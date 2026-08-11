@@ -1,0 +1,61 @@
+# openHC — Control4 EA1 (Intel Atom CE5310), minimal *reachable* image.
+#
+# Goal: a modern kernel that netboots and comes up on Wi-Fi with an SSH server,
+# so the serial tether can be dropped. Rootfs is an embedded initramfs, so the
+# kernel needs no storage driver to boot — only CPU, the 8250 UART, and the
+# Atheros Wi-Fi (ath9k, fully mainline, no firmware blob). eMMC and the SoC
+# Ethernet used out-of-tree vendor drivers and are deliberately out of scope
+# here; Wi-Fi is the reachability path.
+
+# --- arch: 32-bit x86, Atom (Bonnell) tuning ---
+BR2_i386=y
+BR2_x86_atom=y
+
+BR2_OPTIMIZE_S=y
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+
+# --- init / login ---
+BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1"
+BR2_TARGET_GENERIC_ISSUE="openHC EA1 (kernel-up)"
+# Password login for the serial console AND ssh. Change after first boot.
+BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
+BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
+BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
+
+# --- kernel ---
+BR2_LINUX_KERNEL=y
+# Latest mainline stable (kernel.org). ath9k/e1000/8250 are ancient and stable
+# here; the size cost of a modern kernel is handled by the aggressive trim in
+# linux.fragment (must stay under CEFDK bootlinux's ~7MB copy window).
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
+BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_EA1_PATH)/linux/linux.fragment"
+BR2_LINUX_KERNEL_BZIMAGE=y
+
+# --- rootfs: standalone gzipped cpio, loaded as an external initrd ---
+# NOT embedded in the bzImage: CEFDK's bootlinux copies the whole kernel image
+# to 0x100000, and its own loader code sits at ~0x812f07 (8.07MB). A 10MB
+# embedded image overruns the loader mid-copy and crashes on return. Keeping the
+# rootfs out of the kernel keeps the bzImage small enough to fit under that, and
+# the initrd rides in high RAM via the loader's ramdisk path ([0x837560..568]).
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_GZIP=y
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_EA1_PATH)/rootfs-overlay"
+
+# --- wrap the bzImage in the CEFDK container for netboot ---
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_EA1_PATH)/post-image.sh"
+
+# --- reachability: SSH + Wi-Fi ---
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
+BR2_PACKAGE_IW=y
+# busybox udhcpc handles DHCP; no separate client needed.
+
+# --- handy on-target debugging ---
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+BR2_PACKAGE_PCIUTILS=y

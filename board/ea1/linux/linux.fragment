@@ -1,0 +1,164 @@
+# Kernel config delta on the mainline i386 defconfig, for a reachable EA1.
+#
+# Minimal on purpose: boot to a shell on serial, and bring up Wi-Fi so we can
+# SSH in and drop the tether. Storage (eMMC) and wired Ethernet used out-of-tree
+# vendor drivers and are not attempted here.
+
+# --- serial console (CEFDK's port) ---
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_NR_UARTS=4
+CONFIG_CMDLINE_BOOL=y
+# pci=realloc,nocrs is REQUIRED on this board: CEFDK leaves the ath9k/e1000 PCI
+# BARs unassigned, so without it the kernel can't ioremap them and there's no
+# wlan0/eth0. Baked in (CMDLINE_EXTEND appends this to whatever bootlinux passes)
+# so it applies even on a plain boot.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"
+CONFIG_CMDLINE_EXTEND=y
+
+# --- external initrd (Buildroot supplies a separate rootfs.cpio.gz) ---
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+
+# --- image size: the bzImage must fit CEFDK's bootlinux copy window. bootlinux
+#     copies the protected-mode kernel to phys 0x100000 and its own loader code
+#     lives at ~0x813000 (8.07MB); if the copy reaches that, it clobbers the
+#     loader mid-copy and crashes. So protmode must stay under ~7.0MB. The stock
+#     i386 arch defconfig is ~8.3MB kernel-only, so: XZ + size-opt + drop the
+#     subsystems a wifi-only, RAM-rootfs bring-up never uses. ---
+CONFIG_KERNEL_XZ=y
+# CONFIG_KERNEL_GZIP is not set
+CONFIG_CC_OPTIMIZE_FOR_SIZE=y
+# CONFIG_USB_SUPPORT is not set
+# CONFIG_SCSI is not set
+# CONFIG_ATA is not set
+# CONFIG_MMC is not set
+# CONFIG_EXT4_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_BTRFS_FS is not set
+
+# --- Atom / platform ---
+CONFIG_MATOM=y
+CONFIG_HIGHMEM4G=y
+CONFIG_PCI=y
+CONFIG_PCIEPORTBUS=y
+
+# --- Wi-Fi: Atheros AR9485 on PCIe, fully mainline ath9k (no firmware) ---
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_CFG80211=y
+CONFIG_MAC80211=y
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_ATH_COMMON=y
+CONFIG_ATH9K=y
+CONFIG_ATH9K_PCI=y
+# crypto mac80211/WPA needs
+CONFIG_CRYPTO=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_CCM=y
+CONFIG_CRYPTO_GCM=y
+CONFIG_CRYPTO_ARC4=y
+
+# --- wired NIC: the on-board Intel GbE (e1000) CEFDK netboots from. Keep it
+#     builtin as a second path to the network alongside Wi-Fi. ---
+CONFIG_E1000=y
+
+# ============================================================================
+# Aggressive size trim, openSpeakerPoint-style. We inherit the x86 i386
+# "support every PC ever made" defconfig, which builds in a huge amount of dead
+# weight. The CE5310 needs almost nothing: 8250 serial, PCI, ath9k, e1000, an
+# initrd. Everything below is safe to cut on THIS board and each line is chosen,
+# not sprayed. Goal: keep the bzImage under bootlinux's ~7MB copy window even on
+# a modern (7.1.x) kernel.
+# ============================================================================
+
+# All-builtin, no loadable modules (openSpeakerPoint approach). The image is
+# self-contained — every driver we need is =y below — so there are no .ko files
+# and no modpost step. This also sidesteps a hard i386-7.1.8 build failure:
+# the musl toolchain compiles .ko modules with the stack protector, but the
+# guard symbol __stack_chk_guard isn't exported to modules, so modpost dies
+# ("__stack_chk_guard undefined" for efivarfs.ko / x86_pkg_temp_thermal.ko).
+# vmlinux itself links fine, so all-builtin is clean.
+CONFIG_MODULES=n
+
+# Disable the kernel stack protector. The Buildroot musl toolchain's SSP canary
+# model and i386-7.1.8's per-CPU canary setup disagree: the secondary CPU's
+# guard doesn't match, so __stack_chk_fail panics the instant swapper/1 enters
+# do_idle ("stack-protector: Kernel stack is corrupted in: do_idle"). This is
+# the same __stack_chk_guard mismatch that broke module modpost above. Off for
+# bring-up; revisit with a matching toolchain if we want it back.
+# CONFIG_STACKPROTECTOR is not set
+# CONFIG_STACKPROTECTOR_STRONG is not set
+
+# We boot through CEFDK's legacy 16-bit entry (bootlinux), never EFI. Drop the
+# whole EFI stack — and with it efivarfs, one of the two modules that failed.
+# CONFIG_EFI is not set
+
+# The symbol table is a big slice of a small kernel. Oops/panics still print
+# raw addresses; flip back on to resolve a crash.
+# CONFIG_KALLSYMS is not set
+
+# This is bare metal, never a VM guest. The i386 defconfig builds in the entire
+# paravirt/guest stack (KVM/Xen/Hyper-V/VMware/virtio) — all dead weight.
+# CONFIG_HYPERVISOR_GUEST is not set
+# CONFIG_PARAVIRT is not set
+# CONFIG_KVM_GUEST is not set
+# CONFIG_XEN is not set
+# CONFIG_VIRTUALIZATION is not set
+
+# No kernel debug/trace/instrumentation infra in a bring-up firmware image.
+# CONFIG_FTRACE is not set
+# CONFIG_DEBUG_KERNEL is not set
+# CONFIG_DEBUG_INFO is not set
+# CONFIG_DEBUG_INFO_BTF is not set
+# CONFIG_KPROBES is not set
+# CONFIG_BPF_SYSCALL is not set
+# CONFIG_IKCONFIG is not set
+# CONFIG_PROFILING is not set
+# CONFIG_KGDB is not set
+
+# Networking: plain IPv4 for SSH/HTTP. No firewall, IPsec, IPv6, traffic QoS.
+# CONFIG_NETFILTER is not set
+# CONFIG_IPV6 is not set
+# CONFIG_NET_SCHED is not set
+# CONFIG_XFRM_USER is not set
+# CONFIG_INET_DIAG is not set
+# CONFIG_WIRELESS_EXT is not set
+
+# No storage stack: rootfs is a RAM initramfs. eMMC/SATA/USB/NVMe/MTD/RAID out.
+# CONFIG_MD is not set
+# CONFIG_NVME_CORE is not set
+# CONFIG_MTD is not set
+
+# Filesystems: initramfs is tmpfs/ramfs (builtin). No on-disk or network FS.
+# CONFIG_EXT3_FS is not set
+# CONFIG_EXT2_FS is not set
+# CONFIG_JBD2 is not set
+# CONFIG_F2FS_FS is not set
+# CONFIG_FS_DAX is not set
+# CONFIG_NETWORK_FILESYSTEMS is not set
+# CONFIG_QUOTA is not set
+# CONFIG_FUSE_FS is not set
+
+# No graphics / sound / media — serial console is the only head.
+# CONFIG_DRM is not set
+# CONFIG_FB is not set
+# CONFIG_SOUND is not set
+# CONFIG_SND is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_VGA_CONSOLE is not set
+# CONFIG_AGP is not set
+
+# No sensors / thermal / hwmon / watchdog / power / RTC / i2c for bring-up.
+# (i2c comes back if/when HDMI+CEC bring-up needs it.)
+# CONFIG_HWMON is not set
+# CONFIG_THERMAL is not set
+# CONFIG_WATCHDOG is not set
+# CONFIG_POWER_SUPPLY is not set
+# CONFIG_I2C is not set
+
+# Crypto: keep only what mac80211/WPA needs (AES/CCM/GCM/ARC4, above). Drop the
+# rest of the algorithm zoo and every hardware-crypto driver.
+# CONFIG_CRYPTO_USER is not set
+# CONFIG_CRYPTO_HW is not set

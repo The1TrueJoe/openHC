@@ -1,0 +1,34 @@
+#!/bin/sh
+# SSH to a Control4 controller. Stock units run an old dropbear that needs
+# legacy kex/cipher/MAC, hence the +algorithm flags.
+#
+#   tools/ohc-ssh <host> [command...]
+#
+# Control4's factory root password is built in — it is a published vendor
+# default, the same on every controller they shipped, so requiring a setup file
+# bought nothing. Override with $OHC_PASSWORD for a unit that has been changed.
+#
+# Uses sshpass -e (not -p) so the password never appears in the process list.
+set -e
+
+SSHPASS="${OHC_PASSWORD:-t0talc0ntr0l4!}"
+export SSHPASS
+HOST="$1"
+if [ -z "$HOST" ]; then
+    echo "usage: ohc-ssh <host> [command...]" >&2
+    exit 1
+fi
+shift
+
+exec sshpass -e ssh \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    -o PubkeyAuthentication=no \
+    -o PreferredAuthentications=password \
+    -o ConnectTimeout=10 \
+    -o HostKeyAlgorithms=+ssh-rsa \
+    -o KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1 \
+    -o Ciphers=+aes128-cbc,3des-cbc \
+    -o MACs=+hmac-sha1 \
+    "root@$HOST" "$@"

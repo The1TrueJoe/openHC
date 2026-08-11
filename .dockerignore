@@ -1,0 +1,7 @@
+.git
+output
+dl
+*.img
+*.bin
+!board/ea1/cefdk-container-header.bin
+docs

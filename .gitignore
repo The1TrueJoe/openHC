@@ -1,0 +1,10 @@
+# Buildroot output (multi-GB, reproducible from configs)
+/output/
+/dl/
+/br2-external/buildroot/
+*.img
+*.bin
+!board/ea1/cefdk-container-header.bin
+# scratch
+/tmp/
+*.log

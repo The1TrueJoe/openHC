@@ -1,0 +1,7 @@
+#!/bin/sh
+# openHC bring-up marker: proves we reached userspace on a modern kernel.
+[ "$1" = start ] || exit 0
+echo ""
+echo "  openHC EA1 — kernel-up bring-up rootfs"
+echo "  kernel: $(uname -r)   $(uname -m)"
+echo ""
