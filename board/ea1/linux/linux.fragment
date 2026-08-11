@@ -162,3 +162,14 @@ CONFIG_MODULES=n
 # rest of the algorithm zoo and every hardware-crypto driver.
 # CONFIG_CRYPTO_USER is not set
 # CONFIG_CRYPTO_HW is not set
+
+# ==== CE5310 SoC bring-up (headless controller I/O) ====
+# gpio-sodaville binds PCI 8086:2e67 by ID (no DTB). Both it and i2c-pxa
+# depend on OF, so OF must be a plain bool — NOT flattree, NOT the CE4100
+# platform (bootlinux passes no DTB; devices enumerate via PCI/ACPI as usual).
+CONFIG_OF=y
+# CONFIG_OF_EARLY_FLATTREE is not set
+# CONFIG_X86_INTEL_CE is not set
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_SODAVILLE=y
+CONFIG_GPIO_SYSFS=y

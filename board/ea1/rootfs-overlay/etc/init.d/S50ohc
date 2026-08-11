@@ -1,0 +1,9 @@
+#!/bin/sh
+# Start the openHomeController services after networking (S40wifi) is up.
+case "$1" in
+  start) /opt/ohc/bin/ohc boot ;;
+  stop)  /opt/ohc/bin/ohc stop ;;
+  restart) /opt/ohc/bin/ohc stop; /opt/ohc/bin/ohc boot ;;
+  status) /opt/ohc/bin/ohc status ;;
+  *) echo "usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

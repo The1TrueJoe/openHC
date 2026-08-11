@@ -1,0 +1,42 @@
+#!/bin/sh
+# ohc-tz — set the host timezone (kernel-up build; no Android container here).
+#
+# Buildroot ships zoneinfo under /usr/share/zoneinfo and /etc/localtime is the
+# active zone. Zone names, not fixed offsets, so DST takes care of itself.
+#
+#   ohc-tz                    apply OHC_TIMEZONE from board.env
+#   ohc-tz America/New_York   apply that zone and remember it
+#   ohc-tz --status
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+ENVF=/opt/ohc/board.env
+[ -f "$ENVF" ] && . "$ENVF"
+ZI=/usr/share/zoneinfo
+
+host_zone() { readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||'; }
+
+if [ "$1" = "--status" ]; then
+    echo "ohc-tz: configured ${OHC_TIMEZONE:-<unset>}"
+    echo "ohc-tz: host      $(host_zone) — $(date)"
+    exit 0
+fi
+
+TZONE="${1:-$OHC_TIMEZONE}"
+[ -n "$TZONE" ] || { echo "ohc-tz: no timezone configured (set OHC_TIMEZONE in $ENVF)" >&2; exit 1; }
+[ -f "$ZI/$TZONE" ] || { echo "ohc-tz: unknown zone '$TZONE' — no $ZI/$TZONE" >&2; exit 1; }
+
+if [ "$(host_zone)" != "$TZONE" ]; then
+    echo "ohc-tz: host -> $TZONE"
+    ln -sf "$ZI/$TZONE" /etc/localtime
+fi
+# busybox reads /etc/TZ; keep it in sync (POSIX TZ from the zoneinfo name works).
+printf 'TZ=%s\n' "$TZONE" > /etc/TZ 2>/dev/null || true
+
+# Remember an explicitly requested zone across reboots.
+if [ -n "$1" ] && [ "$1" != "$OHC_TIMEZONE" ]; then
+    if grep -q '^OHC_TIMEZONE=' "$ENVF" 2>/dev/null; then
+        sed -i "s|^OHC_TIMEZONE=.*|OHC_TIMEZONE=$TZONE|" "$ENVF"
+    else
+        echo "OHC_TIMEZONE=$TZONE" >> "$ENVF"
+    fi
+fi
+exit 0

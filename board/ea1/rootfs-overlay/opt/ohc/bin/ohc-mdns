@@ -1,0 +1,209 @@
+#!/bin/sh
+# ohc-mdns — announce this controller on the network.
+#
+# Control4's SDDP is gone after clean-slate, so without this the box is only
+# findable by IP — painful on a unit that moved to wifi and got a new lease.
+# mDNS replaces it with a stable, predictable name:
+#
+#     openhomecontroller-<model>-<eth-mac>.local
+#
+# model is the board number (1/3/5/800/250) and the MAC is ALWAYS the ethernet
+# one, lower-case and without colons, even when the box is reachable over wifi.
+# That keeps the name stable across interfaces — the whole point of an identity.
+#
+# Implemented with avahi, which is already in the stock image (standard open
+# source, not Control4 code) and is a far better mDNS stack than anything worth
+# hand-rolling here. We only supply the identity and a service record.
+#
+#   ohc-mdns            configure + (re)start the responder
+#   ohc-mdns --watch    re-apply whenever the preferred interface changes
+#   ohc-mdns --status   show the advertised name
+#   ohc-mdns --stop
+#
+# NB: avahi on this image reads /usr/etc/avahi, NOT /etc/avahi. Writing the
+# config to /etc/avahi looks like it works and is silently ignored.
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+[ -f /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+CONF_DIR=/etc/avahi
+CONF="$CONF_DIR/avahi-daemon.conf"
+SERVICES="$CONF_DIR/services"
+# Advertised so `ohc discover` can show which units are out of date
+# without opening an HTTP connection to each one.
+OHC_VERSION=$(cat /opt/ohc/VERSION 2>/dev/null || echo unknown)
+BACKUP=/opt/ohc/backup
+
+mdns_name() {
+    model="${OHC_MODEL:-0}"
+    mac=$(cat /sys/class/net/"${OHC_ID_IFACE:-eth0}"/address 2>/dev/null | tr -d ':' | tr 'A-Z' 'a-z')
+    [ -n "$mac" ] || mac="unknown"
+    echo "openhomecontroller-${model}-${mac}"
+}
+
+running() { ps w | grep -v grep | grep -q "avahi-daemon: running"; }
+
+# Which interface should carry the identity.
+#
+# Wired first: it is the faster and more stable path, and on this box both
+# interfaces sit on the SAME subnet, so advertising on both publishes two
+# addresses for one host. Clients then pick one at random and some cache the
+# wrong one. Pick a single interface and stick to it.
+#
+# br0 and the veth pair belong to the Android container and must never carry
+# service records onto the LAN.
+preferred_iface() {
+    for i in ${OHC_MDNS_IFACE:-eth0 wlan0}; do
+        [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = "1" ] || continue
+        ip -4 addr show "$i" 2>/dev/null | grep -q "inet " || continue
+        echo "$i"; return 0
+    done
+    return 1
+}
+
+# Re-apply on link change.
+#
+# The interface is chosen once at start, so unplugging ethernet used to leave
+# avahi pinned to a dead interface publishing nothing at all — the box went
+# silent while every service was still running. Poll the carrier and reconfigure
+# when the answer changes. A file read every few seconds costs nothing.
+if [ "$1" = "--watch" ]; then
+    last=""
+    while :; do
+        now=$(preferred_iface || echo none)
+        if [ "$now" != "$last" ]; then
+            [ -n "$last" ] && echo "ohc-mdns: interface changed $last -> $now, reconfiguring"
+            "$0" >/dev/null 2>&1
+            # Receivers publish their own records, so they have to re-register
+            # against the new interface too.
+            [ -x /opt/ohc/bin/ohc-airplay ] && { /opt/ohc/bin/ohc-airplay --stop; /opt/ohc/bin/ohc-airplay; } >/dev/null 2>&1
+            [ -x /opt/ohc/bin/ohc-spotify ] && { /opt/ohc/bin/ohc-spotify --stop; /opt/ohc/bin/ohc-spotify; } >/dev/null 2>&1
+            last="$now"
+        fi
+        sleep "${OHC_MDNS_WATCH_INTERVAL:-5}"
+    done
+fi
+
+case "$1" in
+  --status)
+        if running; then
+            ps w | grep -v grep | grep "avahi-daemon: running" | sed 's/.*running/  advertising/'
+        else
+            echo "ohc-mdns: not running"; exit 1
+        fi
+        exit 0 ;;
+  --stop)
+        killall avahi-daemon 2>/dev/null
+        echo "ohc-mdns: stopped"; exit 0 ;;
+esac
+
+[ -x /usr/sbin/avahi-daemon ] || { echo "ohc-mdns: avahi-daemon not present"; exit 0; }
+[ -f "$CONF" ] || { echo "ohc-mdns: $CONF missing"; exit 0; }
+
+NAME=$(mdns_name)
+mkdir -p "$BACKUP" "$SERVICES"
+[ -f "$BACKUP/avahi-daemon.conf" ] || cp "$CONF" "$BACKUP/avahi-daemon.conf"
+
+IFACE=$(preferred_iface) || IFACE=""
+
+# Restrict publishing to the one interface, and never to the container bridge.
+set_conf() {   # set_conf <key> <value>
+    if grep -q "^#*$1=" "$CONF"; then
+        sed -i "s|^#*$1=.*|$1=$2|" "$CONF"
+    else
+        sed -i "/^\[server\]/a $1=$2" "$CONF"
+    fi
+}
+if [ -n "$IFACE" ]; then
+    set_conf allow-interfaces "$IFACE"
+    echo "ohc-mdns: publishing on $IFACE only"
+fi
+set_conf deny-interfaces "br0"
+
+# Set host-name in the [server] section, whether it is present, commented, or
+# absent entirely.
+if grep -q "^#*host-name=" "$CONF"; then
+    sed -i "s/^#*host-name=.*/host-name=$NAME/" "$CONF"
+else
+    sed -i "/^\[server\]/a host-name=$NAME" "$CONF"
+fi
+
+# Two service types. _http._tcp is for browsers and anything generic;
+# _openhomecontroller._tcp is ours, so `ohc discover` can pick controllers out
+# of a LAN full of printers, NAS boxes and router admin pages. It matters more
+# than it sounds: Control4's SDDP is gone after a clean-slate, so this record is
+# the ONLY way a unit running our firmware gets found.
+#
+# TWO THINGS THIS HEREDOC WILL PUNISH YOU FOR, both learned the hard way:
+#   * The delimiter is unquoted so ${OHC_WEB_PORT} and friends expand — which
+#     means a backtick anywhere in here runs as a command while the file is
+#     being written.
+#   * XML comments cannot contain a double hyphen. avahi rejects the whole file
+#     with "XML_ParseBuffer() failed ... not well-formed" and logs it to syslog,
+#     where nobody looks; the daemon starts fine and simply advertises nothing.
+# Keep the XML comments short and put the prose out here.
+cat > "$SERVICES/openhomecontroller.service" <<EOF
+<?xml version="1.0" standalone="no"?><!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">openHomeController on %h</name>
+  <!-- browsers and generic tooling -->
+  <service>
+    <type>_http._tcp</type>
+    <port>${OHC_WEB_PORT:-80}</port>
+    <txt-record>board=${OHC_BOARD:-unknown}</txt-record>
+    <txt-record>model=${OHC_MODEL:-0}</txt-record>
+    <txt-record>version=${OHC_VERSION}</txt-record>
+  </service>
+  <!-- how the ohc tool finds controllers -->
+  <service>
+    <type>_openhomecontroller._tcp</type>
+    <port>${OHC_WEB_PORT:-80}</port>
+    <txt-record>board=${OHC_BOARD:-unknown}</txt-record>
+    <txt-record>model=${OHC_MODEL:-0}</txt-record>
+    <txt-record>version=${OHC_VERSION}</txt-record>
+  </service>
+</service-group>
+EOF
+
+# A config change only takes effect on a full restart; `-r` reloads static
+# services but NOT host-name.
+#
+# STOP GRACEFULLY. This used to be `killall -9`, which is why the box spent a
+# long time advertising itself as "<name>-2.local": SIGKILL gives avahi no chance
+# to send its mDNS goodbye packets, so every other host on the network keeps the
+# old records cached. One second later the new instance probes for the same name,
+# a neighbour answers from cache "that name is taken", and avahi permanently
+# renames itself with a -2 suffix. The daemon was colliding with its own ghost.
+# `-k` is avahi's own clean shutdown; fall back to SIGTERM, and only escalate to
+# SIGKILL if it genuinely will not exit.
+if running; then
+    /usr/sbin/avahi-daemon -k >/dev/null 2>&1 || killall avahi-daemon 2>/dev/null
+    i=0
+    while running && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
+    if running; then
+        echo "ohc-mdns: avahi did not exit cleanly; forcing (expect a -N suffix)" >&2
+        killall -9 avahi-daemon 2>/dev/null
+        sleep 1
+    fi
+    # Let the goodbye packets propagate before re-probing the same name.
+    sleep 2
+fi
+rm -f /var/run/avahi-daemon/pid
+/usr/sbin/avahi-daemon -D >/dev/null 2>&1
+sleep 2
+if ! running; then
+    echo "ohc-mdns: avahi-daemon failed to start"
+    exit 1
+fi
+
+# Verify we actually got the name we asked for. avahi renames silently on
+# conflict, and an identity that is only mostly right is worse than a loud
+# failure — every client bookmarks the wrong name.
+GOT=$(ps w | grep -v grep | sed -n 's/.*avahi-daemon: running \[\(.*\)\.local\].*/\1/p' | head -1)
+if [ -n "$GOT" ] && [ "$GOT" != "$NAME" ]; then
+    echo "ohc-mdns: WARNING advertising '${GOT}.local', wanted '${NAME}.local'"
+    echo "  another responder claims that name — check for a second controller,"
+    echo "  or a stale record that has not expired yet (retry in ~2 minutes)."
+    exit 1
+fi
+echo "ohc-mdns: advertising ${NAME}.local"

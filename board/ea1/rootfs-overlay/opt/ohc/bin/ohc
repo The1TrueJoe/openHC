@@ -1,0 +1,50 @@
+#!/bin/sh
+# ohc — service orchestrator for the kernel-up headless controller.
+# POSIX sh (busybox ash). Board config in /opt/ohc/board.env. Each subsystem is
+# its own script in /opt/ohc/bin so it can be run standalone.
+#
+#   ohc boot                    full bring-up at boot (called from /etc/init.d)
+#   ohc start | stop | status
+#   ohc tz [zone] | mdns        run one step by hand
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
+export PATH
+ROOT=/opt/ohc; BIN=$ROOT/bin; RUN=/var/run/ohc; LOG=$ROOT/log
+[ -f $ROOT/board.env ] && . $ROOT/board.env
+mkdir -p "$RUN" "$LOG"
+
+start_one() {  # start_one <name> <cmd...>  — supervise a daemon by pidfile
+  name=$1; shift; pidf=$RUN/$name.pid
+  if [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; then
+    echo "  $name already running (pid $(cat "$pidf"))"; return 0
+  fi
+  echo "  starting $name"
+  nohup "$@" >"$LOG/$name.log" 2>&1 &
+  echo $! > "$pidf"
+}
+stop_one() {
+  name=$1; pidf=$RUN/$name.pid; [ -f "$pidf" ] || return 0
+  pid=$(cat "$pidf")
+  kill -0 "$pid" 2>/dev/null && { echo "  stopping $name (pid $pid)"; kill "$pid"; }
+  rm -f "$pidf"
+}
+
+boot() {
+  echo "ohc: bring-up"
+  "$BIN/ohc-tz"                      # host timezone
+  "$BIN/ohc-mdns"                    # advertise openhomecontroller-<model>-<mac>.local
+  start_one mdns-watch "$BIN/ohc-mdns" --watch
+  # --- gated on the SoC driver bring-up (added as each lands) ---
+  # [ -x "$BIN/ohc-io" ]    && "$BIN/ohc-io"        # Tiva IO MCU into app mode
+  # [ -x "$BIN/ohc-zigbee" ] && "$BIN/ohc-zigbee"   # EM357 NCP into app mode
+  # [ -x "$BIN/ohc-fand" ]  && start_one fand "$BIN/ohc-fand"
+  # [ -x "$BIN/ohc-led" ]   && "$BIN/ohc-led" boot
+}
+
+case "$1" in
+  boot|start) boot ;;
+  stop)  stop_one mdns-watch; "$BIN/ohc-mdns" --stop 2>/dev/null ;;
+  status) "$BIN/ohc-mdns" --status; "$BIN/ohc-tz" --status ;;
+  tz)    shift; "$BIN/ohc-tz" "$@" ;;
+  mdns)  "$BIN/ohc-mdns" ;;
+  *) echo "usage: ohc {boot|start|stop|status|tz [zone]|mdns}" ; exit 1 ;;
+esac

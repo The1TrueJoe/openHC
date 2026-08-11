@@ -59,3 +59,9 @@ BR2_PACKAGE_IW=y
 # --- handy on-target debugging ---
 BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 BR2_PACKAGE_PCIUTILS=y
+
+# --- mDNS identity: avahi (built without D-Bus to stay light) ---
+BR2_PACKAGE_AVAHI=y
+BR2_PACKAGE_AVAHI_DAEMON=y
+# --- carry kernel patches (i2c-pxa-pci enumerate-without-DT, future pwm-ce5300) ---
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_EA1_PATH)/patches"
