@@ -44,8 +44,30 @@ console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 ip=%s mfgtest=1 \
 ```
 
 **This is the zero-risk development path: netboot our kernel, never write eMMC.**
-The cookie mechanism (likely a DHCP vendor option) is not yet reverse-engineered —
-see Unverified below.
+The cookie is **`C4_COOKIE`** in DHCP option 60 — reverse-engineered and working
+(see `bootloader-access.md`).
+
+## What the factory-restore button actually does (measured 2026-08)
+
+Captured the full recovery-kernel log on hardware. The recessed **factory-restore
+button** (GPIO 31) is not a light touch — it is a **complete stock reimage sourced
+entirely from p2**, in this order:
+
+1. `mke2fs` — **reformats p1** (yes, it runs mkfs; an earlier note here was wrong).
+2. mounts p1 + p2, copies the stock rootfs and config from **p2 → p1**.
+3. unpacks `/mnt/rec/recovery_kernel.deb` and `dd`s the **stock 6.7 MB kernel**
+   (7,009,216 B = 0x006af3c0, the eMMC container size stored at eMMC `0x200`) back
+   over the eMMC kernel region — logs `Wrote Kernel Size To Flash Success!`.
+4. unpacks `/mnt/rec/cefdk.deb` and `dd`s **stock CEFDK (512 KB)** back — it even
+   reflashes the bootloader.
+5. reboots.
+
+**Consequence for going persistent:** the button restores **kernel + rootfs +
+CEFDK** to stock, so flashing our own kernel to the eMMC container and our rootfs
+to p1 is fully reversible with one press. The single region that must **never** be
+written is **p2** — it holds the entire recovery payload (`recovery_kernel.deb`,
+`cefdk.deb`, the rootfs) and is the one source of truth for the reimage. Take a
+full 7.6 GB eMMC backup before the first write regardless.
 
 ## The CEFDK shell
 
@@ -268,11 +290,12 @@ sane iteration path.
    "Boot Shell Timeout", or only via a failed boot?
 3. The manufacturing-mode **network cookie** format (DHCP option? TFTP file?).
    This unlocks netboot, the whole no-risk dev path.
-4. **Is p2 a bootable factory image or just a config store?** `hdmi_edid_fixup`
-   only stashes one file there, but it's 1 GB. If it *is* a factory image, a
-   restore-button press may fully recover stock with no serial at all.
-5. What the factory-restore button actually does — does it reimage from p2?
-6. ~~Whether CEFDK enforces signature checks~~ — **largely answered above**
-   (almost certainly not enforced; confirm with the serial `bootlinux` test).
+4. ~~Is p2 a bootable factory image or just a config store?~~ — **ANSWERED**: p2
+   is the recovery payload (`recovery_kernel.deb`, `cefdk.deb`, stock rootfs). See
+   the factory-restore section above.
+5. ~~What the factory-restore button actually does — does it reimage from p2?~~ —
+   **ANSWERED**: yes, full reimage of kernel + rootfs + CEFDK from p2 (measured).
+6. ~~Whether CEFDK enforces signature checks~~ — **ANSWERED**: `bootkernel`/mfg
+   enforce RSA (fuse set); `bootlinux` does NOT — we boot unsigned through it.
 7. The exact DHCP option carrying `C4_COOKIE` — read it off the wire the first
    time we netboot, or from the CEFDK shell.
