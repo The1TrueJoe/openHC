@@ -150,13 +150,11 @@ CONFIG_MODULES=n
 # CONFIG_VGA_CONSOLE is not set
 # CONFIG_AGP is not set
 
-# No sensors / thermal / hwmon / watchdog / power / RTC / i2c for bring-up.
-# (i2c comes back if/when HDMI+CEC bring-up needs it.)
-# CONFIG_HWMON is not set
+# No thermal framework / watchdog / power for bring-up. (I2C + HWMON are turned
+# ON in the SoC bring-up section below, for the LM75 fan temp sensor.)
 # CONFIG_THERMAL is not set
 # CONFIG_WATCHDOG is not set
 # CONFIG_POWER_SUPPLY is not set
-# CONFIG_I2C is not set
 
 # Crypto: keep only what mac80211/WPA needs (AES/CCM/GCM/ARC4, above). Drop the
 # rest of the algorithm zoo and every hardware-crypto driver.
@@ -173,3 +171,22 @@ CONFIG_OF=y
 CONFIG_GPIOLIB=y
 CONFIG_GPIO_SODAVILLE=y
 CONFIG_GPIO_SYSFS=y
+
+# I2C: i2c-pxa (REGS_CE4100 variant) behind PCI 8086:2e68. Enumerates only with
+# the i2c-pxa-pci "no DT" patch (patches/linux/0001). COMMON_CLK MUST stay off:
+# i2c-pxa's devm_clk_get() returns an error (not the NULL stub) once HAVE_CLK is
+# on, and probe fails with "failed to get the clk".
+CONFIG_I2C=y
+CONFIG_I2C_PXA=y
+CONFIG_I2C_CHARDEV=y
+# CONFIG_COMMON_CLK is not set
+
+# LM75 heatsink temp sensor on i2c-0 @ 0x48 -> /sys/class/hwmon/hwmon0/temp1_input.
+# (A DS1339 RTC also sits on i2c-0 @ 0x68 — hwclock candidate later.)
+CONFIG_HWMON=y
+CONFIG_SENSORS_LM75=y
+
+# Fan PWM: our pwm-ce5300 driver (patches/linux/0002) binds PCI 8086:089f.
+CONFIG_PWM=y
+CONFIG_PWM_SYSFS=y
+CONFIG_PWM_CE5300=y

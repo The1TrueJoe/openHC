@@ -1,0 +1,100 @@
+i2c: pxa-pci: enumerate the CE5310 I2C without a device tree
+
+The CE5310 exposes the same three-BAR I2C PCI function as the CE4100
+(8086:2e68), but our CEFDK 'bootlinux' boot passes no DTB, so of_node is
+NULL and the stock driver bails ('Missing device tree node').
+
+Drop the DT-node matching and hand each BAR directly to an i2c-pxa
+'ce4100-i2c' platform device. i2c-pxa falls through to its
+platform_device_id path (REGS_CE4100) when of_node is NULL and numbers
+the adapters from the platform id (i2c-0..2). fast_mode stays 0 (100kHz),
+which is fine for the LM75 + DS1339 on i2c-0.
+
+Signed-off-by: openHC <openhc@localhost>
+---
+--- a/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:30
++++ b/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:16
+@@ -6,13 +6,18 @@
+  * The CE4100's I2C device is more or less the same one as found on PXA.
+  * It does not support target mode, the register slightly moved. This PCI
+  * device provides three bars, every contains a single I2C controller.
++ *
++ * openHC: patched to enumerate WITHOUT a device tree. The CE5310 exposes the
++ * same three-BAR I2C PCI function (8086:2e68), but our CEFDK bootlinux boot
++ * passes no DTB, so dev->dev.of_node is NULL. Drop the DT-node matching and
++ * hand each BAR straight to an i2c-pxa "ce4100-i2c" platform device; i2c-pxa
++ * falls through to its platform_device_id path (REGS_CE4100) when of_node is
++ * NULL, and numbers the adapters from the platform id (i2c-0..2).
+  */
+ #include <linux/init.h>
+ #include <linux/pci.h>
+ #include <linux/platform_device.h>
+ #include <linux/platform_data/i2c-pxa.h>
+-#include <linux/of.h>
+-#include <linux/of_address.h>
+ 
+ #define CE4100_PCI_I2C_DEVS	3
+ 
+@@ -25,7 +30,6 @@
+ 	struct platform_device *pdev;
+ 	struct i2c_pxa_platform_data pdata;
+ 	struct resource res[2];
+-	struct device_node *child;
+ 	static int devnum;
+ 	int ret;
+ 
+@@ -40,43 +44,12 @@
+ 	res[1].start = dev->irq;
+ 	res[1].end = dev->irq;
+ 
+-	for_each_child_of_node(dev->dev.of_node, child) {
+-		const void *prop;
+-		struct resource r;
+-		int ret;
+-
+-		ret = of_address_to_resource(child, 0, &r);
+-		if (ret < 0)
+-			continue;
+-		if (r.start != res[0].start)
+-			continue;
+-		if (r.end != res[0].end)
+-			continue;
+-		if (r.flags != res[0].flags)
+-			continue;
+-
+-		prop = of_get_property(child, "fast-mode", NULL);
+-		if (prop)
+-			pdata.fast_mode = 1;
+-
+-		break;
+-	}
+-
+-	if (!child) {
+-		dev_err(&dev->dev, "failed to match a DT node for bar %d.\n",
+-				bar);
+-		ret = -EINVAL;
+-		goto out;
+-	}
+-
+ 	pdev = platform_device_alloc("ce4100-i2c", devnum);
+ 	if (!pdev) {
+-		of_node_put(child);
+ 		ret = -ENOMEM;
+ 		goto out;
+ 	}
+ 	pdev->dev.parent = &dev->dev;
+-	pdev->dev.of_node = child;
+ 
+ 	ret = platform_device_add_resources(pdev, res, ARRAY_SIZE(res));
+ 	if (ret)
+@@ -108,10 +81,6 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	if (!dev->dev.of_node) {
+-		dev_err(&dev->dev, "Missing device tree node.\n");
+-		return -EINVAL;
+-	}
+ 	sds = kzalloc_obj(*sds);
+ 	if (!sds)
+ 		return -ENOMEM;

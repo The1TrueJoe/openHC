@@ -30,11 +30,13 @@ M=(make -C "$BUILDROOT_DIR" O="$OUT" BR2_EXTERNAL="$REPO/board/ea1"
    BR2_DL_DIR="$DL" BR2_JLEVEL="$JOBS")
 
 "${M[@]}" ea1_defconfig
-# Kernel config still iterates during bring-up (fragment changes, rootfs type),
-# and Buildroot won't rebuild a cached kernel just because the fragment changed.
-# Force a reconfigure+rebuild of linux so config edits actually take. Drop this
-# line once the kernel config stabilizes.
-"${M[@]}" linux-reconfigure
+# Kernel bring-up iterates on both the config fragment AND the patch set
+# (board/ea1/patches/linux/). Buildroot applies patches only at EXTRACT time and
+# won't re-extract a cached source, so a plain reconfigure silently ignores new
+# patches. linux-dirclean wipes the extracted tree; the next build re-extracts,
+# re-applies all patches, reconfigures from the fragment, and rebuilds. Drop this
+# once the kernel + patches stabilize (it forces a full kernel rebuild each run).
+"${M[@]}" linux-dirclean
 "${M[@]}" "${@:-all}"
 
 echo ">> image: $OUT/images/openhc-ea1-kernel.img"
