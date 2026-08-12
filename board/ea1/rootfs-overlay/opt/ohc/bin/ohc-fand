@@ -1,0 +1,101 @@
+#!/bin/sh
+# ohc-fand — fan controller for the kernel-up build.
+#
+# Temp in : the LM75 heatsink sensor on i2c-0 @ 0x48, via the standard hwmon
+#           class (drivers/hwmon/lm75). milli-C.
+# Fan out : the standard mainline PWM sysfs on our pwm-ce5300 chip. The EA1 fan
+#           is channel 2. period/duty_cycle are in ns; enable is 0/1. No vendor
+#           "claim" dance — that was a property of the old binary driver.
+#
+# Curve matches the stock [ea_fan] profile so behaviour is unchanged from the
+# vendor daemon: on_temp 50, min 10%, 10%/deg, 60s cool-hold, 80C critical,
+# and fail-SAFE to 100% if the sensor read ever fails.
+#
+#   ohc-fand            run the control loop (service backgrounds it)
+#   ohc-fand set <pct>  manual override 0-100
+#   ohc-fand off
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+[ -f /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+PWMCHIP=${OHC_FAN_PWMCHIP:-/sys/class/pwm/pwmchip0}
+PWMCH=${OHC_FAN_PWMCH:-2}
+PERIOD_NS=${OHC_FAN_PERIOD_NS:-40000}     # 25 kHz
+ON_TEMP=${OHC_FAN_ON_TEMP:-50}
+MIN_PCNT=${OHC_FAN_MIN_PCNT:-10}
+PCNT_PER_DEG=${OHC_FAN_PCNT_PER_DEG:-10}
+COOL_HOLD=${OHC_FAN_COOL_HOLD:-60}
+CRITICAL=${OHC_FAN_CRITICAL:-80}
+INTERVAL=${OHC_FAN_INTERVAL:-15}
+
+PWM="$PWMCHIP/pwm$PWMCH"
+
+# Locate the LM75 hwmon (order isn't guaranteed, so match by name).
+find_temp() {
+  for d in /sys/class/hwmon/hwmon*; do
+    [ -r "$d/name" ] || continue
+    case "$(cat "$d/name" 2>/dev/null)" in
+      lm75) echo "$d/temp1_input"; return 0 ;;
+    esac
+  done
+  # fall back to any temp1_input
+  for d in /sys/class/hwmon/hwmon*; do
+    [ -r "$d/temp1_input" ] && { echo "$d/temp1_input"; return 0; }
+  done
+  return 1
+}
+
+pwm_setup() {
+  [ -d "$PWM" ] || echo "$PWMCH" > "$PWMCHIP/export" 2>/dev/null
+  [ -d "$PWM" ] || return 1
+  echo "$PERIOD_NS" > "$PWM/period" 2>/dev/null
+}
+
+set_pct() {                                # 0-100 -> duty_cycle + enable
+  pct=$1
+  pwm_setup || { echo "ohc-fand: no pwm at $PWM" >&2; return 1; }
+  [ "$pct" -lt 0 ] 2>/dev/null && pct=0
+  [ "$pct" -gt 100 ] 2>/dev/null && pct=100
+  duty=$((PERIOD_NS * pct / 100))
+  # duty must be <= period; enable gates the output
+  echo 0 > "$PWM/enable" 2>/dev/null
+  echo "$duty" > "$PWM/duty_cycle" 2>/dev/null
+  if [ "$pct" -gt 0 ]; then echo 1 > "$PWM/enable" 2>/dev/null; fi
+  echo "$pct"
+}
+
+read_temp_c() {
+  f=$(find_temp) || return 1
+  t=$(cat "$f" 2>/dev/null) || return 1
+  [ -n "$t" ] || return 1
+  echo $((t / 1000))
+}
+
+duty_for() {
+  t=$1
+  [ "$t" -lt "$ON_TEMP" ] && { echo 0; return; }
+  pct=$((MIN_PCNT + (t - ON_TEMP) * PCNT_PER_DEG))
+  [ "$pct" -gt 100 ] && pct=100
+  echo "$pct"
+}
+
+case "$1" in
+  set)  set_pct "${2:-0}" >/dev/null; echo "fan set to ${2:-0}%"; exit 0 ;;
+  off)  set_pct 0 >/dev/null; echo "fan off"; exit 0 ;;
+esac
+
+TEMPF=$(find_temp) || { echo "ohc-fand: no hwmon temp sensor (lm75 not bound?)" >&2; exit 1; }
+echo "ohc-fand: temp=$TEMPF pwm=$PWM on=${ON_TEMP}C min=${MIN_PCNT}% slope=${PCNT_PER_DEG}%/C crit=${CRITICAL}C"
+last_on=0; now=0
+while :; do
+  t=$(read_temp_c)
+  if [ -z "$t" ]; then
+    set_pct 100 >/dev/null; echo "ohc-fand: temp read failed -> fan 100%"
+    sleep "$INTERVAL"; now=$((now + INTERVAL)); continue
+  fi
+  pct=$(duty_for "$t")
+  [ "$t" -ge "$CRITICAL" ] && { pct=100; echo "ohc-fand: CRITICAL ${t}C -> 100%"; }
+  if [ "$pct" -gt 0 ]; then last_on=$now
+  elif [ $((now - last_on)) -lt "$COOL_HOLD" ]; then pct=$MIN_PCNT; fi
+  set_pct "$pct" >/dev/null
+  sleep "$INTERVAL"; now=$((now + INTERVAL))
+done

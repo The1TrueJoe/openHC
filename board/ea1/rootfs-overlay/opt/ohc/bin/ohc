@@ -28,15 +28,34 @@ stop_one() {
   rm -f "$pidf"
 }
 
+hw_bringup() {
+  # LM75 heatsink sensor: i2c-pxa gives us i2c-0; instantiate the (builtin) lm75.
+  if [ -d /sys/bus/i2c/devices/i2c-0 ] && [ ! -d /sys/bus/i2c/devices/0-0048 ]; then
+    echo lm75 0x48 > /sys/bus/i2c/devices/i2c-0/new_device 2>/dev/null
+    sleep 1
+  fi
+  # Self-report the SoC driver bring-up on the console (input over 921600 is
+  # overrun-prone, so let the box tell us what bound instead of typing at it).
+  gc=$(ls -d /sys/class/gpio/gpiochip* 2>/dev/null | wc -l)
+  np=$(cat /sys/class/pwm/pwmchip0/npwm 2>/dev/null || echo none)
+  ic=$(ls -d /sys/bus/i2c/devices/i2c-* 2>/dev/null | wc -l)
+  echo "ohc-hw: gpiochips=$gc pwmchip0.npwm=$np i2c-buses=$ic"
+  for d in /sys/class/hwmon/hwmon*; do
+    [ "$(cat "$d/name" 2>/dev/null)" = lm75 ] && \
+      echo "ohc-hw: lm75 temp=$(cat "$d/temp1_input" 2>/dev/null) milliC ($d)"
+  done
+}
+
 boot() {
   echo "ohc: bring-up"
   "$BIN/ohc-tz"                      # host timezone
   "$BIN/ohc-mdns"                    # advertise openhomecontroller-<model>-<mac>.local
   start_one mdns-watch "$BIN/ohc-mdns" --watch
-  # --- gated on the SoC driver bring-up (added as each lands) ---
-  # [ -x "$BIN/ohc-io" ]    && "$BIN/ohc-io"        # Tiva IO MCU into app mode
-  # [ -x "$BIN/ohc-zigbee" ] && "$BIN/ohc-zigbee"   # EM357 NCP into app mode
-  # [ -x "$BIN/ohc-fand" ]  && start_one fand "$BIN/ohc-fand"
+  hw_bringup                         # LM75 + report gpio/pwm/i2c driver state
+  [ -x "$BIN/ohc-fand" ] && start_one fand "$BIN/ohc-fand"
+  # --- still to adapt to kernel-up sysfs ---
+  # [ -x "$BIN/ohc-io" ]    && "$BIN/ohc-io"        # Tiva IO MCU (ttyS1 + gpio7)
+  # [ -x "$BIN/ohc-zigbee" ] && "$BIN/ohc-zigbee"   # EM357 NCP (+ gpio29)
   # [ -x "$BIN/ohc-led" ]   && "$BIN/ohc-led" boot
 }
 
