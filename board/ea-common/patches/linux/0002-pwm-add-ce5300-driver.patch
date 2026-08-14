@@ -2,7 +2,7 @@ pwm: add Intel CE5300 (Groveland) driver for the EA1 fan
 
 New PWM framework driver binding PCI 8086:089f. No upstream driver exists and
 the register map is not documented; it was reverse-engineered on the stock
-kernel (board/ea1/patches/PWM-CE5300-REGMAP.md). Four channels, stride 0x20,
+kernel (board/ea-common/patches/PWM-CE5300-REGMAP.md). Four channels, stride 0x20,
 27 MHz tick; the EA1 fan is channel 2.
 
 Signed-off-by: openHC <openhc@localhost>
@@ -53,7 +53,7 @@ diff -ruN a/drivers/pwm/pwm-ce5300.c b/drivers/pwm/pwm-ce5300.c
 + * channels at stride 0x20. There is no upstream driver and no public register
 + * doc; the map below was reverse-engineered on the stock 3.12 kernel by driving
 + * the vendor sysfs to 0/50/100 % and dumping the BAR at each level (see
-+ * board/ea1/patches/PWM-CE5300-REGMAP.md in openHC):
++ * board/ea-common/patches/PWM-CE5300-REGMAP.md in openHC):
 + *
 + *   per channel, offset = channel * 0x20:
 + *     +0x00 CTRL    0x6000 = run, 0x0 = stop

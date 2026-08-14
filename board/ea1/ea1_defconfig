@@ -1,0 +1,31 @@
+# openHC — Control4 EA1 deltas.
+#
+# Concatenated AFTER board/ea-common/ea-common_defconfig by build/build.sh, so
+# only the EA1-specific differences belong here. Everything shared — arch,
+# toolchain, kernel version, rootfs type, dropbear/avahi — is in the common file.
+#
+# What makes an EA1 an EA1: it has a PCIe Atheros Wi-Fi card, and Wi-Fi is its
+# reachability path. (The EA3 has no radio and comes up wired.)
+
+BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1"
+BR2_TARGET_GENERIC_ISSUE="openHC EA1 (kernel-up)"
+
+# --- kernel config: common trim + the ath9k Wi-Fi stack ---
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea1/linux/ea1.fragment"
+
+# --- rootfs: shared services + EA1's Wi-Fi bring-up ---
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea1/rootfs-overlay"
+
+# --- wrap the bzImage in the CEFDK container for netboot ---
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="ea1"
+
+# --- Wi-Fi userspace (EA1 only) ---
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
+BR2_PACKAGE_IW=y
+
+# --- kernel patches: i2c-pxa-pci enumerate-without-DT, pwm-ce5300 ---
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"

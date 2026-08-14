@@ -1,0 +1,78 @@
+#!/bin/sh
+# EA3 network bring-up. This is the ONLY reachability path on this board — the
+# EA3 has no Wi-Fi — so it takes the S40 slot that S40wifi occupies on an EA1.
+# Best-effort throughout: never fail boot, because a box that will not boot is
+# harder to debug than a box with no address.
+#
+# Topology: the two rear RJ45s are ports on a BCM53125 switch. The SoC e1000 MAC
+# is the switch's CPU port, running against a fixed link ("internal fake phy").
+# With DSA up, that MAC appears as the master `eth0` and each jack gets its own
+# netdev (lan1, lan2). The master carries no IP of its own — it only has to be
+# UP for the port netdevs to pass traffic. That is a DSA requirement, not a
+# style choice: bring the master up first or the lan ports stay dead.
+#
+# If DSA did not attach (see board/ea3/patches/linux/0003), there will be no
+# lan* devices and we fall back to DHCP directly on eth0. That fallback works,
+# but ONLY through the primary jack (switch port 2) — measured on a live EA3,
+# the other jack (port 1) is not forwarded to the CPU port by the stock switch
+# configuration, so a cable there gets no address at all. The fallback is the
+# difference between "the switch patch needs work" and "the board is
+# unreachable"; it is not a substitute for the switch driver.
+MASTER=eth0
+PORTS="lan1 lan2"
+
+wait_carrier() {
+    i=0
+    while [ $i -lt 10 ]; do
+        [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = 1 ] && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+case "$1" in
+  start)
+    ip link set "$MASTER" up 2>/dev/null || { echo "Net: no $MASTER"; exit 0; }
+
+    have_dsa=
+    for p in $PORTS; do
+        [ -e "/sys/class/net/$p" ] && have_dsa=yes
+    done
+
+    if [ -z "$have_dsa" ]; then
+        printf 'Net: no DSA ports, falling back to %s: ' "$MASTER"
+        wait_carrier "$MASTER"
+        udhcpc -i "$MASTER" -t 8 -T 2 -n >/dev/null 2>&1 \
+            && echo "up ($(ip -4 -o addr show $MASTER | awk '{print $4}'))" \
+            || echo "no lease"
+        exit 0
+    fi
+
+    # Lease on the first port that has a cable in it. Both stay UP so either
+    # socket works, but only one address is taken — two DHCP clients racing on
+    # one L2 segment is a worse default than one.
+    leased=
+    for p in $PORTS; do
+        ip link set "$p" up 2>/dev/null || continue
+    done
+    for p in $PORTS; do
+        wait_carrier "$p" || continue
+        printf 'Net: %s: ' "$p"
+        if udhcpc -i "$p" -t 8 -T 2 -n >/dev/null 2>&1; then
+            echo "up ($(ip -4 -o addr show $p | awk '{print $4}'))"
+            leased=$p
+            break
+        fi
+        echo "no lease"
+    done
+    [ -n "$leased" ] || echo "Net: no lease on any of:$PORTS"
+    ;;
+  stop)
+    killall udhcpc 2>/dev/null
+    for p in $PORTS; do ip link set "$p" down 2>/dev/null; done
+    ip link set "$MASTER" down 2>/dev/null
+    ;;
+  *) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac
+exit 0

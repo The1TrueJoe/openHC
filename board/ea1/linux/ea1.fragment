@@ -1,0 +1,29 @@
+# EA1-only kernel config, applied on top of board/ea-common/linux/common.fragment.
+#
+# The EA1's reachability path is Wi-Fi: an Atheros AR9485 on PCIe, driven by
+# fully mainline ath9k with no firmware blob. That is what lets the serial
+# tether be dropped on a board whose eMMC and SoC Ethernet need out-of-tree
+# vendor drivers.
+#
+# (The EA3 has no radio at all — see board/ea3/linux/ea3.fragment.)
+
+CONFIG_CFG80211=y
+CONFIG_MAC80211=y
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_ATH_COMMON=y
+CONFIG_ATH9K=y
+CONFIG_ATH9K_PCI=y
+
+# crypto mac80211/WPA needs
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_CCM=y
+CONFIG_CRYPTO_GCM=y
+CONFIG_CRYPTO_ARC4=y
+
+# --- kernel command line (EA1) ---
+# pci=realloc,nocrs is REQUIRED on the EA1: CEFDK leaves the ath9k/e1000 BARs
+# unassigned, and this is the combination proven to bring up wlan0 there.
+# Do NOT copy it to another board without checking that board's E820 — see
+# the EA3 fragment for a case where `nocrs` actively breaks the NIC.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"

@@ -25,14 +25,22 @@ harmless failed boot, not a brick — refine against hardware, not on paper.
 """
 import sys, struct, pathlib
 
-HEADER = pathlib.Path(__file__).resolve().parent.parent / "board/ea1/cefdk-container-header.bin"
+REPO = pathlib.Path(__file__).resolve().parent.parent
+# Default header: the one extracted from a stock EA1 image. Every EA runs CEFDK
+# (an EA3 reports cefdk.deb 36-34 in its recovery partition), but only the EA1's
+# container header has actually been captured, so a board with its own header
+# should pass it explicitly rather than inherit this one silently.
+HEADER = REPO / "board/ea1/cefdk-container-header.bin"
 HDR_LEN = 0x580
 
 def main():
-    if len(sys.argv) != 3:
-        sys.exit("usage: cefdk-wrap.py <bzImage> <out-container.img>")
+    if len(sys.argv) not in (3, 4):
+        sys.exit("usage: cefdk-wrap.py <bzImage> <out-container.img> [header.bin]")
     bz = pathlib.Path(sys.argv[1]).read_bytes()
-    hdr = bytearray(HEADER.read_bytes())
+    header = pathlib.Path(sys.argv[3]) if len(sys.argv) == 4 else HEADER
+    if not header.is_file():
+        sys.exit(f"no CEFDK container header at {header}")
+    hdr = bytearray(header.read_bytes())
     if len(hdr) != HDR_LEN:
         sys.exit(f"header is {len(hdr)} bytes, expected {HDR_LEN}")
 

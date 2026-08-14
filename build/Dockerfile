@@ -7,13 +7,14 @@
 # state across runs. This mirrors openSpeakerPoint's proven build.
 #
 # Build + extract the image (from repo root):
-#   DOCKER_BUILDKIT=1 docker build -f build/Dockerfile \
+#   DOCKER_BUILDKIT=1 docker build -f build/Dockerfile --build-arg BOARD=ea1 \
 #       --target artifacts --output type=local,dest=output/images .
 
 FROM debian:bookworm-slim AS build-env
 
 ARG BUILDROOT_REF=2024.02.9
 ARG BR2_JLEVEL=
+ARG BOARD=ea1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential bc bison flex git rsync unzip wget cpio file \
@@ -34,9 +35,9 @@ COPY --chown=builder:builder . /src
 # downloads; output caches the whole build (toolchain, packages) across runs.
 RUN --mount=type=cache,target=/src/dl,uid=1000,gid=1000 \
     --mount=type=cache,target=/src/output,uid=1000,gid=1000 \
-    BR2_JLEVEL="$BR2_JLEVEL" bash ./build/build.sh \
+    BR2_JLEVEL="$BR2_JLEVEL" BOARD="$BOARD" bash ./build/build.sh \
     && rm -rf /tmp/artifacts && mkdir -p /tmp/artifacts \
-    && cp -a /src/output/build/images/. /tmp/artifacts/
+    && cp -a "/src/output/build/$BOARD/images/." /tmp/artifacts/
 
 FROM scratch AS artifacts
 COPY --from=build-env /tmp/artifacts/ /

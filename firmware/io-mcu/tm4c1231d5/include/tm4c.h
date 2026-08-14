@@ -76,6 +76,7 @@
 
 /* UART */
 #define UART0_BASE 0x4000C000u
+#define UART4_BASE 0x40010000u
 #define UART5_BASE 0x40011000u
 #define UART7_BASE 0x40013000u
 #define UART_DR(b)    REG((b) + 0x000)

@@ -7,6 +7,7 @@
  * IR transmit and capture are stubbed at the hardware edge and marked below —
  * they need timer work that cannot be validated without the board in hand.
  */
+#include "board_profile.h"
 #include "ir_engine.h"
 #include "ir_pins.h"
 #include "ohc_proto.h"
@@ -14,7 +15,10 @@
 
 #include <string.h>
 
-#define PRODUCT  "c4:io_processor:ohc-ir04"
+/* The stock image reports "c4:io_processor:c4-ir02" on every board. Ours names
+ * the board so a running unit can be identified without guessing which image
+ * was flashed — the host only ever logs this string, it does not parse it. */
+#define PRODUCT  "c4:io_processor:ohc-" OHC_BOARD_NAME
 #define FIRMWARE "0.1.0"
 
 static uint8_t txbuf[OHC_MAX_PAYLOAD * 2 + 32];
@@ -58,15 +62,15 @@ static void ir_transmit(const ir_tx_job *job)
      * both selected and real, then drive them together. Transmitting the same
      * code on several emitters at once is the normal case — one AV rack, several
      * boxes — and the vendor protocol models it as a mask for exactly that. */
-    uint32_t mask = job->output_mask;
-    for (uint8_t chan = 0; chan < IR_CHANNEL_COUNT; chan++) {
+    uint32_t mask = job->output_mask & OHC_IR_OUT_MASK;
+    for (uint8_t chan = 0; chan < OHC_IR_OUT_COUNT; chan++) {
         if (mask & (1u << chan)) {
             ir_carrier_configure(chan, job->carrier_ticks);
         }
     }
 
     while (!ir_stop_requested && ir_tx_next(job, &cur, &on, &ticks)) {
-        for (uint8_t chan = 0; chan < IR_CHANNEL_COUNT; chan++) {
+        for (uint8_t chan = 0; chan < OHC_IR_OUT_COUNT; chan++) {
             if (mask & (1u << chan)) {
                 ir_carrier_set(chan, on);
             }
@@ -80,7 +84,7 @@ static void ir_transmit(const ir_tx_job *job)
             }
         }
     }
-    for (uint8_t chan = 0; chan < IR_CHANNEL_COUNT; chan++) {
+    for (uint8_t chan = 0; chan < OHC_IR_OUT_COUNT; chan++) {
         if (mask & (1u << chan)) {
             ir_carrier_set(chan, false);
         }
@@ -100,15 +104,26 @@ static void on_frame(const ohc_frame *f, void *user)
         break;
 
     case OHC_OP_CONTACT_GET: {
-        /* EA1 wires no contacts; report all-clear rather than staying silent so
-         * the host gets a definite answer instead of a timeout. */
-        static const uint8_t none[4] = { 0, 0, 0, 0 };
-        reply(f, none, sizeof none);
+        /* u32 bitmask, bit N = contact N, and a CLOSED contact reads 1.
+         * Confirmed on a live EA3 by shorting its input and watching the state
+         * go 0x00000000 -> 0x00000001 and back; see docs/io-mcu-firmware.md.
+         * Width is fixed by the wire format (4 bytes), not by the contact
+         * count: EA1 wires none, EA3 wires exactly one, at index 0.
+         *
+         * Note the host POLLS this — nothing here should try to push changes.
+         *
+         * TODO(hw): read the real input. EA3's contact is PF0 or PA2 (the two
+         * pins it populates); which one is settled at first flash. Until then
+         * report all-clear, which gives the host a definite answer rather than
+         * a timeout. */
+        static const uint8_t clear[4] = { 0, 0, 0, 0 };
+        reply(f, clear, sizeof clear);
         break;
     }
 
     case OHC_OP_RELAY_GET:
     case OHC_OP_RELAY_TOGGLE: {
+        /* TODO(hw): EA3's single relay is PF0. */
         static const uint8_t off[2] = { 0, 0 };
         send_frame(OHC_OP_RELAY_STATE, f->seq, OHC_FLAG_RESPONSE, off, sizeof off);
         break;

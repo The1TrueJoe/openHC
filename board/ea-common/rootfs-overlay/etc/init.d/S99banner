@@ -1,0 +1,17 @@
+#!/bin/sh
+# openHC bring-up marker: proves we reached userspace on a modern kernel.
+# Board-neutral — the model comes from /opt/ohc/board.env, which the per-board
+# rootfs overlay supplies.
+[ "$1" = start ] || exit 0
+OHC_MODEL=
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+case "$OHC_MODEL" in
+  1) board="EA1" ;;
+  3) board="EA3" ;;
+  5) board="EA5" ;;
+  *) board="unknown board" ;;
+esac
+echo ""
+echo "  openHC $board — kernel-up bring-up rootfs"
+echo "  kernel: $(uname -r)   $(uname -m)"
+echo ""

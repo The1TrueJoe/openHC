@@ -1,5 +1,7 @@
 #!/bin/sh
-# Start the openHomeController services after networking (S40wifi) is up.
+# Start the openHomeController services after networking is up — S40wifi on the
+# EA1, S40net on the EA3; both occupy the S40 slot so this ordering holds either
+# way.
 case "$1" in
   start) /opt/ohc/bin/ohc boot ;;
   stop)  /opt/ohc/bin/ohc stop ;;

@@ -9,12 +9,14 @@ CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
 CONFIG_SERIAL_8250_NR_UARTS=4
 CONFIG_CMDLINE_BOOL=y
-# pci=realloc,nocrs is REQUIRED on this board: CEFDK leaves the ath9k/e1000 PCI
-# BARs unassigned, so without it the kernel can't ioremap them and there's no
-# wlan0/eth0. Baked in (CMDLINE_EXTEND appends this to whatever bootlinux passes)
-# so it applies even on a plain boot.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"
 CONFIG_CMDLINE_EXTEND=y
+# CONFIG_CMDLINE itself is PER-BOARD — see each board's fragment. It used to
+# live here as "... pci=realloc,nocrs", which is an EA1 fact that does not
+# generalise: `nocrs` makes the kernel derive host-bridge windows from E820
+# instead of ACPI, and on the EA3 the NIC's BAR (0xdf860000) falls in an E820
+# gap, so nothing can claim it and e1000 probe dies with a bare -EIO.
+# CMDLINE_EXTEND appends the bootloader's line AFTER this one, so a later
+# `pci=` option on the bootlinux command line wins — handy for testing.
 
 # --- external initrd (Buildroot supplies a separate rootfs.cpio.gz) ---
 CONFIG_BLK_DEV_INITRD=y
@@ -43,25 +45,14 @@ CONFIG_HIGHMEM4G=y
 CONFIG_PCI=y
 CONFIG_PCIEPORTBUS=y
 
-# --- Wi-Fi: Atheros AR9485 on PCIe, fully mainline ath9k (no firmware) ---
+# --- networking core (radios, if any, are in the per-board fragment) ---
 CONFIG_NET=y
 CONFIG_INET=y
-CONFIG_CFG80211=y
-CONFIG_MAC80211=y
-CONFIG_WLAN=y
-CONFIG_WLAN_VENDOR_ATH=y
-CONFIG_ATH_COMMON=y
-CONFIG_ATH9K=y
-CONFIG_ATH9K_PCI=y
-# crypto mac80211/WPA needs
 CONFIG_CRYPTO=y
-CONFIG_CRYPTO_AES=y
-CONFIG_CRYPTO_CCM=y
-CONFIG_CRYPTO_GCM=y
-CONFIG_CRYPTO_ARC4=y
 
-# --- wired NIC: the on-board Intel GbE (e1000) CEFDK netboots from. Keep it
-#     builtin as a second path to the network alongside Wi-Fi. ---
+# --- wired NIC: the on-board Intel GbE (e1000) CEFDK netboots from. Mainline,
+#     builtin, and present on every EA. On EA1 this is a second path alongside
+#     Wi-Fi; on EA3 (which has no radio) it is the ONLY path. ---
 CONFIG_E1000=y
 
 # ============================================================================

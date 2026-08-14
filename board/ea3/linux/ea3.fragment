@@ -1,0 +1,110 @@
+# EA3-only kernel config, applied on top of board/ea-common/linux/common.fragment.
+#
+# The EA3 is the same computer as the EA1 (CE5310, 1.5 GB, same eMMC layout and
+# bootloader), so almost everything it needs is already in the common fragment.
+# Two things differ, and both simplify the build:
+#
+#   1. THERE IS NO WI-FI on this board. No ath9k, no /sys/class/ieee80211, no
+#      wlan interface — see docs/ea3-recon.md. The wireless stack is dropped
+#      entirely, which also buys back image size against CEFDK's ~7 MB
+#      bootlinux copy window.
+#
+#   2. REACHABILITY IS WIRED, and it is the only path. e1000 is enabled in the
+#      common fragment. TESTED on hardware: 7.1.8 boots to a login prompt on
+#      this board, but e1000 probe fails with a bare -EIO and there is no eth0.
+#      STILL UNSOLVED. It is not a host-bridge-window problem — that theory was
+#      tried, `nocrs` was removed on the strength of it, and the only result was
+#      an earlier hang (see the command line at the bottom of this file).
+
+# No radio on this board. Explicitly off rather than merely absent, so the
+# inherited i386 defconfig cannot drag the wireless stack back in.
+# CONFIG_WLAN is not set
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
+
+# ── BCM53125 managed switch, via DSA ──────────────────────────────────────
+#
+# The EA3's two rear RJ45s are ports on a Broadcom BCM53125 sitting on SPI
+# (spi0.1), not on MDIO; the e1000 MAC is the CPU port behind it. Bringing the
+# switch up under DSA turns those two jacks into their own netdevs (lan1/lan2)
+# alongside the master eth0, which is the point of doing this at all — the
+# vendor's out-of-tree spi-bcm53125 driver exposes no such thing.
+#
+# THREE PIECES ARE NEEDED AND ALL THREE ARE HERE:
+#   1. the SPI master        — spi-pxa2xx-pci binds PCI 8086:2e6a (CE4100 port),
+#                              which is the same function the CE5310 exposes
+#   2. the switch driver     — b53 with its SPI binding
+#   3. board glue            — ea3/patches/linux/0003 registers the switch as an
+#                              SPI device at chip-select 1 and hands DSA the
+#                              port map, because there is no DTB to describe it
+#
+# Piece 3 is the unverified one. See the patch header before trusting this.
+
+# ── CURRENTLY OFF — the board glue does not build against 7.1.8 ────────────
+#
+# Piece 3 (ea3/patches/linux/0003-*) is parked as `.patch.disabled` because it
+# does not compile:
+#
+#   spi-ea3-board.c: 'ea3_switch_pdata' has initializer but incomplete type
+#   spi-ea3-board.c: 'struct dsa_platform_data' has no member named 'nr_chips'
+#
+# That is the legacy DSA platform-data path being GONE in 7.1.8 —
+# `struct dsa_platform_data` survives only as a forward declaration. It was
+# listed as risk #1 in the patch header and is now confirmed by the compiler
+# rather than suspected.
+#
+# Replacing it means describing the ports as a software-node (fwnode) graph,
+# which is a real rewrite, not a field rename. Until that exists these symbols
+# only grow the image against CEFDK bootlinux's ~7 MB ceiling for a driver that
+# cannot bind, so they stay off and the EA3 boots on plain e1000 through the
+# primary jack (switch port 2).
+#
+# Re-enable together with the patch, not separately:
+#
+#   CONFIG_SPI=y
+#   CONFIG_SPI_MASTER=y
+#   CONFIG_SPI_PXA2XX=y
+#   CONFIG_SPI_PXA2XX_PCI=y
+#   CONFIG_NET_DSA=y
+#   CONFIG_NET_DSA_B53=y
+#   CONFIG_NET_DSA_B53_SPI_DRIVER=y
+#   CONFIG_NET_DSA_TAG_BRCM=y
+#   CONFIG_NET_DSA_TAG_BRCM_PREPEND=y
+#   CONFIG_BRIDGE=y
+#   CONFIG_VLAN_8021Q=y
+
+# FALLBACK, AND ITS LIMIT. Turning CONFIG_NET_DSA off gets you back to plain
+# e1000 on eth0, which does reach the network — but only through ONE of the two
+# jacks. Measured on a live EA3: with the cable in the primary jack (switch
+# port 2) the box is reachable; moved to the other jack (port 1) it goes
+# completely dark, while that port's MIB counters still climb (1.4 MB received,
+# 4565 multicast frames) and its TxOctets stays at exactly 0.
+#
+# So port 1 links and receives at the PHY, and the switch simply never forwards
+# it to the CPU port. The stock configuration isolates that jack. This is the
+# argument FOR the DSA work rather than against it: without a switch driver the
+# second RJ45 is unusable, and no amount of e1000 configuration changes that.
+
+# --- kernel command line (EA3) ---
+# `nocrs` IS REQUIRED here, same as the EA1 — this was tested both ways.
+#
+# The ACPI _CRS on this SoC is deficient: the only memory window it declares for
+# the root bus is a 48 KB TPM range, and it never mentions the 0xc0000000-
+# 0xdfffffff space where every on-SoC device actually lives. Boot WITHOUT nocrs
+# and you get:
+#
+#     pci_bus 0000:00: root bus resource [mem 0xfed40000-0xfed4bfff window]
+#     pci 0000:00:01.0: bridge window [mem 0xc0000000-0xdfffffff]:
+#                       can't claim; no compatible bridge window
+#     ... 70 x "can't claim" ...
+#     <hang at t=1.02s, before userspace>
+#
+# With nocrs the kernel derives windows from E820 and the root bus gets
+# [mem 0x00000000-0xffffffff], which covers everything, and the board boots to a
+# login prompt.
+#
+# NOTE the e1000 -EIO is therefore NOT a host-bridge-window problem — an earlier
+# revision of this comment claimed it was, removed nocrs on that basis, and only
+# made the board hang earlier. The NIC failure is still open; see
+# docs/ea3-recon.md.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"

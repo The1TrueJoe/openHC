@@ -1,0 +1,207 @@
+spi: register the EA3's BCM53125 switch without a device tree
+
+The Control4 EA3 puts a Broadcom BCM53125 managed switch on the CE5310's SPI
+bus at chip-select 1. The two rear RJ45s are switch ports; the e1000 MAC is the
+CPU port behind it, which is why the stock kernel logs
+
+    GBE working in Internal Fake Phy Mode
+    spi-bcm53125 spi0.1: spi_bcm53125_probe: BCM53125 SPI Driver
+
+Mainline already has both halves of the driver stack: spi-pxa2xx-pci binds the
+PCI function (8086:2e6a, the CE4100 port, which the CE5310 also exposes) and
+b53_spi drives the part. What is missing is the board description — "there is a
+bcm53125 at chip-select 1 of bus 0, and here is how its ports map" — which
+normally comes from DT, and our CEFDK bootlinux boot passes no DTB.
+
+Same problem, and the same style of fix, as 0001-i2c-pxa-pci: describe the
+child device in code instead of in a device tree.
+
+This uses spi_register_board_info(), the mechanism built for exactly this, so
+no existing driver has to be modified: the board info sits on the queue until a
+controller with bus_num 0 registers, and the SPI core instantiates the device
+then. subsys_initcall ordering puts the registration ahead of the PCI driver's
+device_initcall.
+
+THIS PATCH ADDS ONE NEW FILE AND NOTHING ELSE — deliberately. An earlier version
+also carried a hunk adding `obj-y += spi-ea3-board.o` to drivers/spi/Makefile,
+and it failed to apply: the context was written from a guess at that file's
+first lines rather than from the real tree, and `Hunk #1 FAILED at 1` killed the
+build. A pure file-add needs no context and cannot drift.
+
+The Makefile line is appended instead by LINUX_POST_PATCH_HOOKS in
+board/external.mk, which is context-free and self-guarding (it only fires when
+this patch has actually put the file there, so EA1 builds are unaffected).
+
+>>> DISABLED — DOES NOT COMPILE AGAINST 7.1.8 <<<
+
+Renamed to `.patch.disabled` so Buildroot skips it. Risk #1 below was not a
+hypothetical: the compiler settled it.
+
+    drivers/spi/spi-ea3-board.c:69: variable 'ea3_switch_pdata' has
+                                    initializer but incomplete type
+    drivers/spi/spi-ea3-board.c:70: 'struct dsa_platform_data' has no
+                                    member named 'nr_chips'
+
+THE LEGACY DSA PLATFORM-DATA PATH IS GONE in 7.1.8 — `struct dsa_platform_data`
+survives only as a forward declaration, so it cannot be instantiated at all.
+Everything else in this patch (the file add, the Makefile hook, the measured
+port map) is good; only the *port description mechanism* is dead.
+
+TO REVIVE THIS: describe the ports as a software-node (fwnode) graph and attach
+it to the SPI device, replacing dsa_chip_data/dsa_platform_data. The measured
+map below carries over unchanged — CPU is port 5, jacks are ports 1 and 2. Then
+rename this file back to `.patch` and re-enable the CONFIG_NET_DSA block in
+board/ea3/linux/ea3.fragment (the two must move together).
+
+Original risk list, for the record — #1 is now confirmed, #2 and #3 untested:
+
+  1. THE DSA PLATFORM-DATA PATH STILL EXISTS. -> IT DOES NOT. See above.
+  2. THE PORT MAP IS MEASURED, but the DSA *bring-up* of an isolated port is
+     not. Port 1 is deliberately walled off from the CPU port by the stock
+     configuration, so DSA has to reconfigure the switch, not merely describe
+     it. That reconfiguration has never been exercised here.
+  3. spi_register_board_info() must still exist and still be honoured for
+     controllers that register later. It is long-standing but is legacy API.
+
+MEASURED ON A LIVE EA3, via the vendor driver's register sysfs
+(/sys/bus/spi/devices/spi0.1/{port,page_reg,value,mibs}):
+
+  * Link Status Summary (page 0x01 reg 0x00) = 0x24 -> ports 2 and 5 up.
+  * Per-port MIB counters show ports 2 and 5 as exact mirrors of each other
+    (port 5 TxOctets ~= port 2 RxGoodOctets and vice versa) — the signature of
+    a CPU-port/external-port pair carrying the same traffic.
+  * Port 5's GMII override (page 0x00 reg 0x5d) = 0x4b: link up, full duplex,
+    1000M, forced — i.e. the fixed "internal fake phy" link to the SoC MAC.
+  * The driver clamps a port selector above 5 to 8, so valid ports are 0-5, 8.
+    Port 8 (IMP) reports all-zero counters and no link.
+
+So: CPU PORT IS 5, not the IMP at 8, and the jack this unit's cable was in is
+PORT 2. Both are measurements, not guesses.
+
+A controlled test settled it: snapshot every port, push 4 MB out of the box,
+snapshot again. Port 5 gained 4,313,853 received bytes, port 2 gained 4,313,811
+transmitted bytes, and ports 0/1/3/4 were flat. A 42-byte difference across 4 MB
+is framing.
+
+THE SECOND JACK IS PORT 1, found by moving the cable. It is ISOLATED in the
+stock configuration: with a cable in it the port links and receives (1.4 MB,
+4565 multicast frames) but its TxOctets stays at exactly 0 and the host is
+unreachable. Ports 0/1/3/4 all report the same integrated GPHY (0362:5f24), so
+silicon presence could not have separated them — only the cable move could.
+
+Also solid: the chip-select and bus number. The stock kernel enumerates the
+switch as spi0.1, so bus 0 / CS 1 is read off real hardware. The SPI mode and
+clock below are conservative defaults, not values taken from the vendor driver.
+
+Signed-off-by: openHC <openhc@localhost>
+---
+--- /dev/null
++++ b/drivers/spi/spi-ea3-board.c
+@@ -0,0 +1,107 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Board glue for the Control4 EA3 (Intel Atom CE5310).
++ *
++ * The EA3 has a Broadcom BCM53125 managed switch on SPI bus 0, chip-select 1.
++ * Its two external ports are the unit's rear RJ45s; the on-SoC e1000 MAC hangs
++ * off switch PORT 5 (not the IMP at port 8 — measured, see below) on a fixed
++ * forced link, "internal fake phy" in the vendor's words. Without DSA the
++ * primary jack works and the second one is dark: the stock switch config never
++ * forwards port 1 to the CPU port.
++ *
++ * Bringing the switch up under DSA gives each jack its own netdev, which is the
++ * point: the vendor's out-of-tree spi-bcm53125 driver never did.
++ *
++ * There is no device tree on this machine — CEFDK's bootlinux hands the kernel
++ * no DTB — so the switch is described here in code. spi_register_board_info()
++ * is the mechanism intended for that: the entry waits on a queue until a
++ * controller with the matching bus_num registers, then the SPI core creates the
++ * device. Registering at subsys_initcall puts us ahead of spi-pxa2xx-pci.
++ *
++ * See board/ea3/patches/linux/0003-*.patch in openHC for what is verified here
++ * and what is not. In short: the bus, chip-select and the whole port map were
++ * measured on a live unit; what is untested is DSA's bring-up of them.
++ */
++
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/spi/spi.h>
++#include <net/dsa.h>
++
++/* Read off a live EA3: the stock kernel enumerates the switch as spi0.1. */
++#define EA3_SWITCH_BUS		0
++#define EA3_SWITCH_CS		1
++
++/* Conservative. The vendor driver's actual clock was not recovered. */
++#define EA3_SWITCH_HZ		1000000
++
++/*
++ * Port map for the BCM53125.
++ *
++ * port_names[] is indexed by switch port number. "cpu" marks the port wired to
++ * the host MAC; every other named port becomes its own netdev.
++ *
++ * PORT 5 IS THE CPU PORT, NOT THE IMP AT 8. Measured on a live EA3 through the
++ * vendor driver's register sysfs: link summary (page 0x01 reg 0x00) reads 0x24
++ * — ports 2 and 5 — and those two ports' MIB counters are exact mirrors of
++ * each other. Port 5's GMII override (page 0x00 reg 0x5d) reads 0x4b: forced
++ * link, 1000M, full duplex, which is the fixed "internal fake phy" link the
++ * vendor kernel announces. Port 8 shows no link and all-zero counters.
++ *
++ * PORT 2 is the primary jack, also measured: pushing 4 MB out of the box moved
++ * 4,313,853 bytes into port 5 and 4,313,811 bytes out of port 2, with every
++ * other port flat.
++ *
++ * PORT 1 is the second jack, measured by moving the cable. Note that it is
++ * ISOLATED in the stock configuration: with a cable in it the port links and
++ * receives (1.4 MB, 4565 multicast frames) but its TxOctets stays at exactly 0
++ * and the host is unreachable. Bringing it up as a real netdev is precisely
++ * what this DSA setup is for — the vendor never exposed it.
++ */
++#define EA3_SWITCH_CPU_PORT	5
++
++static struct dsa_chip_data ea3_switch_chip = {
++	.port_names[1]			= "lan1",	/* isolated in stock cfg */
++	.port_names[2]			= "lan2",	/* the primary jack       */
++	.port_names[EA3_SWITCH_CPU_PORT]	= "cpu",	/* to the SoC e1000       */
++};
++
++static struct dsa_platform_data ea3_switch_pdata = {
++	.nr_chips	= 1,
++	.chip		= &ea3_switch_chip,
++};
++
++static struct spi_board_info ea3_spi_devices[] __initdata = {
++	{
++		.modalias	= "bcm53125",
++		.bus_num	= EA3_SWITCH_BUS,
++		.chip_select	= EA3_SWITCH_CS,
++		.max_speed_hz	= EA3_SWITCH_HZ,
++		.mode		= SPI_MODE_0,
++		.platform_data	= &ea3_switch_pdata,
++	},
++};
++
++static int __init ea3_board_init(void)
++{
++	int ret;
++
++	ret = spi_register_board_info(ea3_spi_devices,
++				      ARRAY_SIZE(ea3_spi_devices));
++	if (ret) {
++		pr_warn("ea3-board: could not register bcm53125 at spi%d.%d: %d\n",
++			EA3_SWITCH_BUS, EA3_SWITCH_CS, ret);
++		return ret;
++	}
++
++	pr_info("ea3-board: bcm53125 queued for spi%d.%d\n",
++		EA3_SWITCH_BUS, EA3_SWITCH_CS);
++	return 0;
++}
++
++/*
++ * subsys_initcall, not device_initcall: the board info has to be on the queue
++ * before spi-pxa2xx-pci registers the controller, or the SPI core will have
++ * nothing to match and the switch is never created.
++ */
++subsys_initcall(ea3_board_init);

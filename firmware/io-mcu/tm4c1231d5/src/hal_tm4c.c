@@ -130,7 +130,11 @@ static void timer_clock_enable(uint32_t base)
  */
 void ir_carrier_configure(uint8_t channel, uint32_t carrier_ticks)
 {
-    if (channel >= IR_CHANNEL_COUNT) {
+    /* Bound by what THIS board populates, not by the size of the pin table.
+     * Muxing an unpopulated channel is not merely useless: on EA3 channel 7 is
+     * PC4, which is UART4's RX pin, so driving it would break the third user
+     * serial port. */
+    if (channel >= OHC_IR_OUT_COUNT) {
         return;
     }
     const ir_channel *ch = &IR_CHANNELS[channel];
@@ -174,7 +178,7 @@ void ir_carrier_configure(uint8_t channel, uint32_t carrier_ticks)
 
 void ir_carrier_set(uint8_t channel, bool on)
 {
-    if (channel >= IR_CHANNEL_COUNT) {
+    if (channel >= OHC_IR_OUT_COUNT) {
         return;
     }
     const ir_channel *ch = &IR_CHANNELS[channel];
@@ -202,31 +206,32 @@ void ir_carrier_set(uint8_t channel, bool on)
  * Polled rather than interrupt-driven: during a transmission this is the only
  * thing happening, and polling keeps interrupt latency out of the burst edges.
  *
- * NOTE: TIMER1 is also IR channel... nothing. Channel 3 uses TIMER1 for its
- * carrier, so a transmission on channel 3 would fight this timer. Left as-is
- * deliberately for now — see README; the burst timer should move to a timer no
- * channel claims once the EA1's real channel set is known.
+ * Runs on TIMER4 (IR_BURST_TIMER_BASE). This used to be TIMER1, which is IR
+ * channel 2's carrier (PF2/T1CCP0) on both EA1 and EA3 — transmitting on
+ * channel 2 would have reprogrammed the timer it was being timed by. Decoding
+ * the vendor's per-board table showed that no block claims TIMER4 or TIMER5 for
+ * anything, so TIMER4 is free on every board. See ir_pins.h.
  */
 void ir_burst_timer_start(uint32_t ticks)
 {
-    SYSCTL_RCGCTIMER |= (1u << 1);
+    SYSCTL_RCGCTIMER |= (1u << IR_BURST_TIMER_RCGC);
     for (volatile int i = 0; i < 8; i++) {
     }
     if (ticks == 0u) {
         ticks = 1u;
     }
-    TIMER_CTL(TIMER1_BASE) &= ~TIMER_CTL_TAEN;
-    TIMER_CFG(TIMER1_BASE) = TIMER_CFG_32BIT;
-    TIMER_TAMR(TIMER1_BASE) = TIMER_TAMR_PERIODIC;
-    TIMER_TAILR(TIMER1_BASE) = ticks;
-    TIMER_ICR(TIMER1_BASE) = TIMER_ICR_TATOCINT;
-    TIMER_CTL(TIMER1_BASE) |= TIMER_CTL_TAEN;
+    TIMER_CTL(IR_BURST_TIMER_BASE) &= ~TIMER_CTL_TAEN;
+    TIMER_CFG(IR_BURST_TIMER_BASE) = TIMER_CFG_32BIT;
+    TIMER_TAMR(IR_BURST_TIMER_BASE) = TIMER_TAMR_PERIODIC;
+    TIMER_TAILR(IR_BURST_TIMER_BASE) = ticks;
+    TIMER_ICR(IR_BURST_TIMER_BASE) = TIMER_ICR_TATOCINT;
+    TIMER_CTL(IR_BURST_TIMER_BASE) |= TIMER_CTL_TAEN;
 }
 
 bool ir_burst_timer_expired(void)
 {
-    if (TIMER_RIS(TIMER1_BASE) & TIMER_RIS_TATORIS) {
-        TIMER_ICR(TIMER1_BASE) = TIMER_ICR_TATOCINT;
+    if (TIMER_RIS(IR_BURST_TIMER_BASE) & TIMER_RIS_TATORIS) {
+        TIMER_ICR(IR_BURST_TIMER_BASE) = TIMER_ICR_TATOCINT;
         return true;
     }
     return false;

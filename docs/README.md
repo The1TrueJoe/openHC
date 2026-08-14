@@ -22,6 +22,21 @@ Start here if you want to understand *why* the build works the way it does.
   reference and what is open vs vendor-locked.
 - [ea1-recon.md](ea1-recon.md) — live recon of one unit: SoC, memory map,
   device nodes, kernel modules.
+- [ea3-recon.md](ea3-recon.md) — the same for an EA3 rev 9: same SoC and boot
+  chain as the EA1, plus the BCM53125 switch, the third combo serial port and
+  the ADAU1451/AK4621 audio path. Also why there is no FPGA on this board.
+- [hc800-recon.md](hc800-recon.md) — an HC-800 rev 4, and the outlier of the
+  lineup: not an embedded board but a **small x86 PC** (Lite-On motherboard, AMI
+  BIOS, Atom D525, SATA SSD, GRUB 0.97) with the Control4 peripherals on LPC
+  UARTs and the ICH GPIO block. Nothing in its boot chain is signed, and it is
+  the only board that needs **no kernel patches at all**. Includes the full
+  five-UART map, the GPIO line names, the ALC888-VD jack map, and the
+  `menu.lst` install path.
+- [ca1-recon.md](ca1-recon.md) — a CA-1 rev 4, and a different machine entirely:
+  i.MX6 SoloLite, stock U-Boot in SPI-NOR, ZM5304 Z-Wave and an EM35x Zigbee NCP
+  on native UARTs, RTL8723BS Wi-Fi on SDIO, and **no IO-MCU**. Includes the
+  secure-boot finding (HAB open, nothing in the chain verified) and the
+  `boot.scr` path that takes over boot without touching flash.
 - [hdmi-cec.md](hdmi-cec.md) — the CEC investigation and the PIC24/8051 finding.
 
 ### Firmware / sources

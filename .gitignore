@@ -4,7 +4,12 @@
 /br2-external/buildroot/
 *.img
 *.bin
-!board/ea1/cefdk-container-header.bin
 # scratch
 /tmp/
 *.log
+__pycache__/
+/test/
+# local python venv for the netboot/serial tools
+.venv/
+
+.DS_Store

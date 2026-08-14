@@ -1,7 +1,10 @@
 # IO MCU — protocol, bring-up, and firmware notes
 
-The EA1's IO processor is a **TI Tiva TM4C1231D5**. It drives the IR jacks and
-the two combo IR/serial ports, and it is reached over the host UART.
+The EA1's and EA3's IO processor is a **TI Tiva TM4C1231D5**, running the
+**same firmware image on both**. It drives the IR jacks and the combo IR/serial
+ports — two of them on EA1, three on EA3 — and is reached over the host UART.
+Which peripherals exist on a given board comes from a
+[per-board profile table](#the-per-board-profile-table) inside the image.
 
 Everything below is confirmed against a live EA1 unless marked `?`. This is
 groundwork for a clean-room replacement firmware: **interfaces and observed
@@ -123,7 +126,7 @@ An opcode sweep of all 256 values against live app 1.0.36 (`ohc-ioprobe.py
 | `0x34` | `0x35` | `1.0.36` | FIRMWARE_VERSION_GET |
 | `0x54` | `0x55` | `00 00` | RELAY_GET |
 | `0x56` | `0x55` | `00 00` | RELAY_TOGGLE/STATE_GET |
-| `0x74` | `0x75` | `00 00 00 00` | CONTACT_GET |
+| `0x74` | `0x75` | `00 00 00 00` | CONTACT_GET (u32 bitmask — see below) |
 | `0xa1` | `0xa4` | `01` | UART_SEND → READY_FOR_DATA |
 | `0xd2` | `0xd7` | `00 07 <u16>` | AUTO_BAUD_GET (the trailing u16 varies per sync — a timing measurement) |
 
@@ -143,6 +146,252 @@ independent confirmation that the EA1 has exactly two:
 
 Control4's `ioserver` logs the matching pair ("Create 3-wire IO Chip serial
 port" 1 and 2, on sockets 5101/5102).
+
+## The per-board profile table
+
+One image serves ea1, ea3 and ea5 — `.flash.config` maps all three to the same
+`.bin`. It does that with a table of **six board profiles at file offset
+`0x1fec`, stride `0x4a4`**, selected at runtime. This table has now been fully
+decoded, and it is the authoritative source for per-board IR and serial counts.
+
+Block layout:
+
+```
++0x000  0x18   IR receiver descriptor
++0x018  0x1c   IR output, channel 0
++0x034  0x1c   IR outputs, channels 1..8   (8 x 0x1c)
+...
++0x3b4         UART records, 0x28 each, first is the host link
+```
+
+An **IR output descriptor**:
+
+```
++0x00  u32  GPIO port base (APB)
++0x04  u32  pin mask in bits 0..7;  BIT 8 = CHANNEL IS POPULATED ON THIS BOARD
++0x08  u32  timer base
++0x0c  u32  exception number for timer A  (= IRQ + 16)
++0x10  u32  exception number for timer B, or 0xFF
+```
+
+A **UART record**:
+
+```
++0x00  u32  flags        0x00010001 host link, 0x02000001 user port
++0x04  u32  UART base
++0x08  u32  PCTL value, RX
++0x0c  u32  PCTL value, TX
++0x10  u32  exception number  (= IRQ + 16)
++0x14  u32  default baud      (0x0001c200 = 115200 on every board)
++0x18  u32  GPIO base, RX     +0x1c  u32  RX pin mask
++0x20  u32  GPIO base, TX     +0x24  u32  TX pin mask
+```
+
+### Bit 8 is the key
+
+Decoding bit 8 of the pin-mask word as *populated* is what makes the table
+resolve. Without it the six blocks look like arbitrary reorderings; with it they
+become board profiles, and the counts match physical hardware exactly:
+
+| block | IR outputs populated | user UARTs | board |
+|---|---|---|---|
+| 0 | 9 | 2 | EA5 / TR1 / amp1 ? |
+| 1 | 9 | 2 | EA5 / TR1 / amp1 ? |
+| **2** | **5** | **2** | **EA1** — 4 rear jacks + 1 internal blaster |
+| **3** | **7** | **3** | **EA3** — 6 rear jacks + 1 internal blaster |
+| 4 | 9 | 2 | EA5 / TR1 / amp1 ? |
+| 5 | 9 | 2 | EA5 / TR1 / amp1 ? |
+
+Two independent facts confirm the EA3 assignment: the owner counts **6 IR jacks,
+with 1–3 doubling as serial**, and a live EA3's `ioserver` opens **three**
+user-serial sockets (5101/5102/5103) where an EA1 opens two.
+
+### The decoded profiles
+
+Channels are listed in `IROUT_SEND` `output_mask` bit order. The receiver is
+`PD6 / WTIMER5A`, identical in all six blocks.
+
+```
+ch  pin  timer  irq    EA1 (block 2)   EA3 (block 3)
+0   PD4  WT4    102    populated       populated
+1   PB6  T0      19    populated       populated
+2   PF2  T1      21    populated       populated
+3   PB0  T2      23    populated       populated
+4   PB2  T3      35    populated       populated
+5   PD0  WT2     98    absent          populated
+6   PD2  WT3    100    absent          populated
+7   PC4  WT0     94    absent          absent   (PC4 is UART4 RX on EA3)
+8   PC6  WT1     96    absent          absent
+```
+
+```
+UART   pins        irq   EA1 (block 2)   EA3 (block 3)
+UART0  PA0/PA1       5   host link       host link
+UART5  PE4/PE5      61   user port 1     user port 1
+UART7  PE0/PE1      63   user port 2     user port 2
+UART4  PC4/PC5      60   —               user port 3
+```
+
+Both boards populate a **contiguous run from channel 0**, so `output_mask` is
+dense: `0x1f` on EA1, `0x7f` on EA3.
+
+### Relays and contacts fall out of the same table
+
+Between the IR outputs and the UART records each block carries a run of plain
+`[gpio_base, pin_mask|attr]` pairs, and bit 8 means the same thing there. Two
+groups of four sit at the front:
+
+```
+group        pins                    EA1 (block 2)   EA3 (block 3)   blocks 0,1,4,5
+first four   PF0 PF1 PF3 PF4         none            PF0 only        all four
+second four  PA2 PA3 PA4 PA5         none            PA2 only        all four
+then         PC7 PE2 PE3 PB1 PB3     populated       populated       populated
+EA3 extras   PA7, PB5                —               populated       —
+```
+
+This reproduces the known hardware exactly and is strong confirmation that the
+block→board assignment is right:
+
+* **EA1 populates none of the eight** — and an EA1 has no relays and no
+  contacts.
+* **EA3 populates exactly one from each group** — and an EA3 has **1 relay and
+  1 contact** (owner-confirmed off the PCB).
+* The 9-output blocks populate all eight, i.e. **4 relays + 4 contacts**, which
+  is the HC800/HC250 complement.
+
+**Which group is relays and which is contacts is not established.** Both are
+four-wide and nothing in the table distinguishes an output from an input. `PF0`
+and `PA2` are each first in their group, so "relay 0" and "contact 0" is the
+natural reading, but it should be checked against `ioserver` before being
+trusted. The remaining always-populated pins (`PC7`, `PE2`, `PE3`, `PB1`, `PB3`)
+are unidentified — LEDs, straps or the front button are all plausible. Note
+`PB4` is absent from every block, consistent with it being the ADC board-id
+input rather than a GPIO.
+
+### Two corrections this forces to the earlier reading
+
+1. **The `+0x18` descriptor is channel 0, not channel 8.** `include/ir_pins.h`
+   already had it that way in its `IR_CHANNELS[]` table; the prose comment above
+   the table called it "index 8" and that comment was wrong. Channel 0 is what
+   makes both boards' populated sets contiguous.
+
+2. **The channel order is not an unresolved ambiguity.** The earlier note said
+   channels 4..7 "come in two different orders … must be measured". They do
+   differ between blocks {0,1,5} and {2,3,4}, but that is not a mystery to
+   resolve empirically — it is simply which pins each board populates in the
+   tail slots, and bit 8 says which those are. For **EA1** the question is moot:
+   its five channels are the unambiguous prefix. For **EA3** the two extra
+   channels are `PD0/WT2` and `PD2/WT3`, in that order, explicitly.
+
+   What is *still* unmeasured is only **which rear jack corresponds to which
+   channel index** — nothing in the image ties a descriptor to a labelled jack.
+
+### The selector, disassembled
+
+The vendor picks its block from an analogue board-ID strap. That function has
+now been pulled apart — it lives at runtime address **`0x2878`** (file offset
+`0x1878`), and its literal pool sits immediately before the profile table, which
+is how it was found: `0x40038000` (ADC0 base) at file `0x1fe0`, twelve bytes
+ahead of the table at `0x1fec`.
+
+```
+0x2878  push {r4,r5,lr};  sub sp,#4
+0x287e  str  r0,[sp]                    ; scratch = 0
+0x2882  ldr  r5,[pc,#0x75c]             ; r5 = ADC0 base (0x40038000)
+loop:
+0x288e  bl   ...                        ; ADCSequenceConfigure(ADC0, 0, ...)
+0x2896  bl   ...                        ; ADCHardwareOversampleConfigure(ADC0, 8)
+0x289a  movs r3,#0x6a
+0x28a2  bl   ...                        ; ADCSequenceStepConfigure(..., 0x6a)
+                                        ;   0x6a = CH10 | IE | END  -> AIN10 (PB4)
+0x28aa  bl   ...                        ; ADCSequenceEnable
+0x28b6  bl   ...; cmp r0,#0; beq 0x28b6 ; spin until conversion done
+0x28cc  adds r4,r4,#1                   ; count++
+0x28ce  add  r2,sp,#0
+0x28d4  bl   ...                        ; ADCSequenceDataGet(ADC0, 0, &scratch)
+0x28dc  cmp  r4,#5;  blt loop           ; five conversions
+0x28e0  ldr  r0,[sp]                    ; ... and only the LAST one is used
+0x28e4  movs r1,#0xfa                   ; 250
+0x28e6  udiv r1,r0,r1                   ; id  = adc / 250
+0x28ee  mls  r1,r3,r1,r2                ; rem = adc - 250*id
+0x28f4  cmp  r1,#0x7e                   ; 126
+0x28f8  addge r0,r0,#1                  ; round to nearest
+0x28fa  uxtb r0,r0                      ; -> board id
+```
+
+Two corrections to the earlier reading of this ("five samples averaged"):
+
+* **The five conversions are a settle-and-discard loop, not an average.** The
+  scratch word is *overwritten* by every `ADCSequenceDataGet`; nothing sums it,
+  and the `str r0,[sp]` at entry only zero-initialises it. Only the fifth
+  reading reaches the arithmetic.
+* **The averaging is in hardware** — `ADCHardwareOversampleConfigure(ADC0, 8)`
+  makes each returned sample an 8× average.
+
+The id returned is used directly as the block index; 21 separate sites in the
+image multiply it by the `0x4a4` stride.
+
+So the strap mapping is fully determined, on a 12-bit ADC against 3.3 V:
+
+| board id / block | ADC counts | volts on PB4 | board |
+|---|---|---|---|
+| 2 | ~500 | ~0.40 V | EA1 |
+| 3 | ~750 | ~0.60 V | EA3 |
+| N | N × 250 | N × 0.20 V | — |
+
+**Those voltages are predictions from the decoded arithmetic, not
+measurements.** Nobody has put a meter on PB4. Confirm them on a live EA1 and
+EA3 and our firmware can drop its compile-time `BOARD=` switch and ship a single
+image for both boards, the way the vendor does. Until then it selects at compile
+time; the constants are already in `board_profile.h`.
+
+## Contacts — CONFIRMED on an EA3
+
+`CONTACT_GET`'s payload is a **32-bit bitmask, one bit per contact, bit N =
+contact N, and a CLOSED contact reads 1**. Verified on a live EA3 by shorting
+its single contact input and watching `ioserver` at DEBUG
+(`debug_contact_relay 1`):
+
+```
+                       jumper OUT   set_state   - Contact State : New State (0x00000000)
+                       jumper IN    set_state   - Contact State : New State (0x00000001)
+                       jumper OUT   update_state - Contact State :
+                                      Current state: (0x00000001) New State (0x00000000)
+                                    update_state - Contact State :
+                                      Send update of state for contact (0), now (open)
+```
+
+Both directions, with an independent fresh read after each change, so this is a
+measured edge rather than a single snapshot. The EA3 populates exactly one
+contact and it is **index 0**, consistent with the profile table (it populates
+one pin from each of the two four-pin groups).
+
+### Contact state is PULLED, never pushed
+
+This is the part that matters for `iod`. The MCU does not volunteer contact
+changes, and `ioserver` does not poll on a timer of its own — it re-reads only
+when director asks for the `c4.hc.cs` MIB:
+
+```
+DEBUG: mib_received - Received MIB: c4.hc.cs
+DEBUG: update_state - Contact State : Current state: (...) New State (...)
+DEBUG: mib_received - Received MIB: c4.hc.rs      <- relay state, polled alongside
+```
+
+In a 45-second idle window with the contact held closed, **not one** contact
+line appeared; the observed director polls were roughly 1–2 minutes apart. So a
+replacement daemon must run its own `CONTACT_GET` poll loop and derive edges by
+comparison — waiting for an unsolicited frame will simply never fire.
+
+Related MIBs seen on the same path: `c4.hc.cs` (contact state), `c4.hc.rs`
+(relay state), `c4.hc.fwv` (firmware version, answered `1.0.36`).
+
+### Still not bound to a pin
+
+This tells us the contact is **index 0** and how to read it. It does **not**
+say whether index 0 lives on `PA2` or `PF0` — the two candidate pins the EA3
+populates. That binding still falls out at first flash: drive the relay pin and
+listen for the click, and swap the two constants if it is silent.
 
 ## IR output — CONFIRMED
 
@@ -389,3 +638,22 @@ at a time and watching which emitter lights.
 
 For reference, the HC800's LM3S1162 uses only TIMER0–3 (four IR channels, no
 wide timers) and all three UARTs — UART0 host, UART1/UART2 the two user ports.
+
+**Both halves of that sentence are now contradicted by a live HC-800**
+([hc800-recon.md](hc800-recon.md)), and neither conflict is resolved:
+
+* **IR count.** The owner of the recon unit counts **six IR jacks** on the rear
+  panel, not four. A timer count is a *lower bound* on channel count, not the
+  channel count: every Stellaris GPTM has two capture/compare outputs (CCP0 and
+  CCP1), so TIMER0–3 can drive up to eight IR carriers. The EA decoding above
+  reads channels off the pin/exception table rather than off timer numbers,
+  which is why it is trustworthy; the HC800 figure was inferred from timers
+  alone. Redo it against the pin table before believing either number.
+* **The two user serial ports.** On the live unit `ioserver` holds
+  `/dev/ttyS1` and `/dev/ttyS2` — **host 8250 UARTs**, not MCU-routed — at the
+  same time as it holds `/dev/ttyS3` for the MCU itself. If the LM3S image
+  really does configure UART1/UART2, then either they land somewhere other than
+  the rear jacks, or the host UARTs are bridged through the MCU rather than
+  wired to the transceivers directly. Nothing visible from a running system
+  distinguishes those, and it matters for `iod`: the EA family needs
+  `--no-serial-devices`, and whether the HC-800 does too depends on this answer.
