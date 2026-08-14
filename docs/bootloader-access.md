@@ -121,26 +121,63 @@ optional ramdisk comes from three more globals: `0x837560` (present flag),
 
 ## The recipe
 
-1. **Shell:** `sudo python3 tools/netboot.py probe --iface-ip 192.168.1.5`, then
-   power-cycle holding **ID**. It drops to `shell>` (with an IP already set by
-   the BOOTP).
-2. **Serve the files:** `sudo python3 tools/tftp-serve.py output/images
-   --ip 192.168.1.5`.
-3. **Boot it** — `tools/ohc-bootlinux.py` automates the shell side:
+**One command.** Build in Docker, then netboot:
 
-   ```
-   tftp get 192.168.1.5 0x06000000 bzImage          # kernel into scratch RAM
-   tftp get 192.168.1.5 0x04000000 rootfs.cpio.gz   # initrd, page-aligned
-   ord4 0x000c90a4 = 0x06000000                      # linuxKernelBase -> kernel
-   ord4 0x00837560 = 1                               # ramdisk present
-   ord4 0x00837564 = 0x04000000                      # ramdisk addr (in place)
-   ord4 0x00837568 = <initrd size>                   # ramdisk size
-   bootlinux "console=ttyS0,115200 pci=realloc,nocrs ..."
-   ```
+```sh
+make image BOARD=ea3          # Buildroot, in Docker
+make netboot BOARD=ea3        # BOOTP + TFTP + drives the shell over serial
+```
 
-Run it with `--server 192.168.1.5 --console-baud 921600` (see UART note below).
-It verifies the bzImage/gzip magics actually landed before it commits to the
-boot. Everything is RAM-only; a power-cycle returns you to stock.
+`make netboot` is a thin wrapper over `sudo python3 tools/netboot.py --board
+<board> boot`, which does the whole thing in one process:
+
+1. threaded TFTP over `output/images` (both `bzImage` and `rootfs.cpio.gz`)
+2. BOOTP replies carrying the `C4_COOKIE` but naming a bootfile that does not
+   exist, so the mfg auto-fetch fails and CEFDK drops to the **unlocked** shell
+3. it watches the serial console and, the moment `shell>` appears, drives the
+   sequence itself
+4. reopens the console at the kernel's real baud and streams the boot log to
+   `output/boot-console.log`
+
+The only manual step is holding the **ID button** while the unit restarts —
+nothing in software can press it. The tool prints a reminder and waits
+(`--wait-secs`, default 300).
+
+`sudo` is unavoidable: BOOTP and TFTP are privileged ports (67/69).
+
+What it types at the shell, for reference:
+
+```
+tftp get <server> 0x06000000 bzImage          # kernel into scratch RAM
+tftp get <server> 0x04000000 rootfs.cpio.gz   # initrd, page-aligned
+ord4 0x000c90a4 = 0x06000000                   # linuxKernelBase -> kernel
+ord4 0x00837560 = 1                            # ramdisk present
+ord4 0x00837564 = 0x04000000                   # ramdisk addr (in place)
+ord4 0x00837568 = <initrd size>                # ramdisk size
+bootlinux "console=ttyS0,115200 pci=realloc,nocrs ..."
+```
+
+It reads back the bzImage `0xAA55` and gzip `0x1f8b` magics and all four
+globals, and **refuses to boot** if any of them did not stick — a bad stage
+should be a clear error, not a silent hang. Everything is RAM-only; a
+power-cycle returns you to stock.
+
+Per-board addressing (this host's IP, the controller's MAC, the offered
+address, the console baud) lives in the `BOARDS` table in `tools/netboot.py`.
+The MAC matters: the responder answers **only** that MAC — which is what keeps
+it safe to run on a live network alongside a real DHCP server — so a wrong one
+means every request is ignored and the console just says `Bootp configuration
+failed`.
+
+### Doing it by hand
+
+The individual pieces still exist if you need to poke at a step:
+
+| | |
+|---|---|
+| `netboot.py --board X probe` | get to the unlocked shell and stop |
+| `tftp-serve.py output/images` | TFTP only, no BOOTP |
+| `netboot.py --board X boot --dry-run` | stage and verify, but do not `bootlinux` |
 
 Two tooling notes that cost real time, now baked into `tftp-serve.py`: CEFDK
 asks for a **47040-byte TFTP block**, which macOS can't send in one datagram and
@@ -158,7 +195,7 @@ copy reaches that, it overwrites the loader mid-copy and crashes on return. So
 The stock x86 `i386_defconfig` is a "support every PC ever made" config — a
 kernel-only image busts that budget on its own. The fix is the openSpeakerPoint
 approach: keep the initramfs **separate** (not embedded), and trim hard. In
-`board/ea1/linux/linux.fragment`:
+`board/ea-common/linux/common.fragment`:
 
 * `CONFIG_KERNEL_XZ`, `CONFIG_CC_OPTIMIZE_FOR_SIZE`
 * `CONFIG_MODULES=n` — all-builtin, self-contained. Also dodges an i386-7.1.8
