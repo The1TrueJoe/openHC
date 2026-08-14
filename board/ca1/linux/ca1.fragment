@@ -1,0 +1,110 @@
+# Kernel config delta for the Control4 CA-1, on top of imx_v6_v7_defconfig.
+#
+# imx_v6_v7 is the multi-platform ARMv6/v7 i.MX defconfig and already carries
+# the i.MX6SL SoC, its pinctrl/clk/gpio, the FEC, usdhc, ecspi, imx UART and
+# imx PWM. This file only turns on what that defconfig leaves off and what the
+# board DTS (c4-imx6sl-ca1.dts) actually references.
+#
+# Nothing here is out-of-tree. The whole point of this board is that mainline
+# already supports the silicon — contrast the DM355, which needs SoC
+# resurrection patches before it will build at all.
+
+# --- Wi-Fi + Bluetooth: Realtek RTL8723BS on SDIO (usdhc1) ---
+# Replaces the vendor's 1.25 MB out-of-tree 8723bs.ko. Built as a module so a
+# firmware-load failure cannot stall boot on a board whose only other network
+# path is the single FEC port.
+CONFIG_STAGING=y
+CONFIG_RTL8723BS=m
+CONFIG_CFG80211=y
+CONFIG_MAC80211=y
+CONFIG_RFKILL=y
+# The Bluetooth half of the same package, over UART/H5.
+CONFIG_BT=m
+CONFIG_BT_HCIUART=m
+CONFIG_BT_HCIUART_H4=y
+CONFIG_BT_HCIUART_3WIRE=y
+
+# --- MMC: SDIO for the radio, 8-bit eMMC for root ---
+CONFIG_MMC=y
+CONFIG_MMC_SDHCI=y
+CONFIG_MMC_SDHCI_PLTFM=y
+CONFIG_MMC_SDHCI_ESDHC_IMX=y
+# mmc-pwrseq-simple drives wifi_enable + the 32 kHz clock for the RTL8723BS.
+CONFIG_PWRSEQ_SIMPLE=y
+
+# --- The PWM3 32.768 kHz clock the Wi-Fi part needs ---
+# Vendor used an out-of-tree "pwm-control" driver; this is the mainline
+# equivalent, consumed by pwrseq_wifi in the DTS.
+CONFIG_PWM=y
+CONFIG_PWM_IMX27=y
+CONFIG_COMMON_CLK_PWM=y
+
+# --- Status LEDs: RGB on pwm1/pwm2/pwm4 ---
+CONFIG_NEW_LEDS=y
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_PWM=y
+CONFIG_LEDS_TRIGGERS=y
+CONFIG_LEDS_TRIGGER_HEARTBEAT=y
+
+# --- Front setup/identify button (KEY_F5) ---
+CONFIG_INPUT_EVDEV=y
+CONFIG_KEYBOARD_GPIO=y
+
+# --- SPI-NOR: S25FL128S on ecspi2, holds U-Boot + the recovery kernel ---
+# Read-mostly for us: openHC boots off the eMMC and never writes this chip.
+CONFIG_MTD=y
+CONFIG_MTD_SPI_NOR=y
+CONFIG_MTD_OF_PARTS=y
+CONFIG_SPI=y
+CONFIG_SPI_IMX=y
+
+# --- I2C: PFUZE100 PMIC + BQ32000 RTC (the two real devices on i2c1) ---
+CONFIG_I2C=y
+CONFIG_I2C_IMX=y
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_REGULATOR_PFUZE100=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_BQ32K=y
+
+# --- The five UARTs: console, RS-232/485, Z-Wave, Zigbee ---
+CONFIG_SERIAL_IMX=y
+CONFIG_SERIAL_IMX_CONSOLE=y
+
+# --- Ethernet: FEC in RMII ---
+CONFIG_FEC=y
+
+# --- USB: two EHCI host ports ---
+CONFIG_USB=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_CHIPIDEA=y
+CONFIG_USB_CHIPIDEA_HOST=y
+CONFIG_NOP_USB_XCEIV=y
+# The stock unit supports an external FTDI-based Z-Wave dongle as an
+# alternative to the onboard ZM5304 (see the vendor udev rules).
+CONFIG_USB_SERIAL=m
+CONFIG_USB_SERIAL_FTDI_SIO=m
+CONFIG_USB_STORAGE=m
+
+# --- GPIO from userspace by line name (libgpiod) ---
+# The radio resets and the seven RS-485 transceiver lines are named in the DTS
+# via gpio-line-names; the chardev ABI is how the rootfs finds them.
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_MXC=y
+CONFIG_GPIO_CDEV=y
+CONFIG_GPIO_CDEV_V1=y
+
+# --- rootfs: initramfs for bring-up, ext4 for the eventual eMMC install ---
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+
+# --- Not this board: EVK leftovers the vendor DT dragged in ---
+# The CA-1 has no E-ink panel, no touchscreen, no accelerometer. The i.MX6SL
+# EPDC/PXP path and its 320 MB CMA reservation are pure waste on a headless
+# controller, and the DTS drops the nodes; drop the drivers too.
+# CONFIG_FB_MXC_EINK_PANEL is not set
+# CONFIG_MXC_PXP_V2 is not set
+# CONFIG_TOUCHSCREEN_ELAN is not set

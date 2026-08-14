@@ -1,0 +1,44 @@
+#!/bin/sh
+# openHC bring-up marker for the CA-1: proves we reached userspace on a mainline
+# kernel, and reports the board state that is most likely to be wrong on a first
+# boot — the two radio UARTs, the Z-Wave presence strap and the Wi-Fi module.
+[ "$1" = start ] || exit 0
+OHC_MODEL=
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+echo ""
+echo "  openHC Control4 CA-1 (i.MX6SL \"emmet\") — kernel-up bring-up rootfs"
+echo "  kernel: $(uname -r)   $(uname -m)"
+
+# Radio UARTs: their absence means the DTS UART aliases came out wrong, which
+# is the single most likely first-boot failure on this board.
+for tty in "$OHC_ZWAVE_TTY" "$OHC_ZIGBEE_TTY" "$OHC_SERIAL_TTY"; do
+    [ -n "$tty" ] || continue
+    [ -c "$tty" ] && s="present" || s="MISSING"
+    echo "  $tty: $s"
+done
+
+# zwave_module reads high when a ZM5304 is fitted. It is an input and is not
+# hogged in the DTS, so it stays readable from userspace.
+#
+# libgpiod v1 and v2 disagree here: v1 needs `gpiofind NAME` to turn a line name
+# into a "chip offset" pair for gpioget; v2 dropped gpiofind and lets gpioget
+# take the name directly, printing "name=active" instead of a bare 0/1.
+if [ -n "$OHC_ZWAVE_PRESENT_GPIO" ]; then
+    if command -v gpiofind >/dev/null 2>&1; then
+        val=$(gpioget $(gpiofind "$OHC_ZWAVE_PRESENT_GPIO") 2>/dev/null)
+    elif command -v gpioget >/dev/null 2>&1; then
+        val=$(gpioget "$OHC_ZWAVE_PRESENT_GPIO" 2>/dev/null)
+    else
+        val=
+    fi
+    case "$val" in
+      *=active|1)   echo "  z-wave module: present" ;;
+      *=inactive|0) echo "  z-wave module: absent" ;;
+      "")           : ;;
+      *)            echo "  z-wave module: unreadable ($val)" ;;
+    esac
+fi
+
+grep -q 8723 /proc/modules 2>/dev/null && echo "  wifi: rtl8723bs loaded"
+echo ""

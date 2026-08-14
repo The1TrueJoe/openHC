@@ -1,0 +1,136 @@
+# openHC — Control4 CA-1 controller (i.MX6 SoloLite, board codename "emmet").
+#
+# Unlike ea1/ea3 (ea-common), this board has NO family base defconfig (same as
+# ioxv1): build/build.sh's default case feeds this file to Buildroot on its
+# own. Split out a ca-common when a second CA-series board lands — every
+# value here is either SoC-generic or CA-1-specific, and inventing a family for
+# one board would just add a level of indirection with nothing in it.
+#
+# What this board is (confirmed on a live rev-4 unit — docs/ca1-recon.md):
+#
+#   * i.MX6SL: ONE Cortex-A9 (ARMv7-A, VFPv3-D32 + NEON), 1 GB RAM.
+#   * 16 MB SPI-NOR (S25FL128S on ecspi2) holds U-Boot 2014.04 + a recovery
+#     kernel; 3.7 GB eMMC (usdhc2) holds vfat kernel / ext4 rootfs / ext4 recfs.
+#   * Stock U-Boot, unlocked console, writable environment, and NO secure boot
+#     (HAB fuse open, U-Boot's CSF slot zero-filled, kernel loaded with a plain
+#     bootz). We can boot our own kernel without touching flash.
+#   * Radios: ZM5304 Z-Wave on UART4, an EM35x Zigbee NCP on UART5, and a
+#     Realtek RTL8723BS Wi-Fi/BT combo on SDIO (usdhc1).
+#   * NO companion IO-MCU. The rear RS-232/RS-485 port is a host UART (UART3)
+#     in front of a GPIO-configured transceiver.
+#
+# STATUS: pre-boot. This builds a toolchain, kernel and rootfs; nobody has
+# booted it on hardware yet. Unlike the DM355 the SoC needs no resurrection
+# patches — mainline supports i.MX6SL — so the risk here is the board DTS
+# (board/ca1/linux/c4-imx6sl-ca1.dts), not the kernel.
+
+# --- arch: i.MX6SL = single Cortex-A9, ARMv7-A, VFPv3-D32 + NEON, EABIhf ---
+# cpuinfo reports "vfpv3 ... vfpd32", i.e. the full 32 double registers, so
+# plain VFPV3 rather than the D16 variant. Hard float: there is an FPU, use it.
+BR2_arm=y
+BR2_cortex_a9=y
+BR2_ARM_ENABLE_NEON=y
+BR2_ARM_ENABLE_VFP=y
+BR2_ARM_FPU_VFPV3=y
+BR2_ARM_EABIHF=y
+
+BR2_OPTIMIZE_S=y
+# musl, matching every other board in this tree.
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+
+# --- init / login ---
+# Console is ttymxc0 @115200 (U-Boot passes console=ttymxc0,115200).
+BR2_TARGET_GENERIC_HOSTNAME="openhc-ca1"
+BR2_TARGET_GENERIC_ISSUE="openHC Control4 CA-1 (kernel-up)"
+BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
+BR2_TARGET_GENERIC_GETTY_PORT="ttymxc0"
+BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
+
+# --- kernel: mainline stable, same version as the rest of the tree ---
+# i.MX6SL is fully supported upstream, so this is a stock defconfig plus a
+# board DTS — no SoC patches, no BR2_GLOBAL_PATCH_DIR. That is the whole reason
+# this board is a soft target compared to the DM355.
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
+BR2_LINUX_KERNEL_USE_DEFCONFIG=y
+BR2_LINUX_KERNEL_DEFCONFIG="imx_v6_v7"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/linux/ca1.fragment"
+
+# U-Boot boots this with `bootz`, so a raw zImage — no uImage wrap (ioxv1) and
+# no CEFDK container (EA family).
+BR2_LINUX_KERNEL_ZIMAGE=y
+
+# Our own board DTS, reconstructed from the vendor DTB for a mainline kernel.
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
+BR2_LINUX_KERNEL_CUSTOM_DTS_PATH="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/linux/c4-imx6sl-ca1.dts"
+
+# --- rootfs: initramfs in the zImage (bring-up) + ext4 (later, for p2) ---
+# Same philosophy as the other boards: a RAM rootfs we can boot without writing
+# anything persistent, iterate on, and only commit to eMMC once the kernel is
+# trusted. 1 GB of RAM makes an embedded initramfs very comfortable here.
+# The ext4 image is for `dd`ing over mmcblk1p2 once that day comes.
+BR2_TARGET_ROOTFS_INITRAMFS=y
+BR2_TARGET_ROOTFS_EXT2=y
+BR2_TARGET_ROOTFS_EXT2_4=y
+BR2_TARGET_ROOTFS_EXT2_SIZE="256M"
+
+# --- reachability + on-target tools ---
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+# SPI-NOR inspection. Note the bring-up path never writes this chip — U-Boot
+# and both environment copies live there.
+BR2_PACKAGE_MTD=y
+# The radio resets and the seven RS-485 transceiver lines, by name, from
+# userspace on the chardev ABI. See rootfs-overlay/etc/init.d/S30gpio.
+BR2_PACKAGE_LIBGPIOD=y
+BR2_PACKAGE_LIBGPIOD_TOOLS=y
+# fw_printenv/fw_setenv talk to the U-Boot environment in SPI-NOR, which is how
+# the boot path is steered on this board; mkimage builds the boot.scr that
+# stock bootcmd sources off the eMMC FAT partition.
+BR2_PACKAGE_UBOOT_TOOLS=y
+BR2_PACKAGE_UBOOT_TOOLS_MKIMAGE=y
+BR2_PACKAGE_UBOOT_TOOLS_FWPRINTENV=y
+# Host mkimage: post-image.sh uses it to build the boot.scr that stock bootcmd
+# sources off the eMMC vfat partition. Without this the image still builds, but
+# post-image.sh warns and skips the boot script.
+BR2_PACKAGE_HOST_UBOOT_TOOLS=y
+# Writing the kernel/DTB/boot.scr onto the vfat "kernel" partition.
+BR2_PACKAGE_DOSFSTOOLS=y
+BR2_PACKAGE_DOSFSTOOLS_FSCK_FAT=y
+
+# --- Wi-Fi: in-tree rtl8723bs (staging) replaces the vendor 8723bs.ko ---
+# The stock image carries a 1.25 MB out-of-tree module; mainline has had
+# drivers/staging/rtl8723bs since v4.12.
+#
+# Firmware is fiddlier than it looks, checked against Buildroot 2024.02.9 and
+# Linux 7.1.8 rather than assumed:
+#
+#   * Bluetooth is covered — RTL_87XX_BT ships rtl_bt/rtl8723bs_fw.bin and
+#     rtl_bt/rtl8723bs_config-OBDA8723.bin, which is what btrtl asks for.
+#   * Wi-Fi is NOT. rtl8723b_hal_init.c does request_firmware() on
+#     "rtlwifi/rtl8723bs_nic.bin" (there is no embedded firmware array any
+#     more), and that exact file is missing from RTL_87XX's file list — it
+#     ships rtl8723bs_bt.bin and rtl8723bu_nic.bin, but not rtl8723bs_nic.bin.
+#
+# The file IS present in the linux-firmware tarball Buildroot already
+# downloads, so post-build.sh lifts it out of the extracted source rather than
+# vendoring a blob here or adding a second download. Wi-Fi is not the
+# bring-up reachability path either way — S40net brings up eth0 only.
+BR2_PACKAGE_LINUX_FIRMWARE=y
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX_BT=y
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/post-build.sh"
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+
+# --- mDNS identity: avahi (no D-Bus, light), matching the other boards ---
+BR2_PACKAGE_AVAHI=y
+BR2_PACKAGE_AVAHI_DAEMON=y
+
+# --- rootfs overlay + image publishing ---
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/rootfs-overlay"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/post-image.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="ca1"

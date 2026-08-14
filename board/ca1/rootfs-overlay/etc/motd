@@ -1,0 +1,7 @@
+
+  openHC Control4 CA-1 (i.MX6SL "emmet") — kernel-up image.
+  1x Cortex-A9, 1GB. ZM5304 Z-Wave, EM35x Zigbee, RTL8723BS Wi-Fi/BT,
+  RS-232/485 combo port, 2x USB. No IO-MCU — the IO is native.
+
+  Boot path is U-Boot from SPI-NOR; openHC boots off the eMMC vfat
+  partition and does not write flash. Recovery: delete boot.scr.
