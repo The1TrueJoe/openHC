@@ -1,0 +1,11 @@
+
+  openHC Control4 HC-800 (Lite-On AE100) — kernel-up image.
+  Atom D525, 2GB, ICH7/NM10. It is a PC, not an embedded SoC board:
+  no vendor kernel patches, no container format, no signed boot.
+
+  6 IR / 4 relays / 4 contacts behind an LM3S1162 on ttyS3.
+  Zigbee EM357 on ttyS4, 2x RS-232 on ttyS1/ttyS2 (real host UARTs).
+  ALC888-VD: 2 line out, 1 line in, coax S/PDIF. eSATA on ata2.
+
+  Boot path is GRUB 0.97 from sda1; openHC boots a bzImage + initrd off
+  sda3 and writes nothing else. Recovery: set "default 1" in menu.lst.

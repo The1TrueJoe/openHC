@@ -1,0 +1,50 @@
+#!/bin/sh
+# openHC bring-up marker for the HC-800: proves we reached userspace on a
+# mainline kernel, and reports the board state most likely to be wrong on a
+# first boot. On this board that is a short list, because there are no custom
+# drivers to fail — what can go wrong is the UART count, the NIC and the radio.
+[ "$1" = start ] || exit 0
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+echo ""
+echo "  openHC Control4 HC-800 (Atom D525) — kernel-up bring-up rootfs"
+echo "  kernel: $(uname -r)   $(uname -m)"
+
+# THE check for this board. Mainline registers only ttyS0..ttyS3 unless
+# CONFIG_SERIAL_8250_RUNTIME_UARTS=5, and the port that goes missing is ttyS4 —
+# the Zigbee NCP. A count of 4 here means the fragment did not take.
+n=0
+for i in 0 1 2 3 4; do [ -c /dev/ttyS$i ] && n=$((n + 1)); done
+if [ "$n" = 5 ]; then
+    echo "  uarts: 5/5 (ttyS3 io-mcu, ttyS4 zigbee present)"
+else
+    echo "  uarts: $n/5 -- CONFIG_SERIAL_8250_RUNTIME_UARTS=5 did not take"
+fi
+
+# Wired is the reachability path; say so plainly whether or not it worked.
+if [ -d /sys/class/net/eth0 ]; then
+    addr=$(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}')
+    carrier=$(cat /sys/class/net/eth0/carrier 2>/dev/null)
+    echo "  eth0:  ${addr:-no address} (carrier ${carrier:-?})"
+else
+    echo "  eth0:  MISSING -- r8169 did not bind 10ec:8168"
+fi
+
+# The USB radio is the one staging component in the image, so it is the one
+# most likely to have been dropped upstream by 7.1.8.
+if [ -d /sys/class/net/wlan0 ]; then
+    echo "  wlan0: present (r8712u bound; use wpa_supplicant -Dwext)"
+else
+    echo "  wlan0: absent -- staging r8712u missing, or firmware not loaded"
+fi
+
+# GPIO chip: without it there is no zigbee_reset / io_reset and no way to
+# reset the IO-MCU. Mainline names no lines here, so report the chip only.
+if command -v gpiodetect >/dev/null 2>&1; then
+    chip=$(gpiodetect 2>/dev/null | grep gpio_ich)
+    [ -n "$chip" ] && echo "  gpio:  $chip" || echo "  gpio:  no gpio_ich (lpc_ich did not bind)"
+fi
+
+[ -e /proc/asound/card0 ] && echo "  audio: $(cat /proc/asound/card0/id 2>/dev/null) (ALC888-VD)"
+[ -b /dev/sda ] && echo "  disk:  /dev/sda present (sda1 grub, sda3 kernel, sda4 vendor root)"
+echo ""

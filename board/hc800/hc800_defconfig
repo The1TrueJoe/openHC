@@ -1,0 +1,161 @@
+# openHC — Control4 HC-800 (Lite-On AE100, Intel Atom D525 + NM10).
+#
+# Self-contained defconfig, no family base. build/build.sh's default case feeds
+# this file to Buildroot on its own — same as ca1 and ioxv1. This board is NOT
+# an EA: `ea-common` exists for the Intel CE5310 SoC boards, and everything in
+# it (the CEFDK ~7 MB copy-window trim, the i386/atom arch, the i2c-pxa and
+# pwm-ce5300 patches, the CEFDK post-image wrap) is either wrong or dead weight
+# here. There will never be a "hc-common" either: the HC-800 is a PC, and the
+# only other board that shares its IO-MCU family — the HC-250 — is ARMv7 and
+# shares nothing else.
+#
+# What this board is (confirmed on a live rev-4 unit — docs/hc800-recon.md):
+#
+#   * Atom D525 (Pineview), 2 cores / 4 threads, 2 GB RAM, NM10/ICH7 chipset.
+#     Ordinary PC silicon end to end; no custom SoC anywhere.
+#   * 8 GB SanDisk SSD on AHCI, MBR-partitioned: sda1 GRUB, sda2 factory
+#     restore, sda3 kernel-only (ext3, 165 MB free), sda4 vendor ext4 root.
+#     The rear eSATA jack is ata2 on the same controller.
+#   * GRUB 0.97 with a plain-text menu.lst, serial terminal at 115200, and a
+#     working `initrd` builtin. Nothing in the boot chain is signed or verified.
+#   * Five ISA-range 8250 UARTs: ttyS0 console, ttyS1/ttyS2 the two rear RS-232
+#     ports (host ttys, not MCU-routed like the EA family's combo ports),
+#     ttyS3 the LM3S1162 IO-MCU, ttyS4 the Zigbee EM357 NCP.
+#   * 6 IR out, 4 relays, 4 contacts behind the LM3S1162 on ttyS3 — panel
+#     counts; the IR figure is disputed, see docs/hc800-recon.md.
+#   * Realtek RTL8111/8168 GbE (mainline r8169) and an RTL8192SU USB Wi-Fi
+#     (staging r8712u). ALC888-VD HDA codec: 2 line out, 1 line in, coax S/PDIF.
+#
+# STATUS: pre-boot. This builds a toolchain, kernel and rootfs; nobody has
+# booted openHC on this hardware yet. It needs NO kernel patches at all — every
+# driver is mainline and has been for a decade — which makes it the cheapest
+# board in the tree to bring up. See docs/hc800-recon.md#what-this-means-for-the-port.
+
+# --- arch: x86_64, Bonnell tuning ---
+# The ONE place this tree deliberately departs from the vendor. Control4 ships a
+# 32-bit non-PAE kernel here ("NX protection cannot be enabled: non-PAE
+# kernel!", 1149 MB of the 2 GB stranded in HIGHMEM), but /proc/cpuinfo on the
+# live unit reports `lm` and `nx` — the D525 is a 64-bit part. Going x86_64
+# gets the full 2 GB flat, gets NX, and lands on the better-maintained mainline
+# target. GRUB 0.97 boots a 64-bit bzImage through the standard x86 boot
+# protocol (the kernel's own 32-bit setup switches to long mode), so the
+# bootloader does not care.
+#
+# If a 64-bit kernel ever turns out to be the thing that will not boot here,
+# reverting is two lines: BR2_i386=y and the same BR2_x86_bonnell.
+BR2_x86_64=y
+# "bonnell" is the D525's microarchitecture and the non-deprecated spelling of
+# what ea-common calls BR2_x86_atom (Buildroot: "since gcc 4.9 ... use bonnell").
+BR2_x86_bonnell=y
+
+BR2_OPTIMIZE_S=y
+# musl, matching every other board in this tree.
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+
+# --- init / login ---
+# GRUB's own terminal and both vendor menu entries use ttyS0 @115200; our
+# menu.lst entry passes the same, so the getty matches.
+BR2_TARGET_GENERIC_HOSTNAME="openhc-hc800"
+BR2_TARGET_GENERIC_ISSUE="openHC Control4 HC-800 (kernel-up)"
+BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
+BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
+BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
+
+# --- kernel: mainline stable, same version as the rest of the tree ---
+# Stock x86_64 defconfig plus one fragment. No BR2_GLOBAL_PATCH_DIR: unlike the
+# CE5310 (i2c-pxa/pwm de-DT patches) and the DM355 (SoC resurrection), this
+# board needs nothing that is not already upstream.
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
+BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
+BR2_LINUX_KERNEL_BZIMAGE=y
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/linux/hc800.fragment"
+
+# --- rootfs: standalone gzipped cpio, loaded by GRUB as an external initrd ---
+# Same shape as the EA family — a RAM rootfs that boots without writing anything
+# persistent — but for a different reason. On the EA it is forced: CEFDK's
+# bootlinux would clobber its own loader copying a bigger image. Here it is a
+# choice: it keeps bring-up entirely non-destructive, because installing openHC
+# then means dropping two files on the kernel partition (sda3, 165 MB free) and
+# adding a menu.lst entry. The vendor root on sda4 is never touched, and the
+# factory-restore path on sda2 stays byte-identical.
+#
+# NOT initramfs-in-the-bzImage (ioxv1/ca1 style): GRUB 0.97's `initrd` builtin
+# works — verified by string-dumping the installed stage2 — and a separate file
+# means a rootfs change does not mean re-copying the kernel.
+#
+# No on-disk rootfs image is built yet, deliberately. The only free space is
+# sda3, and the alternatives overwrite either the vendor root or the factory
+# restore image. That is a decision to make after the kernel is trusted, not
+# something to leave lying around in output/images.
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_GZIP=y
+
+# --- reachability ---
+# Wired eth0 (r8169) is the bring-up path and comes up in S40net. Wi-Fi needs a
+# PSK we do not have at build time, so it is present but not brought up.
+BR2_PACKAGE_DROPBEAR=y
+# busybox udhcpc handles DHCP; no separate client needed.
+
+# --- Wi-Fi: mainline staging r8712u + its firmware ---
+# The radio is USB (0bda:8172, RTL8192SU) on an internal port, not PCIe.
+# Firmware is the part worth checking rather than assuming: the driver does
+# request_firmware("rtlwifi/rtl8712u.bin"), and that exact file IS in
+# BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX's file list (checked against Buildroot
+# 2024.02.9). So no vendored blob and no post-build lift — contrast the CA-1,
+# where rtl8723bs_nic.bin is missing from that same list.
+BR2_PACKAGE_LINUX_FIRMWARE=y
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
+#
+# r8712u is a WIRELESS EXTENSIONS driver — it sets netdev->wireless_handlers
+# and registers no wiphy (checked in drivers/staging/rtl8712/os_intfs.c), so
+# `wpa_supplicant -Dwext` is the backend that will actually drive it. nl80211 is
+# built too because it costs nothing and is the right one the day this radio is
+# replaced or the driver grows a cfg80211 front end.
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_WEXT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
+# `iw` speaks nl80211 only and will show nothing for this radio; `iwconfig`
+# (busybox) or wpa_cli is what works. Kept for the same forward-looking reason.
+BR2_PACKAGE_IW=y
+
+# --- mDNS identity: avahi (built without D-Bus to stay light) ---
+BR2_PACKAGE_AVAHI=y
+BR2_PACKAGE_AVAHI_DAEMON=y
+
+# --- on-target tools ---
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+# It is a PC: lspci is how you check the chipset. No usbutils to go with it —
+# Buildroot's usbutils depends on BR2_PACKAGE_HAS_UDEV for its hwdb, and this
+# image uses busybox mdev like every other board here, so the symbol would be
+# silently dropped rather than built. /sys/bus/usb/devices has the same VID:PID
+# information; the radio is 0bda:8172.
+BR2_PACKAGE_PCIUTILS=y
+# The eight named ICH GPIO lines (zigbee_reset, io_reset, wlan_disable,
+# lan_disable, the reset button, the three board-revision straps) on the chardev
+# ABI. Mainline gpio-ich does not name lines, so these are chip+offset — the map
+# is in rootfs-overlay/opt/ohc/board.env.
+BR2_PACKAGE_LIBGPIOD=y
+BR2_PACKAGE_LIBGPIOD_TOOLS=y
+# Mounting sda1/sda3 to install our own kernel, and fsck for when a half-written
+# menu.lst needs sorting out. This is how openHC updates itself in place once it
+# is the running image.
+BR2_PACKAGE_E2FSPROGS=y
+# ALC888-VD verification: 2 line out, 1 line in, coax S/PDIF. amixer/aplay/
+# speaker-test are the whole reason to have audio in a bring-up image at all.
+BR2_PACKAGE_ALSA_UTILS=y
+BR2_PACKAGE_ALSA_UTILS_ALSAMIXER=y
+BR2_PACKAGE_ALSA_UTILS_AMIXER=y
+BR2_PACKAGE_ALSA_UTILS_APLAY=y
+BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
+# iecset drives the IEC958 status bits — i.e. the coax S/PDIF jack specifically.
+BR2_PACKAGE_ALSA_UTILS_IECSET=y
+
+# --- rootfs overlay + image publishing ---
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/rootfs-overlay"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/post-image.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="hc800"

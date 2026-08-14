@@ -1,0 +1,173 @@
+# Kernel config delta on the mainline x86_64 defconfig, for a reachable HC-800.
+#
+# Read this next to board/ea-common/linux/common.fragment and note what is NOT
+# here: there is no size trim. That fragment cuts hard because CEFDK's bootlinux
+# copies the kernel into a ~7 MB window and overruns its own loader if the image
+# is bigger. The HC-800 boots from GRUB 0.97, which has no such ceiling, so this
+# fragment only turns things ON — every line below is a device that exists on
+# the board, and the reason it is here is that a stock x86_64 defconfig either
+# leaves it off or builds it as a module.
+#
+# Everything here is mainline. This board needs no patches. See
+# docs/hc800-recon.md.
+
+# ── all-builtin, no loadable modules ──────────────────────────────────────
+# Same call as the EA family: the image is self-contained, so there is no
+# depmod step, no module load ordering to get right, and no .ko files in the
+# initrd.
+#
+# THE HAZARD THIS CREATES, and why so many symbols below are set explicitly:
+# the x86_64 defconfig marks a lot of what we need as =m, and kconfig silently
+# turns every =m into =n once MODULES is off. A driver that "is in the
+# defconfig" is therefore not necessarily in this kernel. Anything the HC-800
+# actually needs is forced =y here rather than inherited.
+CONFIG_MODULES=n
+
+# ── serial: five 8250 UARTs, and ttyS4 is the one that gets lost ──────────
+# The UARTs are LPC/ISA-range and enumerate through PNPACPI (the live unit
+# reports them as PNP devices "00:02".."00:06"), so SERIAL_8250_PNP is load
+# bearing, not decoration.
+#
+# NR_UARTS *and* RUNTIME_UARTS both have to be 5. Mainline defaults RUNTIME to
+# 4, which registers ttyS0..ttyS3 and silently drops ttyS4 — the Zigbee NCP.
+# The vendor's own config sets both to 5 (read out of /proc/config.gz on the
+# live unit); this is that same value, for that same reason.
+#
+#   ttyS0 0x3f8 console     ttyS1 0x2f8 rear RS-232 #1
+#   ttyS2 0x3e8 rear RS-232 #2                  ttyS3 0x2e8 LM3S1162 IO-MCU
+#   ttyS4 0x2f0 Zigbee EM357 NCP
+CONFIG_PNP=y
+CONFIG_PNPACPI=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_PNP=y
+CONFIG_SERIAL_8250_NR_UARTS=5
+CONFIG_SERIAL_8250_RUNTIME_UARTS=5
+
+# ── external initrd (GRUB `initrd` line hands us a rootfs.cpio.gz) ────────
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+
+# ── storage: ICH7 AHCI ────────────────────────────────────────────────────
+# ata1 is the internal 8 GB SanDisk SSD; ata2 is the rear eSATA jack, same
+# controller. We do not boot from either — the rootfs is the initrd — but the
+# disk must be readable to install our own kernel onto sda3 and to edit
+# menu.lst on sda1, which is how openHC updates itself once it is the running
+# image. USB storage is on for the front jack.
+CONFIG_ATA=y
+CONFIG_SATA_AHCI=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_MSDOS_PARTITION=y
+
+# The boot partitions (sda1, sda3) are ext3 and the vendor root (sda4) is ext4.
+# One driver covers all three.
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+
+# ── wired: Realtek RTL8111/8168 (10ec:8168 at 02:00.0) ────────────────────
+# The vendor ships Realtek's out-of-tree r8168 8.043.02. Mainline's r8169 has
+# covered this device for years and is what we use — this is the reachability
+# path for bring-up, so it is builtin and not negotiable.
+CONFIG_ETHERNET=y
+CONFIG_NET_VENDOR_REALTEK=y
+CONFIG_R8169=y
+CONFIG_PHYLIB=y
+CONFIG_REALTEK_PHY=y
+
+# ── USB: four ICH7 UHCI companions + one EHCI ─────────────────────────────
+# Not optional here: the Wi-Fi radio is a USB device on an internal port.
+CONFIG_USB_SUPPORT=y
+CONFIG_USB=y
+CONFIG_USB_PCI=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_EHCI_PCI=y
+CONFIG_USB_UHCI_HCD=y
+CONFIG_USB_STORAGE=y
+
+# ── Wi-Fi: RTL8192SU (0bda:8172) on staging r8712u ────────────────────────
+# The only driver for this part. Mainline's rtl8xxxu does NOT cover RTL8192SU,
+# so if drivers/staging/rtl8712 has been dropped by 7.1.8 then Wi-Fi is what
+# breaks — wired reachability is unaffected and bring-up continues.
+#
+# It is a WIRELESS EXTENSIONS driver, not a cfg80211 one: it sets
+# netdev->wireless_handlers directly and registers no wiphy. The CFG80211
+# dependency in its Kconfig only exists because WIRELESS_EXT now lives behind
+# cfg80211. The practical consequence is in userspace — wpa_supplicant has to
+# drive it with -Dwext, not -Dnl80211.
+#
+# Firmware is rtlwifi/rtl8712u.bin, which comes from Buildroot's linux-firmware
+# (RTL_87XX). A builtin driver can still get it: the initramfs is unpacked in
+# populate_rootfs() (a rootfs_initcall), which runs before device probing, so
+# /lib/firmware is populated by the time request_firmware() is called.
+CONFIG_WLAN=y
+CONFIG_CFG80211=y
+CONFIG_WIRELESS_EXT=y
+CONFIG_STAGING=y
+CONFIG_R8712U=y
+CONFIG_FW_LOADER=y
+
+# ── audio: ICH7 HD Audio + ALC888-VD ──────────────────────────────────────
+# 2 line out (pins 0x14 rear, 0x1b front), 1 line in (0x1a), coax S/PDIF out
+# (0x1e). The BIOS pin defaults describe the panel correctly, so the generic
+# parser gets the jacks right and no model quirk is needed.
+CONFIG_SOUND=y
+CONFIG_SND=y
+CONFIG_SND_PCI=y
+CONFIG_SND_HDA_INTEL=y
+CONFIG_SND_HDA_GENERIC=y
+CONFIG_SND_HDA_CODEC_REALTEK=y
+
+# ── ICH7 platform glue: LPC → GPIO, SMBus, watchdog ───────────────────────
+# lpc_ich is the MFD that spawns gpio_ich; without it there is no GPIO chip and
+# no way to touch zigbee_reset / io_reset / wlan_disable / lan_disable / the
+# board-revision straps. GPIO_CDEV is the chardev ABI libgpiod uses. Note
+# mainline gpio-ich supplies no line names — address lines by chip + offset,
+# per rootfs-overlay/opt/ohc/board.env.
+CONFIG_MFD_CORE=y
+CONFIG_LPC_ICH=y
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_ICH=y
+CONFIG_GPIO_CDEV=y
+
+# SMBus. The ADV7511 HDMI transmitter (0x72) and THS8200 video DAC (0x21) live
+# here; the vendor instantiates them from its board file. We instantiate
+# nothing — this is on so the bus can be probed with i2c-tools when somebody
+# takes the video question seriously.
+CONFIG_I2C=y
+CONFIG_I2C_I801=y
+CONFIG_I2C_CHARDEV=y
+
+# iTCO watchdog. The vendor runs /sbin/watchdog -t 10 against it, so it is
+# known good on this silicon. Needs LPC_ICH (above) for the NO_REBOOT bit.
+CONFIG_WATCHDOG=y
+CONFIG_ITCO_WDT=y
+
+# Atom package/core temperature. The vendor kernel registers no hwmon device at
+# all; coretemp is free and this is a fanless box in a rack.
+CONFIG_HWMON=y
+CONFIG_SENSORS_CORETEMP=y
+
+# CMOS RTC — an ordinary PC RTC, so hwclock works with no I2C part to hunt for.
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_CMOS=y
+
+# ── no head ───────────────────────────────────────────────────────────────
+# openHC is headless on every board and the console is ttyS0. The GMA 3150 and
+# the ADV7511/THS8200 chain are left alone: DRM would pull in a large stack for
+# an output nobody uses. VGA_CONSOLE stays at its defconfig value so a monitor
+# on the internal header still shows a panic.
+# CONFIG_DRM is not set
+# CONFIG_FB is not set
+
+# ── note on the stack protector ───────────────────────────────────────────
+# ea-common has to disable STACKPROTECTOR: musl + i386 + 7.1.8 disagree about
+# the per-CPU canary and the kernel panics in do_idle. x86_64 puts the canary at
+# a fixed %gs offset and is expected to be fine, so it is left ON here. If this
+# board panics with "stack-protector: Kernel stack is corrupted in: do_idle",
+# the fix is the same two lines ea-common uses:
+#   # CONFIG_STACKPROTECTOR is not set
+#   # CONFIG_STACKPROTECTOR_STRONG is not set
