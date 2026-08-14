@@ -1,0 +1,187 @@
+From e9e7605bc6e70cdb7c5f16b0eca599e3a6ce3ee4 Mon Sep 17 00:00:00 2001
+From: openHC <p@o>
+Date: Wed, 12 Aug 2026 19:02:14 -0400
+Subject: [PATCH] ARM: dts: davinci: add DM355 SoC + Control4 hammer (gpio +
+ dm9000)
+
+Device tree for the DM355 and the Control4 IO Extender V1 ("hammer"): AINTC,
+davinci timer + ns16550a console (fixed 24 MHz ref), the GPIO controller at
+0x01c67000 in banked mode (registers the IRQ domain), and the dm9000 Ethernet
+on async EMIF CS1 (IRQ on GPIO1, reset GPIO101, 16-bit, no EEPROM -> MAC
+forced). Boots via appended DTB; network brings up SSH.
+
+See docs/kernel-7.1-port-log.md.
+---
+ arch/arm/boot/dts/ti/davinci/Makefile         |  3 +
+ arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 52 ++++++++++
+ arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 +++++++++++++++++++
+ 3 files changed, 149 insertions(+)
+ create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
+ create mode 100644 arch/arm/boot/dts/ti/davinci/dm355.dtsi
+
+diff --git a/arch/arm/boot/dts/ti/davinci/Makefile b/arch/arm/boot/dts/ti/davinci/Makefile
+index c0e388e..42c3b80 100644
+--- a/arch/arm/boot/dts/ti/davinci/Makefile
++++ b/arch/arm/boot/dts/ti/davinci/Makefile
+@@ -4,3 +4,6 @@ dtb-$(CONFIG_ARCH_DAVINCI) += \
+ 	da850-enbw-cmc.dtb \
+ 	da850-evm.dtb \
+ 	da850-lego-ev3.dtb
++
++dtb-$(CONFIG_ARCH_DAVINCI_DM355) += \
++	dm355-hammer.dtb
+diff --git a/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
+new file mode 100644
+index 0000000..a959552
+--- /dev/null
++++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
++ * openHC bring-up board: console + 128 MB RAM + dm9000 Ethernet (for SSH).
++ * NAND, the front-panel LEDs/PWM, relays/contacts GPIO and the FPGA UARTs/IR
++ * are added once we are on the network. dm9000 facts from the vendor
++ * board-hammer.c: 16-bit, no EEPROM, IRQ on GPIO1 (rising), reset on GPIO101.
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/interrupt-controller/irq.h>
++#include "dm355.dtsi"
++
++/ {
++	model = "Control4 IO Extender V1 (DM355 hammer)";
++	compatible = "ti,dm355-hammer", "ti,dm355";
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		bootargs = "console=ttyS0,115200n8";
++	};
++
++	memory@80000000 {
++		device_type = "memory";
++		reg = <0x80000000 0x08000000>;	/* 128 MB */
++	};
++};
++
++&serial0 {
++	status = "okay";
++};
++
++&soc {
++	/*
++	 * dm9000 on async EMIF CS1. U-Boot already set the CS timing and brought
++	 * the PHY up (it netboots over it), so no aemif node is needed to reach
++	 * it. Two reg windows: index/address port, then data port. MAC is forced
++	 * (the part has no EEPROM) so our MAC-filtered netboot server answers it.
++	 */
++	ethernet@4014000 {
++		compatible = "davicom,dm9000";
++		reg = <0x04014000 0x2>, <0x04014002 0x2>;
++		reg-io-width = <2>;
++		interrupt-parent = <&gpio>;
++		interrupts = <1 IRQ_TYPE_EDGE_RISING>;
++		reset-gpios = <&gpio 101 GPIO_ACTIVE_LOW>;
++		davicom,no-eeprom;
++		local-mac-address = [00 0f ff 18 21 9c];
++	};
++};
+diff --git a/arch/arm/boot/dts/ti/davinci/dm355.dtsi b/arch/arm/boot/dts/ti/davinci/dm355.dtsi
+new file mode 100644
+index 0000000..319a74d
+--- /dev/null
++++ b/arch/arm/boot/dts/ti/davinci/dm355.dtsi
+@@ -0,0 +1,89 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Device tree for the TI DaVinci DM355 SoC.
++ *
++ * openHC: first-boot node set + the GPIO controller (needed for the dm9000
++ * Ethernet IRQ). Clocks are still modeled as a fixed 24 MHz reference rather
++ * than the full PSC/PLL providers -- U-Boot has already enabled the module
++ * clocks we use (timer, UART, GPIO, the async EMIF the dm9000 sits on), so the
++ * drivers only need a clk handle to enable. PSC/PLL + NAND/PWM/FPGA come next.
++ */
++
++/ {
++	compatible = "ti,dm355";
++	#address-cells = <1>;
++	#size-cells = <1>;
++	interrupt-parent = <&intc>;
++
++	cpus {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		cpu@0 {
++			compatible = "arm,arm926ej-s";
++			device_type = "cpu";
++			reg = <0>;
++		};
++	};
++
++	ref_clk_24m: clock-24000000 {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <24000000>;
++		clock-output-names = "ref_clk_24m";
++	};
++
++	soc: soc {
++		compatible = "simple-bus";
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		intc: interrupt-controller@1c48000 {
++			compatible = "ti,dm355-aintc";
++			interrupt-controller;
++			#interrupt-cells = <1>;
++			reg = <0x01c48000 0x1000>;
++			ti,intc-size = <64>;
++		};
++
++		timer0: timer@1c21400 {
++			compatible = "ti,da830-timer";
++			reg = <0x01c21400 0x1000>;
++			interrupts = <32>, <33>;
++			interrupt-names = "tint12", "tint34";
++			clocks = <&ref_clk_24m>;
++		};
++
++		serial0: serial@1c20000 {
++			compatible = "ns16550a";
++			reg = <0x01c20000 0x400>;
++			reg-shift = <2>;
++			interrupts = <40>;
++			clock-frequency = <24000000>;
++			current-speed = <115200>;
++			status = "disabled";
++		};
++
++		gpio: gpio@1c67000 {
++			compatible = "ti,dm6441-gpio";
++			reg = <0x01c67000 0x1000>;
++			gpio-controller;
++			#gpio-cells = <2>;
++			interrupt-controller;
++			#interrupt-cells = <2>;
++			/*
++			 * Banked mode (unbanked = 0) is what registers the IRQ
++			 * domain that a DT consumer (dm9000 on GPIO1) needs to
++			 * resolve interrupt-parent = <&gpio>. DIV_ROUND_UP(104,16)
++			 * = 7 GPIO bank interrupts; on the DM355 AINTC those are
++			 * GPIOBNK0-6 = 54-60 (GPIO0=44 .. UART0=40 anchor).
++			 */
++			interrupts = <54>, <55>, <56>, <57>, <58>, <59>, <60>;
++			ti,ngpio = <104>;
++			ti,davinci-gpio-unbanked = <0>;
++			clocks = <&ref_clk_24m>;
++			clock-names = "gpio";
++		};
++	};
++};
+-- 
+2.50.1 (Apple Git-155)

@@ -1,0 +1,15 @@
+#!/bin/sh
+# openHC bring-up marker for the DM355 IOX family: proves we reached userspace
+# on a modern (7.1.x) kernel. Model comes from /opt/ohc/board.env, supplied by
+# the per-board rootfs overlay.
+[ "$1" = start ] || exit 0
+OHC_MODEL=
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+case "$OHC_MODEL" in
+  ioxv1) board="IO Extender V1 (DM355)" ;;
+  *)     board="unknown IOX board" ;;
+esac
+echo ""
+echo "  openHC $board — kernel-up bring-up rootfs"
+echo "  kernel: $(uname -r)   $(uname -m)"
+echo ""

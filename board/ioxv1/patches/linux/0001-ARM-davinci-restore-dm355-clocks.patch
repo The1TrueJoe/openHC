@@ -1,0 +1,339 @@
+From 41e8c77e084b238fcecd0ad669d1189884dbb7e7 Mon Sep 17 00:00:00 2001
+From: openHC <port@openhc>
+Date: Wed, 12 Aug 2026 15:06:52 -0400
+Subject: [PATCH] ARM: davinci: restore DM355 PSC and PLL clock drivers with DT
+ support
+
+Mainline dropped all DM3xx DaVinci support in v6.2 ("ARM: remove unused
+davinci board & drivers"). openHC targets the DM355-based Control4 IO
+Extender V1, so restore the two CCF clock drivers that describe the DM355
+PSC (power-sleep controller) and PLL, taken verbatim from Linux v6.1.
+
+The davinci clock framework (drivers/clk/davinci/{psc,pll}.{c,h}) is
+unchanged between v6.1 and v7.1, so the descriptor tables drop in as-is.
+v6.1's DM355 clocks were board-file only; add device-tree init paths
+(of_dm355_psc_init, of_dm355_pll1_init) modeled on the surviving da850
+drivers, register the ti,dm355-psc / ti,dm355-pll1 compatibles, and build
+the files under CONFIG_ARCH_DAVINCI_DM355.
+
+The DT match / id-table entries are guarded by CONFIG_ARCH_DAVINCI_DM355 so
+the davinci clk driver still links when DM355 is off (e.g. a da850 build) --
+the symbol itself is added by the SoC patch. Cross-compiled against Linux
+7.1.8 with arm-linux-gnueabi-gcc: both files build warning-clean, the clk
+driver stays link-clean with DM355 off, and the references resolve with
+DM355 on. Not-yet-upstream. See docs/kernel-7.1-port-log.md.
+---
+ drivers/clk/davinci/Makefile    |   2 +
+ drivers/clk/davinci/pll-dm355.c |  97 +++++++++++++++++++++++++++++
+ drivers/clk/davinci/pll.c       |   7 +++
+ drivers/clk/davinci/pll.h       |   3 +
+ drivers/clk/davinci/psc-dm355.c | 105 ++++++++++++++++++++++++++++++++
+ drivers/clk/davinci/psc.c       |   6 ++
+ drivers/clk/davinci/psc.h       |   2 +
+ 7 files changed, 222 insertions(+)
+ create mode 100644 drivers/clk/davinci/pll-dm355.c
+ create mode 100644 drivers/clk/davinci/psc-dm355.c
+
+diff --git a/drivers/clk/davinci/Makefile b/drivers/clk/davinci/Makefile
+index f9d5c9a..d0127c2 100644
+--- a/drivers/clk/davinci/Makefile
++++ b/drivers/clk/davinci/Makefile
+@@ -5,7 +5,9 @@ obj-$(CONFIG_ARCH_DAVINCI_DA8XX)	+= da8xx-cfgchip.o
+ 
+ obj-y += pll.o
+ obj-$(CONFIG_ARCH_DAVINCI_DA850)	+= pll-da850.o
++obj-$(CONFIG_ARCH_DAVINCI_DM355)	+= pll-dm355.o
+ 
+ obj-y += psc.o
+ obj-$(CONFIG_ARCH_DAVINCI_DA850)	+= psc-da850.o
++obj-$(CONFIG_ARCH_DAVINCI_DM355)	+= psc-dm355.o
+ endif
+diff --git a/drivers/clk/davinci/pll-dm355.c b/drivers/clk/davinci/pll-dm355.c
+new file mode 100644
+index 0000000..d859d7b
+--- /dev/null
++++ b/drivers/clk/davinci/pll-dm355.c
+@@ -0,0 +1,97 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * PLL clock descriptions for TI DM355
++ *
++ * Copyright (C) 2018 David Lechner <david@lechnology.com>
++ *
++ * Restored for openHC from Linux v6.1 (removed upstream in v6.2) and given a
++ * device-tree init path (of_dm355_pll1_init) modeled on pll-da850.c. The
++ * board-file paths (dm355_pll1_init/dm355_pll2_init) are the verbatim v6.1
++ * code and are kept for the non-DT platform_device_id fallback.
++ */
++
++#include <linux/bitops.h>
++#include <linux/clk/davinci.h>
++#include <linux/clkdev.h>
++#include <linux/init.h>
++#include <linux/of.h>
++#include <linux/types.h>
++
++#include "pll.h"
++
++static const struct davinci_pll_clk_info dm355_pll1_info = {
++	.name = "pll1",
++	.pllm_mask = GENMASK(7, 0),
++	.pllm_min = 92,
++	.pllm_max = 184,
++	.flags = PLL_HAS_CLKMODE | PLL_HAS_PREDIV | PLL_PREDIV_ALWAYS_ENABLED |
++		 PLL_PREDIV_FIXED8 | PLL_HAS_POSTDIV |
++		 PLL_POSTDIV_ALWAYS_ENABLED | PLL_POSTDIV_FIXED_DIV,
++};
++
++SYSCLK(1, pll1_sysclk1, pll1_pllen, 5, SYSCLK_FIXED_DIV | SYSCLK_ALWAYS_ENABLED);
++SYSCLK(2, pll1_sysclk2, pll1_pllen, 5, SYSCLK_FIXED_DIV | SYSCLK_ALWAYS_ENABLED);
++SYSCLK(3, pll1_sysclk3, pll1_pllen, 5, SYSCLK_ALWAYS_ENABLED);
++SYSCLK(4, pll1_sysclk4, pll1_pllen, 5, SYSCLK_ALWAYS_ENABLED);
++
++int dm355_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip)
++{
++	struct clk *clk;
++
++	davinci_pll_clk_register(dev, &dm355_pll1_info, "ref_clk", base, cfgchip);
++
++	clk = davinci_pll_sysclk_register(dev, &pll1_sysclk1, base);
++	clk_register_clkdev(clk, "pll1_sysclk1", "dm355-psc");
++
++	clk = davinci_pll_sysclk_register(dev, &pll1_sysclk2, base);
++	clk_register_clkdev(clk, "pll1_sysclk2", "dm355-psc");
++
++	clk = davinci_pll_sysclk_register(dev, &pll1_sysclk3, base);
++	clk_register_clkdev(clk, "pll1_sysclk3", "dm355-psc");
++
++	clk = davinci_pll_sysclk_register(dev, &pll1_sysclk4, base);
++	clk_register_clkdev(clk, "pll1_sysclk4", "dm355-psc");
++
++	clk = davinci_pll_auxclk_register(dev, "pll1_auxclk", base);
++	clk_register_clkdev(clk, "pll1_auxclk", "dm355-psc");
++
++	davinci_pll_sysclkbp_clk_register(dev, "pll1_sysclkbp", base);
++
++	return 0;
++}
++
++static const struct davinci_pll_sysclk_info *dm355_pll1_sysclk_info[] = {
++	&pll1_sysclk1,
++	&pll1_sysclk2,
++	&pll1_sysclk3,
++	&pll1_sysclk4,
++	NULL
++};
++
++int of_dm355_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip)
++{
++	return of_davinci_pll_init(dev, dev->of_node, &dm355_pll1_info,
++				   NULL, dm355_pll1_sysclk_info, 4, base, cfgchip);
++}
++
++static const struct davinci_pll_clk_info dm355_pll2_info = {
++	.name = "pll2",
++	.pllm_mask = GENMASK(7, 0),
++	.pllm_min = 92,
++	.pllm_max = 184,
++	.flags = PLL_HAS_PREDIV | PLL_PREDIV_ALWAYS_ENABLED | PLL_HAS_POSTDIV |
++		 PLL_POSTDIV_ALWAYS_ENABLED | PLL_POSTDIV_FIXED_DIV,
++};
++
++SYSCLK(1, pll2_sysclk1, pll2_pllen, 5, SYSCLK_FIXED_DIV | SYSCLK_ALWAYS_ENABLED);
++
++int dm355_pll2_init(struct device *dev, void __iomem *base, struct regmap *cfgchip)
++{
++	davinci_pll_clk_register(dev, &dm355_pll2_info, "oscin", base, cfgchip);
++
++	davinci_pll_sysclk_register(dev, &pll2_sysclk1, base);
++
++	davinci_pll_sysclkbp_clk_register(dev, "pll2_sysclkbp", base);
++
++	return 0;
++}
+diff --git a/drivers/clk/davinci/pll.c b/drivers/clk/davinci/pll.c
+index f73b0ac..8f59645 100644
+--- a/drivers/clk/davinci/pll.c
++++ b/drivers/clk/davinci/pll.c
+@@ -846,12 +846,19 @@ CLK_OF_DECLARE(da850_pll0, "ti,da850-pll0", of_da850_pll0_init);
+ 
+ static const struct of_device_id davinci_pll_of_match[] = {
+ 	{ .compatible = "ti,da850-pll1", .data = of_da850_pll1_init },
++#ifdef CONFIG_ARCH_DAVINCI_DM355
++	{ .compatible = "ti,dm355-pll1", .data = of_dm355_pll1_init },
++#endif
+ 	{ }
+ };
+ 
+ static const struct platform_device_id davinci_pll_id_table[] = {
+ 	{ .name = "da850-pll0",  .driver_data = (kernel_ulong_t)da850_pll0_init  },
+ 	{ .name = "da850-pll1",  .driver_data = (kernel_ulong_t)da850_pll1_init  },
++#ifdef CONFIG_ARCH_DAVINCI_DM355
++	{ .name = "dm355-pll1",  .driver_data = (kernel_ulong_t)dm355_pll1_init  },
++	{ .name = "dm355-pll2",  .driver_data = (kernel_ulong_t)dm355_pll2_init  },
++#endif
+ 	{ }
+ };
+ 
+diff --git a/drivers/clk/davinci/pll.h b/drivers/clk/davinci/pll.h
+index ad286ba..b86b50a 100644
+--- a/drivers/clk/davinci/pll.h
++++ b/drivers/clk/davinci/pll.h
+@@ -125,5 +125,8 @@ int of_davinci_pll_init(struct device *dev, struct device_node *node,
+ int da850_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
+ void of_da850_pll0_init(struct device_node *node);
+ int of_da850_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
++int dm355_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
++int of_dm355_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
++int dm355_pll2_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
+ 
+ #endif /* __CLK_DAVINCI_PLL_H___ */
+diff --git a/drivers/clk/davinci/psc-dm355.c b/drivers/clk/davinci/psc-dm355.c
+new file mode 100644
+index 0000000..cea26bc
+--- /dev/null
++++ b/drivers/clk/davinci/psc-dm355.c
+@@ -0,0 +1,105 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * PSC clock descriptions for TI DaVinci DM355
++ *
++ * Copyright (C) 2018 David Lechner <david@lechnology.com>
++ *
++ * Restored for openHC from Linux v6.1 (removed upstream in v6.2 by
++ * "ARM: remove unused davinci board & drivers") and given a device-tree
++ * init path (of_dm355_psc_init) modeled on psc-da850.c.
++ */
++
++#include <linux/clk-provider.h>
++#include <linux/clk/davinci.h>
++#include <linux/clk.h>
++#include <linux/clkdev.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/of.h>
++#include <linux/types.h>
++
++#include "psc.h"
++
++LPSC_CLKDEV1(vpss_master_clkdev,	"master",	"vpss");
++LPSC_CLKDEV1(vpss_slave_clkdev,		"slave",	"vpss");
++LPSC_CLKDEV1(spi1_clkdev,		NULL,		"spi_davinci.1");
++LPSC_CLKDEV1(mmcsd1_clkdev,		NULL,		"dm6441-mmc.1");
++LPSC_CLKDEV1(mcbsp1_clkdev,		NULL,		"davinci-mcbsp.1");
++LPSC_CLKDEV1(usb_clkdev,		"usb",		NULL);
++LPSC_CLKDEV1(spi2_clkdev,		NULL,		"spi_davinci.2");
++LPSC_CLKDEV1(aemif_clkdev,		"aemif",	NULL);
++LPSC_CLKDEV1(mmcsd0_clkdev,		NULL,		"dm6441-mmc.0");
++LPSC_CLKDEV1(mcbsp0_clkdev,		NULL,		"davinci-mcbsp.0");
++LPSC_CLKDEV1(i2c_clkdev,		NULL,		"i2c_davinci.1");
++LPSC_CLKDEV1(uart0_clkdev,		NULL,		"serial8250.0");
++LPSC_CLKDEV1(uart1_clkdev,		NULL,		"serial8250.1");
++LPSC_CLKDEV1(uart2_clkdev,		NULL,		"serial8250.2");
++LPSC_CLKDEV1(spi0_clkdev,		NULL,		"spi_davinci.0");
++/* REVISIT: gpio-davinci.c should be modified to drop con_id */
++LPSC_CLKDEV1(gpio_clkdev,		"gpio",		NULL);
++LPSC_CLKDEV1(timer0_clkdev,		"timer0",	NULL);
++LPSC_CLKDEV1(timer2_clkdev,		NULL,		"davinci-wdt");
++LPSC_CLKDEV1(vpss_dac_clkdev,		"vpss_dac",	NULL);
++
++static const struct davinci_lpsc_clk_info dm355_psc_info[] = {
++	LPSC(0,  0, vpss_master, pll1_sysclk4, vpss_master_clkdev, 0),
++	LPSC(1,  0, vpss_slave,  pll1_sysclk4, vpss_slave_clkdev,  0),
++	LPSC(5,  0, timer3,      pll1_auxclk,  NULL,               0),
++	LPSC(6,  0, spi1,        pll1_sysclk2, spi1_clkdev,        0),
++	LPSC(7,  0, mmcsd1,      pll1_sysclk2, mmcsd1_clkdev,      0),
++	LPSC(8,  0, asp1,        pll1_sysclk2, mcbsp1_clkdev,      0),
++	LPSC(9,  0, usb,         pll1_sysclk2, usb_clkdev,         0),
++	LPSC(10, 0, pwm3,        pll1_auxclk,  NULL,               0),
++	LPSC(11, 0, spi2,        pll1_sysclk2, spi2_clkdev,        0),
++	LPSC(12, 0, rto,         pll1_auxclk,  NULL,               0),
++	LPSC(14, 0, aemif,       pll1_sysclk2, aemif_clkdev,       0),
++	LPSC(15, 0, mmcsd0,      pll1_sysclk2, mmcsd0_clkdev,      0),
++	LPSC(17, 0, asp0,        pll1_sysclk2, mcbsp0_clkdev,      0),
++	LPSC(18, 0, i2c,         pll1_auxclk,  i2c_clkdev,         0),
++	LPSC(19, 0, uart0,       pll1_auxclk,  uart0_clkdev,       0),
++	LPSC(20, 0, uart1,       pll1_auxclk,  uart1_clkdev,       0),
++	LPSC(21, 0, uart2,       pll1_sysclk2, uart2_clkdev,       0),
++	LPSC(22, 0, spi0,        pll1_sysclk2, spi0_clkdev,        0),
++	LPSC(23, 0, pwm0,        pll1_auxclk,  NULL,               0),
++	LPSC(24, 0, pwm1,        pll1_auxclk,  NULL,               0),
++	LPSC(25, 0, pwm2,        pll1_auxclk,  NULL,               0),
++	LPSC(26, 0, gpio,        pll1_sysclk2, gpio_clkdev,        0),
++	LPSC(27, 0, timer0,      pll1_auxclk,  timer0_clkdev,      LPSC_ALWAYS_ENABLED),
++	LPSC(28, 0, timer1,      pll1_auxclk,  NULL,               0),
++	/* REVISIT: why can't this be disabled? */
++	LPSC(29, 0, timer2,      pll1_auxclk,  timer2_clkdev,      LPSC_ALWAYS_ENABLED),
++	LPSC(31, 0, arm,         pll1_sysclk1, NULL,               LPSC_ALWAYS_ENABLED),
++	LPSC(40, 0, mjcp,        pll1_sysclk1, NULL,               0),
++	LPSC(41, 0, vpss_dac,    pll1_sysclk3, vpss_dac_clkdev,    0),
++	{ }
++};
++
++static int dm355_psc_init(struct device *dev, void __iomem *base)
++{
++	return davinci_psc_register_clocks(dev, dm355_psc_info, 42, base);
++}
++
++static int of_dm355_psc_init(struct device *dev, void __iomem *base)
++{
++	return of_davinci_psc_clk_init(dev, dm355_psc_info, 42, base);
++}
++
++static struct clk_bulk_data dm355_psc_parent_clks[] = {
++	{ .id = "pll1_sysclk1" },
++	{ .id = "pll1_sysclk2" },
++	{ .id = "pll1_sysclk3" },
++	{ .id = "pll1_sysclk4" },
++	{ .id = "pll1_auxclk"  },
++};
++
++const struct davinci_psc_init_data dm355_psc_init_data = {
++	.parent_clks		= dm355_psc_parent_clks,
++	.num_parent_clks	= ARRAY_SIZE(dm355_psc_parent_clks),
++	.psc_init		= &dm355_psc_init,
++};
++
++const struct davinci_psc_init_data of_dm355_psc_init_data = {
++	.parent_clks		= dm355_psc_parent_clks,
++	.num_parent_clks	= ARRAY_SIZE(dm355_psc_parent_clks),
++	.psc_init		= &of_dm355_psc_init,
++};
+diff --git a/drivers/clk/davinci/psc.c b/drivers/clk/davinci/psc.c
+index ff60352..e55f302 100644
+--- a/drivers/clk/davinci/psc.c
++++ b/drivers/clk/davinci/psc.c
+@@ -501,12 +501,18 @@ int of_davinci_psc_clk_init(struct device *dev,
+ static const struct of_device_id davinci_psc_of_match[] = {
+ 	{ .compatible = "ti,da850-psc0", .data = &of_da850_psc0_init_data },
+ 	{ .compatible = "ti,da850-psc1", .data = &of_da850_psc1_init_data },
++#ifdef CONFIG_ARCH_DAVINCI_DM355
++	{ .compatible = "ti,dm355-psc", .data = &of_dm355_psc_init_data },
++#endif
+ 	{ }
+ };
+ 
+ static const struct platform_device_id davinci_psc_id_table[] = {
+ 	{ .name = "da850-psc0", .driver_data = (kernel_ulong_t)&da850_psc0_init_data },
+ 	{ .name = "da850-psc1", .driver_data = (kernel_ulong_t)&da850_psc1_init_data },
++#ifdef CONFIG_ARCH_DAVINCI_DM355
++	{ .name = "dm355-psc", .driver_data = (kernel_ulong_t)&dm355_psc_init_data },
++#endif
+ 	{ }
+ };
+ 
+diff --git a/drivers/clk/davinci/psc.h b/drivers/clk/davinci/psc.h
+index 7426728..460d3bd 100644
+--- a/drivers/clk/davinci/psc.h
++++ b/drivers/clk/davinci/psc.h
+@@ -98,5 +98,7 @@ extern const struct davinci_psc_init_data da850_psc0_init_data;
+ extern const struct davinci_psc_init_data da850_psc1_init_data;
+ extern const struct davinci_psc_init_data of_da850_psc0_init_data;
+ extern const struct davinci_psc_init_data of_da850_psc1_init_data;
++extern const struct davinci_psc_init_data dm355_psc_init_data;
++extern const struct davinci_psc_init_data of_dm355_psc_init_data;
+ 
+ #endif /* __CLK_DAVINCI_PSC_H__ */
+-- 
+2.50.1 (Apple Git-155)
+

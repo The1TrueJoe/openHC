@@ -1,0 +1,83 @@
+# openHC — Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
+#
+# Self-contained defconfig (no family base): there is only one DM355 IO Extender,
+# and a hypothetical V2 may well be different silicon, so a shared "iox-common"
+# would be indirection with nothing behind it — same call as ca1. build/build.sh
+# feeds this straight to Buildroot as BR2_DEFCONFIG.
+#
+# What this board is (confirmed on a live unit):
+#   * TI DaVinci DM355 (ARM926EJ-S / ARMv5TE), 128MB RAM, 256MB Micron NAND.
+#   * On-board IO: 8 relays (GPIO 88-95), 8 contacts (GPIO 71/70/82-87),
+#     8 IR-out + 4 serial behind a Xilinx FPGA on async-EMIF CS1 @ 0x04000200.
+#   * Ethernet: dm9000 @ 0x04014000. Reachability is wired, and it is the only
+#     path. NO companion IO-MCU (unlike the EA family) — the IO is native.
+#   * Dual-bank + recovery NAND, stock U-Boot 1.2.0-IOX. `run tst` netboots a
+#     uImage into RAM without touching flash — that is the bring-up loop.
+
+# --- arch: TI DaVinci DM355 = ARM926EJ-S, ARMv5TE, EABI, soft-float, LE ---
+# No FPU on ARM926 -> soft float (implied).
+BR2_arm=y
+BR2_arm926t=y
+
+BR2_OPTIMIZE_S=y
+# musl, matching the EA family. Small and fine on ARMv5 against a 7.1 kernel.
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+
+# --- init / login ---
+# Password login on the serial console AND ssh. Change after first boot.
+BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
+BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
+BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
+BR2_TARGET_GENERIC_HOSTNAME="openhc-ioxv1"
+BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1 (kernel-up)"
+
+# --- kernel: mainline stable, same version as the EA family ---
+# Mainline dropped DM355 in ~v6.2; the SoC (mach-davinci/dm355.c, clk psc/pll,
+# irq-davinci-aintc) + the hammer device tree are re-added by the patches in
+# ioxv1/patches/linux/. See docs/kernel-7.1-port-log.md.
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
+BR2_LINUX_KERNEL_USE_DEFCONFIG=y
+BR2_LINUX_KERNEL_DEFCONFIG="multi_v5"
+# The DM355 U-Boot (IOX v1.2.0) boots a legacy uImage and passes ATAGS, not a
+# DTB. So we build a plain zImage + the board DTB and do the append + uImage
+# wrap ourselves in post-image.sh (bootm loads at 0x82000000, kernel unpacks to
+# 0x80008000). NOTE: Buildroot's own BR2_LINUX_KERNEL_APPENDED_UIMAGE mangles a
+# vendored ("ti/davinci/...") DTS name into the output path and fails, so we do
+# the wrap by hand — same pattern the EA boards use for their CEFDK container.
+BR2_LINUX_KERNEL_ZIMAGE=y
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="ti/davinci/dm355-hammer"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/linux/ioxv1.fragment"
+
+# --- rootfs: initramfs embedded in the uImage (netboot) + JFFS2 (flash) ---
+# A RAM rootfs we can netboot without touching flash, iterate, and only commit
+# to NAND once the kernel is trusted. `run tst` bootm's a single uImage, so the
+# initramfs is EMBEDDED in it. A standalone JFFS2 image (128K NAND erase block)
+# is also emitted for flashing a bank later.
+BR2_TARGET_ROOTFS_INITRAMFS=y
+BR2_TARGET_ROOTFS_JFFS2=y
+BR2_TARGET_ROOTFS_JFFS2_NANDFLASH_128K=y
+
+# --- reachability + on-target tools ---
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+# NAND flashing / inspection on the device (flash_erase, nandwrite, flashcp...).
+BR2_PACKAGE_MTD=y
+# GPIO relays/contacts from userspace on a modern kernel (chardev ABI).
+BR2_PACKAGE_LIBGPIOD=y
+BR2_PACKAGE_LIBGPIOD_TOOLS=y
+# Host mkimage: post-image.sh wraps zImage+dtb into the U-Boot uImage.
+BR2_PACKAGE_HOST_UBOOT_TOOLS=y
+
+# --- mDNS identity: avahi (no D-Bus, light) ---
+BR2_PACKAGE_AVAHI=y
+BR2_PACKAGE_AVAHI_DAEMON=y
+
+# --- rootfs overlay, image wrap, kernel patches ---
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/rootfs-overlay"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/post-image.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="ioxv1"
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/patches"

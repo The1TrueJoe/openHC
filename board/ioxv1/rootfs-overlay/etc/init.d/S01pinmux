@@ -1,0 +1,22 @@
+#!/bin/sh
+# openHC: route the DM355 IO pins from the (unused) camera/video pin-mux to GPIO.
+#
+# On the IO Extender the relays (GIO88-95), the contacts on GIO86/87, and the
+# front-panel data/link LEDs (GIO75/76) all share balls with the DM355 VPFE
+# (video-in) and VPBE (video-out) ports. U-Boot leaves those muxed to video, so
+# driving them as GPIO does NOTHING until the pin-mux is flipped. Per the DM355
+# TRM (sprufb3, System Module, 9.10.1/9.10.2):
+#   PINMUX0 (Video In):  bit10=YIN[7:0]=GIO[93:86], bit9=CIN[1:0]=GIO[95:94]
+#                        -> 0 selects GPIO (relays 88-95 + contacts 86/87)
+#   PINMUX1 (Video Out): bits13:12=COUT1=GIO75, bits11:10=COUT2=GIO76
+#                        -> 0 selects GPIO (data/link LEDs)
+# PINMUX1[5:0] carries the PWM0/1/2 status/power LEDs, so it is left untouched.
+# (Proper fix is a DT pinctrl node; this early script is the bring-up stand-in.)
+case "$1" in
+  start|"")
+    devmem 0x01c40000 32 0x00007955
+    devmem 0x01c40004 32 0x0014416A
+    echo "pinmux: relays/LEDs routed to GPIO"
+    ;;
+esac
+exit 0

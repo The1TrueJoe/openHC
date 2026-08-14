@@ -1,0 +1,175 @@
+From b0fec4742a4d2c310e18291ce623d3d5fc85abbc Mon Sep 17 00:00:00 2001
+From: openHC <p@o>
+Date: Wed, 12 Aug 2026 18:59:28 -0400
+Subject: [PATCH] ARM: davinci: restore DM355 SoC support (device-tree machine)
+
+Restore minimal TI DaVinci DM355 SoC support (removed upstream in v6.2) for
+the DM355-based Control4 IO Extender V1, as a device-tree machine that coexists
+with the da850 support already in mach-davinci.
+
+dm355.c is trimmed to what .map_io needs: the static IO mapping and the JTAG
+id table (davinci_common_init). Clocks (0001), the AINTC (0002), the timer and
+all peripherals come from the device tree and their in-tree drivers -- there is
+no board-file device/clk/irq/timer setup here. Add ARCH_DAVINCI_DM355 (selects
+DAVINCI_AINTC and, via the clk Makefile, the DM355 psc/pll drivers), the
+DM355_DT machine (ti,dm355 compatible), and DAVINCI_CPU_ID_DM355.
+
+Cross-compiled against Linux 7.1.8 with arm-linux-gnueabi-gcc. See
+docs/kernel-7.1-port-log.md.
+---
+ arch/arm/mach-davinci/Kconfig    |  7 ++++
+ arch/arm/mach-davinci/Makefile   |  1 +
+ arch/arm/mach-davinci/common.h   |  2 +
+ arch/arm/mach-davinci/cputype.h  |  1 +
+ arch/arm/mach-davinci/da8xx-dt.c | 13 +++++++
+ arch/arm/mach-davinci/dm355.c    | 63 ++++++++++++++++++++++++++++++++
+ 6 files changed, 87 insertions(+)
+ create mode 100644 arch/arm/mach-davinci/dm355.c
+
+diff --git a/arch/arm/mach-davinci/Kconfig b/arch/arm/mach-davinci/Kconfig
+index 6cd6d29..953173d 100644
+--- a/arch/arm/mach-davinci/Kconfig
++++ b/arch/arm/mach-davinci/Kconfig
+@@ -27,6 +27,13 @@ config ARCH_DAVINCI_DA850
+ config ARCH_DAVINCI_DA8XX
+ 	bool
+ 
++config ARCH_DAVINCI_DM355
++	bool "DM355 based system"
++	select DAVINCI_AINTC
++	help
++	  Say Y here to include support for the DM355-based devices, such as
++	  the Control4 IO Extender / "hammer" board. Boots from device tree.
++
+ config DAVINCI_MUX
+ 	bool "DAVINCI multiplexing support"
+ 	depends on ARCH_DAVINCI
+diff --git a/arch/arm/mach-davinci/Makefile b/arch/arm/mach-davinci/Makefile
+index 7a210db..4b1706a 100644
+--- a/arch/arm/mach-davinci/Makefile
++++ b/arch/arm/mach-davinci/Makefile
+@@ -11,6 +11,7 @@ obj-$(CONFIG_DAVINCI_MUX)		+= mux.o
+ 
+ # Chip specific
+ obj-$(CONFIG_ARCH_DAVINCI_DA850)	+= da850.o pdata-quirks.o
++obj-$(CONFIG_ARCH_DAVINCI_DM355)	+= dm355.o
+ 
+ obj-y					+= da8xx-dt.o
+ 
+diff --git a/arch/arm/mach-davinci/common.h b/arch/arm/mach-davinci/common.h
+index 81a2b06..a4d2699 100644
+--- a/arch/arm/mach-davinci/common.h
++++ b/arch/arm/mach-davinci/common.h
+@@ -52,6 +52,8 @@ struct davinci_soc_info {
+ extern struct davinci_soc_info davinci_soc_info;
+ 
+ extern void davinci_common_init(const struct davinci_soc_info *soc_info);
++
++void dm355_init(void);
+ void davinci_init_late(void);
+ 
+ #ifdef CONFIG_SUSPEND
+diff --git a/arch/arm/mach-davinci/cputype.h b/arch/arm/mach-davinci/cputype.h
+index a8f5330..bfe230a 100644
+--- a/arch/arm/mach-davinci/cputype.h
++++ b/arch/arm/mach-davinci/cputype.h
+@@ -26,5 +26,6 @@ struct davinci_id {
+ 
+ /* Can use lower 16 bits of cpu id  for a variant when required */
+ #define	DAVINCI_CPU_ID_DA850		0x08500000
++#define	DAVINCI_CPU_ID_DM355		0x03550000
+ 
+ #endif
+diff --git a/arch/arm/mach-davinci/da8xx-dt.c b/arch/arm/mach-davinci/da8xx-dt.c
+index 45763a9..98f5a85 100644
+--- a/arch/arm/mach-davinci/da8xx-dt.c
++++ b/arch/arm/mach-davinci/da8xx-dt.c
+@@ -34,3 +34,16 @@ DT_MACHINE_START(DA850_DT, "Generic DA850/OMAP-L138/AM18x")
+ MACHINE_END
+ 
+ #endif
++
++#ifdef CONFIG_ARCH_DAVINCI_DM355
++static const char *const dm355_boards_compat[] __initconst = {
++	"ti,dm355-evm",
++	"ti,dm355",
++	NULL,
++};
++
++DT_MACHINE_START(DM355_DT, "Generic DM355 (Flattened Device Tree)")
++	.map_io		= dm355_init,
++	.dt_compat	= dm355_boards_compat,
++MACHINE_END
++#endif
+diff --git a/arch/arm/mach-davinci/dm355.c b/arch/arm/mach-davinci/dm355.c
+new file mode 100644
+index 0000000..b4a970b
+--- /dev/null
++++ b/arch/arm/mach-davinci/dm355.c
+@@ -0,0 +1,63 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * TI DaVinci DM355 chip specific setup
++ *
++ * Author: Kevin Hilman, Deep Root Systems, LLC
++ * 2007 (c) Deep Root Systems, LLC.
++ *
++ * Restored for openHC from Linux v6.1 (DM3xx removed upstream in v6.2) and
++ * trimmed to a device-tree machine: this file provides only the static IO
++ * mapping and SoC (JTAG) identification used by .map_io. Clocks, the AINTC,
++ * the timer and all peripherals come from the device tree (dm355.dtsi) and
++ * their in-tree drivers -- see docs/kernel-7.1-port-log.md.
++ */
++
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/sizes.h>
++
++#include <asm/mach/map.h>
++
++#include "common.h"
++#include "cputype.h"
++
++/* Traditional DaVinci register window: 0x01c00000 physical, 4 MiB. */
++#define DM355_IO_PHYS		0x01c00000
++#define DM355_IO_VIRT		0xfec00000
++#define DM355_IO_SIZE		0x00400000
++
++static struct map_desc dm355_io_desc[] = {
++	{
++		.virtual	= DM355_IO_VIRT,
++		.pfn		= __phys_to_pfn(DM355_IO_PHYS),
++		.length		= DM355_IO_SIZE,
++		.type		= MT_DEVICE,
++	},
++};
++
++/* Contents of JTAG ID register used to identify exact cpu type */
++static struct davinci_id dm355_ids[] = {
++	{
++		.variant	= 0x0,
++		.part_no	= 0xb73b,
++		.manufacturer	= 0x00f,
++		.cpu_id		= DAVINCI_CPU_ID_DM355,
++		.name		= "dm355",
++	},
++};
++
++static const struct davinci_soc_info davinci_soc_info_dm355 = {
++	.io_desc		= dm355_io_desc,
++	.io_desc_num		= ARRAY_SIZE(dm355_io_desc),
++	.jtag_id_reg		= 0x01c40028,
++	.ids			= dm355_ids,
++	.ids_num		= ARRAY_SIZE(dm355_ids),
++	.pinmux_base		= 0x01c40000,
++	.sram_dma		= 0x00010000,
++	.sram_len		= SZ_32K,
++};
++
++void __init dm355_init(void)
++{
++	davinci_common_init(&davinci_soc_info_dm355);
++}
+-- 
+2.50.1 (Apple Git-155)
+

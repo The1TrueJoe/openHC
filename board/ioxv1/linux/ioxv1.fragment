@@ -1,0 +1,86 @@
+# Kernel config delta on multi_v5, for a reachable DM355 "IOX" board.
+#
+# multi_v5_defconfig is the ARMv5 multiplatform base. It does NOT include DM355
+# (removed from mainline ~v6.2). The CONFIG_ARCH_DAVINCI* symbols below only
+# exist once ioxv1/patches/linux/ re-adds the SoC. Until then a build stops
+# in `make linux` — that is the expected WIP state (see docs/kernel-7.1-port-log.md).
+
+# --- DM355 SoC (re-added by ioxv1/patches/linux/) ---
+CONFIG_ARCH_MULTI_V5=y
+CONFIG_ARCH_DAVINCI=y
+CONFIG_ARCH_DAVINCI_DM355=y
+# DM355 uses the ARM AINTC (da850 uses cp-intc); both live in drivers/irqchip.
+CONFIG_DAVINCI_AINTC=y
+
+# The stock U-Boot passes ATAGS and can't hand over a DTB, so append the DTB to
+# the zImage and fold the ATAG cmdline/memory into it.
+CONFIG_ARM_APPENDED_DTB=y
+CONFIG_ARM_ATAG_DTB_COMPAT=y
+
+# --- serial console: SoC UART0 @ 0x01c20000 (ttyS0), 16550A ---
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+# ttyS0 = SoC UART0 (console); ttyS1..4 = the four 16550A UARTs in the FPGA.
+CONFIG_SERIAL_8250_NR_UARTS=5
+CONFIG_SERIAL_8250_RUNTIME_UARTS=5
+# Probe the 8250s from the device tree (ns16550a nodes).
+CONFIG_SERIAL_OF_PLATFORM=y
+# earlycon: print from the first instructions, before the 8250 driver probes,
+# so a console-handoff or clock/timer problem shows up instead of a silent hang.
+# DM355 UART0 is a 16550 with 32-bit-spaced registers -> mmio32 (4-byte stride).
+CONFIG_SERIAL_EARLYCON=y
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="console=ttyS0,115200n8 earlycon=uart8250,mmio32,0x01c20000"
+CONFIG_CMDLINE_EXTEND=y
+
+# --- external initrd (Buildroot supplies rootfs.cpio.gz) ---
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+
+# --- async EMIF: the bus the FPGA (CS1) and dm9000 hang off ---
+CONFIG_MEMORY=y
+CONFIG_TI_AEMIF=y
+
+# --- NAND (Micron 512MiB via the DaVinci NAND controller) + JFFS2 ---
+CONFIG_MTD=y
+CONFIG_MTD_BLOCK=y
+CONFIG_MTD_RAW_NAND=y
+CONFIG_MTD_NAND_DAVINCI=y
+CONFIG_JFFS2_FS=y
+
+# --- Ethernet: dm9000 @ 0x04014000, IRQ on a DM355 GPIO ---
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_NETDEVICES=y
+CONFIG_NET_VENDOR_DAVICOM=y
+CONFIG_DM9000=y
+
+# --- GPIO: relays (88-95), contacts (71/70/82-87), buttons, LEDs ---
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_DAVINCI=y
+# GPIO from userspace: libgpiod 1.6.4 (Buildroot 2024.02.9) speaks the v1
+# chardev ABI, which 7.1.8 gates behind CONFIG_GPIO_CDEV_V1 (deprecated, default
+# off). Without it gpioset/gpioget/gpioinfo return EINVAL. SYSFS_LEGACY restores
+# the classic /sys/class/gpio/export as a fallback.
+CONFIG_GPIO_SYSFS=y
+CONFIG_GPIO_SYSFS_LEGACY=y
+CONFIG_GPIO_CDEV=y
+CONFIG_GPIO_CDEV_V1=y
+
+# --- I2C: DaVinci controller, 24c08 EEPROM @ 0x50 on bus 1 ---
+CONFIG_I2C=y
+CONFIG_I2C_DAVINCI=y
+CONFIG_I2C_CHARDEV=y
+
+# --- watchdog (DM355 has a davinci wdt; U-Boot arms it during boot) ---
+CONFIG_WATCHDOG=y
+CONFIG_DAVINCI_WATCHDOG=y
+
+# ============================================================================
+# Size / scope trim. 128MB RAM here, so far less pressure than the EA's ~7MB
+# CEFDK window, but a bring-up firmware still has no use for these.
+# ============================================================================
+CONFIG_CC_OPTIMIZE_FOR_SIZE=y
+# All-builtin: no loadable modules (rootfs is a RAM initramfs, image is
+# self-contained). Simplifies the out-of-tree DM355 resurrection too.
+CONFIG_MODULES=n

@@ -1,0 +1,37 @@
+#!/bin/sh
+# IOX network bring-up: single wired NIC (dm9000) on eth0, DHCP. This is the
+# only reachability path on the IO Extender. Best-effort — never fail boot.
+IFACE=eth0
+
+wait_carrier() {
+    i=0
+    while [ $i -lt 10 ]; do
+        [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = 1 ] && return 0
+        sleep 1; i=$((i + 1))
+    done
+    return 1
+}
+
+case "$1" in
+  start)
+    # dm9000 has no EEPROM, so pin the MAC before bringing the link up: the
+    # openHC netboot server answers DHCP only for this exact address, and it
+    # must match whether or not the DT local-mac-address was honored.
+    ip link set "$IFACE" down 2>/dev/null
+    ip link set "$IFACE" address 00:0f:ff:18:21:9c 2>/dev/null
+    ip link set "$IFACE" up 2>/dev/null || { echo "Net: no $IFACE (dm9000 up?)"; exit 0; }
+    printf 'Net: %s: ' "$IFACE"
+    wait_carrier "$IFACE" || echo "(no carrier, trying anyway)"
+    if udhcpc -i "$IFACE" -t 8 -T 2 -n >/dev/null 2>&1; then
+        echo "up ($(ip -4 -o addr show $IFACE | awk '{print $4}'))"
+    else
+        echo "no lease"
+    fi
+    ;;
+  stop)
+    killall udhcpc 2>/dev/null
+    ip link set "$IFACE" down 2>/dev/null
+    ;;
+  *) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac
+exit 0

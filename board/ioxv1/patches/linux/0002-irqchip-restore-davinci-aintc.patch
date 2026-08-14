@@ -1,0 +1,313 @@
+From 32c16084413bca038595caffc55a6735ca1dcf3b Mon Sep 17 00:00:00 2001
+From: openHC <p@o>
+Date: Wed, 12 Aug 2026 18:15:05 -0400
+Subject: [PATCH] irqchip: restore davinci AINTC with a device-tree binding
+
+Restore the DaVinci AINTC interrupt controller driver (removed from mainline
+in v6.2) for the DM355-based Control4 IO Extender V1. v6.1's driver was
+board-file only (irq_domain_add_legacy with a NULL fwnode), so DT peripherals
+could not name it as their interrupt-parent.
+
+Refactor the init into davinci_aintc_do_init() and add a device-tree entry
+point (ti,dm355-aintc) that reads the register range and 'ti,intc-size' from
+the node and creates an of_node-backed legacy domain via
+irq_domain_create_legacy(of_fwnode_handle(node), ...), modeled on the
+surviving irq-davinci-cp-intc.c. The board-file davinci_aintc_init() is kept
+for non-DT callers. irq_domain_simple_ops already provides
+irq_domain_xlate_onetwocell, so DT interrupt specifiers resolve.
+
+Cross-compiled against Linux 7.1.8 with arm-linux-gnueabi-gcc. See
+docs/kernel-7.1-port-log.md.
+---
+ drivers/irqchip/Kconfig                   |   5 +
+ drivers/irqchip/Makefile                  |   1 +
+ drivers/irqchip/irq-davinci-aintc.c       | 214 ++++++++++++++++++++++
+ include/linux/irqchip/irq-davinci-aintc.h |  27 +++
+ 4 files changed, 247 insertions(+)
+ create mode 100644 drivers/irqchip/irq-davinci-aintc.c
+ create mode 100644 include/linux/irqchip/irq-davinci-aintc.h
+
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+index e755a2a..b194cae 100644
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -170,6 +170,11 @@ config BRCMSTB_L2_IRQ
+ 	select GENERIC_IRQ_CHIP
+ 	select IRQ_DOMAIN
+ 
++config DAVINCI_AINTC
++	bool
++	select GENERIC_IRQ_CHIP
++	select IRQ_DOMAIN
++
+ config DAVINCI_CP_INTC
+ 	bool
+ 	select GENERIC_IRQ_CHIP
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+index 26aa3b6..e24fd68 100644
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_ATH79)			+= irq-ath79-misc.o
+ obj-$(CONFIG_ARCH_BCM2835)		+= irq-bcm2835.o
+ obj-$(CONFIG_ARCH_BCM2835)		+= irq-bcm2836.o
+ obj-$(CONFIG_ARCH_ACTIONS)		+= irq-owl-sirq.o
++obj-$(CONFIG_DAVINCI_AINTC)		+= irq-davinci-aintc.o
+ obj-$(CONFIG_DAVINCI_CP_INTC)		+= irq-davinci-cp-intc.o
+ obj-$(CONFIG_EXYNOS_IRQ_COMBINER)	+= exynos-combiner.o
+ obj-$(CONFIG_ECONET_EN751221_INTC)	+= irq-econet-en751221.o
+diff --git a/drivers/irqchip/irq-davinci-aintc.c b/drivers/irqchip/irq-davinci-aintc.c
+new file mode 100644
+index 0000000..4372eae
+--- /dev/null
++++ b/drivers/irqchip/irq-davinci-aintc.c
+@@ -0,0 +1,214 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++//
++// Copyright (C) 2006, 2019 Texas Instruments.
++//
++// Interrupt handler for DaVinci boards.
++//
++// Restored for openHC from Linux v6.1 (removed upstream in v6.2 by
++// "ARM: remove unused davinci board & drivers") and given a device-tree
++// interrupt-controller binding (ti,dm355-aintc) that it never had upstream,
++// modeled on the surviving irq-davinci-cp-intc.c. The board-file entry point
++// davinci_aintc_init() is preserved for non-DT callers; both paths share
++// davinci_aintc_do_init().
++
++#include <linux/export.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/irqchip.h>
++#include <linux/irqchip/irq-davinci-aintc.h>
++#include <linux/irqdomain.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++
++#include <asm/exception.h>
++
++#define DAVINCI_AINTC_FIQ_REG0		0x00
++#define DAVINCI_AINTC_FIQ_REG1		0x04
++#define DAVINCI_AINTC_IRQ_REG0		0x08
++#define DAVINCI_AINTC_IRQ_REG1		0x0c
++#define DAVINCI_AINTC_IRQ_IRQENTRY	0x14
++#define DAVINCI_AINTC_IRQ_ENT_REG0	0x18
++#define DAVINCI_AINTC_IRQ_ENT_REG1	0x1c
++#define DAVINCI_AINTC_IRQ_INCTL_REG	0x20
++#define DAVINCI_AINTC_IRQ_EABASE_REG	0x24
++#define DAVINCI_AINTC_IRQ_INTPRI0_REG	0x30
++#define DAVINCI_AINTC_IRQ_INTPRI7_REG	0x4c
++
++/* DM355 (and other DM3xx) have 64 interrupt sources */
++#define DAVINCI_AINTC_NR_IRQS_DEFAULT	64
++
++static void __iomem *davinci_aintc_base;
++static struct irq_domain *davinci_aintc_irq_domain;
++
++static inline void davinci_aintc_writel(unsigned long value, int offset)
++{
++	writel_relaxed(value, davinci_aintc_base + offset);
++}
++
++static inline unsigned long davinci_aintc_readl(int offset)
++{
++	return readl_relaxed(davinci_aintc_base + offset);
++}
++
++static __init void
++davinci_aintc_setup_gc(void __iomem *base,
++		       unsigned int irq_start, unsigned int num)
++{
++	struct irq_chip_generic *gc;
++	struct irq_chip_type *ct;
++
++	gc = irq_get_domain_generic_chip(davinci_aintc_irq_domain, irq_start);
++	gc->reg_base = base;
++	gc->irq_base = irq_start;
++
++	ct = gc->chip_types;
++	ct->chip.irq_ack = irq_gc_ack_set_bit;
++	ct->chip.irq_mask = irq_gc_mask_clr_bit;
++	ct->chip.irq_unmask = irq_gc_mask_set_bit;
++
++	ct->regs.ack = DAVINCI_AINTC_IRQ_REG0;
++	ct->regs.mask = DAVINCI_AINTC_IRQ_ENT_REG0;
++	irq_setup_generic_chip(gc, IRQ_MSK(num), IRQ_GC_INIT_MASK_CACHE,
++			       IRQ_NOREQUEST | IRQ_NOPROBE, 0);
++}
++
++static asmlinkage void __exception_irq_entry
++davinci_aintc_handle_irq(struct pt_regs *regs)
++{
++	int irqnr = davinci_aintc_readl(DAVINCI_AINTC_IRQ_IRQENTRY);
++
++	/*
++	 * Use the formula for entry vector index generation from section
++	 * 8.3.3 of the manual.
++	 */
++	irqnr >>= 2;
++	irqnr -= 1;
++
++	generic_handle_domain_irq(davinci_aintc_irq_domain, irqnr);
++}
++
++static int __init davinci_aintc_do_init(const struct resource *res,
++					unsigned int num_irqs,
++					const u8 *prios,
++					struct device_node *node)
++{
++	unsigned int irq_off, reg_off, prio, shift;
++	void __iomem *req;
++	int ret, irq_base;
++
++	req = request_mem_region(res->start, resource_size(res),
++				 "davinci-aintc");
++	if (!req) {
++		pr_err("%s: register range busy\n", __func__);
++		return -EBUSY;
++	}
++
++	davinci_aintc_base = ioremap(res->start, resource_size(res));
++	if (!davinci_aintc_base) {
++		pr_err("%s: unable to ioremap register range\n", __func__);
++		return -ENOMEM;
++	}
++
++	/* Clear all interrupt requests */
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_FIQ_REG0);
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_FIQ_REG1);
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_IRQ_REG0);
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_IRQ_REG1);
++
++	/* Disable all interrupts */
++	davinci_aintc_writel(0x0, DAVINCI_AINTC_IRQ_ENT_REG0);
++	davinci_aintc_writel(0x0, DAVINCI_AINTC_IRQ_ENT_REG1);
++
++	/* Interrupts disabled immediately, IRQ entry reflects all */
++	davinci_aintc_writel(0x0, DAVINCI_AINTC_IRQ_INCTL_REG);
++
++	/* we don't use the hardware vector table, just its entry addresses */
++	davinci_aintc_writel(0, DAVINCI_AINTC_IRQ_EABASE_REG);
++
++	/* Clear all interrupt requests */
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_FIQ_REG0);
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_FIQ_REG1);
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_IRQ_REG0);
++	davinci_aintc_writel(~0x0, DAVINCI_AINTC_IRQ_REG1);
++
++	if (prios) {
++		for (reg_off = DAVINCI_AINTC_IRQ_INTPRI0_REG;
++		     reg_off <= DAVINCI_AINTC_IRQ_INTPRI7_REG; reg_off += 4) {
++			for (shift = 0, prio = 0; shift < 32; shift += 4, prios++)
++				prio |= (*prios & 0x07) << shift;
++			davinci_aintc_writel(prio, reg_off);
++		}
++	} else {
++		/* No per-IRQ priorities from DT: default them all to channel 7 */
++		for (reg_off = DAVINCI_AINTC_IRQ_INTPRI0_REG;
++		     reg_off <= DAVINCI_AINTC_IRQ_INTPRI7_REG; reg_off += 4)
++			davinci_aintc_writel(0x77777777, reg_off);
++	}
++
++	irq_base = irq_alloc_descs(-1, 0, num_irqs, 0);
++	if (irq_base < 0) {
++		pr_err("%s: unable to allocate interrupt descriptors: %d\n",
++		       __func__, irq_base);
++		return irq_base;
++	}
++
++	davinci_aintc_irq_domain = irq_domain_create_legacy(
++					of_fwnode_handle(node), num_irqs,
++					irq_base, 0, &irq_domain_simple_ops,
++					NULL);
++	if (!davinci_aintc_irq_domain) {
++		pr_err("%s: unable to create interrupt domain\n", __func__);
++		return -ENOMEM;
++	}
++
++	ret = irq_alloc_domain_generic_chips(davinci_aintc_irq_domain, 32, 1,
++					     "AINTC", handle_edge_irq,
++					     IRQ_NOREQUEST | IRQ_NOPROBE, 0, 0);
++	if (ret) {
++		pr_err("%s: unable to allocate generic irq chips for domain\n",
++		       __func__);
++		return ret;
++	}
++
++	for (irq_off = 0, reg_off = 0;
++	     irq_off < num_irqs;
++	     irq_off += 32, reg_off += 0x04)
++		davinci_aintc_setup_gc(davinci_aintc_base + reg_off,
++				       irq_base + irq_off, 32);
++
++	set_handle_irq(davinci_aintc_handle_irq);
++
++	return 0;
++}
++
++/* ARM Interrupt Controller Initialization (board-file entry point) */
++void __init davinci_aintc_init(const struct davinci_aintc_config *config)
++{
++	davinci_aintc_do_init(&config->reg, config->num_irqs, config->prios,
++			      NULL);
++}
++
++/* Device-tree interrupt-controller entry point */
++static int __init davinci_aintc_of_init(struct device_node *node,
++					struct device_node *parent)
++{
++	unsigned int num_irqs;
++	struct resource res;
++	int ret;
++
++	ret = of_address_to_resource(node, 0, &res);
++	if (ret) {
++		pr_err("%s: unable to get the register range from device-tree\n",
++		       __func__);
++		return ret;
++	}
++
++	if (of_property_read_u32(node, "ti,intc-size", &num_irqs))
++		num_irqs = DAVINCI_AINTC_NR_IRQS_DEFAULT;
++
++	return davinci_aintc_do_init(&res, num_irqs, NULL, node);
++}
++IRQCHIP_DECLARE(dm355_aintc, "ti,dm355-aintc", davinci_aintc_of_init);
+diff --git a/include/linux/irqchip/irq-davinci-aintc.h b/include/linux/irqchip/irq-davinci-aintc.h
+new file mode 100644
+index 0000000..ea4e087
+--- /dev/null
++++ b/include/linux/irqchip/irq-davinci-aintc.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2019 Texas Instruments
++ */
++
++#ifndef _LINUX_IRQ_DAVINCI_AINTC_
++#define _LINUX_IRQ_DAVINCI_AINTC_
++
++#include <linux/ioport.h>
++
++/**
++ * struct davinci_aintc_config - configuration data for davinci-aintc driver.
++ *
++ * @reg: register range to map
++ * @num_irqs: number of HW interrupts supported by the controller
++ * @prios: an array of size num_irqs containing priority settings for
++ *         each interrupt
++ */
++struct davinci_aintc_config {
++	struct resource reg;
++	unsigned int num_irqs;
++	u8 *prios;
++};
++
++void davinci_aintc_init(const struct davinci_aintc_config *config);
++
++#endif /* _LINUX_IRQ_DAVINCI_AINTC_ */
+-- 
+2.50.1 (Apple Git-155)
+
