@@ -1,0 +1,60 @@
+#!/bin/sh
+# Uplink carrier monitor — SHARED across boards (board/common).
+#
+# The Wi-Fi fallback (S41wifi-ap) only decides wired-vs-Wi-Fi once, at boot, so
+# plugging the Ethernet in later left the AP up until a reboot. This watches the
+# wired uplink's carrier and switches AT RUNTIME:
+#   * link comes up   -> tear down the Wi-Fi AP/station, take a DHCP lease on the
+#                        uplink (Ethernet becomes the path, Wi-Fi radio goes off)
+#   * link goes down  -> start the Wi-Fi fallback (join a saved network, else the
+#                        setup AP)
+#
+# Polls sysfs (works with busybox or iproute2 alike — no `ip monitor` needed).
+# Boards with no Wi-Fi radio (OHC_WIFI_IFACE empty, e.g. ea3) have nothing to
+# switch between, so it exits.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+UPLINK="${OHC_UPLINK_IFACE:-eth0}"
+WIFI="${OHC_WIFI_IFACE:-}"
+PIDF=/var/run/ohc-netmon.pid
+POLL=3          # seconds between carrier checks
+SETTLE=2        # consecutive same reads required before acting (debounces flaps)
+
+carrier() { cat "/sys/class/net/$UPLINK/carrier" 2>/dev/null || echo 0; }
+
+loop() {
+    last="$(carrier)"
+    while sleep "$POLL"; do
+        cur="$(carrier)"
+        [ "$cur" = "$last" ] && continue
+        # require the new state to hold for a moment so a bounce doesn't thrash
+        i=0
+        while [ "$i" -lt "$SETTLE" ]; do
+            sleep 1
+            [ "$(carrier)" = "$cur" ] || { cur=""; break; }
+            i=$((i + 1))
+        done
+        [ -n "$cur" ] || continue
+        [ "$cur" = "$last" ] && continue
+        last="$cur"
+        if [ "$cur" = 1 ]; then
+            logger -t ohc-netmon "$UPLINK link up — switching to wired" 2>/dev/null || true
+            /etc/init.d/S41wifi-ap stop      # AP/portal + Wi-Fi station down, radio off
+            /etc/init.d/S40net start         # DHCP lease on the uplink
+        else
+            logger -t ohc-netmon "$UPLINK link down — Wi-Fi fallback" 2>/dev/null || true
+            /etc/init.d/S41wifi-ap start     # join saved network, else raise setup AP
+        fi
+    done
+}
+
+case "$1" in
+    start)
+        [ -n "$WIFI" ] || { echo "netmon: no Wi-Fi radio, not monitoring"; exit 0; }
+        start-stop-daemon -S -q -b -m -p "$PIDF" -x "$0" -- __loop \
+            && echo "netmon: watching $UPLINK"
+        ;;
+    __loop) loop ;;
+    stop) start-stop-daemon -K -q -p "$PIDF" 2>/dev/null; rm -f "$PIDF" ;;
+    restart) "$0" stop; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
