@@ -1,0 +1,7 @@
+# Use the rustup-managed toolchain (Homebrew ships a standalone rustc that does
+# not see rustup-added cross targets). Cross-targets are added with:
+#   rustup target add armv7-unknown-linux-musleabihf   # ca1 (i.MX6SL, ARMv7)
+#   rustup target add i686-unknown-linux-musl          # ea family (Atom, x86)
+[toolchain]
+channel = "stable"
+targets = ["armv7-unknown-linux-musleabihf", "i686-unknown-linux-musl"]

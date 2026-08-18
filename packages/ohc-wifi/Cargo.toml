@@ -1,0 +1,13 @@
+[package]
+name = "ohc-wifi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared Wi-Fi setup helpers (scan cache, wpa_supplicant station config, captive-portal page). Used by both ohc-portal and ohc-webd."
+
+[lib]
+path = "src/lib.rs"
+
+# Pure std — no dependencies on purpose, so both the tiny portal and the dashboard
+# can pull it in without dragging extra crates into either.
+[dependencies]

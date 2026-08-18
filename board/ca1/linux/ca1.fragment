@@ -108,3 +108,14 @@ CONFIG_NLS_ISO8859_1=y
 # CONFIG_FB_MXC_EINK_PANEL is not set
 # CONFIG_MXC_PXP_V2 is not set
 # CONFIG_TOUCHSCREEN_ELAN is not set
+
+# --- crng flood fix: disable the i.MX RNGB hardware RNG ---
+# Confirmed on hardware 2026-08-18: with the RNGB (CONFIG_HW_RANDOM_IMX_RNGC)
+# active, its hwrng thread feeds entropy in a way that makes the kernel CRNG
+# re-initialise in a tight loop — "random: crng init done" floods ttymxc0 at the
+# full serial bandwidth (~5.9 MB in 35 s) right after the RNGB registers, and the
+# boot never progresses. (A slow boot — e.g. initcall_debug — dodges the race,
+# which is how one earlier boot survived.) Dropping the RNGB driver removes the
+# trigger; the CRNG seeds from jitter/interrupt entropy instead, which is fine on
+# a headless controller.
+# CONFIG_HW_RANDOM_IMX_RNGC is not set

@@ -1,0 +1,14 @@
+# Cross-compile the openHC daemon to the controllers from a Mac. rust-lld ships
+# in the rustup toolchain and links ELF fine, so no Homebrew cross-binutils or a
+# Docker container is needed just to build this daemon (same trick as the EA
+# overlay work). Build with e.g.:
+#   cargo build --release --target armv7-unknown-linux-musleabihf   # ca1
+#   cargo build --release --target i686-unknown-linux-musl          # ea1/ea3
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# The EA controllers are Intel Atom CE5310 = Bonnell (SSE/SSE2/SSSE3 + MOVBE).
+[target.i686-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static", "-C", "target-cpu=bonnell"]

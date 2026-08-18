@@ -1,0 +1,14 @@
+%YAML 1.1
+---
+# openHC ca1 — rear RS-232/485 combo port (ttymxc2/UART3) over RFC2217.
+# Any RFC2217-aware client (Python pyserial, socat, etc.) gets full remote
+# control of the port including baud/parity, not just a raw byte pipe.
+# Direction (RS-232 vs RS-485) is fixed at boot by the gpio-hogs in the DTS —
+# this does not change that, only carries whatever the wire is doing.
+connection: &con0
+  accepter: telnet(rfc2217),tcp,2217
+  connector: serialdev,
+             /dev/ttymxc2,
+             115200n81,local
+  options:
+    kickolduser: true

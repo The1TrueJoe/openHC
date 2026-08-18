@@ -1,0 +1,217 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "openHC control API",
+    "version": "0.1.0",
+    "description": "Board-agnostic control + transport API for openHC controllers. Radio endpoints move raw UART frames; device pairing/control is a separate driver's job."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "paths": {
+    "/api/board": {
+      "get": {
+        "summary": "Board identity + capabilities (from board.env)",
+        "responses": {
+          "200": {
+            "description": "board",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/system": {
+      "get": {
+        "summary": "Runtime state \u2014 uptime, kernel, interfaces",
+        "responses": {
+          "200": {
+            "description": "system"
+          }
+        }
+      }
+    },
+    "/api/radios": {
+      "get": {
+        "summary": "List home-automation radios",
+        "responses": {
+          "200": {
+            "description": "radios"
+          }
+        }
+      }
+    },
+    "/api/radios/{type}/tx": {
+      "post": {
+        "summary": "Send a raw frame to a radio UART",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "zwave",
+                "zigbee"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "hex": {
+                    "type": "string",
+                    "description": "hex bytes, e.g. 1ac038bc7e"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "{written:N}"
+          }
+        }
+      }
+    },
+    "/api/radios/{type}/rx": {
+      "get": {
+        "summary": "Drain a radio UART for N ms",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ms",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{hex,text}"
+          }
+        }
+      }
+    },
+    "/api/radios/{type}/reset": {
+      "post": {
+        "summary": "Pulse a radio's reset GPIO line",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{reset:true}"
+          }
+        }
+      }
+    },
+    "/api/serials": {
+      "get": {
+        "summary": "List serial ports (each has a WebSocket terminal at /ws/serial/{dev})",
+        "responses": {
+          "200": {
+            "description": "serials"
+          }
+        }
+      }
+    },
+    "/api/wifi/scan": {
+      "get": {
+        "summary": "Scan for nearby Wi-Fi networks (setup AP only)",
+        "description": "SSIDs captured by the setup AP at start. Empty unless the Wi-Fi setup AP is active.",
+        "responses": {
+          "200": {
+            "description": "SSID list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wifi/connect": {
+      "post": {
+        "summary": "Join a Wi-Fi network (captive portal)",
+        "description": "Writes the station config and switches wlan from setup-AP to station mode. The AP drops, so the caller loses the connection.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ssid"
+                ],
+                "properties": {
+                  "ssid": {
+                    "type": "string"
+                  },
+                  "psk": {
+                    "type": "string",
+                    "description": "blank for an open network"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "joining",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "joining": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "missing ssid or no wifi radio"
+          }
+        }
+      }
+    }
+  }
+}

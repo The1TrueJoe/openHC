@@ -1,0 +1,29 @@
+#!/bin/sh
+# openHC web dashboard + API — SHARED (board/common).
+#
+# Starts the ohc-webd binary (/opt/ohc/bin/ohc-webd), built by packages/build.sh
+# and cross-compiled with the React UI embedded. It serves the dashboard, the
+# board-driven REST API, and a WebSocket serial bridge for the in-browser
+# terminal. Board-agnostic — everything it shows comes from /opt/ohc/board.env,
+# so this one init script + one binary run on every board.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+WEB_PORT="${OHC_WEB_PORT:-80}"
+WEBD=/opt/ohc/bin/ohc-webd
+
+start() {
+    [ -x "$WEBD" ] || { echo "ohcweb: $WEBD not installed (run 'make webd BOARD=...')"; return 0; }
+    start-stop-daemon -S -q -b -m -p /var/run/ohc-webd.pid --exec "$WEBD" -- \
+        --bind "0.0.0.0:$WEB_PORT" \
+        && echo "ohcweb: ohc-webd on :$WEB_PORT"
+}
+
+stop() {
+    [ -f /var/run/ohc-webd.pid ] && start-stop-daemon -K -q -p /var/run/ohc-webd.pid
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

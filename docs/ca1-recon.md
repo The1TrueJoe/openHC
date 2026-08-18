@@ -147,10 +147,50 @@ SPI-NOR; `flashspiuboot` reflashes U-Boot over TFTP
 the IVT at flash offset 0x400); `mfgmode` boots a manufacturing image when DHCP
 hands back `dhcp_mfgmode=3`; `dhcp_vendor-class-identifier=c4_ca1`.
 
-`bootdelay=2` and `stdin=serial`, so the serial console drops to a U-Boot prompt.
+`bootdelay=2` and `stdin=serial` — but **the serial console does NOT drop to a
+U-Boot prompt on a keypress.** This was verified the hard way on hardware and
+then confirmed from Control4's own U-Boot source (`OS-3.3.1`, board config
+`include/configs/mx6slevk.h`, patch `260-uboot-enable-sha256-password-hash`):
+the autoboot break-in is **SHA-256 password-gated**, exactly like the EA's
+CEFDK. Control4's `CONFIG_KEYED_BOOTDELAY` build prints no "Hit any key" prompt,
+reads a line, SHA-256's it, and compares against a baked-in 32-byte digest —
+the *identical* hash as the EA (`ec 89 70 13 ad f9 …`), which is not in the GPL
+drop. Any wrong key just lets it autoboot. **So there is no way into the U-Boot
+console over serial.** Do not plan around one.
+
 `fw_printenv`/`fw_setenv` are both present in the rootfs with a valid
 `/etc/fw_env.config`, so **the environment is readable and writable from Linux**
-without any console at all.
+without any console at all — which, given the locked U-Boot console, is the
+*only* way to change the environment.
+
+### Recovery when a bad boot.scr / kernel hangs the box (proven on hardware)
+
+A broken `boot.scr` or a kernel that hangs after `Starting kernel ...` leaves
+the box in a watchdog reboot loop with no network and no U-Boot console. The
+way out, all pre-`bootcmd` and needing no password:
+
+1. **Hold the recessed factory-restore button (gpio1,15 — NOT the main ID
+   button, gpio1,17) and apply power, keep holding ~10 s.** U-Boot's
+   `check_factoryrestore()` reads that pin in its init sequence, *before*
+   `bootcmd` runs `boot.scr`, and boots the stock recovery kernel from SPI-NOR.
+   LED goes yellow. (Confirms with `C4FR: Active` on the console.)
+2. The recovery kernel's initramfs offers a **2-second `c4`+ENTER break-in to a
+   root BusyBox shell** — and unlike U-Boot, this is NOT password-gated. Spam
+   `c4\r\n` over serial (~every 0.4 s, low rate to avoid TX→RX crosstalk) while
+   it boots to land in the window, *before* it reimages.
+3. In that shell the eMMC is `/dev/mmcblk1`. Mount p1
+   (`mount -t vfat /dev/mmcblk1p1 /mnt`), remove/rename the offending `boot.scr`,
+   `sync`, `umount`, power-cycle. With no `boot.scr`, `bootcmd` falls through to
+   the stock `zImage` and boots stock Control4.
+
+Note: a **full** factory restore (letting the recovery kernel run, ~3 min,
+yellow LED) reimages p2 (rootfs) and rewrites the stock kernel/DTBs on p1, but
+does **not** delete extra files like our `boot.scr` — so it alone does not break
+the hang loop. You must remove `boot.scr` via the `c4` initramfs shell.
+
+Serial TX gotchas that cost real time: set `-hupcl clocal` (so closing the port
+doesn't pulse DTR and reset the board), keep ONE persistent fd open rather than
+reopening per keystroke, and keep the send rate low.
 
 ## Secure boot: HAB is open, and nothing else is verified either
 

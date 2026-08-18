@@ -46,12 +46,13 @@ NETBOOT_ARGS = --board $(BOARD) \
                $(if $(OFFER_IP),--offer-ip $(OFFER_IP)) \
                $(if $(SERIAL_PORT),--serial-port $(SERIAL_PORT))
 
-.PHONY: help image mcu netboot probe serial clean distclean
+.PHONY: help image mcu webd netboot probe serial clean distclean
 
 help:
 	@echo "openHC — Control4 EA-series kernel-up build"
 	@echo ""
 	@echo "  make image [BOARD=...]       build the netboot kernel image (Docker Buildroot)"
+	@echo "  make webd  [BOARD=...]       build the ohc-webd dashboard (Rust+React) into the overlay"
 	@echo "  make mcu   [BOARD=ea1|ea3]   build the TM4C IO-MCU firmware (EA only)"
 	@echo "  make netboot                 serve $(IMAGE) to the target (EA CEFDK path)"
 	@echo "  make probe                   drop CEFDK to its shell (cookie, no kernel)"
@@ -65,9 +66,12 @@ help:
 	@echo "  ioxv1 (DM355 IO Extender) is pre-boot: rootfs builds, but the kernel"
 	@echo "  needs the DM355 resurrection patches — see docs/kernel-7.1-port.md."
 	@echo "  ioxv1 netboots from U-Boot ('run tst' over TFTP), not 'make netboot'."
-	@echo "  ca1 (i.MX6SL) is pre-boot but needs no SoC patches — mainline covers"
-	@echo "  the silicon. It boots via a boot.scr copied onto the eMMC vfat"
-	@echo "  partition; 'make image BOARD=ca1' prints the install steps."
+	@echo "  ca1 (i.MX6SL) boots our 7.1.8 kernel — proven on hardware. Two paths:"
+	@echo "  persistent (boot.scr on the eMMC vfat partition; 'make image BOARD=ca1'"
+	@echo "  prints the steps) or RAM-only netboot ('make netboot BOARD=ca1', hold the"
+	@echo "  ID button at power-on — mfg mode, writes no flash). Its U-Boot console is"
+	@echo "  SHA-256 password-locked, so recover a bad boot.scr via the factory-restore"
+	@echo "  button + the recovery kernel's 'c4' shell — see docs/ca1-recon.md."
 	@echo "  hc800 (Atom D525) is pre-boot and needs no patches either — it is a"
 	@echo "  PC. It boots from stock GRUB 0.97 via a third menu.lst entry;"
 	@echo "  'make image BOARD=hc800' prints the install steps."
@@ -79,6 +83,13 @@ image:
 	DOCKER_BUILDKIT=1 docker build -f build/Dockerfile --target artifacts \
 		--build-arg BOARD=$(BOARD) $(if $(JOBS),--build-arg BR2_JLEVEL=$(JOBS)) \
 		--output type=local,dest=output/images .
+
+# Build the ohc-webd dashboard (Rust server + embedded React UI) on the host and
+# stage it into board/common/rootfs-overlay/opt/ohc/bin, so the next `make image`
+# bundles it. Needs rustup (with the board's target added) + node/npm. See
+# packages/README.md. Cross-compiles with rust-lld — no Docker or cross-binutils.
+webd:
+	packages/build.sh $(BOARD)
 
 # menuconfig/linux-menuconfig need an interactive container; the cache-mount
 # build model builds non-interactively. Edit the board defconfigs + the linux
@@ -109,11 +120,7 @@ mcu:
 netboot:
 	@case "$(BOARD)" in \
 	  ea*) : ;; \
-	  ca1) echo "netboot: ca1 boots from its own U-Boot, not this CEFDK path."; \
-	       echo "  Preferred: copy boot.scr + kernel + dtb onto the eMMC vfat partition"; \
-	       echo "  ('make image BOARD=ca1' prints the exact steps). Its U-Boot also has"; \
-	       echo "  'run netboot' / 'run loadtftp' if you would rather serve over TFTP."; \
-	       exit 1 ;; \
+	  ca1) : ;; \
 	  hc800) echo "netboot: hc800 boots from stock GRUB 0.97 on sda1 — no netboot path."; \
 	         echo "  Copy the kernel + initrd onto sda3 and add a third menu.lst entry"; \
 	         echo "  ('make image BOARD=hc800' prints the exact steps). Both vendor"; \
@@ -121,11 +128,17 @@ netboot:
 	         exit 1 ;; \
 	  *) echo "netboot: $(BOARD) netboots from U-Boot ('run tst' over TFTP), not this CEFDK path"; exit 1 ;; \
 	esac
-	@test -f output/images/bzImage || { echo "no image yet — run 'make image BOARD=$(BOARD)'"; exit 1; }
-	@$(PYTHON) -c "import serial" 2>/dev/null || { \
-	  echo "boot mode drives the console, so it needs pyserial, and $(PYTHON) has none."; \
-	  echo "    python3 -m venv .venv && .venv/bin/pip install pyserial"; \
-	  echo "  (the Makefile picks .venv up automatically, including under sudo)"; exit 1; }
+	@case "$(BOARD)" in \
+	  ca1) test -f output/images/openhc-ca1-zImage || { echo "no image yet — run 'make image BOARD=ca1'"; exit 1; } ;; \
+	  *)   test -f output/images/bzImage || { echo "no image yet — run 'make image BOARD=$(BOARD)'"; exit 1; } ;; \
+	esac
+	@case "$(BOARD)" in \
+	  ca1) : ;; \
+	  *) $(PYTHON) -c "import serial" 2>/dev/null || { \
+	       echo "boot mode drives the console, so it needs pyserial, and $(PYTHON) has none."; \
+	       echo "    python3 -m venv .venv && .venv/bin/pip install pyserial"; \
+	       echo "  (the Makefile picks .venv up automatically, including under sudo)"; exit 1; } ;; \
+	esac
 	sudo $(PYTHON) tools/netboot.py $(NETBOOT_ARGS) boot
 
 # Just get to the unlocked shell and stop there (no kernel served).

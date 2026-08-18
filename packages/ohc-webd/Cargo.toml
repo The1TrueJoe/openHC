@@ -1,0 +1,23 @@
+[package]
+name = "ohc-webd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC controller web dashboard + REST API. Board-agnostic; serves the embedded React UI and talks to the native serial radios/ports."
+
+[[bin]]
+name = "ohc-webd"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt", "net", "macros", "time", "io-util", "signal", "sync", "fs"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "set-header"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+libc = "0.2"
+ohc-wifi = { path = "../ohc-wifi" }
+
+[build-dependencies]
+flate2 = "1"

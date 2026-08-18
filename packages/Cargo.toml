@@ -1,0 +1,20 @@
+# openHC daemons — a virtual Cargo workspace. Members are listed explicitly
+# (not globbed) so non-Rust packages can live under packages/ later too.
+[workspace]
+resolver = "2"
+members = ["ohc-wifi", "ohc-webd", "ohc-portal"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Small, self-contained binaries that ship inside the rootfs: optimise for size,
+# and abort on panic (an init-script supervisor restarts the daemon; nothing
+# catches unwinds).
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

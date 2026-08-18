@@ -66,15 +66,23 @@ BR2_LINUX_KERNEL_ZIMAGE=y
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
 BR2_LINUX_KERNEL_CUSTOM_DTS_PATH="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/linux/c4-imx6sl-ca1.dts"
 
-# --- rootfs: initramfs in the zImage (bring-up) + ext4 (later, for p2) ---
-# Same philosophy as the other boards: a RAM rootfs we can boot without writing
-# anything persistent, iterate on, and only commit to eMMC once the kernel is
-# trusted. 1 GB of RAM makes an embedded initramfs very comfortable here.
-# The ext4 image is for `dd`ing over mmcblk1p2 once that day comes.
-BR2_TARGET_ROOTFS_INITRAMFS=y
+# --- rootfs: ext4 on eMMC p2 (persistent) — NOT an embedded initramfs ---
+# We booted openHC from a RAM initramfs for bring-up, but that path is exhausted:
+# the whole rootfs is embedded in the zImage and decompressed below the DTB at
+# 0x83000000, so it must stay under ~40 MB decompressed. The lean image (18.5 MB
+# cpio) fit; adding even ttyd (23 MB cpio) tipped it over and hung "Starting
+# kernel" again. Python/Node for the web UI + zigbee/zwave servers never had a
+# chance. So the real system lives on the eMMC ext4 rootfs (mmcblk1p2), the
+# kernel mounts it directly (root=/dev/mmcblk1p2, see post-image.sh), and the
+# zImage carries NO initramfs — which also makes it small and permanently ends
+# the DTB-overwrite class of bug. Writing p2 replaces the stock Control4 rootfs;
+# factory restore rebuilds it from p3, so it stays recoverable.
+# BR2_TARGET_ROOTFS_INITRAMFS is intentionally OFF.
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
-BR2_TARGET_ROOTFS_EXT2_SIZE="256M"
+# Sized for the full stack (python3 web API now, node zigbee2mqtt/zwave-js next);
+# resized to fill p2 (1.9 GB) with resize2fs at install time.
+BR2_TARGET_ROOTFS_EXT2_SIZE="768M"
 
 # --- reachability + on-target tools ---
 BR2_PACKAGE_DROPBEAR=y
@@ -125,12 +133,51 @@ BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/post-build.sh"
 BR2_PACKAGE_WPA_SUPPLICANT=y
 BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
 BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+# 2.4 GHz-only radio, but cfg80211 refuses to pick a channel plan at all
+# without a regulatory.db, warning "failed to load regulatory.db" at boot.
+BR2_PACKAGE_WIRELESS_REGDB=y
+# Setup AP (openhc-ca1-<mac>) when eth0 has no carrier — S41wifi-ap in the
+# rootfs overlay. eth0 stays the only client-mode reachability path; nothing
+# here joins an existing network.
+BR2_PACKAGE_HOSTAPD=y
+BR2_PACKAGE_DNSMASQ=y
 
 # --- mDNS identity: avahi (no D-Bus, light), matching the other boards ---
 BR2_PACKAGE_AVAHI=y
 BR2_PACKAGE_AVAHI_DAEMON=y
 
+# --- rear RS-232/485 port exposed over the network (RFC2217/telnet-com-port) ---
+# ser2net's own S50ser2net init script ships with the package; it just needs a
+# config, which lives in rootfs-overlay/etc/ser2net/ser2net.yaml. Direction
+# stays whatever the DTS gpio-hogs set at boot (RS-232 today) — runtime mode
+# switching needs those hogs converted to a real consumer first (see the DTS).
+BR2_PACKAGE_SER2NET=y
+
+# --- MQTT broker for zigbee2mqtt; also useful standalone for the Z-Wave side ---
+# Buildroot 2024.02.9's mosquitto-2.0.19 package fails to apply its own bundled
+# 0001-Revert-Fix-NetBSD-build.patch against the tarball currently served at
+# mosquitto.org ("Reversed (or previously applied) patch detected" on several
+# hunks) — a stock package/upstream-tarball mismatch, not a local config issue.
+# Revisit when the Zigbee/Z-Wave work actually needs a broker.
+# BR2_PACKAGE_MOSQUITTO=y
+
+# C++ toolchain — needed by Node.js and ser2net's gensio C++ bindings.
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+
+# The web dashboard + API is the Rust ohc-webd binary (packages/), cross-built
+# on the host with the React UI embedded and dropped into the overlay by
+# packages/build.sh — so no python3/ttyd interpreter or per-port terminal daemon
+# is needed on the target. board/common S90ohcweb just runs the one binary.
+
+# --- Node.js: runtime for zigbee2mqtt / zwave-js-server on the ext4 rootfs ---
+# npm included so the servers install on-target. V8 is a heavy compile — see the
+# build.sh JLEVEL note / bump Docker's VM RAM if it OOMs.
+BR2_PACKAGE_NODEJS=y
+BR2_PACKAGE_NODEJS_NPM=y
+
 # --- rootfs overlay + image publishing ---
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/rootfs-overlay"
+# board/common first: the shared Rust webd starter (S90ohcweb). ca1's own
+# overlay (Wi-Fi AP fallback, net, ser2net sample) comes after so it can override.
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ca1/rootfs-overlay"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ca1"

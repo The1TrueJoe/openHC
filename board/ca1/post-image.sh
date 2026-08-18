@@ -20,11 +20,24 @@ BOARD="${2:-ca1}"
 DTB="c4-imx6sl-${BOARD}.dtb"
 KERNEL_FILE="openhc-${BOARD}-zImage"
 
-# Vendor loadaddr, which we know U-Boot is happy with. The DTB goes to
-# 0x83000000 rather than the vendor's 0x813F0000: our zImage carries an
-# embedded initramfs and would run straight through an address only 12.5 MB
-# above the load address. fdt_high=ffffffff in the stock environment means
-# U-Boot leaves the DTB where it is put, so a higher address is free.
+# Vendor loadaddr, which we know U-Boot is happy with. fdt_high=ffffffff in
+# the stock environment means U-Boot leaves the DTB where it is put.
+#
+# FDTADDR must clear the DECOMPRESSED zImage (kernel + embedded initramfs),
+# which unpacks from ~LOADADDR, but must ALSO stay low. Both boundaries were
+# found the hard way on hardware (serial console):
+#
+#  * 0x83000000 (40 MB past LOADADDR) boots a lean ~17 MB zImage cleanly, all
+#    the way to /init — this is the value the first working boot used.
+#  * A 32 MB zImage (Node.js embedded in the initramfs) decompressed far enough
+#    to clobber the DTB at 0x83000000 and hung at "Starting kernel" with no
+#    output. The fix for THAT is to keep the initramfs lean (Node/heavy services
+#    belong on the eMMC ext4 rootfs, not the RAM image) — NOT to move the DTB up.
+#  * 0x90000000 was tried as a "just move it higher" fix and is WORSE: the DTB
+#    reads fine there (the memory node parses) but the kernel then hangs after
+#    "crng init done", before "Freeing unused kernel memory" — it never reaches
+#    /init. 0x83000000 with the same lean image boots to a login prompt. So high
+#    is not safe here; keep the DTB at 0x83000000 and the image lean.
 LOADADDR=0x80800000
 FDTADDR=0x83000000
 
@@ -43,10 +56,21 @@ cat > "$IMAGES/boot.cmd" <<EOF
 # openHC $BOARD — sourced by stock Control4 U-Boot 2014.04 from mmc 1:1.
 # Delete boot.scr from that partition to fall back to the stock boot path.
 echo openHC: booting $BOARD from mmc 1:1
-setenv bootargs console=ttymxc0,115200
+setenv bootargs console=ttymxc0,115200 root=/dev/mmcblk1p2 rootwait rw initcall_debug ignore_loglevel
 fatload mmc 1:1 $LOADADDR $KERNEL_FILE
 fatload mmc 1:1 $FDTADDR $DTB
 bootz $LOADADDR - $FDTADDR
+
+# NOTE the "initcall_debug ignore_loglevel" on the cmdline. It is NOT here for
+# debugging — it is a working WORKAROUND, needed to boot. Confirmed on hardware
+# 2026-08-18: with a normal fast boot, something in the console/printk path on
+# this SoC melts down early — a single message ("random: crng init done" with the
+# RNGB on, or the last serial-port registration with it off) repeats at the full
+# serial bitrate and the boot never gets past it. Serialising the boot with
+# initcall_debug (each initcall bracketed by a print) slows the message rate
+# enough that it doesn't, and the box boots cleanly all the way to the login
+# prompt + the web UI. TODO: root-cause the flood (likely a printk re-entrancy /
+# console lock issue) and drop this; until then it is load-bearing.
 EOF
 
 MKIMAGE="${HOST_DIR:-}/bin/mkimage"

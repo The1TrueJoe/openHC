@@ -13,3 +13,9 @@ __pycache__/
 .venv/
 
 .DS_Store
+# packages/ build artifacts (Rust target, node deps, UI bundle, staged binaries)
+/packages/target/
+/packages/**/node_modules/
+/packages/**/dist/
+/board/common/rootfs-overlay/opt/ohc/bin/
+*.tsbuildinfo

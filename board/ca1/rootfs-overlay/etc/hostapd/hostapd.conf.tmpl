@@ -1,0 +1,11 @@
+# openHC setup-AP template (CA-1) — filled in by the shared S41wifi-ap.
+# OPEN network, no authentication: this AP exists only to serve the captive
+# setup portal, so there is no secret worth pre-sharing — a phone joins with one
+# tap and gets the "connect me to your Wi-Fi" page. @IFACE@ / @SSID@ are
+# substituted at start time.
+interface=@IFACE@
+driver=nl80211
+ssid=@SSID@
+hw_mode=g
+channel=6
+ignore_broadcast_ssid=0

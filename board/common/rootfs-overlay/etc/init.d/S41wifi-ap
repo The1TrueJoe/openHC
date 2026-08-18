@@ -1,0 +1,111 @@
+#!/bin/sh
+# Wi-Fi setup-AP + captive portal — SHARED driver logic (board/common).
+#
+# When the wired uplink has no carrier (unplugged but powered) and the board has
+# a Wi-Fi radio, this either:
+#   (a) joins a previously-saved home network in station mode, or
+#   (b) if none is saved (or the join fails), brings wlan up as an OPEN AP
+#       <hostname>-<uplink-mac> and raises a captive portal — ohc-webd serves the
+#       setup page on :80, DNS is hijacked here — so a phone can pick a network
+#       and hand us its credentials. Submitting them writes the station config
+#       and restarts this script, which then takes path (a).
+#
+# Boards with no Wi-Fi (OHC_WIFI_IFACE empty, e.g. ea3) skip it entirely. Runs
+# after S40net so the uplink's carrier has settled. The per-board CONFIG — the
+# hostapd/dnsmasq templates and the iface/addressing — lives in each board's
+# overlay; only this driver is shared.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+UPLINK="${OHC_UPLINK_IFACE:-eth0}"
+WIFI="${OHC_WIFI_IFACE:-}"
+AP_ADDR="10.42.0.1"
+AP_PORT="8080"                     # the setup portal's own port (webd keeps :80)
+STA_CONF="/etc/wpa_supplicant/wpa_supplicant-${WIFI}.conf"
+SCAN_CACHE="/tmp/ohc-wifi-scan"    # SSIDs the portal offers, captured at AP start
+PORTAL=/opt/ohc/bin/ohc-portal     # the captive-portal web app, run only with the AP
+PORTAL_FLAG="/tmp/ohc-ap-portal"   # holds the portal URL; ohc-webd redirects :80 probes here while it exists
+
+have_link() { [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = 1 ]; }
+
+# Join a saved home network in station mode. Returns 0 once DHCP grants a lease.
+sta_join() {
+    [ -s "$STA_CONF" ] || return 1
+    ip link set "$WIFI" up
+    wpa_supplicant -B -i "$WIFI" -D nl80211 -c "$STA_CONF" >/dev/null 2>&1 || return 1
+    i=0
+    while [ $i -lt 15 ]; do
+        udhcpc -i "$WIFI" -t 3 -T 2 -n >/dev/null 2>&1 && return 0
+        sleep 1; i=$((i + 1))
+    done
+    return 1
+}
+
+# Capture nearby SSIDs for the portal (station-mode scan via wpa_cli — the image
+# has no `iw`). Best-effort: an empty cache just means the portal shows only the
+# manual-entry field.
+scan_networks() {
+    ip link set "$WIFI" up
+    printf 'ctrl_interface=/var/run/wpa_supplicant\n' > /tmp/wpa-scan.conf
+    wpa_supplicant -B -i "$WIFI" -D nl80211 -c /tmp/wpa-scan.conf >/dev/null 2>&1 || return 1
+    wpa_cli -i "$WIFI" scan >/dev/null 2>&1
+    sleep 3
+    wpa_cli -i "$WIFI" scan_results 2>/dev/null \
+        | awk -F'\t' 'NR>1 && $5 != "" {print $5}' | sort -u > "$SCAN_CACHE"
+    wpa_cli -i "$WIFI" terminate >/dev/null 2>&1
+    killall wpa_supplicant 2>/dev/null
+}
+
+start_ap() {
+    MAC=$(cat "/sys/class/net/$UPLINK/address" 2>/dev/null | tr -d ':')
+    SSID="$(hostname)-${MAC:-unknown}"
+    ip link set "$WIFI" up
+    ip addr add "$AP_ADDR/24" dev "$WIFI" 2>/dev/null
+
+    sed -e "s/@IFACE@/$WIFI/" -e "s/@SSID@/$SSID/" \
+        /etc/hostapd/hostapd.conf.tmpl > /etc/hostapd/hostapd.conf
+    sed -e "s/@IFACE@/$WIFI/" -e "s/@ADDR@/$AP_ADDR/" -e "s/@PORT@/$AP_PORT/" \
+        /etc/dnsmasq-ap.conf.tmpl > /etc/dnsmasq-ap.conf
+
+    printf 'Wi-Fi AP: %s ' "$SSID"
+    if start-stop-daemon -S -q -b --exec /usr/sbin/hostapd -- -B /etc/hostapd/hostapd.conf \
+       && start-stop-daemon -S -q -b --exec /usr/sbin/dnsmasq -- --conf-file=/etc/dnsmasq-ap.conf; then
+        # the captive portal is its own app (ohc-portal) on its own port — the
+        # dashboard stays put on :80 and just redirects probes here (PORTAL_FLAG).
+        [ -x "$PORTAL" ] && start-stop-daemon -S -q -b --exec "$PORTAL" -- "0.0.0.0:$AP_PORT"
+        echo "http://$AP_ADDR:$AP_PORT/" > "$PORTAL_FLAG"
+        echo "up (open) on $WIFI ($AP_ADDR) — setup portal on :$AP_PORT"
+    else
+        echo "FAIL"
+    fi
+}
+
+start() {
+    [ -n "$WIFI" ] || { echo "Wi-Fi AP: no radio on this board, skipping"; return 0; }
+    [ -d "/sys/class/net/$WIFI" ] || { echo "Wi-Fi AP: no $WIFI, skipping"; return 0; }
+    if have_link "$UPLINK"; then echo "Wi-Fi AP: $UPLINK has link, staying down"; return 0; fi
+
+    if sta_join; then
+        echo "Wi-Fi: joined saved network on $WIFI ($(ip -4 -o addr show $WIFI | awk '{print $4}'))"
+        return 0
+    fi
+    # station join failed or no saved network — clean up and offer the setup portal
+    killall wpa_supplicant 2>/dev/null
+    ip addr flush dev "$WIFI" 2>/dev/null
+    scan_networks
+    start_ap
+}
+
+stop() {
+    rm -f "$PORTAL_FLAG"   # stop webd redirecting to the portal
+    start-stop-daemon -K -q --exec "$PORTAL" 2>/dev/null
+    start-stop-daemon -K -q --exec /usr/sbin/dnsmasq 2>/dev/null
+    start-stop-daemon -K -q --exec /usr/sbin/hostapd 2>/dev/null
+    killall wpa_supplicant 2>/dev/null
+    [ -n "$WIFI" ] && { ip addr flush dev "$WIFI" 2>/dev/null; ip link set "$WIFI" down 2>/dev/null; }
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

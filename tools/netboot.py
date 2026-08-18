@@ -257,6 +257,29 @@ BOARDS = {
                 offer_ip="192.168.0.50", console_baud=115200, dhcp="plain", uart=False,
                 ssh_user="root", ssh_pass="t0talc0ntr0l4!",
                 cmdline="console=ttyS0,115200n8"),
+    # CA-1 (i.MX6SL): stock Control4 U-Boot, mfg mode. Hold the ID button at
+    # power-on -> U-Boot DHCPs with vendor-class 'c4_ca1' and needs the reply to
+    # carry BOTH option 60 = "C4_COOKIE" (sets dhcp_mfgmode bit 0) AND option 43
+    # sub-option 0x0a = the DTB filename (sets bit 1 + fdt_file); with mfgmode=3
+    # it TFTPs ${bootfile} (kernel) and ${fdt_file} (dtb) itself and bootz's --
+    # no serial driving needed. Decoded from OS-3.3.1 u-boot patch
+    # 170-uboot-control4-mfg-mode. The box builds its own bootargs
+    # (console=ttymxc0,115200 ip=dhcp mfgmode=1), so cmdline here is unused.
+    # REQUIRES AN ISOLATED LINK. Proven on hardware 2026-08-18: the DHCP reply
+    # encoding is correct (U-Boot printed 'MFG: Activated Manufacturing Mode'),
+    # but the CA-1's U-Boot is built WITHOUT CONFIG_SYS_BOOTFILE_PREFIX, so its
+    # `dhcp` accepts the FIRST offer it gets with no way to prefer ours. On a
+    # shared LAN the home router wins the race (box bound via server-id .1, our
+    # cookie/opt43 never parsed -> 'DHCP Manufacturing Mode Failure' -> stock).
+    # Fix: put the CA-1 on a direct cable to this host, or a switch with only the
+    # two -- no other DHCP server -- exactly like the EA/DM355 P2P links. Then
+    # iface_ip is this host's address on THAT link (override with IFACE_IP=).
+    # The box loads the DTB at its own ${fdt_addr} (0x83000000), only ~40 MB
+    # above the kernel, so a netbooted zImage must stay lean (no embedded Node).
+    "ca1": dict(iface_ip="192.168.1.171", client_mac="00:0f:ff:52:82:65",
+                offer_ip="192.168.1.178", console_baud=115200, dhcp="c4mfg", uart=False,
+                bootfile="openhc-ca1-zImage", fdt_file="c4-imx6sl-ca1.dtb",
+                cmdline="console=ttymxc0,115200"),
 }
 
 
@@ -616,10 +639,50 @@ def boot_mode_ssh(a, log):
         "(re-netboots), or stop it and power-cycle (falls back to stock Linux).")
 
 
+def boot_mode_c4mfg(a, log):
+    """CA-1 mfg-mode netboot: serve DHCP (cookie + fdt option) and TFTP, then
+    wait while the box does the rest itself. No serial or SSH needed — holding
+    the ID button at power-on makes U-Boot DHCP, take our cookie+fdt+bootfile,
+    TFTP the kernel and DTB, and bootz. Nothing is written to flash, so a bad
+    kernel is just a power-cycle back to stock. Ctrl-C to stop serving."""
+    import threading
+
+    images = os.path.realpath(a.images)
+    need = [a.bootfile, a.fdt_file]
+    for f in need:
+        if not os.path.isfile(os.path.join(images, f)):
+            sys.exit(f"missing {os.path.join(images, f)} — run 'make image BOARD={a.board}' first")
+
+    stop = threading.Event()
+    threading.Thread(target=tftp_dir_serve, args=(images, log, stop), daemon=True).start()
+    threading.Thread(target=bootp_responder, args=(a, log, stop), daemon=True).start()
+    time.sleep(0.4)
+
+    print()
+    log("=" * 62)
+    log("HOLD THE ID BUTTON (rear) and power-cycle the CA-1.")
+    log("The ID button is NOT the recessed factory-restore button (that one")
+    log("reimages stock from SPI-NOR). U-Boot prints 'MFG: Active' when it")
+    log("takes the button; then watch the DHCP/TFTP log below.")
+    log("Nothing here writes flash — power-cycle with no button to return to stock.")
+    log("=" * 62)
+    print()
+    log(f"serving {a.bootfile} + {a.fdt_file} from {images}; DHCP cookie={a.cookie!r}")
+    log("waiting for the box (Ctrl-C to stop)...")
+    try:
+        while not stop.is_set():
+            time.sleep(1)
+    except KeyboardInterrupt:
+        stop.set()
+        log("stopped.")
+
+
 def boot_mode(a, log):
     """BOOTP + TFTP + automated bring-up, one command. UART boards drive the
     bootloader over the serial console; UART-less boards (uart=False in BOARDS)
     drive a self-reverting one-shot netboot over SSH instead."""
+    if getattr(a, "dhcp", "cefdk") == "c4mfg":
+        return boot_mode_c4mfg(a, log)
     if not getattr(a, "uart", True):
         return boot_mode_ssh(a, log)
     import threading
@@ -681,17 +744,19 @@ def main():
     # server) and `bootlinux "<cmdline>"`.
     ap.add_argument("mode", choices=["observe", "probe", "serve", "tftpd", "shellboot", "boot"])
     ap.add_argument("--kernel", help="bzImage to serve (serve/tftpd mode)")
-    ap.add_argument("--bootfile", default="vmlinuz.xz")
-    ap.add_argument("--cookie", default="C4_COOKIE", help="option-60 value CEFDK checks")
+    ap.add_argument("--bootfile", help="DHCP bootfile name (default: from --board, else vmlinuz.xz)")
+    ap.add_argument("--fdt-file", help="DTB filename served via DHCP option 43 (c4mfg; from --board)")
+    ap.add_argument("--cookie", default="C4_COOKIE", help="option-60 cookie value the board checks")
     ap.add_argument("--any-client", action="store_true",
                     help="reply to the MAC even without CEFDK's 'c4_*' vendor class "
                          "(default: ignore the stock OS's normal DHCP)")
     # boot mode
     ap.add_argument("--board", choices=sorted(BOARDS), help="preset iface-ip / MAC / offer-ip / console baud")
-    ap.add_argument("--dhcp-style", choices=["cefdk", "plain"],
-                    help="DHCP reply style: 'cefdk' (option-60 cookie, EA/Intel) "
-                         "or 'plain' (real OFFER/ACK for stock U-Boot). "
-                         "Default: from --board, else cefdk.")
+    ap.add_argument("--dhcp-style", choices=["cefdk", "plain", "c4mfg"],
+                    help="DHCP reply style: 'cefdk' (option-60 cookie, EA/Intel), "
+                         "'plain' (real OFFER/ACK for stock U-Boot, DM355), or "
+                         "'c4mfg' (CA-1: OFFER/ACK + option-60 cookie + option-43 "
+                         "fdt_file). Default: from --board, else cefdk.")
     ap.add_argument("--iface", help="restrict DHCP to this host interface (the "
                     "P2P link) so the main LAN's DHCP is ignored and replies stay "
                     "on the link. Default: auto-derived from the iface-ip.")
@@ -717,6 +782,10 @@ def main():
         if getattr(a, k, None) in (None, "") and k in prof:
             setattr(a, k, prof[k])
     a.dhcp = a.dhcp_style or prof.get("dhcp", "cefdk")
+    if not a.bootfile:
+        a.bootfile = prof.get("bootfile", "vmlinuz.xz")
+    if not a.fdt_file:
+        a.fdt_file = prof.get("fdt_file", "")
     if a.uart is None:
         a.uart = prof.get("uart", True)
     if not a.iface:
@@ -840,15 +909,52 @@ def bootp_responder(a, log, stop=None):
         # CEFDK announces itself in manufacturing mode with vendor-class
         # 'c4_010' (option 60) and asks for 1,3,6,60. Linux sends a hostname and
         # a much longer request list. Match on the vendor class.
-        plain = getattr(a, "dhcp", "cefdk") == "plain"
+        style = getattr(a, "dhcp", "cefdk")
+        plain = style == "plain"
+        c4mfg = style == "c4mfg"
 
         vclass = opts.get(60, b"")
         if not plain and not (a.any_client or vclass.startswith(b"c4_")):
-            log(f"  (ignoring — vendor-class {vclass!r} is not CEFDK mfg mode;"
+            log(f"  (ignoring — vendor-class {vclass!r} is not mfg mode;"
                 f" this is the stock OS asking for a normal lease)")
             continue
 
-        if plain:
+        if c4mfg:
+            # CA-1 stock U-Boot mfg mode: a real DHCP exchange (like 'plain', so
+            # DISCOVER->OFFER / REQUEST->ACK with server-id + lease) that ALSO
+            # carries the two vendor options U-Boot's dhcp_vendorex_proc reads to
+            # set dhcp_mfgmode=3:
+            #   opt 60 = "C4_COOKIE" EXACTLY (9 bytes, NO trailing NUL — the box
+            #            checks oplen==strlen("C4_COOKIE") && strncmp; a NUL makes
+            #            oplen=10 and it fails). Contrast CEFDK, which needs the NUL.
+            #   opt 43 = vendor-encapsulated, sub-option 0x0a = the DTB filename
+            #            (the box memcpy's voptlen bytes into fdt_file; the NUL is
+            #            counted in the length per the source comment).
+            # siaddr (next-server) = TFTP host; the file field = the kernel name.
+            req_ip = opts.get(50)
+            if mtype == 3 and req_ip and socket.inet_ntoa(req_ip) != a.offer_ip:
+                resp = 6   # NAK a stale requested-IP so it re-DISCOVERs (see plain)
+                reply = build_reply(xid, chaddr, "0.0.0.0",
+                                    [(53, bytes([6])),
+                                     (54, socket.inet_aton(a.iface_ip))],
+                                    flags, a.iface_ip)
+            else:
+                resp = {1: 2, 3: 5}.get(mtype, 0)   # DISCOVER->OFFER, REQUEST->ACK
+                fdt = a.fdt_file.encode() + b"\x00"
+                opt43 = bytes([0x0a, len(fdt)]) + fdt      # sub-opt 0x0a = fdt_file
+                base = []
+                if resp:
+                    base += [(53, bytes([resp])),
+                             (54, socket.inet_aton(a.iface_ip)),
+                             (51, struct.pack("!I", 86400))]
+                base += [(1, socket.inet_aton(a.netmask)),
+                         (3, socket.inet_aton(a.iface_ip)),
+                         (60, a.cookie.encode()),          # "C4_COOKIE", no NUL
+                         (43, opt43)]
+                reply = build_reply(xid, chaddr, a.offer_ip, base, flags,
+                                    a.iface_ip, next_server=a.iface_ip,
+                                    bootfile=a.bootfile)
+        elif plain:
             # Stock U-Boot (DM355): a real DHCP exchange, no CEFDK cookie.
             # U-Boot runs the state machine, so answer DISCOVER with an OFFER and
             # REQUEST with an ACK, each carrying the server-id (54) and a lease
@@ -910,7 +1016,12 @@ def bootp_responder(a, log, stop=None):
                 s.sendto(reply, (dst, 68))
             except OSError as e:
                 log(f"  (send to {dst} failed: {e})")
-        if plain:
+        if c4mfg:
+            kind = {2: "OFFER", 5: "ACK", 6: "NAK"}.get(resp, "BOOTP reply")
+            tgt = "0.0.0.0" if resp == 6 else a.offer_ip
+            log(f"  -> {kind} {tgt}, siaddr={a.iface_ip}, cookie={a.cookie!r},"
+                f" opt43 fdt_file={a.fdt_file!r}, file={a.bootfile!r} (CA-1 mfg mode)")
+        elif plain:
             kind = {2: "OFFER", 5: "ACK", 6: "NAK"}.get(resp, "BOOTP reply")
             tgt = "0.0.0.0" if resp == 6 else a.offer_ip
             log(f"  -> {kind} {tgt}, siaddr={a.iface_ip} (plain DHCP, no cookie)")

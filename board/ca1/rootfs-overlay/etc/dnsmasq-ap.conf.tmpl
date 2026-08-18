@@ -1,0 +1,15 @@
+# openHC setup-AP DHCP + captive-portal DNS template (CA-1) — filled in by the
+# shared S41wifi-ap. @IFACE@ / @ADDR@ substituted at start. Bound to the AP iface
+# only so it never competes with anything on the wired uplink.
+interface=@IFACE@
+bind-interfaces
+dhcp-range=10.42.0.10,10.42.0.100,12h
+dhcp-option=3,@ADDR@
+dhcp-option=6,@ADDR@
+# Captive portal: answer EVERY name with our own address, so the phone's OS
+# connectivity check lands on ohc-webd (:80), which 302-redirects it to the setup
+# portal on :@PORT@ — that redirect is what makes the portal pop up. 114 is the
+# RFC 8910 portal-URI option, pointing compliant clients straight at the portal.
+no-resolv
+address=/#/@ADDR@
+dhcp-option=114,http://@ADDR@:@PORT@/
