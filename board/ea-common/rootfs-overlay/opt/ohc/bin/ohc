@@ -49,7 +49,7 @@ hw_bringup() {
 boot() {
   echo "ohc: bring-up"
   "$BIN/ohc-tz"                      # host timezone
-  "$BIN/ohc-mdns"                    # advertise openhomecontroller-<model>-<mac>.local
+  "$BIN/ohc-mdns"                    # advertise openhc-<model>-<mac>.local
   start_one mdns-watch "$BIN/ohc-mdns" --watch
   hw_bringup                         # LM75 + report gpio/pwm/i2c driver state
   [ -x "$BIN/ohc-fand" ] && start_one fand "$BIN/ohc-fand"

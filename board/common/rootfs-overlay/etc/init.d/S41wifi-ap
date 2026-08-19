@@ -4,9 +4,9 @@
 # When the wired uplink has no carrier (unplugged but powered) and the board has
 # a Wi-Fi radio, this either:
 #   (a) joins a previously-saved home network in station mode, or
-#   (b) if none is saved (or the join fails), brings wlan up as an OPEN AP
-#       <hostname>-<uplink-mac> and raises a captive portal — ohc-webd serves the
-#       setup page on :80, DNS is hijacked here — so a phone can pick a network
+#   (b) if none is saved (or the join fails), brings wlan up as an OPEN AP named
+#       for the hostname (openhc-<model>-<mac>) and raises a captive portal —
+#       ohc-webd redirects :80 to it — so a phone can pick a network
 #       and hand us its credentials. Submitting them writes the station config
 #       and restarts this script, which then takes path (a).
 #
@@ -55,8 +55,9 @@ scan_networks() {
 }
 
 start_ap() {
-    MAC=$(cat "/sys/class/net/$UPLINK/address" 2>/dev/null | tr -d ':')
-    SSID="$(hostname)-${MAC:-unknown}"
+    # the hostname already carries the per-unit MAC suffix (S09hostname), so it
+    # IS the setup-AP SSID — e.g. openhc-ca1-000FFF528265.
+    SSID="$(hostname)"
     ip link set "$WIFI" up
     ip addr add "$AP_ADDR/24" dev "$WIFI" 2>/dev/null
 

@@ -5,7 +5,7 @@
 # findable by IP — painful on a unit that moved to wifi and got a new lease.
 # mDNS replaces it with a stable, predictable name:
 #
-#     openhomecontroller-<model>-<eth-mac>.local
+#     openhc-<model>-<eth-mac>.local
 #
 # model is the board number (1/3/5/800/250) and the MAC is ALWAYS the ethernet
 # one, lower-case and without colons, even when the box is reachable over wifi.
@@ -38,7 +38,7 @@ mdns_name() {
     model="${OHC_MODEL:-0}"
     mac=$(cat /sys/class/net/"${OHC_ID_IFACE:-eth0}"/address 2>/dev/null | tr -d ':' | tr 'A-Z' 'a-z')
     [ -n "$mac" ] || mac="unknown"
-    echo "openhomecontroller-${model}-${mac}"
+    echo "openhc-${model}-${mac}"
 }
 
 running() { ps w | grep -v grep | grep -q "avahi-daemon: running"; }

@@ -1,0 +1,27 @@
+#!/bin/sh
+# Per-unit hostname — SHARED across boards (board/common).
+#
+# Append the wired MAC to the base hostname so several identical controllers
+# don't collide on the LAN / mDNS / DHCP:
+#     openhc-ca1  ->  openhc-ca1-000FFF528265
+# The base is whatever the image was built with (BR2_TARGET_GENERIC_HOSTNAME, in
+# /etc/hostname); the MAC comes from the board's identity interface (OHC_ID_IFACE,
+# the wired port). Runs early — before the network, avahi (mDNS) and the Wi-Fi AP
+# — so all of them advertise the final name. Idempotent; if the MAC can't be read
+# the base name is kept.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+IDIF="${OHC_ID_IFACE:-eth0}"
+
+case "${1:-start}" in
+  start)
+    base=$(head -1 /etc/hostname 2>/dev/null); [ -n "$base" ] || base=openhc
+    mac=$(cat "/sys/class/net/$IDIF/address" 2>/dev/null | tr -d ':' | tr 'a-f' 'A-F')
+    [ -n "$mac" ] || { echo "hostname: no MAC on $IDIF, keeping $base"; exit 0; }
+    case "$base" in
+        *-"$mac") name="$base" ;;              # already suffixed (base was persisted)
+        *)        name="${base}-${mac}" ;;
+    esac
+    hostname "$name" 2>/dev/null && echo "hostname: $name"
+    ;;
+  *) : ;;
+esac
