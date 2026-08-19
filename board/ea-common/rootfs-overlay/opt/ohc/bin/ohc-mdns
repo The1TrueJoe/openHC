@@ -129,7 +129,7 @@ else
 fi
 
 # Two service types. _http._tcp is for browsers and anything generic;
-# _openhomecontroller._tcp is ours, so `ohc discover` can pick controllers out
+# _openhc._tcp is ours, so `ohc discover` can pick controllers out
 # of a LAN full of printers, NAS boxes and router admin pages. It matters more
 # than it sounds: Control4's SDDP is gone after a clean-slate, so this record is
 # the ONLY way a unit running our firmware gets found.
@@ -142,10 +142,11 @@ fi
 #     with "XML_ParseBuffer() failed ... not well-formed" and logs it to syslog,
 #     where nobody looks; the daemon starts fine and simply advertises nothing.
 # Keep the XML comments short and put the prose out here.
-cat > "$SERVICES/openhomecontroller.service" <<EOF
+rm -f "$SERVICES/openhomecontroller.service"   # drop the old name on upgrade
+cat > "$SERVICES/openhc.service" <<EOF
 <?xml version="1.0" standalone="no"?><!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
-  <name replace-wildcards="yes">openHomeController on %h</name>
+  <name replace-wildcards="yes">openHC on %h</name>
   <!-- browsers and generic tooling -->
   <service>
     <type>_http._tcp</type>
@@ -156,7 +157,7 @@ cat > "$SERVICES/openhomecontroller.service" <<EOF
   </service>
   <!-- how the ohc tool finds controllers -->
   <service>
-    <type>_openhomecontroller._tcp</type>
+    <type>_openhc._tcp</type>
     <port>${OHC_WEB_PORT:-80}</port>
     <txt-record>board=${OHC_BOARD:-unknown}</txt-record>
     <txt-record>model=${OHC_MODEL:-0}</txt-record>
