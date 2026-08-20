@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+// ohc-zigbee — bring the EM357 ZigBee NCP up and keep it up.
+//
+// This is a CHIP bring-up utility, not a ZigBee stack or a byte forwarder: it
+// makes /dev/ttymxc4 present a live EZSP NCP so whatever owns the radio next
+// (the openHC radio API, or an external forwarder) can talk to it immediately.
+//
+// Why it is needed. On this board the EM35x resets into its serial bootloader
+// every time the port is opened — DTR is asserted on the first open, which
+// resets the part — and the bootloader ignores ASH. So a plain "open the port
+// and send an ASH reset" (what every EZSP host does) lands in the bootloader
+// and gets no answer; the coordinator never forms. The fix, in order:
+//
+//   1. open the port  (DTR asserted -> EM35x drops to its bootloader, which echoes)
+//   2. send "2"       (the bootloader's "run application" menu key)
+//   3. ASH RST -> RSTACK confirms the NCP is now running
+//   4. HOLD the port open forever so DTR stays asserted — the next opener does
+//      NOT re-trigger the bootloader and speaks EZSP straight away.
+//
+// Run under `ohc` via start_one (it is a daemon: it holds the port for its
+// lifetime). Stopping it frees the port and the chip returns to its bootloader
+// on the next open, where this brings it back.
+//
+// Config: OHC_ZIGBEE_TTY (from board.env), default /dev/ttymxc4.
+
+const fs = require("fs");
+
+const DEV = process.env.OHC_ZIGBEE_TTY || "/dev/ttymxc4";
+const sleep = (ms) => { const e = Date.now() + ms; while (Date.now() < e) {} };
+
+if (!fs.existsSync(DEV)) {
+  console.log(`ohc-zigbee: ${DEV} absent — no EM357 on this board, nothing to do`);
+  process.exit(0);
+}
+
+let fd;
+try {
+  fd = fs.openSync(DEV, "r+");
+} catch (e) {
+  console.log(`ohc-zigbee: cannot open ${DEV}: ${e.message}`);
+  process.exit(1);
+}
+
+const rb = Buffer.alloc(256);
+function rd(ms) {
+  const end = Date.now() + ms;
+  let out = Buffer.alloc(0);
+  while (Date.now() < end) {
+    let n = 0;
+    try { n = fs.readSync(fd, rb, 0, rb.length, null); } catch { n = 0; }
+    if (n > 0) out = Buffer.concat([out, rb.slice(0, n)]);
+    else sleep(5);
+  }
+  return out;
+}
+const wr = (b) => { try { fs.writeSync(fd, b, 0, b.length, null); } catch {} };
+
+// Run the app, then confirm the NCP answers an ASH reset (RSTACK carries 0xc1).
+function bringUp() {
+  wr(Buffer.from("\r\n")); rd(1200);                 // wake the bootloader (it echoes)
+  wr(Buffer.from("2"));    rd(2000);                 // "2" = run application
+  wr(Buffer.from([0x1a, 0xc0, 0x38, 0xbc, 0x7e]));   // ASH RST
+  return rd(1500).includes(0xc1);                    // RSTACK
+}
+
+let up = false;
+for (let i = 0; i < 4 && !up; i++) up = bringUp();
+console.log(up
+  ? `ohc-zigbee: NCP up on ${DEV}`
+  : `ohc-zigbee: NCP did not answer on ${DEV} after 4 tries — holding the port anyway`);
+
+// Hold the fd (and DTR) open for the life of the service. We deliberately do NOT
+// read or write past bring-up: the radio owner reads the EZSP traffic, and a
+// tty's input is a single queue, so any read here would steal its bytes.
+process.stdin.resume();
+setInterval(() => {}, 1 << 30);
