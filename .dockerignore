@@ -1,7 +1,12 @@
 .git
 output
 dl
-*.img
-*.bin
-!board/ea1/cefdk-container-header.bin
+# Device backups (docs/recovery.md tells you to take a full 7.6 GB eMMC dump
+# before the first write). These are NOT build inputs and must never be pulled
+# into the build context — a multi-GB context slows every build to a crawl.
+backups
+# NOTE the ** — a bare *.img only matches the context root, so it did not cover
+# backups/<board>/*.img and the dumps were being shipped to the daemon.
+**/*.img
+**/*.bin
 docs
