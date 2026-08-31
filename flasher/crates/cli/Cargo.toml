@@ -1,0 +1,15 @@
+[package]
+name = "ohc-flash-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ohc-flash"
+path = "src/main.rs"
+
+[dependencies]
+ohc-flash-core = { workspace = true }
+ohc-flash-transport = { workspace = true }
+ohc-flash-engine = { workspace = true }
+anyhow = { workspace = true }

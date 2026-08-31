@@ -1,0 +1,10 @@
+[package]
+name = "ohc-flash-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# core is deliberately dependency-light: it is pure logic that the whole app
+# trusts to be correct, so it stays easy to read and to test in isolation.
+[dependencies]
+serde = { workspace = true }

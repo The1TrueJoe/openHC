@@ -1,0 +1,44 @@
+# openHC flasher — a desktop application that installs openHC on Control4
+# controllers. A Cargo workspace of small, single-responsibility crates so no
+# one file grows into a script that is painful to maintain:
+#
+#   core       pure domain knowledge — board matrix, CEFDK/eMMC layout, the
+#              autoscript format, image validation. No I/O, exhaustively tested.
+#   transport  how we talk to a box — ssh, serial, discovery, tftp/bootp.
+#   engine     install *flows* built from core + transport; emits progress
+#              events so any front end can render them.
+#   cli        a thin clap front end for power users and scripts.
+#   gui        an eframe/egui desktop app — one static binary, drag a release
+#              onto it, it detects the board and flashes.
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/transport",
+    "crates/engine",
+    "crates/cli",
+    "crates/gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/The1TrueJoe/openHC"
+
+[workspace.dependencies]
+ohc-flash-core = { path = "crates/core" }
+ohc-flash-transport = { path = "crates/transport" }
+ohc-flash-engine = { path = "crates/engine" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The GUI is the shipped artifact: one self-contained binary a non-technical
+# user double-clicks. Optimise it for size and strip it.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

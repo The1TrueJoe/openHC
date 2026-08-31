@@ -1,0 +1,12 @@
+[package]
+name = "ohc-flash-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# How the app talks to a box. SSH is via the system `ssh`/`sshpass` for now
+# (proven against these boxes' legacy crypto, and OpenSSH ships on macOS, Linux
+# and Windows 10+); it sits behind a trait so a pure-Rust client (russh) can be
+# dropped in later without touching the engine.
+[dependencies]
+ohc-flash-core = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "ohc-flash-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ohc-flasher"
+path = "src/main.rs"
+
+# eframe is the only UI dependency: immediate mode means the window is a pure
+# function of the state the background threads write, so there is no view model
+# to keep in sync, and it links into the same single binary the user
+# double-clicks. rfd is here for one reason — a Browse button. A non-technical
+# user should never have to type a path.
+[dependencies]
+ohc-flash-core = { workspace = true }
+ohc-flash-transport = { workspace = true }
+ohc-flash-engine = { workspace = true }
+eframe = "0.36"
+rfd = "0.17"
+# In-place self-update. Windows locks a running .exe against overwrite but
+# allows renaming it, so this crate does the rename-current-aside / move-new-in
+# dance (and the Unix atomic rename-over) correctly — not worth hand-rolling.
+self-replace = "1"
+
+[dev-dependencies]
+# The render smoke test builds a fake GitHub release from JSON.
+serde_json = { workspace = true }

@@ -10,3 +10,5 @@ backups
 **/*.img
 **/*.bin
 docs
+# Rust build output — not a build input, and large.
+flasher/target

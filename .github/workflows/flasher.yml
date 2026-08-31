@@ -1,0 +1,136 @@
+# Build the openHC Flasher desktop app for macOS, Windows and Linux.
+#
+# Every push builds a dev binary named <short-sha>-dev and uploads it as a
+# workflow artifact (download from the run's Summary page). Publishing a GitHub
+# release rebuilds with the release tag as the version and attaches the binaries
+# to that release.
+#
+# The binaries are UNSIGNED — we have no Apple/Windows signing certificate — so
+# first launch needs a right-click > Open on macOS and "More info > Run anyway"
+# on Windows. Wiring in signing is a matter of adding the certs as secrets later.
+
+name: flasher
+
+on:
+  push:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# A newer push to the same ref supersedes an in-flight build; a release runs on
+# its own tag ref, so it is never cancelled by branch pushes.
+concurrency:
+  group: flasher-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+# gh needs write access to attach assets to the release.
+permissions:
+  contents: write
+
+defaults:
+  run:
+    # bash on every runner (Git Bash on Windows) so the naming logic is one
+    # script, not one per shell.
+    shell: bash
+    working-directory: flasher
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            ext: ""
+          - os: windows-latest
+            name: windows
+            ext: ".exe"
+          - os: macos-latest
+            name: macos
+            ext: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # eframe/egui (winit + glow) needs the xcb/xkb/wayland libs to link on
+      # Linux. rfd 0.17 defaults to the XDG desktop portal (pure-Rust D-Bus, no
+      # GTK), so its file dialog needs no extra system package here. macOS and
+      # Windows link frameworks already present on the runners.
+      - name: Linux build deps
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libwayland-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both Apple targets so the macOS build can be a universal binary that
+          # runs on Intel and Apple Silicon from one file.
+          targets: ${{ matrix.name == 'macos' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: flasher
+
+      # Version first, so the binary can bake it in (option_env!("OHC_VERSION"))
+      # and know whether it is itself up to date against the latest release: the
+      # release tag on a release, else <short-sha>-dev.
+      - name: Compute version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            v="${{ github.event.release.tag_name }}"
+          else
+            v="$(git rev-parse --short HEAD)-dev"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "flasher version: $v"
+
+      # macOS: build each arch and lipo them into one universal binary.
+      - name: Build (macOS universal)
+        if: matrix.name == 'macos'
+        env:
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cargo build --release -p ohc-flash-gui --target x86_64-apple-darwin
+          cargo build --release -p ohc-flash-gui --target aarch64-apple-darwin
+          lipo -create -output ohc-flasher \
+            target/x86_64-apple-darwin/release/ohc-flasher \
+            target/aarch64-apple-darwin/release/ohc-flasher
+          lipo -info ohc-flasher
+
+      - name: Build
+        if: matrix.name != 'macos'
+        env:
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cargo build --release -p ohc-flash-gui
+          cp "target/release/ohc-flasher${{ matrix.ext }}" "ohc-flasher${{ matrix.ext }}"
+
+      - name: Name the binary
+        id: name
+        run: |
+          out="ohc-flasher-${{ steps.ver.outputs.version }}-${{ matrix.name }}${{ matrix.ext }}"
+          mv "ohc-flasher${{ matrix.ext }}" "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          echo "built $out"
+
+      # Always available as a workflow artifact. The name is per-OS (v4 requires
+      # unique artifact names); the file inside carries the <sha>-dev version.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohc-flasher-${{ matrix.name }}
+          path: flasher/${{ steps.name.outputs.file }}
+          if-no-files-found: error
+
+      # On a release, attach the binary to it.
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.name.outputs.file }}" --clobber

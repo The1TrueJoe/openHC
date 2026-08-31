@@ -1,0 +1,19 @@
+[package]
+name = "ohc-flash-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The engine runs install *flows* on top of core (decisions) and transport
+# (I/O), emitting progress events any front end can render.
+[dependencies]
+ohc-flash-core = { workspace = true }
+ohc-flash-transport = { workspace = true }
+anyhow = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+# Release/update metadata comes back as GitHub JSON; parsed with the workspace
+# serde stack. Downloads shell out to system `curl` (like transport does to ssh),
+# so no HTTP crate is pulled in.
+serde = { workspace = true }
+serde_json = { workspace = true }
