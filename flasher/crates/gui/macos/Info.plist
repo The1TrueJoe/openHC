@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- .app bundle metadata. __VERSION__ is filled in by the flasher CI workflow
+     from the same version string as the binary/image. CFBundleIconFile names
+     the .icns in Contents/Resources (no extension). -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>openHC Flasher</string>
+    <key>CFBundleDisplayName</key>
+    <string>openHC Flasher</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.openhc.flasher</string>
+    <key>CFBundleExecutable</key>
+    <string>ohc-flasher</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+</dict>
+</plist>

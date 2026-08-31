@@ -112,25 +112,44 @@ jobs:
           cargo build --release -p ohc-flash-gui
           cp "target/release/ohc-flasher${{ matrix.ext }}" "ohc-flasher${{ matrix.ext }}"
 
-      - name: Name the binary
-        id: name
+      # macOS ships as a zipped .app bundle: it gives the binary its Finder/Dock
+      # icon and a normal double-click launch (a bare Unix binary can carry
+      # neither). The self-updater knows to pull Contents/MacOS/ back out of this
+      # zip. __VERSION__ in the plist is filled from the same version string.
+      - name: Package .app (macOS)
+        if: matrix.name == 'macos'
         run: |
-          out="ohc-flasher-${{ steps.ver.outputs.version }}-${{ matrix.name }}${{ matrix.ext }}"
-          mv "ohc-flasher${{ matrix.ext }}" "$out"
-          echo "file=$out" >> "$GITHUB_OUTPUT"
-          echo "built $out"
+          app="ohc-flasher.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp ohc-flasher "$app/Contents/MacOS/ohc-flasher"
+          chmod +x "$app/Contents/MacOS/ohc-flasher"
+          cp crates/gui/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+          sed "s/__VERSION__/${{ steps.ver.outputs.version }}/g" \
+            crates/gui/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          asset="ohc-flasher-${{ steps.ver.outputs.version }}-macos.zip"
+          # -X drops extra macOS attributes so no __MACOSX/._ junk lands in the zip.
+          zip -r -X "$asset" "$app"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
 
-      # Always available as a workflow artifact. The name is per-OS (v4 requires
-      # unique artifact names); the file inside carries the <sha>-dev version.
+      - name: Name the binary
+        if: matrix.name != 'macos'
+        run: |
+          asset="ohc-flasher-${{ steps.ver.outputs.version }}-${{ matrix.name }}${{ matrix.ext }}"
+          mv "ohc-flasher${{ matrix.ext }}" "$asset"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      # Always available as a workflow artifact. The artifact name is per-OS (v4
+      # requires unique names); the file inside carries the <version> in its name.
       - uses: actions/upload-artifact@v4
         with:
           name: ohc-flasher-${{ matrix.name }}
-          path: flasher/${{ steps.name.outputs.file }}
+          path: flasher/${{ env.ASSET }}
           if-no-files-found: error
 
-      # On a release, attach the binary to it.
+      # On a release, attach the binary/bundle to it.
       - name: Attach to release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.name.outputs.file }}" --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ env.ASSET }}" --clobber

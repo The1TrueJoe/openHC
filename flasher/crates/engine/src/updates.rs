@@ -5,7 +5,7 @@
 //! Linux. The JSON that comes back is parsed with the serde stack the workspace
 //! already carries. Releases are public, so none of this needs a token.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -106,6 +106,41 @@ pub fn download(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a downloaded flasher asset to the executable to install.
+///
+/// macOS ships the flasher as a zipped `.app` bundle (for the Finder icon and
+/// double-click launch), so the actual Mach-O lives at `Contents/MacOS/...`
+/// inside it — extract that. Windows and Linux ship the bare binary already, so
+/// the path passes straight through.
+pub fn resolve_executable(downloaded: &Path) -> Result<PathBuf> {
+    if !downloaded.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+        return Ok(downloaded.to_path_buf());
+    }
+    let f = std::fs::File::open(downloaded)
+        .with_context(|| format!("open {}", downloaded.display()))?;
+    let mut zip = zip::ZipArchive::new(f).context("reading the downloaded .app bundle")?;
+    let idx = (0..zip.len())
+        .find(|&i| {
+            zip.by_index(i)
+                .map(|e| {
+                    let n = e.name();
+                    e.is_file()
+                        && n.contains("/Contents/MacOS/")
+                        && !n.contains("__MACOSX")
+                        && !n.rsplit('/').next().unwrap_or("").starts_with("._")
+                })
+                .unwrap_or(false)
+        })
+        .context("no Contents/MacOS/ executable inside the downloaded bundle")?;
+    let mut entry = zip.by_index(idx)?;
+    let name = entry.name().rsplit('/').next().unwrap_or("ohc-flasher").to_string();
+    let dest = std::env::temp_dir().join(name);
+    let mut out = std::fs::File::create(&dest)
+        .with_context(|| format!("writing {}", dest.display()))?;
+    std::io::copy(&mut entry, &mut out).context("extracting the app binary")?;
+    Ok(dest)
+}
+
 /// Does `installed` differ from the latest release `tag`? Deliberately an
 /// inequality, not an ordering: versions are either a release tag or a
 /// `<sha>-dev` string, which have no total order, so the honest signal a front
@@ -125,7 +160,7 @@ mod tests {
             r#"{"tag_name":"v1.2.0","assets":[
                 {"name":"openhc-ea3-v2-v1.2.0.zip","browser_download_url":"http://x/a","size":10},
                 {"name":"openhc-ca1-v1.2.0.zip","browser_download_url":"http://x/b","size":10},
-                {"name":"ohc-flasher-v1.2.0-macos","browser_download_url":"http://x/c","size":10},
+                {"name":"ohc-flasher-v1.2.0-macos.zip","browser_download_url":"http://x/c","size":10},
                 {"name":"ohc-flasher-v1.2.0-windows.exe","browser_download_url":"http://x/d","size":10}
             ]}"#,
         )
@@ -137,6 +172,33 @@ mod tests {
         assert_eq!(rel().image_asset("ea3-v2").unwrap().name, "openhc-ea3-v2-v1.2.0.zip");
         assert_eq!(rel().image_asset("ca1").unwrap().name, "openhc-ca1-v1.2.0.zip");
         assert!(rel().image_asset("hc800").is_none());
+    }
+
+    #[test]
+    fn resolve_passes_a_bare_binary_through() {
+        let p = std::path::Path::new("/tmp/ohc-flasher-x-linux");
+        assert_eq!(resolve_executable(p).unwrap(), p);
+    }
+
+    #[test]
+    fn resolve_extracts_the_app_binary_from_a_zip() {
+        // Build a minimal .app zip in a temp file, then pull the binary out.
+        let zip_path = std::env::temp_dir().join("ohc-resolve-test.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut w = zip::ZipWriter::new(f);
+            let opts: zip::write::FileOptions<()> =
+                zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            use std::io::Write;
+            w.start_file("ohc-flasher.app/Contents/MacOS/ohc-flasher", opts).unwrap();
+            w.write_all(b"\x7fELF-not-really").unwrap();
+            w.finish().unwrap();
+        }
+        let out = resolve_executable(&zip_path).unwrap();
+        assert_eq!(out.file_name().unwrap(), "ohc-flasher");
+        assert_eq!(std::fs::read(&out).unwrap(), b"\x7fELF-not-really");
+        let _ = std::fs::remove_file(&zip_path);
+        let _ = std::fs::remove_file(&out);
     }
 
     #[test]

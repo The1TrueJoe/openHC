@@ -24,6 +24,11 @@ rfd = "0.17"
 # dance (and the Unix atomic rename-over) correctly — not worth hand-rolling.
 self-replace = "1"
 
+[build-dependencies]
+# Embeds icon.ico into the Windows .exe (build.rs). Compiles on any host and
+# does nothing unless building for Windows, so mac/linux builds are unaffected.
+winresource = "0.1"
+
 [dev-dependencies]
 # The render smoke test builds a fake GitHub release from JSON.
 serde_json = { workspace = true }

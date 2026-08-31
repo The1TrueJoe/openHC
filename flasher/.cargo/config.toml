@@ -1,0 +1,8 @@
+# Statically link the MSVC C runtime into the Windows binary. Without this the
+# .exe depends on VCRUNTIME140.dll from the Visual C++ Redistributable, which a
+# fresh Windows box does not have — the user sees "VCRUNTIME140.dll was not
+# found". Baking it in makes ohc-flasher.exe self-contained (a bit larger, no
+# runtime to install). Only affects the Windows/MSVC target; macOS and Linux are
+# untouched.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -1279,9 +1279,13 @@ impl App {
             // same-directory rename.
             let dest = exe.with_file_name(&name);
             let msg = match updates::download(&url, &dest) {
-                Ok(()) => apply_flasher_update(&dest).unwrap_or_else(|e| e),
+                Ok(()) => match updates::resolve_executable(&dest) {
+                    Ok(exe_file) => apply_flasher_update(&exe_file).unwrap_or_else(|e| e),
+                    Err(e) => format!("{e:#}"),
+                },
                 Err(e) => format!("{e:#}"),
             };
+            let _ = std::fs::remove_file(&dest); // clean the download (a macOS .app zip leaves this behind)
             let mut g = s.lock().unwrap();
             g.push(Lvl::Step, msg.clone());
             g.notice = Some(msg);
@@ -1578,7 +1582,7 @@ mod tests {
                 serde_json::from_str(
                     r#"{"tag_name":"v9.9.9","assets":[
                         {"name":"openhc-ea3-v2-v9.9.9.zip","browser_download_url":"http://x/a","size":1},
-                        {"name":"ohc-flasher-v9.9.9-macos","browser_download_url":"http://x/b","size":1},
+                        {"name":"ohc-flasher-v9.9.9-macos.zip","browser_download_url":"http://x/b","size":1},
                         {"name":"ohc-flasher-v9.9.9-windows.exe","browser_download_url":"http://x/c","size":1},
                         {"name":"ohc-flasher-v9.9.9-linux","browser_download_url":"http://x/d","size":1}
                     ]}"#,
