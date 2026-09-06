@@ -1,0 +1,30 @@
+# PowerVR SGX545 3D — kernel driver for the CE5300's GPU (PCI 01:02.0,
+# 8086:089b). Ported from the GPL DDK 1.7 tree Intel published for Cedarview,
+# which uses the same core; see docs/sgx545-3d.md.
+#
+# Kernel half only. It gives you /dev/dri/card0 and the SGX brought up and
+# reset; GLES2 additionally needs the userspace blobs and pvrsrvctl to upload
+# the microkernel, neither of which openHC ships.
+#
+# Pairs with linux/sgx.fragment, appended automatically by build/build.sh.
+BR2_PACKAGE_SGX545_CE=y
+# ...and the userspace: EGL + OpenGL ES 2.0 from Intel's Cedarview DDK 1.7.
+# Must be the same DDK version as the driver -- the driver checks on connect
+# and refuses a mismatch.
+BR2_PACKAGE_SGX545_UM=y
+
+# WPE WebKit: a browser engine that renders through EGL/GLES with no X server
+# and no window system of its own. openHC ships the engine and a generic
+# "render this URL" surface; what the URL serves is not openHC's business.
+#
+# Needs board/buildroot-patches/0001-wpewebkit-do-not-require-wpebackend-fdo.patch
+# -- Buildroot wires WPE to the Wayland backend, which this DDK cannot provide.
+BR2_PACKAGE_WPEWEBKIT=y
+
+# ...and the libwpe backend it loads at runtime to reach the display. Without
+# one WPE builds but has nowhere to put pixels; the stock backend is Wayland.
+BR2_PACKAGE_WPEBACKEND_PVR=y
+
+# ...and the surface that actually puts a page on the screen. WebKit is built
+# with ENABLE_MINIBROWSER=OFF, so without this nothing creates a view.
+BR2_PACKAGE_OHC_WEBVIEW=y

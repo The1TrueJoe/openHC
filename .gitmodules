@@ -1,0 +1,3 @@
+[submodule "packages/sgx545-ce"]
+	path = board/ea-common/packages/sgx545-ce
+	url = https://github.com/The1TrueJoe/sgx545-ce.git

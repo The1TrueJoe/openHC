@@ -1,1 +1,11 @@
 comment "openHC board options"
+
+# Buildroot packages live in <repo>/packages/ (BR2_EXTERNAL_OPENHC_PATH is board/).
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/figlet/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-motd/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-splash/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-ce/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-um/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/wpebackend-pvr/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/ohc-webview/Config.in"

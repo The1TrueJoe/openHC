@@ -1,0 +1,216 @@
+e1000: CE5300 has no PHY on the GbE MDIO bus — fake it
+
+The EA1/EA3 GbE (8086:2e6e) is claimed by mainline e1000 as e1000_ce4100, but
+on the CE5300 the MAC is wired back-to-back to a BCM53125 switch. There is no
+PHY on the MDIO bus at all, so the ce4100 PHY-address autodetect in
+e1000_probe() scans all 32 addresses, finds nothing, and bails:
+
+	/* Auto detect PHY address */
+	if (hw->mac_type == e1000_ce4100) {
+		for (i = 0; i < 32; i++) {
+			hw->phy_addr = i;
+			e1000_read_phy_reg(hw, PHY_ID2, &tmp);
+			if (tmp != 0 && tmp != 0xFF) break;
+		}
+		if (i >= 32) goto err_eeprom;
+	}
+
+err_eeprom returns the `err = -EIO` set further up, and prints nothing — which
+is exactly the symptom on hardware: a bare -EIO out of e1000_probe, no eth0,
+and no clue as to why. It is NOT an EEPROM problem despite the label; modern
+mainline no longer fails probe on a bad EEPROM checksum.
+
+Control4/Intel solve this out of tree with what they call "Internal Fake Phy
+Mode": PHY register access is short-circuited to a canned table, and the MAC is
+forced to a fixed speed/duplex because there is nothing to negotiate with.
+Confirmed on a live stock EA3 (3.12.74 vendor kernel):
+
+	e1000_init_hw_struct: SOC ID: 0xc40
+	GBE working in Internal Fake Phy Mode
+	e1000_copper_link_preconfig: Phy ID = 0x3625f20
+	e1000 0000:01:0c.0 eth0: (PCI:33MHz:32-bit) 00:0f:ff:94:ee:02
+
+This is that mechanism ported to mainline, from Control4's GPL drop (OS-3.3.1:
+intel_kernel_patches/00178129-e1000-driver-changes-consolidation.patch and
+c4_kernel_patches/0009-bcm53125-unmanaged-switch.patch). The canned register
+values, the 0x03625F20 PHY ID and the CTL_AUX bit are all theirs.
+
+Two deliberate simplifications against the vendor version:
+
+  * The vendor selects the mode from intelce_get_soc_info() plus IS_NYA() /
+    IS_DEVBOARD() out of ninjago_platform.h — none of which exists here (that
+    header is not even in the GPL drop). The SoC id they test for, 0xc40, is
+    the CE5300 host bridge's PCI device id, so probing for 8086:0c40 says the
+    same thing with no vendor headers. openHC builds only for known boards, so
+    their CE2600 GMUX-register autodetection is not worth porting too.
+
+  * hw->phy_type is set to e1000_phy_8211 rather than adding an
+    e1000_phy_53125 enum: mainline's gbe_dhg_phy_setup() already handles
+    e1000_phy_8211 by calling e1000_copper_link_rtl_setup(), which is exactly
+    what the vendor's 53125 case does.
+
+The fake PHY reports link permanently up. That matches Intel's base version;
+Control4 refine it to poll the real switch over SPI (spi_bcm53125_uplink_status)
+which needs a switch driver we do not have yet. Until then the carrier state on
+this board is a lie — the link is only as up as the switch says it is.
+
+The forced-speed path relies on CTRL's speed bits as CEFDK left them, which is
+what the vendor driver does too. If link comes up but no traffic passes, setting
+E1000_CTRL_SPD_1000 explicitly beside FRCSPD is the knob to reach for.
+
+Signed-off-by: openHC <openhc@localhost>
+---
+diff -u -r a/drivers/net/ethernet/intel/e1000/e1000_hw.c b/drivers/net/ethernet/intel/e1000/e1000_hw.c
+--- a/drivers/net/ethernet/intel/e1000/e1000_hw.c	2026-08-26 16:18:57
++++ b/drivers/net/ethernet/intel/e1000/e1000_hw.c	2026-08-26 16:18:57
+@@ -952,6 +952,28 @@
+ 	return E1000_SUCCESS;
+ }
+ 
++/**
++ * e1000_phy_reg_fake - canned PHY register values for the CE5300
++ * @reg_addr: address of the PHY register to read
++ * @phy_data: pointer to the value on the PHY register
++ *
++ * openHC: there is no PHY on this board's MDIO bus, so serve the registers the
++ * MAC's link code cares about from a table. The values are Control4/Intel's
++ * (GPL drop, e1000_read_phy_reg_fake): 0x01 reports link up and autoneg
++ * complete, 0x02/0x03 give the PHY ID the driver identifies by.
++ */
++static void e1000_phy_reg_fake(u32 reg_addr, u16 *phy_data)
++{
++	static const u16 fake[] = {
++		[0x00] = 0x3100, [0x01] = 0x796d, [0x02] = 0x001C,
++		[0x03] = 0xC912, [0x04] = 0x05E1, [0x05] = 0x01E0,
++		[0x06] = 0x0004, [0x07] = 0x2001, [0x09] = 0x0300,
++		[0x0A] = 0x3C00, [0x0F] = 0x3000, [0x11] = 0xAC00,
++	};
++
++	*phy_data = (reg_addr < ARRAY_SIZE(fake)) ? fake[reg_addr] : 0x0000;
++}
++
+ static s32 gbe_dhg_phy_setup(struct e1000_hw *hw)
+ {
+ 	s32 ret_val;
+@@ -964,6 +986,16 @@
+ 			e_dbg("e1000_copper_link_rtl_setup failed!\n");
+ 			return ret_val;
+ 		}
++		/* openHC: CE5300 internal fake-PHY mode - the MAC talks to the
++		 * BCM53125, not a PHY. The vendor driver sets CTL_AUX bit 1
++		 * here; do the same.
++		 */
++		if (hw->fake_phy) {
++			ctrl_aux = er32(CTL_AUX);
++			ctrl_aux |= 0x2;
++			ew32(CTL_AUX, ctrl_aux);
++			E1000_WRITE_FLUSH();
++		}
+ 		break;
+ 	case e1000_phy_8201:
+ 		/* Set RMII mode */
+@@ -1012,7 +1044,23 @@
+ 	 */
+ 	if (hw->mac_type > e1000_82543) {
+ 		ctrl |= E1000_CTRL_SLU;
+-		ctrl &= ~(E1000_CTRL_FRCSPD | E1000_CTRL_FRCDPX);
++		if (hw->fake_phy) {
++			/* openHC: nothing to autonegotiate with - the switch
++			 * sits back-to-back with the MAC at a fixed rate, so
++			 * force speed and duplex. Naming the PHY here also
++			 * short-circuits e1000_detect_gig_phy(), which returns
++			 * early once phy_id is non-zero; without that it would
++			 * go to the MDIO bus and fail. e1000_phy_8211 is used
++			 * rather than a new enum because gbe_dhg_phy_setup()
++			 * already handles it exactly as the vendor handles the
++			 * 53125: by calling e1000_copper_link_rtl_setup().
++			 */
++			ctrl |= (E1000_CTRL_FRCSPD | E1000_CTRL_FRCDPX);
++			hw->phy_id = BCM53125_PHY_ID;
++			hw->phy_type = e1000_phy_8211;
++		} else {
++			ctrl &= ~(E1000_CTRL_FRCSPD | E1000_CTRL_FRCDPX);
++		}
+ 		ew32(CTRL, ctrl);
+ 	} else {
+ 		ctrl |=
+@@ -2787,6 +2835,11 @@
+ 	u32 ret_val;
+ 	unsigned long flags;
+ 
++	if (hw->fake_phy) {
++		e1000_phy_reg_fake(MAX_PHY_REG_ADDRESS & reg_addr, phy_data);
++		return E1000_SUCCESS;
++	}
++
+ 	spin_lock_irqsave(&e1000_phy_lock, flags);
+ 
+ 	if ((hw->phy_type == e1000_phy_igp) &&
+@@ -2923,6 +2976,10 @@
+ {
+ 	u32 ret_val;
+ 	unsigned long flags;
++
++	/* openHC: no PHY to write to; swallow it the way the vendor does. */
++	if (hw->fake_phy)
++		return E1000_SUCCESS;
+ 
+ 	spin_lock_irqsave(&e1000_phy_lock, flags);
+ 
+diff -u -r a/drivers/net/ethernet/intel/e1000/e1000_hw.h b/drivers/net/ethernet/intel/e1000/e1000_hw.h
+--- a/drivers/net/ethernet/intel/e1000/e1000_hw.h	2026-08-26 16:18:57
++++ b/drivers/net/ethernet/intel/e1000/e1000_hw.h	2026-08-26 16:18:57
+@@ -1345,6 +1345,12 @@
+ 	u32 phy_id;
+ 	u32 phy_revision;
+ 	u32 phy_addr;
++	/* openHC: CE5300 (EA1/EA3) has no PHY on the GbE MDIO bus - the MAC is
++	 * wired back-to-back to a BCM53125 switch. When set, PHY register
++	 * access is served from a canned table instead of the MDIO bus, and the
++	 * MAC runs at a forced speed/duplex.
++	 */
++	bool fake_phy;
+ 	u32 original_fc;
+ 	u32 txcw;
+ 	u32 autoneg_failed;
+@@ -2899,6 +2905,8 @@
+ #define M88E1118_E_PHY_ID  0x01410E40
+ #define L1LXT971A_PHY_ID   0x001378E0
+ 
++/* openHC: reported by the CE5300 fake PHY - the switch behind the MAC. */
++#define BCM53125_PHY_ID    0x03625F20
+ #define RTL8211B_PHY_ID    0x001CC910
+ #define RTL8201N_PHY_ID    0x8200
+ #define RTL_PHY_CTRL_FD    0x0100 /* Full duplex.0=half; 1=full */
+diff -u -r a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
+--- a/drivers/net/ethernet/intel/e1000/e1000_main.c	2026-08-26 16:18:57
++++ b/drivers/net/ethernet/intel/e1000/e1000_main.c	2026-08-26 16:18:57
+@@ -853,6 +853,28 @@
+ {
+ 	struct pci_dev *pdev = adapter->pdev;
+ 
++	/* openHC: the CE5300 (EA1/EA3) wires this MAC back-to-back to a
++	 * BCM53125 switch, with no PHY on the MDIO bus at all. Without this the
++	 * ce4100 PHY-address autodetect below scans all 32 addresses, finds
++	 * nothing, and e1000_probe() returns a bare -EIO with nothing logged.
++	 *
++	 * The vendor driver picks the mode from intelce_get_soc_info() == 0xc40
++	 * plus IS_NYA()/IS_DEVBOARD() out of ninjago_platform.h, which is not in
++	 * their GPL drop. 0xc40 is the CE5300 host bridge's PCI device id, so
++	 * ask the bus directly and skip the vendor headers.
++	 */
++	if (pdev->device == 0x2E6E) {
++		struct pci_dev *hb;
++
++		hb = pci_get_device(PCI_VENDOR_ID_INTEL, 0x0C40, NULL);
++		if (hb) {
++			hw->fake_phy = true;
++			pci_dev_put(hb);
++			dev_info(&pdev->dev,
++				 "CE5300: no GbE PHY, using fake-PHY mode\n");
++		}
++	}
++
+ 	/* PCI config space info */
+ 	hw->vendor_id = pdev->vendor;
+ 	hw->device_id = pdev->device;

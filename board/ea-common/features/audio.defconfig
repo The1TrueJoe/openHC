@@ -1,0 +1,40 @@
+# Audio: ALSA userspace plus the two network audio receivers.
+#
+# Pairs with linux/audio.fragment, appended automatically by build/build.sh.
+#
+# The kernel half (CE5300 I2S + ADAU1451) is openHC's own; see the fragment.
+# This half is what makes the box useful: a machine that appears on the network
+# as an AirPlay speaker and a Spotify Connect device.
+
+# alsa-lib + the tools to prove the card works at all: aplay, amixer, speaker-test.
+# speaker-test in particular is how you tell "no sound" from "no card".
+BR2_PACKAGE_ALSA_LIB=y
+BR2_PACKAGE_ALSA_LIB_PCM=y
+BR2_PACKAGE_ALSA_LIB_MIXER=y
+BR2_PACKAGE_ALSA_UTILS=y
+BR2_PACKAGE_ALSA_UTILS_APLAY=y
+BR2_PACKAGE_ALSA_UTILS_AMIXER=y
+BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
+
+# AirPlay. shairport-sync advertises the box over mDNS and renders to ALSA.
+#
+# This is AirPlay 1: AirPlay 2 additionally needs nqptp, which Buildroot 2024.02
+# does not package. AirPlay 1 still works from every Apple device; it just does
+# not join multi-room groups. Revisit if/when nqptp lands upstream.
+# (There is no _ALSA sub-option: shairport-sync always builds --with-alsa, and
+# it selects openssl for itself. A BR2_PACKAGE_SHAIRPORT_SYNC_ALSA=y line here
+# would be a symbol that does not exist, which kconfig discards without a word --
+# the same silent-nothing bug as CONFIG_PWM_CE5300 and CONFIG_NET_DSA_B53.)
+BR2_PACKAGE_SHAIRPORT_SYNC=y
+
+# ...and the mDNS responder it announces through. openHC already advertises its
+# own _openhc._tcp service, but that is a small self-contained responder; AirPlay
+# needs a full one that other implementations will talk to.
+BR2_PACKAGE_AVAHI=y
+BR2_PACKAGE_AVAHI_DAEMON=y
+BR2_PACKAGE_AVAHI_LIBDNSSD_COMPATIBILITY=y
+BR2_PACKAGE_DBUS=y
+
+# Spotify Connect. Not in Buildroot -- packages/librespot is openHC's own, built
+# with the same Rust toolchain as the rest of packages/.
+BR2_PACKAGE_LIBRESPOT=y

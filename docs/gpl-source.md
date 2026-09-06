@@ -133,6 +133,33 @@ This was a one-shot measurement, not something the firmware ships a tool for —
 the answer does not change at runtime, and a `/dev/mem` poker is not worth
 carrying on every box for a constant.
 
+> **⚠ CORRECTION (proven on hardware 2026-08-26) — this reads the WRONG register,
+> and the conclusion does NOT generalise past the EA1.**
+>
+> The measurement above is at `dfx_mbar + 0x14`, which is the **pre-patch Intel**
+> location. Control4's `cefdk` patch `0022-s3-boot-verify-fix` MOVED the fuse
+> check to **`dfx_mbar + 0x60` bit 0** and dropped the `rev_id == 4` escape hatch:
+>
+> ```c
+> if ((*(volatile uint32_t *)(dfx_mbar + 0x60) & BIT(0)) ||  /* SEC_BOOT_FUSE=1 */
+>     cp_strap_sts_0().strap.sec_boot)                        /* SEC_BOOT_STRAP */
+>     return true;                                            /* signature enforced */
+> ```
+>
+> So `+0x14 == 0` says nothing about the shipping check. On an **EA3 (board v2)**
+> the fuse is **BLOWN**: writing an openHC kernel to the eMMC container and doing a
+> normal boot gives `VERIFY_S3(kernel bzImage): FAIL` and a SOFT_HANG loop. The
+> EA1 (board v1) still boots unsigned kernels, so the fuse likely differs by board
+> revision — an EA1-v1-vs-EA3-v2 change, not an EA-family constant.
+>
+> **This does NOT block a takeover.** Only CEFDK's *normal boot* (`bootkernel`)
+> verifies. The shell `bootlinux` command does not, and CEFDK's `script` autorun
+> runs before the verifying path — so an unsigned kernel boots and *self-boots*
+> persistently regardless of the fuse. See `docs/ea3-recon.md` (secure-boot
+> section) and `tools/ohc-ea-takeover.py`. Control4 also swapped Intel's RSA key
+> for their own (`cefdk` patch `0010`), so signing a kernel is not an option
+> either way — but it is not needed.
+
 ## Verdict
 
 | | Can we build it? | Can we redistribute it? |

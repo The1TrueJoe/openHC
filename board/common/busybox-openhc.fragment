@@ -1,0 +1,11 @@
+# openHC busybox additions. The initramfs /init (board/common/rootfs-overlay/init)
+# pivots to p1 with switch_root, so that applet must exist — do not rely on the
+# upstream default having it on. mount --move and mkdir are also load-bearing there.
+CONFIG_SWITCH_ROOT=y
+CONFIG_MOUNT=y
+CONFIG_FEATURE_MOUNT_FLAGS=y
+CONFIG_FEATURE_MOUNT_LABEL=y
+CONFIG_MKDIR=y
+CONFIG_UMOUNT=y
+CONFIG_SLEEP=y
+CONFIG_SEQ=y

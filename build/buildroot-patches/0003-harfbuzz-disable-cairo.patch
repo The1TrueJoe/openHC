@@ -1,0 +1,57 @@
+Subject: harfbuzz: do not build the cairo integration
+
+harfbuzz's cairo support is for its own utilities (hb-view and friends), which
+this configuration does not build. The shaping API that consumers use does not
+involve cairo, and WebKit depends on harfbuzz and cairo separately rather than
+on the bridge between them.
+
+Leaving it enabled makes meson search for cairo and, failing to find it, fall
+through to a wrap-based subproject download that Buildroot disables:
+
+  meson.build:194:16: ERROR: Automatic wrap-based subproject downloading is disabled
+
+so a cairo that is built but not visible to pkg-config becomes a hard build
+failure over a feature nothing uses.
+
+WHY cairo was invisible to pkg-config has since been found, and it was not
+harfbuzz's fault: the DDK's egl.pc declared Requires: x11 dri2proto glproto
+xext xdamage xfixes xxf86vm, cairo-gl put "Requires: egl" into cairo.pc, and
+pkg-config resolves Requires transitively and then fails -- so every
+`pkg-config cairo` in the tree errored out naming X11. sgx545-um now strips
+those lines at install time.
+
+That makes this patch very likely redundant. It is kept for now because
+removing it cannot be tested incrementally: harfbuzz is already built in the
+output cache, so dropping the patch would change nothing until the next
+from-scratch build. Drop it there and see whether harfbuzz finds cairo on its
+own -- if it does, delete this file.
+
+--- a/package/harfbuzz/harfbuzz.mk	2026-08-28 15:18:08
++++ b/package/harfbuzz/harfbuzz.mk	2026-08-28 15:18:08
+@@ -44,12 +44,21 @@
+ 	-Dexperimental_api=false \
+ 	-Dfuzzer_ldflags=""
+ 
+-ifeq ($(BR2_PACKAGE_CAIRO),y)
+-HARFBUZZ_DEPENDENCIES += cairo
+-HARFBUZZ_CONF_OPTS += -Dcairo=enabled
+-else
++# harfbuzz's cairo integration exists for its own utilities (hb-view and
++# friends), which this configuration does not build. The library API that
++# consumers actually use -- shaping -- does not involve cairo at all, and
++# WebKit depends on harfbuzz and cairo separately rather than on the bridge
++# between them.
++#
++# Keeping it enabled means meson looks for cairo and, if it cannot see it,
++# falls through to a wrap-based subproject download, which Buildroot disables:
++#
++#   meson.build:194:16: ERROR: Automatic wrap-based subproject downloading
++#                              is disabled
++#
++# so a cairo that is present but not visible to pkg-config turns into a hard
++# failure over a feature nothing uses.
+ HARFBUZZ_CONF_OPTS += -Dcairo=disabled
+-endif
+ 
+ ifeq ($(BR2_PACKAGE_FREETYPE),y)
+ HARFBUZZ_DEPENDENCIES += freetype

@@ -44,6 +44,10 @@ loop() {
             logger -t ohc-netmon "$UPLINK link down — Wi-Fi fallback" 2>/dev/null || true
             /etc/init.d/S41wifi-ap start     # join saved network, else raise setup AP
         fi
+        # The address on screen just became wrong either way -- redraw it.
+        # (The wired branch also redraws via S40net; doing it once here covers
+        # both and costs a fraction of a second.)
+        [ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash restart >/dev/null 2>&1
     done
 }
 

@@ -1,0 +1,186 @@
+# EA3-only kernel config, applied on top of board/ea-common/linux/common.fragment.
+#
+# The EA3 is the same computer as the EA1 (CE5310, 1.5 GB, same eMMC layout and
+# bootloader), so almost everything it needs is already in the common fragment.
+# Two things differ, and both simplify the build:
+#
+#   1. THERE IS NO WI-FI on this board. No ath9k, no /sys/class/ieee80211, no
+#      wlan interface — see docs/ea3-recon.md. The wireless stack is dropped
+#      entirely, which also buys back image size against CEFDK's ~7 MB
+#      bootlinux copy window.
+#
+#   2. REACHABILITY IS WIRED, and it is the only path. e1000 is enabled in the
+#      common fragment. TESTED on hardware: 7.1.8 boots to a login prompt on
+#      this board, but e1000 probe fails with a bare -EIO and there is no eth0.
+#      STILL UNSOLVED. It is not a host-bridge-window problem — that theory was
+#      tried, `nocrs` was removed on the strength of it, and the only result was
+#      an earlier hang (see the command line at the bottom of this file).
+
+# No radio on this board. Explicitly off rather than merely absent, so the
+# inherited i386 defconfig cannot drag the wireless stack back in.
+# CONFIG_WLAN is not set
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
+
+# ── BCM53125 managed switch, via DSA ──────────────────────────────────────
+#
+# The EA3's two rear RJ45s are ports on a Broadcom BCM53125 sitting on SPI
+# (spi0.1), not on MDIO; the e1000 MAC is the CPU port behind it. Bringing the
+# switch up under DSA turns those two jacks into their own netdevs (lan1/lan2)
+# alongside the master eth0, which is the point of doing this at all — the
+# vendor's out-of-tree spi-bcm53125 driver exposes no such thing.
+#
+# THREE PIECES ARE NEEDED AND ALL THREE ARE HERE:
+#   1. the SPI master        — spi-pxa2xx-pci binds PCI 8086:2e6a (CE4100 port),
+#                              which is the same function the CE5310 exposes
+#   2. the switch driver     — b53 with its SPI binding
+#   3. board glue            — ea3/patches/linux/0003 registers the switch as an
+#                              SPI device at chip-select 1 and hands DSA the
+#                              port map, because there is no DTB to describe it
+#
+# Piece 3 is the unverified one. See the patch header before trusting this.
+
+# ── BCM53125 switch: NOW ENABLED ────────────────────────────────────────────
+# The kernel side is ea-common/linux/switch.fragment and the board glue is
+# ea-common/drivers/spi/spi-ea-b53-board.c, both pulled in by the
+# 'switch' entry in board/ea3-v2/ohc.features. The glue's old compile failure
+# (dsa_chip_data moved out of <net/dsa.h>) is fixed. Port 1's DSA bring-up is
+# still unproven on hardware — S40net falls back to the master if DSA does not
+# attach, so the board stays reachable through the primary jack regardless.
+
+# FALLBACK, AND ITS LIMIT. Turning CONFIG_NET_DSA off gets you back to plain
+# e1000 on eth0, which does reach the network — but only through ONE of the two
+# jacks. Measured on a live EA3: with the cable in the primary jack (switch
+# port 2) the box is reachable; moved to the other jack (port 1) it goes
+# completely dark, while that port's MIB counters still climb (1.4 MB received,
+# 4565 multicast frames) and its TxOctets stays at exactly 0.
+#
+# So port 1 links and receives at the PHY, and the switch simply never forwards
+# it to the CPU port. The stock configuration isolates that jack. This is the
+# argument FOR the DSA work rather than against it: without a switch driver the
+# second RJ45 is unusable, and no amount of e1000 configuration changes that.
+
+# --- kernel command line (EA3) ---
+# `nocrs` IS REQUIRED here, same as the EA1 — this was tested both ways.
+#
+# The ACPI _CRS on this SoC is deficient: the only memory window it declares for
+# the root bus is a 48 KB TPM range, and it never mentions the 0xc0000000-
+# 0xdfffffff space where every on-SoC device actually lives. Boot WITHOUT nocrs
+# and you get:
+#
+#     pci_bus 0000:00: root bus resource [mem 0xfed40000-0xfed4bfff window]
+#     pci 0000:00:01.0: bridge window [mem 0xc0000000-0xdfffffff]:
+#                       can't claim; no compatible bridge window
+#     ... 70 x "can't claim" ...
+#     <hang at t=1.02s, before userspace>
+#
+# With nocrs the kernel derives windows from E820 and the root bus gets
+# [mem 0x00000000-0xffffffff], which covers everything, and the board boots to a
+# login prompt.
+#
+# NOTE on the e1000 -EIO: SOLVED. It was not a host-bridge-window problem. The
+# CE5300 GbE has no PHY on the MDIO bus — the MAC is wired back-to-back to the
+# BCM53125 — so the ce4100 PHY-address autodetect scanned all 32 addresses,
+# found nothing, and e1000_probe() returned a bare -EIO with nothing logged.
+# board/ea-common/patches/linux/0003-e1000-ce5300-fake-phy.patch ports Control4's
+# "fake PHY" mode from the GPL drop. PROVEN on hardware 2026-08-26 via bootlinux:
+#   e1000 0000:01:0c.0: CE5300: no GbE PHY, using fake-PHY mode
+#   e1000: eth0 NIC Link is Up 1000 Mbps Full Duplex
+# RAM reclaim -- PROVEN ON HARDWARE 2026-08-31.
+# MemTotal 190688 kB -> 1807608 kB (1765 MB total, 1693 MB available), a 9.5x
+# increase. ACPI clean, zero kernel errors, boots to userspace.
+#
+# It has to be memmap=exactmap. The additive form does NOT work here and was
+# measured failing: memmap=256M@0x10000000 parsed fine (the kernel even printed
+# "user-defined physical RAM map") and changed nothing, because e820
+# sanitisation resolves overlaps in favour of the HIGHER type -- CEFDK's
+# "reserved" (2) beats the RAM (1) being added. exactmap replaces the map
+# outright, so there is no overlap to lose.
+#
+# Every entry below is load-bearing:
+#   68K@0        )  low memory, reproduced faithfully
+#   60K#0x11000  )  THE ACPI TABLES. Claiming this as RAM (an earlier attempt
+#                )  used a blanket memmap=640K@0) gives
+#                )     ACPI Error: AE_NO_ACPI_TABLES
+#                )  and the box dies just after, because ACPI is what routes
+#                )  the interrupts. It boots to 706 MB and then hangs.
+#   512K@0x20000 )  rest of low memory
+#   255M@1M      )  the region CEFDK gave us (0x100000-0xc7fffff) MERGED with
+#                )  the 0x0c800000-0x0fffffff gap above it -- contiguous to 256M
+#   1536M@0x10000000 ) the reclaim, out of the 1.8 GB media carve-out. Ends at
+#                )  0x70000000, leaving 128 MB of margin before the 0x78000000
+#                )  stop line and far below the framebuffer at 0x7fc00000.
+#
+# Do NOT widen past 0x78000000. The framebuffer must not become System RAM or
+# ce5300-fb refuses to probe and the display goes; and the region just under it
+# is where CEFDK keeps structures the box needs in order to reboot.
+#
+# Note this crosses the 32-bit lowmem boundary: the kernel reports ~934 MB of
+# highmem. Userspace is unaffected; kernel allocations stay in lowmem.
+#
+# EA-3 v2 ONLY. The 199M@1M figure describes THIS board's map; a board whose
+# CEFDK hands out a different split needs its own numbers, and a memmap past
+# the end of real DRAM is unrecoverable remotely.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
+
+# --- RAM: CEFDK hides 90% of it -------------------------------------------
+#
+# MEASURED on hardware 2026-08-28. The board has 2 GB of DDR3 fitted and Linux
+# boots with MemTotal = 190720 kB. The missing memory is not missing, it is
+# withheld: CEFDK's e820 declares
+#
+#   [mem 0x00100000-0x0c7fffff]  System RAM       <- 200 MB, all Linux gets
+#   [mem 0x0c800000-0x7fffffff]  device reserved  <- 1.8 GB, carved out
+#
+# That carve-out is for the Intel CE media stack -- 1080p decode buffers, demux
+# rings, display planes -- which openHC does not load and will never load. The
+# reference design for this SoC is a set-top box; we are not one.
+#
+# Evidence the memory is real and idle, not merely address space:
+#   - /proc/iomem shows exactly one claim in the whole 1.8 GB: our own
+#     framebuffer, ce5300-fb at 0x7fc00000. simplefb draws through it and the
+#     panel shows the picture, so DRAM at 2 GB minus 4 MB demonstrably works.
+#   - A word at 0x40000000 (1 GB) took 0xa5a5a5a5 and 0x5a5a5a5a and read each
+#     back, then restored; the neighbouring word was undisturbed, so the
+#     decode is real and nothing is aliasing down into low memory.
+#   - Much of the range still holds a boot-time address-walking test pattern
+#     (0x30000000 reads 0x30000000), i.e. nothing has written it since CEFDK.
+#
+# This matters because it decides what can run here. WPE WebKit does not fit in
+# 186 MB; it fits comfortably in 1.2 GB. See docs/sgx545-3d.md.
+#
+# memmap=nn@ss forces a range back to E820 System RAM, and it is additive --
+# without "exactmap" the rest of the map is left alone. The line below claims
+# 1 GB starting at 256 MB, deliberately stopping well short of the framebuffer
+# at 0x7fc00000:
+#
+#CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs memmap=1024M@0x10000000"
+#
+# HARD LIMIT: the range must never reach the framebuffer at 0x7fc00000.
+# ce5300-fb refuses to probe if its buffer has become System RAM --
+#
+#     if (page_is_ram(PFN_DOWN(fb_base))) {
+#             pr_err("ce5300-fb: 0x%lx is System RAM, refusing\n", fb_base);
+#
+# -- so a memmap= that swallows it costs you the display, not just the memory.
+# It fails loudly with that exact line in dmesg, which is the good case; the
+# bad case is widening far enough to also take the CEFDK structures the box
+# needs to reboot. 1024M@0x10000000 ends at 0x50000000, well clear.
+#
+# SUPERSEDED: the additive memmap= line below does not work on this hardware --
+# see the CONFIG_CMDLINE above for what does, and why. Kept only as a record of
+# what was tried.
+#
+# It should be turned on with the serial console in front
+# of you. If the reclaimed range turns out to be live after all, the kernel
+# does not warn -- it corrupts and panics, and this board has no remote
+# recovery: getting back in needs the factory-restore button and the CEFDK
+# shell. Bring it up in stages (256M, then 1024M, then out to 0x78000000, the
+# last address before the uninitialised region under the framebuffer) and run
+# something memory-heavy at each step before widening.
+#
+# EA-3 v2 only. Do not promote this to ea-common: the EA-1 boards have not been
+# measured and a memmap= past the end of real DRAM is unrecoverable.
+
+# eMMC storage (sdhci-pci + ext4) comes from ea-common/linux/emmc.fragment
+# via the 'emmc' entry in board/ea3-v2/ohc.features.

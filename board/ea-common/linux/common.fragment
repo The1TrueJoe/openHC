@@ -7,7 +7,28 @@
 # --- serial console (CEFDK's port) ---
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
-CONFIG_SERIAL_8250_NR_UARTS=4
+# 8 slots, not 4, or the REAL UARTs never register.
+#
+# The CE5300 puts its UARTs on a PCI function (8086:2e66) with THREE BARs --
+# 0xdffe0200, 0xdffe0300, 0xdffe0b00. Linux saw none of them:
+#
+#     serial 0000:01:0b.0: Couldn't register serial port 0, irq 25,
+#                          type 3, error -28
+#
+# -28 is ENOSPC. Not a hardware fault and not a resource conflict: the 8250 core
+# has only NR_UARTS slots, and the four LEGACY ISA declarations
+# (0x3f8/0x2f8/0x3e8/0x2e8, from SERIAL_PORT_DFNS) had already taken all four.
+# The PCI ports -- the ones with a real IRQ (25), which can actually take an RX
+# interrupt -- were pushed out.
+#
+# This is why every hunt for the Zigbee radio on ttyS1..3 came back empty. Those
+# are the legacy declarations; they enumerate with `irq = 0`, and a port with no
+# IRQ transmits fine but never receives. The radio was never on them.
+#
+# RUNTIME_UARTS must be raised as well -- it is what the core honours at probe
+# time, and leaving it at 4 reproduces the same ENOSPC.
+CONFIG_SERIAL_8250_NR_UARTS=8
+CONFIG_SERIAL_8250_RUNTIME_UARTS=8
 CONFIG_CMDLINE_BOOL=y
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_CMDLINE itself is PER-BOARD — see each board's fragment. It used to
@@ -31,7 +52,16 @@ CONFIG_RD_GZIP=y
 CONFIG_KERNEL_XZ=y
 # CONFIG_KERNEL_GZIP is not set
 CONFIG_CC_OPTIMIZE_FOR_SIZE=y
-# CONFIG_USB_SUPPORT is not set
+# USB: enabled across openHC. The EA family carries three EHCI controllers
+# (PCI 192e:0101) and the Zigbee EM357 NCP hangs off a CP2104 USB-serial
+# (10c4:ea60 -> /dev/ttyUSB0), so USB + cp210x are what make the radio reachable.
+CONFIG_USB_SUPPORT=y
+CONFIG_USB=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_EHCI_PCI=y
+CONFIG_USB_ACM=y
+CONFIG_USB_SERIAL=y
+CONFIG_USB_SERIAL_CP210X=y
 # CONFIG_SCSI is not set
 # CONFIG_ATA is not set
 # CONFIG_MMC is not set
@@ -64,14 +94,50 @@ CONFIG_E1000=y
 # a modern (7.1.x) kernel.
 # ============================================================================
 
-# All-builtin, no loadable modules (openSpeakerPoint approach). The image is
-# self-contained — every driver we need is =y below — so there are no .ko files
-# and no modpost step. This also sidesteps a hard i386-7.1.8 build failure:
-# the musl toolchain compiles .ko modules with the stack protector, but the
-# guard symbol __stack_chk_guard isn't exported to modules, so modpost dies
-# ("__stack_chk_guard undefined" for efivarfs.ko / x86_pkg_temp_thermal.ko).
-# vmlinux itself links fine, so all-builtin is clean.
-CONFIG_MODULES=n
+# Loadable modules ARE enabled, and the reason they once were not no longer
+# applies. The old note here said modules could not be built because the musl
+# toolchain emits .ko code referencing __stack_chk_guard, which is not exported
+# to modules, so modpost died on efivarfs.ko / x86_pkg_temp_thermal.ko. But the
+# stack protector was subsequently turned OFF entirely (see STACKPROTECTOR
+# below, disabled for an unrelated per-CPU canary panic), so nothing emits that
+# reference any more and the failure is gone.
+#
+# This matters for a hard limit, not for tidiness. CEFDK's bootlinux copies the
+# protected-mode kernel to 0x100000 while its own loader sits at ~0x813000, so
+# a bzImage over ~7.07 MiB overwrites the loader mid-copy and the board does not
+# boot — a failure that costs an ID-button recovery. Being able to push large
+# subsystems (SGX/DRM/framebuffer above all) out to /lib/modules on p1 is the
+# only real headroom there is; everything else is trimming.
+#
+# What must stay BUILT-IN: anything needed to reach the rootfs (e1000, sdhci,
+# ext4, 8250), and the board glue whose initcall ordering matters —
+# spi-ea-b53-board registers its board info at subsys_initcall, BEFORE the SPI
+# controller registers, which a module loaded from userspace cannot do.
+# STATUS: not enabled yet, but the old reason is dead and the new one is
+# tractable. Flipping this to =y builds: the musl __stack_chk_guard/modpost
+# failure that originally forced =n is gone, because STACKPROTECTOR was later
+# turned off entirely. What breaks instead is scope — with MODULES=n every
+# `=m` symbol inherited from the i386 defconfig is silently dropped, and turning
+# modules on resurrects the whole lot at once (drivers/gpu/drm/i915 among them,
+# which this board has no use for: the EA3's GPU is a PowerVR SGX545).
+#
+# So enabling modules is a config-curation job, not a one-line flip: turn it on
+# and then explicitly disable the module families we do not want. Worth doing —
+# it is the only real headroom under CEFDK's ~7.07 MiB bootlinux ceiling (see
+# the image-size note at the top), and it is what lets SGX/DRM/framebuffer live
+# on p1 instead of inside the bzImage.
+# Modules ON for the EA family.
+#
+# It was =n on the principle that a fixed appliance has nothing to load. That
+# changed when 3D arrived: CONFIG_DRM drags in 417 objects of core and
+# KMS/DisplayPort/HDCP helpers, and builtin that costs ~1.25 MiB of bzImage
+# against CEFDK bootlinux's ~8.07 MB copy window -- the one genuinely scarce
+# resource on this board. As modules the same code lives in the rootfs, which
+# has ~438 MB spare.
+#
+# It also makes the GPU driver iterable: rmmod/insmod instead of a reflash.
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
 
 # Disable the kernel stack protector. The Buildroot musl toolchain's SSP canary
 # model and i386-7.1.8's per-CPU canary setup disagree: the secondary CPU's
@@ -153,15 +219,40 @@ CONFIG_MODULES=n
 # CONFIG_CRYPTO_HW is not set
 
 # ==== CE5310 SoC bring-up (headless controller I/O) ====
-# gpio-sodaville binds PCI 8086:2e67 by ID (no DTB). Both it and i2c-pxa
-# depend on OF, so OF must be a plain bool — NOT flattree, NOT the CE4100
-# platform (bootlinux passes no DTB; devices enumerate via PCI/ACPI as usual).
+# The CE5300 GPIO controller is PCI 8086:2e67. Mainline's gpio-sodaville binds
+# it but with the CE4100 layout (12 lines) — WRONG for the CE5300, which has 4
+# banks x 32 = 128 lines carrying the board's reset/LED pins. So sodaville is
+# OFF and our own gpio-intelce driver (drivers/gpio/gpio-intelce.c, wired in by
+# board/external.mk's OHC_KERNEL_DRIVERS_HOOK) binds 8086:2e67 instead and exposes
+# all 128. Both it and i2c-pxa depend on OF, so OF must be a plain bool — NOT
+# flattree, NOT the CE4100 platform (bootlinux passes no DTB; devices enumerate
+# via PCI/ACPI as usual).
 CONFIG_OF=y
 # CONFIG_OF_EARLY_FLATTREE is not set
 # CONFIG_X86_INTEL_CE is not set
 CONFIG_GPIOLIB=y
-CONFIG_GPIO_SODAVILLE=y
+
+# Front-panel LEDs: six GPIO-backed LEDs described by
+# ea-common/drivers/leds/leds-ea-board.c (map recovered from the stock
+# kernel — see that patch). Needs gpio-intelce above, because three of them sit
+# on GPIOs 99-102, far past what gpio-sodaville exposed.
+CONFIG_NEW_LEDS=y
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_GPIO=y
+CONFIG_LEDS_TRIGGERS=y
+CONFIG_LEDS_TRIGGER_HEARTBEAT=y
+CONFIG_LEDS_TRIGGER_NETDEV=y
+# CONFIG_GPIO_SODAVILLE is not set
+# GPIO from userspace: libgpiod 1.6.4 (Buildroot 2024.02.9) speaks the v1 chardev
+# ABI, which 7.1.8 gates behind CONFIG_GPIO_CDEV_V1 (deprecated, default off).
+# Without it gpioset/gpioget/gpioinfo all fail with EINVAL on a chip that is
+# otherwise working — measured on an EA3, where gpio-intelce probes fine and
+# still nothing in userspace could read or drive a line. SYSFS_LEGACY keeps the
+# classic /sys/class/gpio/export around as a fallback. Same block as ioxv1/ca1.
 CONFIG_GPIO_SYSFS=y
+CONFIG_GPIO_SYSFS_LEGACY=y
+CONFIG_GPIO_CDEV=y
+CONFIG_GPIO_CDEV_V1=y
 
 # I2C: i2c-pxa (REGS_CE4100 variant) behind PCI 8086:2e68. Enumerates only with
 # the i2c-pxa-pci "no DT" patch (patches/linux/0001). COMMON_CLK MUST stay off:
@@ -170,14 +261,120 @@ CONFIG_GPIO_SYSFS=y
 CONFIG_I2C=y
 CONFIG_I2C_PXA=y
 CONFIG_I2C_CHARDEV=y
-# CONFIG_COMMON_CLK is not set
+
+# COMMON_CLK IS NOW ON, and that reverses what this file used to say.
+#
+# The old line here was `# CONFIG_COMMON_CLK is not set`, because with a real
+# clock framework i2c-pxa's unconditional devm_clk_get() became a real lookup,
+# this SoC registers no clock provider, and every adapter failed:
+#     pxa2xx-i2c ce4100-i2c.0: error -ENOENT: failed to get the clk
+#
+# That is fixed at the source. 0001-i2c-pxa-pci-enumerate-without-DT.patch now
+# registers a fixed-rate clock per adapter (clk_register_fixed_rate +
+# clk_register_clkdev), exactly as spi-pxa2xx-pci does for its own port, so the
+# lookup succeeds. Keeping COMMON_CLK off is no longer buying anything, and it
+# was blocking SPI entirely -- see below.
+CONFIG_COMMON_CLK=y
 
 # LM75 heatsink temp sensor on i2c-0 @ 0x48 -> /sys/class/hwmon/hwmon0/temp1_input.
 # (A DS1339 RTC also sits on i2c-0 @ 0x68 — hwclock candidate later.)
 CONFIG_HWMON=y
 CONFIG_SENSORS_LM75=y
 
-# Fan PWM: our pwm-ce5300 driver (patches/linux/0002) binds PCI 8086:089f.
+# Fan PWM framework. The driver itself is board/ea-common/drivers/pwm/pwm-ce5300.c
+# (binds PCI 8086:089f), copied in and registered as plain obj-y by
+# drivers/objs.mk — so there is deliberately NO CONFIG_PWM_CE5300 here. It used
+# to be set, but the symbol only existed in the Kconfig hunk of the old patch;
+# once the driver stopped being a patch the symbol vanished and kconfig would
+# discard the line without a word. Same class of bug as CONFIG_NET_DSA_B53*.
 CONFIG_PWM=y
 CONFIG_PWM_SYSFS=y
-CONFIG_PWM_CE5300=y
+
+# ── KERNEL SIZE BUDGET — READ BEFORE ADDING ANYTHING ──────────────────────
+#
+# CEFDK's `bootlinux` copies the kernel into a FIXED window:
+#
+#     0x813000 - 0x100000  =  7,417,856 bytes
+#
+# That is CEFDK's own code. It is not the eMMC autoscript, it cannot be
+# rewritten, and a kernel over it is silently TRUNCATED -- the box does not
+# complain, it just fails to boot, and getting back in costs a power cycle and
+# the factory-restore button.
+#
+# Measured 2026-08-31, x86_64, features = emmc only:
+#
+#     bzImage (XZ)   7,169,024      headroom: 248,832 bytes  (3.4%)
+#     .text          9.6 MB  |  .rodata 3.4 MB  |  .data 1.5 MB
+#
+# The config is ALREADY lean -- no netfilter, no IPv6, no Bluetooth, no
+# SCSI/ATA/MD, no DRM/sound/media, no ftrace, no debug info. There is no fat
+# left to cut. A 64-bit kernel on this board simply costs about 7 MB, and the
+# wall is at 7.4 MB.
+#
+# THEREFORE, AND THIS IS NOT A STYLE PREFERENCE:
+#
+#   *** New functionality goes in as a MODULE (=m), never built in (=y). ***
+#
+# CONFIG_MODULES is already on and, as of this writing, exactly ONE symbol in
+# the whole config is =m against 1370 that are =y. Every one of those 1370 is
+# in the image whether the board uses it or not. The switch, audio and SGX
+# feature fragments were all written as =y; re-enabling them as they stand
+# will overrun the window. Convert them to =m as they come back. Modules live
+# on the p1 rootfs, load after it mounts, and cost nothing here.
+#
+# Only things needed to REACH the rootfs must be built in: e1000, sdhci/mmc,
+# ext4, serial, PCI, ACPI.
+#
+# ESCAPE HATCH, if a genuinely large kernel is ever unavoidable: chain a small
+# bootstrap kernel (<5 MB, fits the window) that kexec's the real one from p1.
+# kexec has no such size limit. Considered and deliberately not built, because
+# modules solve the actual problem without a second boot stage.
+
+# Trims. Each is safe on this hardware and each buys back window.
+# This board has exactly ONE network interface: the CE5300's e1000 behind the
+# BCM53125. The others were inherited from the generic x86_64 defconfig and
+# have never had anything to bind to.
+# CONFIG_E1000E is not set
+# CONFIG_E1000E_HWTS is not set
+# CONFIG_SKY2 is not set
+# CONFIG_8139TOO is not set
+# CONFIG_R8169 is not set
+# Nothing on this box mounts an optical filesystem.
+# CONFIG_ISO9660_FS is not set
+
+# ── MTD / SPI-NOR: makes the eMMC autoscript rewritable ───────────────────
+#
+# The boot autoscript lives in SPI-NOR (mtd0 @ 0x91000) and hardcodes the
+# number of bytes to read for the kernel and initrd -- currently 5,642,240 and
+# 5,370,368. Those are smaller than any x86_64 image we build, so an install
+# is refused. Without MTD there is no /dev/mtd0 and the flasher cannot rewrite
+# the script, which is exactly the state this board was in: `cat /proc/mtd`
+# returned nothing at all.
+#
+# With the flash exposed, the autoscript can be rewritten to read the WHOLE
+# SLOT instead of a fixed count, which removes the script's ceiling for good
+# and leaves bootlinux's 7,417,856 as the only remaining wall.
+#
+# The SPI master is already driven here -- spi-pxa2xx-pci binds the CE4100 port
+# that this SoC also exposes, and it is what the BCM53125 hangs off. The flash
+# is the other chip select.
+#
+# BACK UP mtd0 BEFORE WRITING TO IT. A bad autoscript costs the button and the
+# CEFDK shell to recover.
+# SPI first: MTD_SPI_NOR is worthless without a master, and kconfig drops it
+# SILENTLY if SPI is off -- which is exactly what happened on the first attempt.
+# The build came out with CONFIG_MTD=y, CONFIG_MTD_BLOCK=y and no MTD_SPI_NOR at
+# all, because `# CONFIG_SPI is not set` was inherited and nothing said so.
+#
+# SPI_PXA2XX_PCI is a DERIVED symbol (`def_tristate SPI_PXA2XX && PCI &&
+# COMMON_CLK`), so it cannot be set here directly -- it is enabled by satisfying
+# its dependencies, which is why COMMON_CLK above is load-bearing.
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_PXA2XX=y
+
+CONFIG_MTD=y
+CONFIG_MTD_BLOCK=y
+CONFIG_MTD_SPI_NOR=y
+CONFIG_SPI_MEM=y
+# CONFIG_MTD_OF_PARTS is not set

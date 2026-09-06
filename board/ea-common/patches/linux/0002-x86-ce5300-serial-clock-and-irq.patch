@@ -1,0 +1,56 @@
+x86: CE5300 serial — real UART clock and the routed IRQ
+
+The CE5300's UART is clocked at 14.7456 MHz, not the 1.8432 MHz that
+arch/x86/include/asm/serial.h assumes for legacy COM ports. Two things follow,
+and both were measured on an EA3 before this was found in Control4's GPL kernel
+drop (intel_kernel_patches/00178086 and 00999901), which makes the same change:
+
+1. BASE_BAUD is 8x too small, so every divisor is 8x too small and the port
+   transmits 8x too fast. Ask for console=ttyS0,115200 and the wire runs at
+   921600. The boot log is then unreadable at the rate you asked for -- which
+   is exactly what it did, for the entire bring-up, and it made every failed
+   boot look like a silent hang. Control4's own comment on this:
+
+       /* The Intel Media SOC Gen3 has a high freqency clock. */
+       #define BASE_BAUD ( 14745600 / 16 )
+
+   Note mainline already knows the right number on the PCI path --
+   8250_pci's pbn_ce4100_1_115200 sets .base_baud = 921600 -- so only the
+   legacy SERIAL_PORT_DFNS path is wrong.
+
+2. The declared ISA IRQs 4 and 3 are not routed on this SoC, so the ports came
+   up with "irq = 0". A port with no interrupt still transmits, which is why
+   the console appeared to work, but it never takes an RX interrupt: reading
+   from it blocks forever and returns nothing. Anything attached to ttyS1..3 is
+   therefore invisible. Control4 declares IRQ 38 for all four.
+
+Scope: applied only to the EA family (board/ea-common/patches), which is the
+only openHC target with this SoC.
+
+Signed-off-by: openHC <openhc@localhost>
+---
+--- a/arch/x86/include/asm/serial.h
++++ b/arch/x86/include/asm/serial.h
+@@ -9,7 +9,7 @@
+  * clock, since the 16550A is capable of handling a top speed of 1.5
+  * megabits/second; but this requires a faster clock.
+  */
+-#define BASE_BAUD (1843200/16)
++#define BASE_BAUD (14745600/16)
+ 
+ /* Standard COM flags (except for COM4, because of the 8514 problem) */
+ #ifdef CONFIG_SERIAL_8250_DETECT_IRQ
+@@ -22,9 +22,9 @@
+ 
+ #define SERIAL_PORT_DFNS								\
+ 	/* UART		CLK		PORT	IRQ	FLAGS			    */	\
+-	{ .uart = 0,	BASE_BAUD,	0x3F8,	4,	STD_COMX_FLAGS	}, /* ttyS0 */	\
+-	{ .uart = 0,	BASE_BAUD,	0x2F8,	3,	STD_COMX_FLAGS	}, /* ttyS1 */	\
+-	{ .uart = 0,	BASE_BAUD,	0x3E8,	4,	STD_COMX_FLAGS	}, /* ttyS2 */	\
+-	{ .uart = 0,	BASE_BAUD,	0x2E8,	3,	STD_COM4_FLAGS	}, /* ttyS3 */
++	{ .uart = 0,	BASE_BAUD,	0x3F8,	38,	STD_COMX_FLAGS	}, /* ttyS0 */	\
++	{ .uart = 0,	BASE_BAUD,	0x2F8,	38,	STD_COMX_FLAGS	}, /* ttyS1 */	\
++	{ .uart = 0,	BASE_BAUD,	0x3E8,	38,	STD_COMX_FLAGS	}, /* ttyS2 */	\
++	{ .uart = 0,	BASE_BAUD,	0x2E8,	38,	STD_COM4_FLAGS	}, /* ttyS3 */
+ 
+ #endif /* _ASM_X86_SERIAL_H */

@@ -1,0 +1,85 @@
+#!/bin/sh
+# openHC tiny boot-initramfs /init — self-install + pivot, all on-device.
+#
+# The CEFDK autoscript loads the kernel and THIS ~1-2 MB initramfs into RAM and
+# bootlinux runs it (on a secure-boot EA that is the only path past the blown
+# fuse). Its whole job is to get onto the persistent rootfs on p1 with the least
+# possible RAM held:
+#
+#   * p1 already holds a valid openHC  -> switch_root into it. The initramfs is
+#     then freed, so steady-state RAM is exactly a disk-rooted system's — none
+#     of the rootfs sits in RAM. This is the case on every normal boot.
+#
+#   * p1 is empty / stock / corrupt    -> FIRST-BOOT INSTALL: a gzipped ext2
+#     rootfs image was staged in the raw eMMC gap by the flasher; stream it
+#     straight to p1 (eMMC -> gunzip -> eMMC, no network, no RAM copy of the
+#     512 MB image), then pivot. Nothing else ever loads the full rootfs into
+#     RAM.
+#
+# One fixed autoscript covers install and every boot after, so openHC needs no
+# MTD tools and the unit stays factory-restore-friendly. The staged image lives
+# in the raw region ahead of p1 (see ROOTFS_STAGE_MB), which factory-restore
+# leaves alone — but p1 reverts to stock, whose lack of /etc/openhc-release
+# makes this /init run the installer again (re-laying openHC), OR you clear the
+# autoscript for a truly-stock box.
+
+PATH=/bin:/sbin
+/bin/mount -t proc     proc     /proc 2>/dev/null
+/bin/mount -t sysfs    sysfs    /sys  2>/dev/null
+/bin/mount -t devtmpfs devtmpfs /dev  2>/dev/null
+
+ROOT=/dev/mmcblk0p1
+NEW=/mnt/root
+/bin/mkdir -p "$NEW"
+
+# WAIT for the eMMC to appear. sdhci-pci probes asynchronously, so /init often
+# runs before /dev/mmcblk0p1 exists; without this the mount below fails and we
+# fall back to RAM even though p1 is fine (the bug that made the first pivot
+# silently not happen). Re-trigger devtmpfs each spin in case /dev was empty.
+i=0
+while [ ! -b "$ROOT" ] && [ $i -lt 100 ]; do
+    /bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
+    /bin/sleep 0.1 2>/dev/null || /bin/usleep 100000 2>/dev/null || :
+    i=$((i + 1))
+done
+[ -b "$ROOT" ] || echo "openHC: WARNING $ROOT never appeared after ${i} tries"
+
+# Where the flasher staged the gzipped ext2 rootfs, in MiB from the start of
+# /dev/mmcblk0 (Linux view). Must match the flasher's ROOTFS_STAGE_OFF. It sits
+# after the kernel container (0x400) and the initrd, still ahead of p1 (32 MiB).
+ROOTFS_STAGE_MB=16
+
+valid_p1() {
+    for fs in ext4 ext2; do
+        if /bin/mount -t "$fs" -o rw "$ROOT" "$NEW" 2>/dev/null; then
+            if [ -f "$NEW/etc/openhc-release" ] && [ -x "$NEW/sbin/init" ]; then
+                return 0
+            fi
+            /bin/umount "$NEW" 2>/dev/null
+        fi
+    done
+    return 1
+}
+
+if ! valid_p1; then
+    echo "openHC: no rootfs on $ROOT — installing from the eMMC-staged image..."
+    # Raw stream: eMMC gap -> gunzip -> p1. dd/gunzip work on tiny buffers, so
+    # the 512 MB rootfs is never held in RAM.
+    if /bin/dd if=/dev/mmcblk0 bs=1M skip="$ROOTFS_STAGE_MB" 2>/dev/null \
+        | /bin/gunzip 2>/dev/null | /bin/dd of="$ROOT" bs=1M 2>/dev/null; then
+        /bin/sync
+        echo "openHC: rootfs written to $ROOT"
+    else
+        echo "openHC: install stream failed"
+    fi
+    if ! valid_p1; then
+        echo "openHC: no valid rootfs after install — dropping to a shell."
+        exec /bin/sh
+    fi
+fi
+
+echo "openHC: booting the persistent rootfs on $ROOT"
+/bin/mount --move /proc "$NEW/proc" 2>/dev/null
+/bin/mount --move /sys  "$NEW/sys"  2>/dev/null
+/bin/mount --move /dev  "$NEW/dev"  2>/dev/null
+exec /sbin/switch_root "$NEW" /sbin/init

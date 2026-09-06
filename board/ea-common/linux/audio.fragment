@@ -1,0 +1,35 @@
+# --- audio: CE5300 I2S -> ADAU1451 SigmaDSP -> analog out ------------------
+#
+# Pairs with features/audio.defconfig. Three openHC drivers do the work, copied
+# in via drivers/objs.mk rather than patched:
+#   sound/soc/ce5300/ce5300-i2s.c   platform (I2S + scatter-gather DMA)
+#   sound/soc/ce5300/ce5300-ea3.c   machine driver (ties the two together)
+#   sound/soc/codecs/adau1451-c4.c  codec
+#
+# There is no Kconfig symbol for any of them (they are copied, not patched), so
+# they are gated by CONFIG_SND_SOC below deciding whether sound/soc is built at
+# all. See drivers/objs.mk for why inventing a CONFIG_ symbol here would
+# silently build nothing.
+CONFIG_SOUND=y
+CONFIG_SND=y
+CONFIG_SND_PCM=y
+CONFIG_SND_SOC=y
+CONFIG_SND_SOC_I2C_AND_SPI=y
+
+# The codec is a plain I2C regmap device. REGMAP_I2C is normally selected by a
+# codec's Kconfig entry -- ours has none, so ask for it explicitly or the driver
+# fails to link.
+CONFIG_REGMAP=y
+CONFIG_REGMAP_I2C=y
+
+# NOTE: the codec sits at 0x38 on the CE5300's FOURTH I2C controller. Mainline's
+# i2c-pxa-pci hardcodes three, so without patches/linux/0001 (DEVS 3 -> 4) the
+# bus does not exist and nothing here can probe. That patch is not optional for
+# audio.
+
+# Userspace mixer/PCM access: /dev/snd/*.
+CONFIG_SND_MIXER_OSS=n
+CONFIG_SND_HRTIMER=y
+
+# The DAC soft-mute line is a GPIO on the CE5300 controller (gpio-intelce).
+# GPIOLIB is already on in common.fragment; nothing extra needed here.

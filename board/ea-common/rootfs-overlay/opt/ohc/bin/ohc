@@ -36,7 +36,11 @@ hw_bringup() {
   fi
   # Self-report the SoC driver bring-up on the console (input over 921600 is
   # overrun-prone, so let the box tell us what bound instead of typing at it).
-  gc=$(ls -d /sys/class/gpio/gpiochip* 2>/dev/null | wc -l)
+  # Count gpiochips via the chardev (modern) AND the legacy sysfs. gpio-sodaville
+  # registers a chardev (/dev/gpiochip0, e.g. the EA3's 12-line SoC controller)
+  # but does NOT populate /sys/class/gpio unless a line is exported, so the old
+  # sysfs-only check reported gpiochips=0 on a working controller.
+  gc=$(ls -d /sys/bus/gpio/devices/gpiochip* /sys/class/gpio/gpiochip* 2>/dev/null | sort -u | wc -l)
   np=$(cat /sys/class/pwm/pwmchip0/npwm 2>/dev/null || echo none)
   ic=$(ls -d /sys/bus/i2c/devices/i2c-* 2>/dev/null | wc -l)
   echo "ohc-hw: gpiochips=$gc pwmchip0.npwm=$np i2c-buses=$ic"

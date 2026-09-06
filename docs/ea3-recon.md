@@ -240,6 +240,39 @@ LEDs              c4::4ball_red, c4::4ball_blue, c4::network,
                   warn::{red,blue,yellow}, mmc0::
 ```
 
+### The LED map — recovered from the stock kernel binary
+
+The LEDs are kernel LED-class devices, not raw GPIO aliases: `c4_gpio_config`
+only symlinks `/sys/class/leds/<name>/brightness` into `/dev/gpio/`. The driver
+that registers them is built into the stock kernel, and the map is NOT in the
+GPL drop (it lived in Control4's absent `ninjago_platform`).
+
+It was recovered from the stock kernel image instead — no hardware poking, which
+matters because the neighbouring lines are resets (NIC, switch, codec). In the
+decompressed `vmlinux` the six LED name strings are contiguous, the pointers to
+them form a 16-byte-stride `struct gpio_led[]`, and the
+`gpio_led_platform_data` in front of that array reads `num_leds = 6`:
+
+| LED | GPIO | polarity |
+|---|---|---|
+| `c4::network` | 15 | active high |
+| `warn::red` | 99 | active high |
+| `warn::yellow` | 16 | active high |
+| `warn::blue` | 100 | active high |
+| `c4::4ball_red` | 102 | **active low** |
+| `c4::4ball_blue` | 34 | **active low** |
+
+Three of those (99, 100, 102) are **above the 12 lines mainline's
+`gpio-sodaville` exposes** for this controller — which is exactly why the front
+panel was unreachable on a mainline kernel, and why openHC replaces that driver
+with `gpio-intelce` (128 lines). The map ships as
+`ea-common/drivers/leds/leds-ea-board.c`.
+
+The same technique confirmed the audio codec's `i2c_board_info`:
+**adau1451 at i2c address 0x38** (0x39 as the secondary), which matches the
+live-box reading in the Audio section below — a useful cross-check that the
+extraction is reading real platform data and not coincidence.
+
 ## Ethernet and the BCM53125 switch
 
 ```
@@ -441,7 +474,7 @@ reset:  /dev/gpio/dsp_reset (gpio101)
 
 These are SigmaStudio program images. A copy of `ea3-1451.bin` has been pulled;
 it is vendor firmware, so it is **not** committed to this repo — see
-`firmware/dsp/adau1451/README.md`.
+`board/ea-common/firmware/dsp/adau1451/README.md`.
 
 ### Output routing config
 
@@ -454,6 +487,36 @@ hdmi_audio_pref    PCM, ENCODED_DTS, ENCODED_DD, ENCODED_AAC; up to 8ch; 192 kHz
 hdmi_video_pref    1920x1080 / 1280x720 / 720x576 / 640x480 @ 59.94, 50, 60
 i2s_audio_pref     enabled=2  -> i2s1 only  (the SoC <-> ADAU1451 link)
 ```
+
+### Mainline bring-up: what's missing
+
+Everything above is recon off the **stock** (3.12-era, out-of-tree) kernel.
+None of it has been ported. Checked against mainline (`torvalds/linux`,
+`sound/soc/codecs/Kconfig`):
+
+* `SND_SOC_SIGMADSP` + `SND_SOC_SIGMADSP_I2C` — the generic SigmaDSP
+  firmware-loader core the ADAU1701/ADAU17x1 family drivers sit on — **is**
+  upstream.
+* An **ADAU1451/1452 codec driver is not.** `snd_soc_adau1451` /
+  `snd_soc_adau1451_common` / `ninjago-smd-codec` / `ninjago-smd-dai` are
+  Control4/Intel out-of-tree modules; nothing in mainline knows this part.
+
+So there are two ways to get sound out of this board on a mainline kernel,
+and neither has been tried:
+
+1. **A real ASoC codec + machine driver** against `SIGMADSP_I2C`, i.e. the
+   normal port — reasonable amount of driver work, and it also needs a DAI
+   driver for the SoC's I²S1 (Intel SMD `IntelCE353xx` side), which is itself
+   unconfirmed under mainline.
+2. **Bypass ASoC entirely.** `ea3_dsploader` talks to the ADAU1451 with raw
+   I²C writes on `/dev/i2c-3` (0x38) — release `codec_reset` (gpio101) high,
+   push the SigmaStudio-compiled program, and the part runs it autonomously
+   off I²S1. A small userspace loader replicating that protocol sidesteps
+   writing a codec driver, but still needs I²S1 itself producing PCM from
+   somewhere on the SoC side.
+
+Both paths need a booted EA3 with a serial console to iterate against real
+`dmesg` — nothing here has been attempted on hardware yet.
 
 ## There is no FPGA on this board
 
@@ -535,18 +598,91 @@ ntpd dropbear dhclient ipwatchd bluetoothd dbus-daemon syslog-ng
 `spotifyclient -n Speakerpoint` — the EA3 registers its audio endpoint as a
 Speakerpoint.
 
+## Secure boot, and how openHC takes the EA3 over anyway (proven on hardware)
+
+Tested end to end on this unit (an **EA3 board v2**) on 2026-08-26. The EA3 is
+NOT the EA1 here: **its CEFDK secure-boot fuse is BLOWN.**
+
+* **The eMMC normal-boot path verifies and rejects us.** Write an openHC kernel
+  into the eMMC container at `0x400` (the `ea-emmc-install.py` path) and a normal
+  power-on prints `VERIFY_S3(kernel bzImage): FAIL` and SOFT_HANGs in a WDT boot
+  loop. The factory-restore button recovers it fully. This is `hndBootKernel`
+  (`bootkernel`) running the RSA check gated on the fuse — see the correction in
+  [gpl-source.md](gpl-source.md): the fuse is at DFX `+0x60` bit 0, and Control4
+  swapped in their own RSA key, so signing is impossible.
+
+* **But `bootlinux` does not verify, and `script` autorun runs first.** The
+  CEFDK shell command `bootlinux` drives `bootLinux()` (`brd_gen5/boot_linux.c`),
+  which does **zero** signature checking — only the `0xAA55`/`HdrS` sanity. And
+  `userInit()` runs `runAutoScript()` (when `g_bios_settings.script == 0`)
+  **before** the verifying normal-boot path. So the takeover is CEFDK's own
+  `script` autorun — the analogue of the CA-1's U-Boot `boot.scr`:
+
+  ```
+  emmc rd <gap> <ram> <size>      ; raw-read our kernel from the eMMC gap into RAM
+  ord4 <linuxKernelBase> = <ram>
+  bootlinux "root=/dev/mmcblk0p1 …"   ; UNVERIFIED boot of our unsigned kernel
+  ```
+
+  Stored once from the CEFDK shell with `script on`; undone with `script off`.
+
+  **PROVEN STANDALONE ON HARDWARE (2026-08-26).** The EA3 self-boots our unsigned
+  7.1.8 kernel from eMMC at every power-on — no button, no host, no network —
+  rooted on p1 (ext4 rw). Two non-obvious fixes were needed:
+
+  1. **`cache flush` (wbinvd) after `emmc rd`, before `bootlinux`.** The shell
+     `emmc rd` DMAs the kernel into RAM but does not invalidate the CPU cache, so
+     bootLinux read stale bytes and died with `Invalid or missing kernel`. The
+     CEFDK shell has a `cache` command — `cache flush` reconciles it. (Shipping
+     shell is a reduced set: no `msr`/`mmc`, but `cache`, `emmc`, `tftp`, `ip`,
+     `ord[2|4]`, `bootlinux`, `script`, `sha`, `md5`, `ymodem`, `b53`, `strap` …
+     are present — run `help`.)
+  2. **Install the kernel to the gap with CEFDK's own `emmc wr`, not Linux `dd`.**
+     Linux `/dev/mmcblk0` and CEFDK `emmc` do not agree on the raw gap's byte
+     offset (the container at 0x400 coincidentally matches; 0x800000 does not).
+     Install path: `ip set` → `tftp get <server> 0x6000000 bzImage` (CPU-coherent)
+     → `cache flush` → `emmc wr <gap> 0x6000000 <size>`. p1 is a real partition,
+     so Linux `dd` is fine for it — only the raw gap needs `emmc wr`.
+
+  The stored autoscript that works:
+  ```
+  emmc rd <gap> 0x6000000 <size>
+  cache flush
+  ord4 0xc90a4 = 0x6000000        # linuxKernelBase
+  ord4 0x837560 = 0x0             # rd_flag=0 (root on p1)
+  bootlinux "console=ttyS0,115200 pci=realloc,nocrs root=/dev/mmcblk0p1 rootwait rw"
+  ```
+  `tools/ohc-ea-takeover.py` automates the whole install over one direct-attach
+  link and a single ID-button hold; `--autoscript-only` re-stores just the script.
+
+* **Proven results of that boot.** openHC 7.1.8 comes up to a full SSH userspace.
+  `e1000` links (see the NIC bullet below — the `-EIO` is solved), and with
+  `CONFIG_MMC_SDHCI_PCI` + `CONFIG_EXT4_FS` added to `ea3.fragment` the eMMC
+  enumerates (`mmcblk0 p1 p2 p3`) and is read/write from our kernel — no
+  out-of-tree driver, mainline `sdhci-pci` binds `8086:070b` by class.
+
+* **The layout the takeover establishes** (all reversible via the restore button;
+  **p2 is never written**): the signed stock kernel stays in the container as a
+  `script off` software-recovery; our no-initramfs kernel (root=p1) lives in the
+  ~25 MB raw gap between the container (~7 MB) and p1 (32 MB), at `0x800000`; our
+  ext4 rootfs is on `mmcblk0p1`; the autoscript is a SPI-NOR MFH item.
+  `tools/ohc-ea-takeover.py` automates the whole thing over one direct-attach
+  link with a single ID-button hold.
+
+* **Board-revision caveat.** The EA1 (board **v1**) boots unsigned kernels on the
+  normal path — its fuse is clear. This EA3 is **v2**. The fuse was likely blown
+  starting at some board revision, so an **EA3 v1** may behave like the EA1 (and
+  could take over via the plain eMMC-container path, no autoscript). Untested —
+  we have one to check.
+
 ## What is not yet verified
 
-Everything above was read off the box. These were **not** tested and must not be
-treated as done:
+Everything in the recon sections above was read off the box. These were **not**
+tested and must not be treated as done:
 
-* **Netboot / CEFDK shell on EA3.** The boot chain looks identical to EA1
-  (CEFDK 36-34, no GRUB, same recovery layout) but no EA3 has been netbooted,
-  and `SEC_BOOT` has not been read on this unit. Do not assume unsigned kernels
-  boot here just because they do on the EA1.
 * **Which physical rear jack maps to which IR channel index.**
-* **The BCM53125 under mainline `b53`/DSA**, and whether `e1000` alone gets a
-  link on a mainline kernel.
+* **The BCM53125 under mainline `b53`/DSA.** (`e1000` alone DOES get a link now —
+  the fake-PHY patch, see the NIC section. The switch/DSA work is separate.)
 * **Which switch port is the second RJ45.** Port 5 (CPU) and port 2 (a jack)
   are measured; port 1 is inferred from stale counters. Settle it by moving a
   cable and re-reading `page 0x01 reg 0x00`.

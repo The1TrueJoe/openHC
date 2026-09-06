@@ -1,0 +1,61 @@
+#!/bin/sh
+# openHC initramfs /init — the pivot.
+#
+# The EA boards boot this rootfs as an initramfs (CEFDK's autoscript loads the
+# kernel + rootfs.cpio.gz into RAM and bootlinux runs it; on a secure-boot part
+# that is the only path past the blown fuse). This /init decides where openHC
+# actually runs:
+#
+#   * if p1 holds a valid openHC rootfs -> switch_root into it (persistent);
+#   * otherwise -> run openHC from RAM (first boot after a flash, or recovery
+#     when p1 is empty/corrupt).
+#
+# Doing the choice here, in the initramfs, means the CEFDK autoscript NEVER has
+# to change between "install" and "installed" — which matters because openHC has
+# no MTD tools to rewrite it, and because a fixed autoscript keeps the unit
+# factory-restore-friendly (kernel in the slot, p1 reverts, this /init then
+# falls back to RAM on the restored-but-openHC-less p1... which is stock, so it
+# runs RAM openHC — see note below).
+#
+# NOTE on factory restore: after a restore p1 holds the STOCK rootfs, which has
+# no /etc/openhc-release, so this /init will NOT pivot to it — it runs openHC
+# from RAM instead. To get a truly-stock box back, clear the autoscript
+# (`script off` at the CEFDK shell, or the flasher's restore-stock action).
+
+/bin/mount -t proc     proc     /proc 2>/dev/null
+/bin/mount -t sysfs    sysfs    /sys  2>/dev/null
+/bin/mount -t devtmpfs devtmpfs /dev  2>/dev/null
+
+ROOT=/dev/mmcblk0p1
+NEW=/mnt/root
+/bin/mkdir -p "$NEW"
+
+# WAIT for the eMMC to appear. sdhci-pci probes asynchronously, so /init often
+# runs before /dev/mmcblk0p1 exists; without this the mount below fails and we
+# fall back to RAM even though p1 is fine (the bug that made the first pivot
+# silently not happen). Re-trigger devtmpfs each spin in case /dev was empty.
+i=0
+while [ ! -b "$ROOT" ] && [ $i -lt 100 ]; do
+    /bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
+    /bin/sleep 0.1 2>/dev/null || /bin/usleep 100000 2>/dev/null || :
+    i=$((i + 1))
+done
+[ -b "$ROOT" ] || echo "openHC: WARNING $ROOT never appeared after ${i} tries"
+
+# The build writes p1 as ext2; a resized/older p1 may be ext4. Try both.
+mounted=
+for fs in ext4 ext2; do
+    if /bin/mount -t "$fs" -o rw "$ROOT" "$NEW" 2>/dev/null; then mounted=1; break; fi
+done
+
+if [ -n "$mounted" ] && [ -f "$NEW/etc/openhc-release" ] && [ -x "$NEW/sbin/init" ]; then
+    echo "openHC: pivoting to persistent rootfs on $ROOT"
+    /bin/mount --move /proc "$NEW/proc" 2>/dev/null
+    /bin/mount --move /sys  "$NEW/sys"  2>/dev/null
+    /bin/mount --move /dev  "$NEW/dev"  2>/dev/null
+    exec /sbin/switch_root "$NEW" /sbin/init
+fi
+
+[ -n "$mounted" ] && /bin/umount "$NEW" 2>/dev/null
+echo "openHC: no valid rootfs on $ROOT — running from RAM (recovery/first-boot)"
+exec /sbin/init

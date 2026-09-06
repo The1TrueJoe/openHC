@@ -223,11 +223,18 @@ VERDICT: signature checking NOT enforced by the fuse -> a self-built kernel shou
          is the remaining suspect.)
 ```
 
-So `VERIFY_S3 ... PASS` is expected to be advisory on this unit. That is a
-prediction, not yet a demonstration — **nobody has booted a self-built kernel on
-this box yet.** Do not attempt it without the serial console attached, because a
-kernel CEFDK refuses to load leaves nothing to break into: the `c4` escape lives
-in the initramfs, which is inside the very kernel that failed.
+So `VERIFY_S3 ... PASS` is expected to be advisory **on the EA1** (board v1).
+
+> **⚠ Board-dependent, and the register above is the wrong one.** Proven on
+> hardware 2026-08-26: on an **EA3 (board v2)** the fuse is BLOWN and the eMMC
+> normal boot rejects unsigned kernels (`VERIFY_S3: FAIL`). The `/dev/mem` dump
+> reads DFX `+0x14`, but shipping CEFDK checks `+0x60` bit 0 — see the correction
+> in [gpl-source.md](gpl-source.md). This does not block a takeover: the shell
+> `bootlinux` command does not verify, and CEFDK's `script` autorun runs before
+> the verifying path, so an unsigned kernel boots and self-boots regardless of the
+> fuse. See [ea3-recon.md](ea3-recon.md#secure-boot-and-how-openhc-takes-the-ea3-over-anyway-proven-on-hardware)
+> and `tools/ohc-ea-takeover.py`. The self-built kernel HAS now booted (EA3, via
+> `bootlinux`); what still needs serial is a *first* attempt on any new board.
 
 ### Order of attack, safest first
 

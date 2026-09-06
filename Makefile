@@ -7,12 +7,18 @@
 # fragments, the rootfs overlay, the image name, the MCU firmware profile —
 # follows from it.
 
-BOARD ?= ea1
-# ea1/ea3: Intel CE5300 (x86), companion TM4C IO-MCU, CEFDK netboot.
+BOARD ?= ea3-v2
+# ea1-*/ea3-*: Intel CE5300 (x86), companion TM4C IO-MCU, CEFDK netboot.
+#          Variants differ by wifi / BCM53125 switch / PoE / secure-boot fuse:
+#          ea1-v1 (wifi, no switch, fuse CLEAR — plain flash, no takeover)
+#          ea1-v2 (wifi; boot differences unconfirmed)
+#          ea1-v2-poe (no wifi, switch, PoE)
+#          ea3-v1 (wifi, switch, PoE)
+#          ea3-v2 (no wifi, switch, PoE, fuse BLOWN — needs the autoscript takeover)
 # ioxv1:   TI DaVinci DM355 (ARM), native on-board IO, U-Boot `run tst` netboot.
 # ca1:     Freescale i.MX6SL (ARM), native on-board IO, stock U-Boot boot.scr.
 # hc800:   Intel Atom D525 PC (x86_64), companion LM3S1162 IO-MCU, GRUB 0.97.
-BOARDS := ea1 ea3 ioxv1 ca1 hc800
+BOARDS := ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800
 
 ifeq ($(filter $(BOARD),$(BOARDS)),)
   $(error BOARD must be one of: $(BOARDS)  (got '$(BOARD)'))
@@ -32,7 +38,7 @@ PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 # --- netboot ----------------------------------------------------------------
 # Per-board addressing (this host's IP on the controller's segment, the
 # controller's MAC, the address to offer it, the console baud) lives in ONE
-# place: the BOARDS table in tools/netboot.py, selected with --board. Any of it
+# place: the board table in flasher/boards.py, selected with --board. Any of it
 # can still be overridden here, e.g.
 #
 #   make netboot BOARD=ea3 IFACE_IP=192.168.1.155
@@ -46,7 +52,7 @@ NETBOOT_ARGS = --board $(BOARD) \
                $(if $(OFFER_IP),--offer-ip $(OFFER_IP)) \
                $(if $(SERIAL_PORT),--serial-port $(SERIAL_PORT))
 
-.PHONY: help image mcu webd netboot probe serial clean distclean
+.PHONY: help image mcu webd netboot probe serial flash verify selftest clean distclean
 
 help:
 	@echo "openHC — Control4 EA-series kernel-up build"
@@ -98,7 +104,7 @@ webd:
 
 # IO-MCU firmware builds with an arm-none-eabi toolchain; its own Makefile
 # documents the prerequisites. The board profile is compile-time — see
-# firmware/io-mcu/tm4c1231d5/include/board_profile.h.
+# board/ea-common/firmware/io-mcu/tm4c1231d5/include/board_profile.h.
 mcu:
 	@case "$(BOARD)" in \
 	  ea*) : ;; \
@@ -109,7 +115,7 @@ mcu:
 	         exit 1 ;; \
 	  *) echo "mcu: $(BOARD) has native on-board IO — no companion MCU to build"; exit 1 ;; \
 	esac
-	$(MAKE) -C firmware/io-mcu/tm4c1231d5 fw BOARD=$(BOARD)
+	$(MAKE) -C board/ea-common/firmware/io-mcu/tm4c1231d5 fw BOARD=$(BOARD)
 
 # Serve the built kernel over BOOTP+TFTP. Needs root (binds :67/:69); run the
 # printed command yourself if make cannot get privileges. EA/CEFDK only — the
@@ -139,18 +145,27 @@ netboot:
 	       echo "    python3 -m venv .venv && .venv/bin/pip install pyserial"; \
 	       echo "  (the Makefile picks .venv up automatically, including under sudo)"; exit 1; } ;; \
 	esac
-	sudo $(PYTHON) tools/netboot.py $(NETBOOT_ARGS) boot
+	sudo $(PYTHON) -m flasher install --method serial $(NETBOOT_ARGS)
 
 # Just get to the unlocked shell and stop there (no kernel served).
 probe:
 	@case "$(BOARD)" in ea*) : ;; *) echo "probe: CEFDK path is EA-only"; exit 1 ;; esac
-	sudo $(PYTHON) tools/netboot.py $(NETBOOT_ARGS) probe
+	$(PYTHON) -m flasher discover
 
 serial:
 	@$(PYTHON) -c "import serial" 2>/dev/null || { \
 	  echo "serial-console.py needs pyserial, and $(PYTHON) has none:"; \
 	  echo "    python3 -m venv .venv && .venv/bin/pip install pyserial"; exit 1; }
-	$(PYTHON) tools/serial-console.py $(if $(SERIAL_PORT),--port $(SERIAL_PORT)) --listen 3600
+	$(PYTHON) -m flasher --serial $(or $(SERIAL_PORT),/dev/ttyUSB0) --record openhc-console.log
+
+flash:                    ## install openHC on a unit (TUI if no HOST=)
+	$(PYTHON) -m flasher $(if $(HOST),install $(HOST))
+
+verify:                   ## post-install hardware check
+	$(PYTHON) -m flasher verify $(HOST)
+
+selftest:                 ## flasher self-check (no hardware needed)
+	$(PYTHON) -m flasher.selftest
 
 clean:
 	rm -rf output/build

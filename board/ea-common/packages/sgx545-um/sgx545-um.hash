@@ -1,0 +1,7 @@
+# Intel's Cedarview DDK 1.7.862890 userspace, from the Ubuntu archive. This
+# hash is the one carried by the PGP-signed .dsc published alongside it
+# (cedarview-graphics-drivers_20120717-0ubuntu1.dsc), checked by hand.
+sha256  c23e7261631860f3bc132c294e269ea982e34e37b5e838fafea0e7070da8fd83  cedarview-graphics-drivers_20120717.orig.tar.gz
+
+# Intel's binary redistribution licence, shipped inside the tarball at
+# usr/share/doc/powervr/license.txt.

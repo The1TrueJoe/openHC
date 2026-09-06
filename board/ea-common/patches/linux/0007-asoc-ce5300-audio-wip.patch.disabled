@@ -1,0 +1,275 @@
+ASoC: CE5300 audio I/O (AUD_IO) PCM/DMA platform driver — WIP skeleton
+
+The one piece of the EA audio path Control4's GPL drop does not contain. The
+codec (adau1451), the SigmaDSP core, the DAI and the machine driver are all
+published in that drop's patch 0012; only the PCM/DMA platform component is
+missing, and the vendor's binary chain that fills it (c4_smd_pcm ->
+c4_smd_common -> c4_smd_plat -> the closed ismd* stack) does no MMIO of its own
+at all. So this talks to the hardware directly instead of reimplementing three
+layers of pipeline glue.
+
+The SoC audio DSPs run RSA-signed firmware we cannot replace — but they are for
+decode/mix workloads, and the I2S render path does not use them: the stock
+audio_hal_render_start has zero dsp/firmware/auth references. Plain PCM out, all
+a headless appliance needs, is a linked-list DMA engine feeding an I2S port.
+
+Register map, bit fields and the per-stream context table were recovered from
+the stock ismdaudio.ko, which ships with DWARF debug info — so the names here
+are Intel's own. The bit fields come from audio_hal_write_vsymbol()'s
+(bitpos, width, mask, value) tuples, and every mask across 21 fields satisfies
+mask == ((1 << width) - 1) << bitpos, which is what makes it a decode rather
+than a guess. Full write-up in docs/ce5300-audio-regmap.md.
+
+NOT YET FUNCTIONAL, and deliberately so: this probes and reports read-only
+rather than registering an ASoC component whose PCM ops cannot move samples,
+which would give userspace a sound card that silently does nothing. The
+remaining work is the descriptor ring, the PCM ops and the audio PLL clocking.
+
+Not wired into the build yet either — there is no Makefile hook for it, so it
+compiles only when someone adds one. It is checked in to keep the reverse
+engineering and the code that consumes it together.
+
+Signed-off-by: openHC <openhc@localhost>
+---
+--- /dev/null
++++ b/sound/soc/intel/ce5300/snd-soc-ce5300.c
+@@ -0,0 +1,239 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * ASoC PCM/DMA platform driver for the Intel CE5300 audio I/O block ("AUD_IO").
++ *
++ * This is the ONE piece Control4's GPL drop does not contain. Everything else in
++ * the EA audio path is published source (patch 0012 in the drop): the ADAU1451
++ * codec, the SigmaDSP core, the DAI and the machine driver. The vendor's binary
++ * chain that fills this gap — c4_smd_pcm -> c4_smd_common -> c4_smd_plat -> the
++ * closed ismd* stack — does no MMIO of its own at all; it is pipeline glue. So
++ * rather than reimplement three layers of abstraction, this talks to the
++ * hardware directly.
++ *
++ * WHY THIS IS POSSIBLE AT ALL. The CE5300 audio *DSPs* run RSA-signed firmware
++ * (loaded through the SoC security engine) that we cannot replace. But the DSPs
++ * are for decode/mix workloads — DTS, Dolby, the mixer. The I2S render path does
++ * not involve them: the stock audio_hal_render_start contains zero references to
++ * dsp/firmware/auth. It is a plain linked-list DMA engine feeding an I2S port,
++ * which is exactly what ALSA wants and what a headless HA appliance needs.
++ *
++ * The register map is documented in docs/ce5300-audio-regmap.md, recovered from
++ * the stock ismdaudio.ko — which ships with DWARF debug info, so the field and
++ * enum names below are Intel's own, not guesses.
++ *
++ * STATUS: the register layout, the per-stream context map, the control-word bit
++ * fields and the start sequence are all recovered, and the BAR is confirmed by
++ * reading it on a live EA3. What is NOT yet done is the ASoC component itself —
++ * the PCM ops, descriptor ring and clocking. This deliberately probes read-only
++ * rather than registering a PCM device that cannot yet move samples, which would
++ * present userspace with a sound card that silently does nothing.
++ */
++
++#include <linux/bits.h>
++#include <linux/dma-mapping.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#define DRV_NAME "ce5300-audio"
++
++/* ---- register map (offsets from BAR0) ---------------------------------- */
++/* DMA block: 5 contexts, stride 0x40 */
++#define CE_DMA_BASE		0x1000
++#define CE_DMA_STRIDE		0x40
++#define CE_DMA_SRC_START	0x10	/* srcdma_start */
++#define CE_DMA_CTRL		0x1c	/* primary control/status */
++/*
++ * DMA control bit fields. Recovered from audio_hal_write_vsymbol()'s
++ * (bitpos, width, mask, value) tuples — every mask in every call satisfies
++ * mask == ((1 << width) - 1) << bitpos, across 21 fields, which is what makes
++ * this a decode rather than a guess. See docs/ce5300-audio-regmap.md.
++ */
++#define CE_DMA_EN30		BIT(30)		/* set to 1 to enable */
++#define CE_DMA_EN29		BIT(29)		/* set to 1 to enable */
++#define CE_DMA_BIT7		BIT(7)		/* set on configure and on start */
++#define CE_DMA_BIT4		BIT(4)		/* cleared on configure */
++#define CE_DMA_F65		GENMASK(6, 5)	/* = 1 */
++#define CE_DMA_F21		GENMASK(2, 1)	/* = 3 */
++#define CE_DMA_BURST		GENMASK(11, 8)	/* 0 when configured, 6 when running */
++#define CE_DMA_F1512		GENMASK(15, 12)
++#define CE_DMA_F1916		GENMASK(19, 16)
++
++#define CE_DMA_SRC_STOP		0x38	/* srcdma_stop */
++#define CE_DMA_REG(ctx, r)	(CE_DMA_BASE + (ctx) * CE_DMA_STRIDE + (r))
++
++/* TX block: 3 contexts, stride 0x100 */
++#define CE_TX_BASE		0x2000
++#define CE_TX_STRIDE		0x100
++#define CE_TX_CTRL		0x04
++/*
++ * TX control bit fields. The four 2-bit pin fields take
++ * AUDIO_HAL_I2S_PIN_ENABLE (ENABLE=0, LEFT=1, RIGHT=2, DISABLE=3) and match
++ * audio_hal_i2s_pin_en_t[4] in the stock DWARF; DSM takes
++ * AUDIO_HAL_DATA_STORAGE_MODE (7_1=0, STEREO=1, LEFT=2, RIGHT=3).
++ * Plain stereo out is DSM=STEREO with pin0 enabled and the rest disabled.
++ */
++#define CE_TX_PIN3		GENMASK(6, 5)
++#define CE_TX_PIN0		GENMASK(11, 10)
++#define CE_TX_PIN1		GENMASK(13, 12)
++#define CE_TX_PIN2		GENMASK(15, 14)
++#define CE_TX_DSM		GENMASK(9, 8)
++#define CE_TX_RUN		BIT(0)
++
++#define CE_I2S_PIN_ENABLE	0
++#define CE_I2S_PIN_LEFT		1
++#define CE_I2S_PIN_RIGHT	2
++#define CE_I2S_PIN_DISABLE	3
++
++#define CE_DSM_7_1		0
++#define CE_DSM_STEREO		1
++#define CE_DSM_LEFT		2
++#define CE_DSM_RIGHT		3
++
++#define CE_TX_SATR		0x18	/* txSATR — start-address register */
++#define CE_TX_REG(ctx, r)	(CE_TX_BASE + (ctx) * CE_TX_STRIDE + (r))
++
++/* RX block mirrors TX at 0x3000 (capture — not implemented here) */
++#define CE_RX_BASE		0x3000
++#define CE_RX_STRIDE		0x100
++#define CE_RX_SARR		0x18
++
++/* The DMA context selector lives at bit 17 of the TX register:
++ * the stock code does SetMaskedReg32(render_context->dma_context << 0x11). */
++#define CE_TX_DMACTX_SHIFT	17
++
++#define CE_MAX_DMA_CTX		5
++#define CE_MAX_TX_CTX		3
++
++/*
++ * Per-stream context map, from audio_hal_render_init_context()'s hw_dev_id
++ * switch. The interrupt_mask is this stream's bit in the shared IMR.
++ */
++struct ce5300_stream_map {
++	u16 hw_dev_id;
++	u8  tx_ctx;
++	u8  dma_ctx;
++	u32 irq_mask;
++};
++
++static const struct ce5300_stream_map ce5300_streams[] = {
++	{ 0x3d1, 0, 0, 0x08 },
++	{ 0x3d2, 1, 1, 0x20 },
++	{ 0x3d3, 2, 2, 0x80 },
++};
++
++/*
++ * Scatter-gather descriptor, verbatim from the stock DWARF
++ * (audio_hal_defs_pvt.h, AUDIO_HAL_DMA_DESCRIPTOR, 20 bytes). The engine walks
++ * a linked list of these — audio_render_buffer_mode_t has exactly one value,
++ * LINKED_LIST, so this is the only mode the hardware offers.
++ */
++struct ce5300_dma_desc {
++	__le32 next_desc;
++	__le32 srcdma_size;
++	__le32 srcdma_start;
++	__le32 dstdma_start;
++	__le32 flags_mode;
++} __packed;
++
++struct ce5300_audio {
++	struct device *dev;
++	void __iomem *regs;
++	spinlock_t lock;
++};
++
++static inline u32 ce_rd(struct ce5300_audio *ce, u32 off)
++{
++	return readl(ce->regs + off);
++}
++
++static inline void ce_wr(struct ce5300_audio *ce, u32 off, u32 val)
++{
++	writel(val, ce->regs + off);
++}
++
++static inline void ce_setbits(struct ce5300_audio *ce, u32 off, u32 mask)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&ce->lock, flags);
++	ce_wr(ce, off, ce_rd(ce, off) | mask);
++	spin_unlock_irqrestore(&ce->lock, flags);
++}
++
++static inline void ce_clrbits(struct ce5300_audio *ce, u32 off, u32 mask)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&ce->lock, flags);
++	ce_wr(ce, off, ce_rd(ce, off) & ~mask);
++	spin_unlock_irqrestore(&ce->lock, flags);
++}
++
++/* ---- PCI bring-up ------------------------------------------------------ */
++/*
++ * Measured on a live EA3:
++ *   01:06.0  8086:2e5f  BAR0 0xdfd00000  512K
++ *   01:06.1  8086:2e5f  BAR0 0xdfd80000  512K
++ *   01:06.2  8086:2e60  BAR0 0xdfa80000   64K
++ * Every offset in the map above fits inside the 512K window, so plain
++ * pcim_iomap() replaces the vendor's OSAL os_map_io_to_mem_nocache().
++ */
++static int ce5300_audio_probe(struct pci_dev *pdev, const struct pci_device_id *id)
++{
++	struct ce5300_audio *ce;
++	int ret;
++
++	ret = pcim_enable_device(pdev);
++	if (ret)
++		return ret;
++
++	ce = devm_kzalloc(&pdev->dev, sizeof(*ce), GFP_KERNEL);
++	if (!ce)
++		return -ENOMEM;
++
++	ce->dev = &pdev->dev;
++	spin_lock_init(&ce->lock);
++
++	ce->regs = pcim_iomap(pdev, 0, 0);
++	if (!ce->regs)
++		return -ENOMEM;
++
++	pci_set_master(pdev);
++	pci_set_drvdata(pdev, ce);
++
++	/*
++	 * Read-only for now, on purpose. Registering an ASoC platform component
++	 * whose trigger/pointer ops cannot actually move samples would present a
++	 * PCM device that silently does nothing, which is worse than not being
++	 * there. Bring that up once the control bits are known.
++	 */
++	dev_info(&pdev->dev,
++		 "CE5300 AUD_IO at %pR — dma0 ctrl %#010x, tx0 ctrl %#010x\n",
++		 &pdev->resource[0],
++		 ce_rd(ce, CE_DMA_REG(0, CE_DMA_CTRL)),
++		 ce_rd(ce, CE_TX_REG(0, CE_TX_CTRL)));
++
++	return 0;
++}
++
++static const struct pci_device_id ce5300_audio_ids[] = {
++	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x2e5f) },
++	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x2e60) },
++	{ }
++};
++MODULE_DEVICE_TABLE(pci, ce5300_audio_ids);
++
++static struct pci_driver ce5300_audio_driver = {
++	.name		= DRV_NAME,
++	.id_table	= ce5300_audio_ids,
++	.probe		= ce5300_audio_probe,
++};
++module_pci_driver(ce5300_audio_driver);
++
++MODULE_DESCRIPTION("Intel CE5300 audio I/O (AUD_IO) PCM/DMA");
++MODULE_LICENSE("GPL");

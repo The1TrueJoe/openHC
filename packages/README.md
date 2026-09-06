@@ -1,8 +1,19 @@
 # packages/ — openHC on-device daemons
 
-A Cargo workspace for the userspace that ships in the rootfs. Cross-compiled on
-the host (rust-lld links ELF with no Docker or cross-binutils), then staged into
-`board/common/rootfs-overlay/opt/ohc/bin/` so `make image` bundles it.
+Two things share this directory.
+
+**A Cargo workspace** for the userspace daemons that ship in the rootfs.
+Cross-compiled on the host (rust-lld links ELF with no Docker or
+cross-binutils), then staged into `board/common/rootfs-overlay/opt/ohc/bin/` so
+`make image` bundles it.
+
+**Buildroot packages**, one per subdirectory containing a `<name>.mk` —
+`board/external.mk` globs them in and `board/Config.in` sources each
+`Config.in`. These are built *by* Buildroot rather than staged into the
+overlay, because they need the target toolchain or a kernel tree: `figlet`,
+`ohc-motd`, `ohc-splash`, `sgx545-ce`, `sgx545-um`, `wpebackend-pvr`,
+`ohc-webview`. `build/build.sh` force-rebuilds every one of them on each run,
+since we maintain them and their stamps mean nothing.
 
 ## ohc-webd
 
@@ -57,6 +68,30 @@ cargo, since `build.rs` embeds `ui/dist`), picks a cargo whose toolchain has the
 target's std (Homebrew's shadowing rustc does not), cross-compiles, and installs
 the binary into the overlay. The init script `S90ohcweb` runs this one binary
 (it just no-ops if the binary is not staged yet — run `make webd` first).
+
+## The display stack
+
+Three packages that only make sense together, on boards with the `sgx` feature:
+
+```
+ohc-webview            creates one WebKit view, loads a URL, runs a main loop
+   |  links
+WPE WebKit             browser engine, renders through EGL/GLES, no X, no
+   |  dlopens          window system of its own
+wpebackend-pvr         libwpe backend: hands WPE the DDK's framebuffer EGL
+   |  draws through
+sgx545-um  +  sgx545-ce    PowerVR DDK userspace + our GPL kernel driver
+```
+
+`ohc-webview` defaults to `http://localhost/`, which is **ohc-webd** above — the
+dashboard is what a controller should show when nobody has said otherwise.
+`OHC_WEBVIEW_URL` overrides it, and that is the seam: a layer built on top of
+openHC points the surface somewhere else without openHC needing to know or care
+what serves it.
+
+Nothing starts the webview at boot. `S01splash` owns the framebuffer until
+someone runs it by hand, which is deliberate while the display path is still
+being brought up. See `docs/sgx545-3d.md` for what is verified and what is not.
 
 ## Layout
 

@@ -1,0 +1,17 @@
+config BR2_PACKAGE_WPEBACKEND_PVR
+	bool "wpebackend-pvr"
+	depends on BR2_PACKAGE_SGX545_UM
+	# libwpe's own dependencies, mirrored so the select below can never be
+	# made with them unmet -- kconfig allows that and then quietly produces
+	# a .config nobody asked for.
+	depends on BR2_INSTALL_LIBSTDCPP
+	depends on !BR2_STATIC_LIBS
+	select BR2_PACKAGE_LIBWPE
+	help
+	  A libwpe backend that renders through PowerVR SGX framebuffer EGL.
+
+	  WPE WebKit reaches a display through a libwpe backend that is
+	  dlopen'd at runtime. The usual one, wpebackend-fdo, is built on
+	  Wayland; the Imagination DDK for the SGX 5-series predates Wayland
+	  and ships only X11/DRI, LinuxFB, Front, Blit and Flip window-system
+	  layers. This is the route for a framebuffer with no display server.

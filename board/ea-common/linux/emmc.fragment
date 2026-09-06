@@ -1,0 +1,16 @@
+# openHC — eMMC storage kernel side, shared by every EA variant that runs from
+# the eMMC instead of a RAM initramfs.
+#
+# The SD controller is PCI 8086:070b (class 0x0805). Mainline sdhci-pci binds it
+# generically — its id table ends with {PCI_DEVICE_CLASS(SYSTEM_SDHCI, ...)},
+# "Generic SD host controller", exactly how the stock 3.12 kernel bound it. No
+# out-of-tree driver needed, despite what the top-level README long assumed.
+#
+# Size is not a concern on the boot paths that use this: a kernel delivered by
+# `bootlinux` (TFTP into RAM, or the CEFDK autoscript) has no eMMC-container
+# ceiling. Only a kernel CEFDK loads from the container itself is capped.
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_SDHCI=y
+CONFIG_MMC_SDHCI_PCI=y
+CONFIG_EXT4_FS=y

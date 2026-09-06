@@ -26,6 +26,40 @@ PORTAL_FLAG="/tmp/ohc-ap-portal"   # holds the portal URL; ohc-webd redirects :8
 
 have_link() { [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = 1 ]; }
 
+# Is ANY wired interface actually on a network?
+#
+# This replaces a plain carrier test on $UPLINK, which is wrong twice over on a
+# board with the BCM53125 switch:
+#
+#   * the DSA MASTER (eth0) is wired back-to-back to the switch, so its carrier
+#     reads 1 whether or not a cable is in either jack. Testing it alone means
+#     the AP never comes up on an unplugged unit -- exactly the case the AP
+#     exists for.
+#   * the real jacks are the DSA slaves (lan1/lan2), which appear only when the
+#     switch attaches, so they cannot be hardcoded either.
+#
+# Carrier on its own is also not connectivity: a cable into a dead switch gives
+# carrier and no address. Requiring an IPv4 address as well makes this "we are
+# reachable", which is the actual question -- and it is a safe test here because
+# S40net has already run and done DHCP by the time S41 starts.
+#
+# Everything that is not loopback and not the radio counts, so lan1/lan2, eth0
+# and eth1 are all covered without naming any of them.
+wired_online() {
+    for d in /sys/class/net/*; do
+        i="${d##*/}"
+        case "$i" in
+            lo|"$WIFI"|wlan*) continue ;;
+        esac
+        [ "$(cat "$d/carrier" 2>/dev/null)" = 1 ] || continue
+        if ip -4 -o addr show dev "$i" 2>/dev/null | grep -q "inet "; then
+            echo "$i"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Join a saved home network in station mode. Returns 0 once DHCP grants a lease.
 sta_join() {
     [ -s "$STA_CONF" ] || return 1
@@ -79,10 +113,40 @@ start_ap() {
     fi
 }
 
+# Load the radio driver, then wait for its interface to appear.
+#
+# ath9k/mac80211/cfg80211 are MODULES (see ea-common/linux/wifi.fragment: built
+# in, they overrun CEFDK's 7,417,856-byte kernel window and the box does not
+# boot). Nothing loads them automatically here -- there is no udev, and mdev
+# does not autoload from a PCI modalias -- so the interface simply would not
+# exist and this script would report "no radio on this board" on a board that
+# has one.
+#
+# The wait matters: modprobe returns once the module is loaded, but the PCI
+# probe and netdev registration finish a moment later, so testing for the
+# interface immediately loses the race.
+load_radio() {
+    [ -d "/sys/class/net/$WIFI" ] && return 0
+    modprobe ath9k >/dev/null 2>&1 || return 1
+    i=0
+    while [ $i -lt 20 ]; do
+        [ -d "/sys/class/net/$WIFI" ] && return 0
+        sleep 1; i=$((i + 1))
+    done
+    return 1
+}
+
 start() {
     [ -n "$WIFI" ] || { echo "Wi-Fi AP: no radio on this board, skipping"; return 0; }
-    [ -d "/sys/class/net/$WIFI" ] || { echo "Wi-Fi AP: no $WIFI, skipping"; return 0; }
-    if have_link "$UPLINK"; then echo "Wi-Fi AP: $UPLINK has link, staying down"; return 0; fi
+    if ! load_radio; then
+        echo "Wi-Fi AP: $WIFI never appeared (ath9k loaded? lsmod | grep ath9k)"
+        return 0
+    fi
+    if on=$(wired_online); then
+        echo "Wi-Fi AP: $on is on the network, staying down"
+        return 0
+    fi
+    echo "Wi-Fi AP: no wired interface has an address -- this is what the AP is for"
 
     if sta_join; then
         echo "Wi-Fi: joined saved network on $WIFI ($(ip -4 -o addr show $WIFI | awk '{print $4}'))"
@@ -105,7 +169,8 @@ stop() {
 }
 
 case "$1" in
-    start) start ;;
+    # `|| true` so a board with no splash does not make this script exit 1.
+    start) start; { [ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash restart >/dev/null 2>&1; } || true ;;
     stop) stop ;;
     restart) stop; start ;;
     *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;

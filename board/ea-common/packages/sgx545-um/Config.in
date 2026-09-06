@@ -1,0 +1,39 @@
+config BR2_PACKAGE_SGX545_UM
+	bool "sgx545-um (PowerVR SGX545 userspace: EGL + OpenGL ES 2.0)"
+	depends on BR2_PACKAGE_SGX545_CE
+	depends on BR2_i386
+	depends on BR2_TOOLCHAIN_USES_GLIBC
+	select BR2_PACKAGE_LIBDRM
+	select BR2_PACKAGE_HAS_LIBEGL
+	select BR2_PACKAGE_HAS_LIBGLES
+	help
+	  EGL 1.4 and OpenGL ES 2.0 for the PowerVR SGX545 in the Intel Atom
+	  CE5300, from Intel's Cedarview DDK 1.7.862890 release. Includes the
+	  USSE shader compiler (libglslcompiler + libusc).
+
+	  Pairs with the sgx545-ce kernel driver, which must be built from the
+	  same DDK version -- the driver checks, and refuses a mismatch.
+
+	  Proprietary binaries, fetched at build time rather than vendored.
+	  Intel's licence permits redistribution in binary form with notice and
+	  forbids reverse engineering them.
+
+	  https://old-releases.ubuntu.com/ubuntu/pool/multiverse/c/cedarview-graphics-drivers/
+
+comment "sgx545-um needs a glibc toolchain"
+	depends on BR2_i386 && BR2_PACKAGE_SGX545_CE
+	depends on !BR2_TOOLCHAIN_USES_GLIBC
+
+# Declaring HAS_LIBEGL is only half of it: Buildroot's virtual-package
+# machinery also needs to know WHICH package implements it, or the build stops
+# with "No implementation selected for virtual package libegl". Same form
+# ti-sgx-um uses, which is the in-tree precedent for a binary SGX userspace.
+if BR2_PACKAGE_SGX545_UM
+
+config BR2_PACKAGE_PROVIDES_LIBEGL
+	default "sgx545-um"
+
+config BR2_PACKAGE_PROVIDES_LIBGLES
+	default "sgx545-um"
+
+endif

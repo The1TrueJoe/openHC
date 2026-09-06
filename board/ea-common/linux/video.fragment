@@ -1,0 +1,16 @@
+# CE5300: give Linux the framebuffer CEFDK leaves running.
+#
+# common.fragment turns graphics off wholesale ("serial console is the only
+# head"). This fragment goes AFTER it in BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES
+# so these win. Cost is ~150K of bzImage against the ~2.6MB of headroom left
+# under CEFDK bootlinux's ~8.07MB copy window.
+CONFIG_FB=y
+CONFIG_FB_SIMPLE=y
+CONFIG_FB_SYS_FILLRECT=y
+CONFIG_FB_SYS_COPYAREA=y
+CONFIG_FB_SYS_IMAGEBLIT=y
+CONFIG_FB_SYSMEM_HELPERS=y
+# No fbcon. The splash is drawn by ohc-splash straight onto /dev/fb0, and the
+# console stays on ttyS0 — a text console would only fight it for the surface
+# (it clears the framebuffer on takeover, which is what ate the first splash).
+# CONFIG_FRAMEBUFFER_CONSOLE is not set

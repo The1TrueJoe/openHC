@@ -1,0 +1,5 @@
+# EA1 v2 board deltas. Wi-Fi and eMMC come from the shared feature fragments.
+# pci=realloc,nocrs as on every CE5300 EA board (the ACPI _CRS omits the
+# 0xc0000000-0xdfffffff MMIO space; without nocrs the bus-01 bridge window
+# cannot be claimed and the kernel hangs before userspace).
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"

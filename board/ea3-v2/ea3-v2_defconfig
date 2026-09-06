@@ -1,0 +1,66 @@
+# openHC — Control4 EA3 deltas.
+#
+# Concatenated AFTER board/ea-common/ea-common_defconfig by build/build.sh, so
+# only the EA3-specific differences belong here.
+#
+# What makes an EA3 an EA3, relative to the EA1:
+#
+#   * NO PCIe WI-FI CARD, and no radio of any kind. The whole wireless stack
+#     and wpa_supplicant/iw drop out, which also buys back image size against
+#     CEFDK bootlinux's ~7MB copy window.
+#   * REACHABILITY IS WIRED, and it is the only path — e1000, in the common
+#     kernel fragment.
+#   * A BCM53125 managed switch on SPI, driven by DSA so the two rear RJ45s
+#     come up as separate netdevs. See ea3-v2/linux/ea3-v2.fragment.
+#
+# Note PCI itself stays enabled (it is in the common fragment): the EA3's NIC
+# *and* its SPI controller are both PCI functions on the CE5310. What goes away
+# is the PCIe Wi-Fi card, not the bus.
+#
+# NOT YET BOOTED ON HARDWARE. The boot chain looks identical to the EA1's
+# (CEFDK 36-34, no GRUB, same recovery layout) but no EA3 has been netbooted and
+# SEC_BOOT has not been read on one. See docs/ea3-recon.md.
+
+BR2_TARGET_GENERIC_HOSTNAME="openhc-ea3"
+BR2_TARGET_GENERIC_ISSUE="openHC EA3 (kernel-up)"
+
+# --- kernel config: common trim + no-radio and the BCM53125 switch ---
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/emmc.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/video.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea3-v2/linux/ea3-v2.fragment"
+
+# --- rootfs: shared services + EA3's wired bring-up ---
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea3-v2/rootfs-overlay"
+
+# --- persistent rootfs: ext4 on the eMMC (mmcblk0p1) ---
+# The real system lives on p1 and the kernel mounts it directly
+# (root=/dev/mmcblk0p1), exactly as ca1 does on its own eMMC. NO embedded
+# initramfs: this same kernel still boots with a netboot-SUPPLIED initrd for the
+# install phase (the ohc-ea-takeover tool tftp's kernel+cpio and bootlinux's
+# them into RAM), so one kernel serves both the persistent boot and the
+# installer — the initrd rides in at boot time rather than being baked in.
+#
+# HOW THE EA3 BOOTS OUR KERNEL (proven on hardware 2026-08-26): CEFDK secure
+# boot is FUSED ON on this unit (EA3 v2), so the eMMC normal-boot path
+# (VERIFY_S3) rejects our unsigned kernel. But the CEFDK shell `bootlinux`
+# command does NOT verify, and CEFDK's `script` autorun (runAutoScript, gated on
+# g_bios_settings.script==0) runs BEFORE the verifying path. So persistence is:
+# our kernel in the raw eMMC gap (~8 MiB, past the container, before p1) + a
+# stored autoscript that `emmc rd`'s it and `bootlinux`'es it. The signed stock
+# kernel stays in the container untouched as a `script off` software-recovery.
+# See docs/ea3-recon.md and tools/ohc-ea-takeover.py.
+#
+# Measured live: mmcblk0 7.28 GiB = p1 (6 GiB ext4) + p2 (1 GiB restore payload,
+# NEVER write) + p3 (32 MiB persistent). Writing p1 is reversible via the
+# recessed restore button (reimages kernel+rootfs+CEFDK from p2).
+#
+# 512M base image, dd'd onto p1 then grown with resize2fs to fill the partition;
+# a build needing more (Node/Python/HA stack) raises this in its defconfig layer.
+BR2_TARGET_ROOTFS_EXT2=y
+BR2_TARGET_ROOTFS_EXT2_4=y
+BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
+
+# --- wrap the bzImage in the CEFDK container for netboot ---
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="ea3-v2"
+
+# --- kernel patches: shared (i2c-pxa, pwm-ce5300) + EA3's switch board glue ---
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"

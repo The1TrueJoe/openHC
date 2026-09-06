@@ -1,0 +1,38 @@
+#!/bin/sh
+#
+# Spotify Connect receiver. Advertises this box on the LAN; a Spotify client
+# picks it as a playback device. Needs a Premium account (Spotify's API only
+# permits Connect for Premium) -- with a free account the device is discovered
+# and then refuses to play, which looks like a bug and is not one.
+#
+# --name uses the unit hostname so several controllers on one network stay
+# distinguishable (openhc-<board>-<MAC>, set by S09hostname).
+
+DAEMON=/usr/bin/librespot
+PIDFILE=/var/run/librespot.pid
+NAME="$(hostname)"
+# 'alsa' with no device follows the default PCM, so an asound.conf or a USB DAC
+# change does not need this file edited.
+ARGS="--name $NAME --backend alsa --bitrate 320 --disable-audio-cache"
+
+case "$1" in
+  start)
+	[ -x "$DAEMON" ] || exit 0
+	printf 'Starting librespot: '
+	start-stop-daemon -S -q -m -b -p "$PIDFILE" -x "$DAEMON" -- $ARGS \
+		&& echo OK || echo FAIL
+	;;
+  stop)
+	printf 'Stopping librespot: '
+	start-stop-daemon -K -q -p "$PIDFILE" && echo OK || echo FAIL
+	rm -f "$PIDFILE"
+	;;
+  restart|reload)
+	"$0" stop
+	sleep 1
+	"$0" start
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac

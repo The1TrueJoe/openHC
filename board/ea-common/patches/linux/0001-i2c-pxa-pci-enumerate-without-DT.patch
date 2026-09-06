@@ -1,8 +1,16 @@
 i2c: pxa-pci: enumerate the CE5310 I2C without a device tree
 
-The CE5310 exposes the same three-BAR I2C PCI function as the CE4100
-(8086:2e68), but our CEFDK 'bootlinux' boot passes no DTB, so of_node is
-NULL and the stock driver bails ('Missing device tree node').
+The CE5310 exposes the CE4100's I2C PCI function (8086:2e68), but our
+CEFDK 'bootlinux' boot passes no DTB, so of_node is NULL and the stock
+driver bails ('Missing device tree node').
+
+It also exposes FOUR controllers, not three: BARs at 0xdffe0500/0600/0700
+and a fourth at 0xdffe0e00. The discontiguous address is why it was
+missed. Measured on an EA3: BAR3's registers read 0x03/0x12 at +0x14/+0x18,
+identical to the three working controllers, and zero elsewhere because
+nothing had configured it. The ADAU1451 audio codec (0x38) lives on that
+fourth bus -- it is the vendor kernel's i2c-3 -- so with DEVS=3 the codec
+is simply unreachable and audio cannot work at all.
 
 Drop the DT-node matching and hand each BAR directly to an i2c-pxa
 'ce4100-i2c' platform device. i2c-pxa falls through to its
@@ -14,36 +22,42 @@ Signed-off-by: openHC <openhc@localhost>
 ---
 --- a/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:30
 +++ b/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:16
-@@ -6,13 +6,18 @@
+@@ -6,13 +6,21 @@
   * The CE4100's I2C device is more or less the same one as found on PXA.
   * It does not support target mode, the register slightly moved. This PCI
   * device provides three bars, every contains a single I2C controller.
 + *
-+ * openHC: patched to enumerate WITHOUT a device tree. The CE5310 exposes the
-+ * same three-BAR I2C PCI function (8086:2e68), but our CEFDK bootlinux boot
++ * openHC: patched to enumerate WITHOUT a device tree. The CE5310 exposes a
++ * FOUR-BAR I2C PCI function (8086:2e68) -- the 4th carries the audio codec --
 + * passes no DTB, so dev->dev.of_node is NULL. Drop the DT-node matching and
 + * hand each BAR straight to an i2c-pxa "ce4100-i2c" platform device; i2c-pxa
 + * falls through to its platform_device_id path (REGS_CE4100) when of_node is
-+ * NULL, and numbers the adapters from the platform id (i2c-0..2).
++ * NULL, and numbers the adapters from the platform id (i2c-0..3).
   */
  #include <linux/init.h>
  #include <linux/pci.h>
  #include <linux/platform_device.h>
  #include <linux/platform_data/i2c-pxa.h>
++#include <linux/clk.h>
++#include <linux/clk-provider.h>
++#include <linux/clkdev.h>
 -#include <linux/of.h>
 -#include <linux/of_address.h>
  
- #define CE4100_PCI_I2C_DEVS	3
+-#define CE4100_PCI_I2C_DEVS	3
++#define CE4100_PCI_I2C_DEVS	4
  
-@@ -25,7 +30,6 @@
+@@ -25,7 +30,8 @@
  	struct platform_device *pdev;
  	struct i2c_pxa_platform_data pdata;
  	struct resource res[2];
 -	struct device_node *child;
++	char clkname[24];
++	struct clk *clk;
  	static int devnum;
  	int ret;
  
-@@ -40,43 +44,12 @@
+@@ -40,43 +44,37 @@
  	res[1].start = dev->irq;
  	res[1].end = dev->irq;
  
@@ -84,6 +98,31 @@ Signed-off-by: openHC <openhc@localhost>
  	}
  	pdev->dev.parent = &dev->dev;
 -	pdev->dev.of_node = child;
++
++	/*
++	 * i2c-pxa calls devm_clk_get() unconditionally. With CONFIG_COMMON_CLK=y
++	 * — which the `switch` feature needs, for spi-pxa2xx-pci — that becomes a
++	 * REAL lookup, and this SoC registers no clock provider, so every adapter
++	 * failed to probe and the box came up with no i2c at all. Measured:
++	 *   pxa2xx-i2c ce4100-i2c.0: error -ENOENT: failed to get the clk
++	 * Register a fixed-rate clock per adapter, exactly as spi-pxa2xx-pci does
++	 * for its own port.
++	 *
++	 * The RATE IS NEVER READ on this path: i2c-pxa only consults it under
++	 * `high_mode`, which is set from the DT property mrvl,i2c-high-mode, and
++	 * there is no DT here. Bus timing comes from the block itself.
++	 * ponytail: placeholder rate; measure the real i2c functional clock if
++	 * high-speed mode is ever wanted.
++	 */
++	snprintf(clkname, sizeof(clkname), "ce4100-i2c.%d", devnum);
++	clk = clk_register_fixed_rate(NULL, clkname, NULL, 0, 100000000);
++	if (IS_ERR(clk)) {
++		ret = PTR_ERR(clk);
++		goto err;
++	}
++	ret = clk_register_clkdev(clk, NULL, clkname);
++	if (ret)
++		goto err;
  
  	ret = platform_device_add_resources(pdev, res, ARRAY_SIZE(res));
  	if (ret)

@@ -1,0 +1,47 @@
+# openHC — BCM53125 managed switch (DSA/b53) kernel side. Shared by every EA
+# variant that HAS the switch: ea3-v1, ea3-v2, ea1-v2-poe.
+#
+# Three pieces are needed and all three are here:
+#   1. the SPI master     — spi-pxa2xx-pci binds PCI 8086:2e6a (the CE4100 port,
+#                           which the CE5310 also exposes)
+#   2. the switch driver  — b53 with its SPI binding
+#   3. board description  — ea-common/drivers/spi/spi-ea-b53-board.c
+#                           registers the switch at CS 1 on the SPI bus whose
+#                           number is the controller's PCI devfn (92), and hands DSA
+#                           the measured port map (CPU=5, jacks=1 and 2) as
+#                           platform_data, since there is no DTB.
+#
+# Piece 3 previously did not build (it included <net/dsa.h> for dsa_chip_data,
+# which moved to <linux/platform_data/dsa.h>); that is fixed. What is still
+# UNVERIFIED is DSA's bring-up of port 1, which the stock switch configuration
+# isolates — DSA has to reconfigure the switch, not merely describe it. If DSA
+# does not attach, S40net falls back to DHCP on the master and only the PRIMARY
+# jack works (measured), so the board stays reachable either way.
+#
+# COMMON_CLK is not optional here even though nothing on this board has a clock
+# tree worth speaking of. SPI_PXA2XX_PCI is `def_tristate SPI_PXA2XX && PCI &&
+# COMMON_CLK` — a derived symbol, so setting CONFIG_SPI_PXA2XX_PCI directly in a
+# fragment is silently DROPPED by kconfig. Without COMMON_CLK the glue is simply
+# never compiled: the SPI master never binds 8086:2e6a, bus 0 never registers,
+# the board_info our patch queues never instantiates, and b53 never probes.
+# Measured exactly that on hardware: 01:0b.4 with no driver bound and an empty
+# /sys/class/spi_master. Do not "clean up" the line below.
+CONFIG_COMMON_CLK=y
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_PXA2XX=y
+#
+# The b53 symbols are CONFIG_B53 / CONFIG_B53_SPI_DRIVER — NOT
+# CONFIG_NET_DSA_B53*, which is what this fragment said for a long time. Those
+# names do not exist, so kconfig dropped them silently and b53 was simply never
+# built: on hardware the SPI device spi92.1 appeared with modalias
+# spi:bcm53125 and /sys/bus/spi/drivers/ was empty, because there was no driver
+# to bind it. (b53's own Kconfig: `menuconfig B53` / `config B53_SPI_DRIVER`.)
+# B53 selects NET_DSA_TAG_BRCM and NET_DSA_TAG_NONE itself.
+CONFIG_NET_DSA=y
+CONFIG_B53=y
+CONFIG_B53_SPI_DRIVER=y
+CONFIG_NET_DSA_TAG_BRCM=y
+CONFIG_NET_DSA_TAG_BRCM_PREPEND=y
+CONFIG_BRIDGE=y
+CONFIG_VLAN_8021Q=y

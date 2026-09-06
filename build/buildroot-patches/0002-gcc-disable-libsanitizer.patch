@@ -1,0 +1,36 @@
+Subject: gcc: disable libsanitizer
+
+libsanitizer includes <linux/scc.h>, the AX.25 SCC driver header, which has
+been removed from the kernel. gcc 12 still expects it, so building a C++
+toolchain against modern kernel headers fails with:
+
+  libsanitizer/sanitizer_common/sanitizer_platform_limits_posix.cpp:154:10:
+      fatal error: linux/scc.h: No such file or directory
+
+Buildroot already disables libsanitizer for uClibc, musl, SPARC and mips64
+n32; this is the same class of problem. libsanitizer is ASan/UBSan for the
+target -- a developer tool an appliance image has no use for -- so disable it
+rather than carry a kernel header that no longer exists.
+
+--- a/package/gcc/gcc.mk	2026-08-28 00:56:44
++++ b/package/gcc/gcc.mk	2026-08-28 00:56:44
+@@ -141,6 +141,19 @@
+ HOST_GCC_COMMON_CONF_OPTS += --disable-libsanitizer
+ endif
+ 
++# libsanitizer does not build against modern kernel headers: it includes
++# <linux/scc.h>, the AX.25 SCC driver header, which has been removed from the
++# kernel. gcc 12 still expects it, so any sufficiently new kernel breaks the
++# build with:
++#
++#   sanitizer_platform_limits_posix.cpp:154:10:
++#       fatal error: linux/scc.h: No such file or directory
++#
++# libsanitizer is ASan/UBSan -- a developer tool for the target, which an
++# appliance image has no use for. Disable it rather than carry a kernel header
++# that no longer exists.
++HOST_GCC_COMMON_CONF_OPTS += --disable-libsanitizer
++
+ # libsanitizer is broken for SPARC
+ # https://bugs.busybox.net/show_bug.cgi?id=7951
+ ifeq ($(BR2_sparc)$(BR2_sparc64),y)

@@ -1,0 +1,4 @@
+# EA3 v1 deltas. Wi-Fi + eMMC come from the shared feature fragments; the
+# BCM53125 switch is handled the same way as on the ea3-v2 (plain e1000 today —
+# see board/ea3-v2/linux/ea3-v2.fragment for the DSA state of play).
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"

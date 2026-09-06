@@ -19,3 +19,6 @@ __pycache__/
 /packages/**/dist/
 /board/common/rootfs-overlay/opt/ohc/bin/
 *.tsbuildinfo
+
+# Device backups (eMMC dumps) — never commit these
+/backups/

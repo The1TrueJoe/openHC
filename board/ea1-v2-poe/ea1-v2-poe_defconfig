@@ -1,0 +1,16 @@
+# openHC — Control4 EA1 v2 PoE.
+#
+# The PoE variant drops the radio and gains the BCM53125 managed switch (the
+# same switch the EA3s carry), so its reachability is wired-only — configure it
+# like an ea3-v2 rather than like an ea1-v1.
+#
+# UNVERIFIED ON HARDWARE, including whether secure boot is fused (see ea1-v2).
+BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1-v2-poe"
+BR2_TARGET_GENERIC_ISSUE="openHC EA1 v2 PoE (kernel-up)"
+
+# NO wifi.fragment — this board has no radio.
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/emmc.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea1-v2-poe/linux/ea1-v2-poe.fragment"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea1-v2-poe/rootfs-overlay"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="ea1-v2-poe"
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"

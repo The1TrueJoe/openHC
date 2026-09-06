@@ -1,0 +1,61 @@
+# Kernel options for the PowerVR SGX545 driver (packages/sgx545-ce).
+#
+# Mirrors that repo's linux.fragment, which is its own statement of
+# requirements for anyone building it outside openHC. Kept as a real file
+# rather than a symlink into the submodule so an uninitialised submodule fails
+# at the package, with a clear message, instead of here with a confusing one.
+#
+# NOTE ON COMMENTS IN THIS FILE: Buildroot's merge_config.sh scrapes any line
+# that looks like a kconfig assignment, including inside prose. Do not write a
+# symbol name followed by "=" or by "is not set" in a sentence -- it lands in
+# the merge diagnostics as a redefinition and makes the warning unreadable.
+# Refer to symbols without the assignment, as below.
+#
+# Ordering: the common fragment disables DRM (serial console is the only head
+# on these boards), so this has to come after it. build.sh appends feature
+# fragments after the board file, which is exactly why this lives as a feature.
+
+# Userspace finds the GPU through libdrm's drmOpen(), so a DRM node has to
+# exist -- the stock system's /dev/dri/card0 is that node, not a KMS device.
+# The driver registers no modesetting and owns no GEM objects; display stays
+# on ce5300-fb.
+#
+# This costs about 1.25 MiB of bzImage, nearly all of it DRM core and its
+# KMS/DisplayPort/HDCP helper libraries rather than the driver (417 objects
+# against the driver's 41). It is not trimmable from here: DRM_KMS_HELPER and
+# DRM_DISPLAY_HELPER have no prompt and are pulled in by other promptless
+# symbols, so disabling them in a fragment is silently ignored -- measured, it
+# changed the image by zero bytes. Reclaiming it would take a kernel patch.
+# Built as a module (see CONFIG_MODULES in common.fragment) precisely so that
+# weight lands in the rootfs instead of the bzImage.
+CONFIG_DRM=m
+
+# PAT gives real write-combining for the SGX command buffers, where the GPU
+# reads what the CPU just wrote. Without it the driver falls back to uncached:
+# correct, markedly slower.
+CONFIG_X86_PAT=y
+CONFIG_MTRR=y
+
+# sgxregs reads the SGX identity registers through /dev/mem before any driver
+# is loaded. Strict devmem would block exactly the BAR range it looks at.
+CONFIG_DEVMEM=y
+# CONFIG_STRICT_DEVMEM is not set
+
+# Turn off the DRM drivers CONFIG_DRM drags in by default.
+#
+# The i386 defconfig enables a pile of GPU drivers for hardware this board does
+# not contain. As modules they never load, but they are still built and shipped:
+# i915 alone is 2.6 MB of the 3.8 MB of modules, for Intel integrated graphics
+# the CE5300 does not have. virtio-gpu is for VMs.
+#
+# This costs nothing in bzImage -- these are modules either way -- it just stops
+# the rootfs carrying drivers that can never bind. The DRM core and its helpers
+# stay, because pvrsrvkm genuinely needs them.
+# CONFIG_DRM_I915 is not set
+# CONFIG_DRM_VIRTIO_GPU is not set
+# CONFIG_DRM_TTM is not set
+# CONFIG_DRM_GEM_SHMEM_HELPER is not set
+# CONFIG_DRM_BUDDY is not set
+# CONFIG_DRM_PANEL_ORIENTATION_QUIRKS is not set
+# CONFIG_INTEL_GTT is not set
+# CONFIG_AGP is not set

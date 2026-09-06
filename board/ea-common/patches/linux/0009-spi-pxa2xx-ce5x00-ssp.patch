@@ -1,0 +1,210 @@
+spi: pxa2xx: add CE5X00_SSP for the Intel CE5300's SSP
+
+The CE5300 (Control4 EA3) exposes an SSP behind the same PCI id as the CE4100
+(8086:2e6a), so spi-pxa2xx-pci treats it as a CE4100. It is not one. Control4's
+GPL kernel drop carries a separate type for it —
+kernel/c4_kernel_patches/0013-bcm-switch-fpga-spi-nor-flash.patch:
+
+	case CE5300_SOC_DEVICE_ID:
+		ssp->type = CE5X00_SSP;
+		//ssp->type = QUARK_X1000_SSP;
+
+and the two parts disagree on the SSCR1/SSSR field layout and FIFO depth:
+
+	                  mainline CE4100      CE5300
+	SSCR1 TFT         bits  7:6  (2 bits)  bits 10:6  (5 bits)
+	SSCR1 RFT         bits 11:10 (2 bits)  bits 15:11 (5 bits)
+	SSSR  TFL         bits  9:8  (2 bits)  bits 12:8  (5 bits)
+	FIFO depth        4                    32
+
+Driven as a CE4100 the controller still clocks bytes and still raises its
+interrupt, so nothing looks broken — but the thresholds land in the wrong bits
+and every byte read back is 0xff. Measured on an EA3: SSP transmits, RX FIFO
+fills (SSSR RFL=4), b53_switch_detect() reads nothing, b53 probes -EINVAL.
+
+The vendor's commented-out alternative is the key: mainline's QUARK_X1000_SSP
+ALREADY has exactly this layout (SSCR1 TFT GENMASK(10,6), RFT GENMASK(15,11),
+SSSR TFL GENMASK(12,8), DataSize(x)=x-1, Motorola at 6:5, RX threshold 1). So
+CE5X00_SSP needs no constants of its own — it is Quark's register layout with
+CE4100's chip select, and that is precisely how this patch defines it: a new
+enum value that falls through to `case QUARK_X1000_SSP:` at eleven of its twelve
+sites, and that joins CE4100_SSP in the three places that select a device by
+writing the chip-select number into SSSR.
+
+THE TWELFTH SITE IS THE CLOCK DIVIDER, AND IT MUST NOT BE ALIASED.
+pxa2xx_ssp_get_clk_div() gives Quark quark_x1000_get_clk_div(), which splits the
+rate into an SCR divisor plus a 24-bit DDS_RATE value — and DDS_RATE is then
+written only under is_quark_x1000_ssp(), an exact type comparison. A CE5300
+routed through that path therefore gets Quark's SCR with the DDS half silently
+dropped, so the clock is wrong and the SSP never leaves BSY:
+    b53-switch spi92.1: Flush failed
+    b53-switch spi92.1: SPI transfer failed: -5
+Control4's driver uses a plain SSCR0_SCR divisor, so CE5X00 falls through to
+ssp_get_clk_div() like every non-Quark part.
+
+Getting that split wrong is what made this take so long. An earlier attempt set
+CE4100_SSP (right chip select, wrong FIFO layout — reads returned 0xff), and a
+partial version of this patch covered only five of the twelve Quark sites, so
+the rest fell into `default:` and got PXA25x behaviour (transfers timed out).
+Alias all twelve or none.
+
+The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
+rather than by the SSP function's own id, which it shares with the CE4100, so
+genuine CE4100 hardware is unaffected.
+
+Signed-off-by: openHC <openhc@localhost>
+---
+--- a/include/linux/pxa2xx_ssp.h
++++ b/include/linux/pxa2xx_ssp.h
+@@ -219,6 +219,7 @@
+ 	PXA168_SSP,
+ 	PXA910_SSP,
+ 	CE4100_SSP,
++	CE5X00_SSP,
+ 	MMP2_SSP,
+ 	MRFLD_SSP,
+ 	QUARK_X1000_SSP,
+--- a/drivers/spi/spi-pxa2xx.c
++++ b/drivers/spi/spi-pxa2xx.c
+@@ -213,6 +213,7 @@
+ static u32 pxa2xx_spi_get_ssrc1_change_mask(const struct driver_data *drv_data)
+ {
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		return QUARK_X1000_SSCR1_CHANGE_MASK;
+ 	case CE4100_SSP:
+@@ -226,6 +227,7 @@
+ pxa2xx_spi_get_rx_default_thre(const struct driver_data *drv_data)
+ {
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		return RX_THRESH_QUARK_X1000_DFLT;
+ 	case CE4100_SSP:
+@@ -240,6 +242,7 @@
+ 	u32 mask;
+ 
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		mask = QUARK_X1000_SSSR_TFL_MASK;
+ 		break;
+@@ -260,6 +263,7 @@
+ 	u32 mask;
+ 
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		mask = QUARK_X1000_SSCR1_RFT;
+ 		break;
+@@ -277,6 +281,7 @@
+ 				   u32 *sccr1_reg, u32 threshold)
+ {
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		*sccr1_reg |= QUARK_X1000_SSCR1_RxTresh(threshold);
+ 		break;
+@@ -293,6 +298,7 @@
+ 				  u32 clk_div, u8 bits)
+ {
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		return clk_div
+ 			| QUARK_X1000_SSCR0_Motorola
+@@ -420,7 +426,7 @@
+ 	struct driver_data *drv_data =
+ 		spi_controller_get_devdata(spi->controller);
+ 
+-	if (drv_data->ssp_type == CE4100_SSP) {
++	if ((drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP)) {
+ 		pxa2xx_spi_write(drv_data, SSSR, spi_get_chipselect(spi, 0));
+ 		return;
+ 	}
+@@ -435,7 +441,7 @@
+ 		spi_controller_get_devdata(spi->controller);
+ 	unsigned long timeout;
+ 
+-	if (drv_data->ssp_type == CE4100_SSP)
++	if ((drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP))
+ 		return;
+ 
+ 	/* Wait until SSP becomes idle before deasserting the CS */
+@@ -583,6 +589,7 @@
+ 	}
+ 
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		mask |= QUARK_X1000_SSCR1_RFT;
+ 		break;
+@@ -1135,6 +1142,7 @@
+ 	uint tx_thres, tx_hi_thres, rx_thres;
+ 
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
+ 		tx_hi_thres = 0;
+@@ -1173,7 +1181,7 @@
+ 		break;
+ 	}
+ 
+-	if (drv_data->ssp_type == CE4100_SSP) {
++	if ((drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP)) {
+ 		if (spi_get_chipselect(spi, 0) > 4) {
+ 			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
+ 			return -EINVAL;
+@@ -1208,6 +1216,7 @@
+ 	}
+ 
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
+ 				   & QUARK_X1000_SSCR1_RFT)
+@@ -1309,7 +1318,8 @@
+ 
+ 	if (pxa25x_ssp_comp(drv_data)) {
+ 		switch (drv_data->ssp_type) {
+-		case QUARK_X1000_SSP:
++		case CE5X00_SSP:
++	case QUARK_X1000_SSP:
+ 			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
+ 			break;
+ 		default:
+@@ -1372,6 +1382,7 @@
+ 
+ 	/* Load default SSP configuration */
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		tmp = QUARK_X1000_SSCR1_RxTresh(RX_THRESH_QUARK_X1000_DFLT) |
+ 		      QUARK_X1000_SSCR1_TxTresh(TX_THRESH_QUARK_X1000_DFLT);
+--- a/drivers/spi/spi-pxa2xx-pci.c
++++ b/drivers/spi/spi-pxa2xx-pci.c
+@@ -177,8 +177,21 @@
+ static int ce4100_spi_setup(struct pci_dev *dev, struct pxa2xx_spi_controller *c)
+ {
+ 	struct ssp_device *ssp = &c->ssp;
++	struct pci_dev *hb;
+ 
+-	ssp->type = PXA25x_SSP;
++	/*
++	 * The CE4100 and the CE5300 share this PCI id but not this SSP. Tell
++	 * them apart by the SoC host bridge, as Control4's own driver does.
++	 */
++	ssp->type = CE4100_SSP;
++	hb = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(0, 0));
++	if (hb) {
++		if (hb->vendor == PCI_VENDOR_ID_INTEL && hb->device == 0x0c40)
++			ssp->type = CE5X00_SSP;
++		pci_dev_put(hb);
++	}
++	dev_info(&dev->dev, "SSP type %s\n",
++		 ssp->type == CE5X00_SSP ? "CE5X00" : "CE4100");
+ 	ssp->port_id = dev->devfn;
+ 	c->num_chipselect = dev->devfn;
+ 

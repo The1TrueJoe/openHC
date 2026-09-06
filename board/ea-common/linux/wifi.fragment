@@ -1,0 +1,38 @@
+# openHC — Wi-Fi (Atheros AR9485 on PCIe) kernel side, shared by every EA
+# variant that HAS a radio: ea1-v1, ea1-v2, ea3-v1. NOT ea3-v2 / ea1-v2-poe,
+# which have no radio at all.
+#
+# Fully mainline ath9k, no firmware blob — which is what let the EA1 drop its
+# serial tether before eMMC/Ethernet had drivers.
+#
+# ── BUILT AS MODULES, and that is not optional ───────────────────────────────
+#
+# CEFDK's bootlinux copies the kernel into a FIXED 7,417,856-byte window and
+# truncates anything larger without a word. An x86_64 EA kernel with only the
+# `emmc` feature is already 7,037,952 bytes — 379,904 to spare. cfg80211,
+# mac80211 and ath9k together are on the order of a megabyte, so building them
+# in does not make a big kernel: it makes one that does not boot, and the
+# failure looks like dead hardware.
+#
+# Nothing here is needed to REACH the rootfs — the radio is brought up from
+# userspace by S41wifi-ap long after p1 is mounted — so modules cost nothing
+# and lift the ceiling entirely. See TEMPORARILY-DISABLED.md and
+# board/ea-common/linux/common.fragment's size-budget section.
+#
+# CFG80211/MAC80211 must be =m too: a built-in cannot depend on a module, so
+# leaving them =y would drag ath9k back in with them.
+CONFIG_CFG80211=m
+CONFIG_MAC80211=m
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_ATH_COMMON=m
+CONFIG_ATH9K=m
+CONFIG_ATH9K_PCI=y
+
+# crypto mac80211/WPA needs. Left BUILT IN deliberately: they are small, several
+# are already pulled in by other subsystems, and a missing crypto algorithm
+# fails as an unexplained association failure rather than a load error.
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_CCM=y
+CONFIG_CRYPTO_GCM=y
+CONFIG_CRYPTO_ARC4=y

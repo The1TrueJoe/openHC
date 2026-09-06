@@ -1,0 +1,7 @@
+config BR2_PACKAGE_OHC_MOTD
+	bool "ohc-motd (figlet-generated /etc/motd)"
+	default y
+	help
+	  Generate /etc/motd from `figlet -f slant openHC` at build time,
+	  so the banner is real figlet output rather than a checked-in blob.
+	  figlet must be present in the build environment (build/Dockerfile).

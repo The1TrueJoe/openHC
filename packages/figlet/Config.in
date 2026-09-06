@@ -1,0 +1,15 @@
+config BR2_PACKAGE_FIGLET
+	bool "figlet"
+	help
+	  FIGlet renders text as large ASCII-art letters made out of
+	  ordinary characters.
+
+	  Buildroot has no figlet package of its own, and openHC has only
+	  ever run the build host's copy (see build/Dockerfile). This
+	  packages it for the target so the banner can be generated on the
+	  device instead of frozen into the image at build time.
+
+	  Only the slant and standard fonts are installed — the full font
+	  set is ~700K, which is not worth carrying for a boot splash.
+
+	  http://www.figlet.org/

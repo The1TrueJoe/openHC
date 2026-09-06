@@ -1,0 +1,6 @@
+# Shared EA feature sets this board pulls in (board/ea-common/features/*.defconfig
+# and the matching linux/*.fragment). One word per feature, space separated.
+#   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
+#   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
+#   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
+wifi

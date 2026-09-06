@@ -1,0 +1,9 @@
+# openHC — persistent eMMC rootfs, shared by every EA variant that boots from
+# the eMMC rather than RAM. Concatenated when the board's feature list contains
+# "emmc". The sdhci-pci/ext4 kernel side is in ea-common/linux/emmc.fragment.
+#
+# 512M base image: dd'd onto p1 then grown with resize2fs to fill the partition.
+# A build needing more (Node/Python/HA) raises this in ITS OWN layer.
+BR2_TARGET_ROOTFS_EXT2=y
+BR2_TARGET_ROOTFS_EXT2_4=y
+BR2_TARGET_ROOTFS_EXT2_SIZE="512M"

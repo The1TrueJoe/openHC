@@ -1,0 +1,19 @@
+# Shared EA feature sets this board pulls in (board/ea-common/features/*.defconfig
+# and the matching linux/*.fragment). One word per feature, space separated.
+#   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
+#   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
+#   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
+wifi emmc
+
+# TEMPORARILY reduced from `wifi emmc switch audio` (2026-08-31), same reason as
+# ea3-v2 -- see TEMPORARILY-DISABLED.md at the repo root.
+#
+# `switch` and `audio` are both written =y and would overrun CEFDK's
+# 7,417,856-byte bootlinux window, which an x86_64 kernel already fills to
+# 7,037,952. An oversized kernel is TRUNCATED silently and simply does not boot.
+# Bring them back as modules (=m), not built in.
+#
+# `wifi` is KEPT, because this is the EA-3 variant that has a radio and the AP +
+# captive portal is how an unplugged unit is set up. It is affordable now only
+# because ea-common/linux/wifi.fragment builds ath9k/mac80211/cfg80211 as
+# MODULES; as =y they were about a megabyte and did not fit either.

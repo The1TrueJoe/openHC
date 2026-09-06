@@ -1,0 +1,138 @@
+#!/bin/sh
+# openHC network bring-up — SHARED by every board. Board differences come from
+# /opt/ohc/board.env, not from a per-board copy of this script:
+#
+#   OHC_UPLINK_IFACE   wired uplink (default eth0)
+#   OHC_DSA_PORTS      DSA switch port netdevs, if the board has a managed
+#                      switch (e.g. "lan1 lan2" on the EA3/EA1-PoE BCM53125).
+#                      Empty on boards whose uplink is a plain single MAC.
+#   OHC_NET_STATIC     optional "addr/cidr[,gw]" to skip DHCP entirely.
+#
+# Best-effort throughout: never fail boot. A box with no address is far easier
+# to debug than a box that will not boot.
+#
+# DSA note: with a managed switch, the SoC MAC is the switch's CPU port and must
+# be UP for the port netdevs to pass traffic at all — it carries no IP itself.
+# That ordering is a DSA requirement, not a style choice. If the switch driver
+# did not attach there will be no port netdevs, and we fall back to DHCP on the
+# master. On the EA3 that fallback reaches the network through the PRIMARY jack
+# only (measured: the stock switch config does not forward the second jack to
+# the CPU port), so it is a safety net, not a substitute for the switch driver.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+MASTER="${OHC_UPLINK_IFACE:-eth0}"
+PORTS="${OHC_DSA_PORTS:-}"
+
+wait_carrier() {
+    i=0
+    while [ $i -lt 10 ]; do
+        [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = 1 ] && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+addr_of() { ip -4 -o addr show "$1" 2>/dev/null | awk '{print $4}'; }
+
+lease() {                      # $1 = iface. static if configured, else DHCP.
+    if [ -n "$OHC_NET_STATIC" ]; then
+        a="${OHC_NET_STATIC%%,*}"; gw="${OHC_NET_STATIC#*,}"
+        ip addr add "$a" dev "$1" 2>/dev/null
+        [ "$gw" != "$OHC_NET_STATIC" ] && ip route add default via "$gw" dev "$1" 2>/dev/null
+        return 0
+    fi
+    udhcpc -i "$1" -t 8 -T 2 -n >/dev/null 2>&1
+}
+
+# Last-resort recovery. Once a DSA switch driver binds, the SoC MAC stops being
+# an ordinary netdev and becomes the switch's CPU port: the switch expects
+# tagged frames there, so plain DHCP on it is dropped and the box falls off the
+# network entirely — even though the link is up and ARP looks alive. That is
+# exactly what a half-working switch does, e.g. when the driver attaches but its
+# ports fail PHY setup ("no phy at 1 ... error -19"), leaving no usable lanN.
+#
+# Unbinding the switch driver tears DSA down and hands the MAC back as a plain
+# interface. A reachable box with a dumb NIC beats an unreachable one with a
+# managed switch: without this the only way back in is the ID button and a
+# reflash. Never called while anything has a lease.
+dsa_unbind() {
+    for drv in /sys/bus/spi/drivers/b53-switch; do
+        [ -d "$drv" ] || continue
+        for d in "$drv"/spi*; do
+            [ -e "$d" ] || continue
+            b=${d##*/}
+            echo "Net: no address and DSA is bound — unbinding $b to recover $MASTER"
+            echo "$b" > "$drv/unbind" 2>/dev/null || continue
+            sleep 1
+            return 0
+        done
+    done
+    return 1
+}
+
+case "$1" in
+  start)
+    ip link set "$MASTER" up 2>/dev/null || { echo "Net: no $MASTER"; exit 0; }
+
+    have_ports=
+    for p in $PORTS; do
+        [ -e "/sys/class/net/$p" ] && have_ports=yes
+    done
+
+    if [ -z "$have_ports" ]; then
+        [ -n "$PORTS" ] && printf 'Net: no switch ports, falling back to %s: ' "$MASTER" \
+                        || printf 'Net: %s: ' "$MASTER"
+        wait_carrier "$MASTER"
+        if lease "$MASTER"; then
+            echo "up ($(addr_of "$MASTER"))"
+        else
+            echo "no lease"
+            # A bound-but-portless switch is the usual cause here.
+            if dsa_unbind; then
+                printf 'Net: %s (post-unbind): ' "$MASTER"
+                ip link set "$MASTER" up 2>/dev/null
+                wait_carrier "$MASTER"
+                lease "$MASTER" && echo "up ($(addr_of "$MASTER"))" || echo "still no lease"
+            fi
+        fi
+        exit 0
+    fi
+
+    # Lease on the first port with a cable. All stay UP so any socket works, but
+    # only one address is taken — racing DHCP clients on one L2 segment is a
+    # worse default than a single lease.
+    for p in $PORTS; do ip link set "$p" up 2>/dev/null; done
+    leased=
+    for p in $PORTS; do
+        wait_carrier "$p" || continue
+        printf 'Net: %s: ' "$p"
+        if lease "$p"; then
+            echo "up ($(addr_of "$p"))"
+            leased=$p
+            break
+        fi
+        echo "no lease"
+    done
+    if [ -z "$leased" ]; then
+        echo "Net: no lease on any of:$PORTS"
+        if dsa_unbind; then
+            printf 'Net: %s (post-unbind): ' "$MASTER"
+            ip link set "$MASTER" up 2>/dev/null
+            wait_carrier "$MASTER"
+            lease "$MASTER" && echo "up ($(addr_of "$MASTER"))" || echo "still no lease"
+        fi
+    fi
+    # The splash drew at S01, before any of this, so it had no address to show.
+    # Redraw now that we do. Guarded: board/common is shared with boards that
+    # ship no splash at all.
+    [ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash restart >/dev/null 2>&1
+    ;;
+  stop)
+    killall udhcpc 2>/dev/null
+    for p in $PORTS; do ip link set "$p" down 2>/dev/null; done
+    ip link set "$MASTER" down 2>/dev/null
+    ;;
+  *) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac
+exit 0

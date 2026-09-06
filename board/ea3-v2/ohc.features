@@ -1,0 +1,11 @@
+# TEMPORARILY reduced to 'emmc' to get Home Assistant booting -- see
+# TEMPORARILY-DISABLED.md at the repo root for what was turned off and why.
+# Shared EA feature sets this board pulls in (board/ea-common/features/*.defconfig
+# and the matching linux/*.fragment). One word per feature, space separated.
+#   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
+#   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
+#   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
+#   sgx    - PowerVR SGX545 kernel driver (3D); gives /dev/dri/card0
+#   audio  - CE5300 I2S + ADAU1451 codec, ALSA, AirPlay (shairport-sync)
+#            and Spotify Connect (librespot)
+emmc

@@ -1,0 +1,82 @@
+Subject: wpewebkit: depend on libwpe, not on wpebackend-fdo
+
+WPE WebKit links libwpe; the *backend* is a shared object dlopen'd at runtime
+and selected by WPE_BACKEND. Buildroot nonetheless makes wpebackend-fdo a hard
+dependency, and fdo is built on Wayland -- it needs wayland, libepoxy and
+EGL_WL_bind_wayland_display.
+
+That makes WPE unbuildable on a system whose EGL has no Wayland support at all.
+Imagination's DDK for PowerVR SGX 5-series is such a system: its WSEGL layer
+offers X11/DRI, LinuxFB, Front, Blit and Flip, and predates Wayland entirely.
+The gate is in the packaging rather than in WPE itself -- MiniBrowser and the
+API tests are what normally want a concrete backend, and Buildroot already
+configures both OFF.
+
+The replacement is libwpe rather than nothing. Buildroot never lists libwpe as
+a wpewebkit dependency at all: WPEWEBKIT_DEPENDENCIES reaches it only through
+wpebackend-fdo, whose own DEPENDENCIES include it, and BR2_PACKAGE_LIBWPE is
+set only because wpebackend-fdo's Config.in selects it. Confirmed on a live
+tree, where the config reads
+
+  # BR2_PACKAGE_LIBWPE is not set
+  BR2_PACKAGE_WPEBACKEND_FDO=y
+
+while libwpe is built anyway. Deleting the fdo dependency without putting libwpe
+in its place therefore removes WebKit's only ordering guarantee on a library it
+genuinely links (wpe-webkit-2.0.pc carries "Requires: ... wpe-1.0").
+
+Removing fdo from WPEWEBKIT_DEPENDENCIES is also not enough on its own, because
+Config.in SELECTS it, and kconfig honours a select regardless of the .mk. So
+wayland, wayland-protocols and a Wayland backend that cannot work on this EGL
+were all built and installed into the rootfs anyway. The selects have to go too.
+
+wayland-protocols goes with them: it is pulled in only for fdo.
+
+A build that does want the fdo backend still gets it by selecting it directly.
+
+Deliberately left alone: the menuconfig `comment` block above still lists
+!BR2_PACKAGE_HAS_LIBEGL_WAYLAND among the reasons wpewebkit is unavailable, so
+that hint is now wrong. It is a display string in a UI this tree never opens --
+build.sh goes straight to defconfig -- and touching it would add another hunk
+for a Buildroot bump to break, which is a worse trade than an inaccurate hint.
+
+Note that dropping the selects stops fdo and wayland being BUILT, but Buildroot
+never uninstalls a deselected package's files, so libWPEBackend-fdo and the
+libwayland-* already in target/ survive until a clean build. They are inert --
+libWPEBackend-default.so.1 points at the PowerVR backend -- just dead weight.
+
+--- a/package/wpewebkit/wpewebkit.mk	2026-08-28 19:13:38
++++ b/package/wpewebkit/wpewebkit.mk	2026-08-28 19:13:38
+@@ -17,7 +17,7 @@
+ WPEWEBKIT_CPE_ID_PRODUCT = wpe_webkit
+ WPEWEBKIT_DEPENDENCIES = host-gperf host-python3 host-ruby host-unifdef \
+ 	harfbuzz cairo icu jpeg libepoxy libgcrypt libgles libsoup3 libtasn1 \
+-	libpng libxslt wayland-protocols webp wpebackend-fdo
++	libpng libxslt libwpe webp
+ 
+ WPEWEBKIT_CMAKE_BACKEND = ninja
+ 
+--- a/package/wpewebkit/Config.in	2026-08-28 19:13:38
++++ b/package/wpewebkit/Config.in	2026-08-28 19:13:38
+@@ -41,7 +41,6 @@
+ 	depends on BR2_USE_WCHAR # icu, libsoup3
+ 	depends on BR2_PACKAGE_HAS_LIBGLES # libepoxy
+ 	depends on BR2_PACKAGE_HAS_LIBEGL # libepoxy
+-	depends on BR2_PACKAGE_HAS_LIBEGL_WAYLAND # wpebackend-fdo
+ 	depends on BR2_PACKAGE_WPEWEBKIT_ARCH_SUPPORTS
+ 	select BR2_PACKAGE_CAIRO
+ 	select BR2_PACKAGE_CAIRO_PNG
+@@ -53,12 +52,10 @@
+ 	select BR2_PACKAGE_LIBPNG
+ 	select BR2_PACKAGE_LIBSOUP3
+ 	select BR2_PACKAGE_LIBTASN1
++	select BR2_PACKAGE_LIBWPE
+ 	select BR2_PACKAGE_LIBXSLT
+-	select BR2_PACKAGE_WAYLAND
+-	select BR2_PACKAGE_WAYLAND_PROTOCOLS
+ 	select BR2_PACKAGE_WEBP
+ 	select BR2_PACKAGE_WEBP_DEMUX
+-	select BR2_PACKAGE_WPEBACKEND_FDO
+ 	help
+ 	  WPE (Web Platform for Embedded) port of the WebKit engine,
+ 	  to allow embedders to create simple and performant systems
