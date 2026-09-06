@@ -123,6 +123,11 @@ enum Lvl {
     Step,
     Detail,
     Warn,
+    /// Live console evidence while waiting on the user. Rendered dim and small:
+    /// it exists to prove the tool is still watching, not to be read.
+    Observed,
+    /// A physical step the user completed.
+    Resolved,
 }
 
 /// Where an install has got to. The three working phases are what the user is
@@ -216,6 +221,10 @@ struct Shared {
     checked_latest: bool,
     /// A one-line banner (e.g. the result of a self-update).
     notice: Option<String>,
+    /// A physical action the tool is blocked on: (title, instruction). Sticky
+    /// and rendered as a banner rather than a log line, because the user is
+    /// looking at the hardware and would scroll straight past it.
+    awaiting: Option<(String, String)>,
     /// A release image just downloaded, waiting for the UI thread to open it
     /// (set off-thread, consumed in `render`, same pattern as a dropped file).
     downloaded_image: Option<PathBuf>,
@@ -248,12 +257,26 @@ fn spawn(
 fn sink(shared: &Arc<Mutex<Shared>>) -> Progress {
     let s = Arc::clone(shared);
     Progress::new(move |e| {
+        // Set the banner before logging, and clear it on anything that means
+        // the wait is over -- Event::clears_await() owns that rule so the GUI
+        // does not have to track the variant list.
+        let mut g = s.lock().unwrap();
+        if let Event::Await { title, instruction } = &e {
+            g.awaiting = Some((title.clone(), instruction.clone()));
+        } else if e.clears_await() {
+            g.awaiting = None;
+        }
         let (lvl, text) = match e {
             Event::Step(t) => (Lvl::Step, t),
             Event::Detail(t) => (Lvl::Detail, t),
             Event::Warn(t) => (Lvl::Warn, t),
+            Event::Observed(t) => (Lvl::Observed, t),
+            Event::Resolved(t) => (Lvl::Resolved, t),
+            Event::Await { title, instruction } => {
+                (Lvl::Step, format!("{title}\n{instruction}"))
+            }
         };
-        s.lock().unwrap().push(lvl, text);
+        g.push(lvl, text);
     })
 }
 
@@ -405,6 +428,39 @@ impl App {
                 ui.label(RichText::new(msg).color(OK));
             }
 
+            // The "it is your turn" banner. Deliberately the loudest thing on
+            // screen: the install genuinely cannot proceed until someone walks
+            // over and holds a button, and the previous build gave no hint of
+            // that at all -- it simply appeared to hang.
+            if let Some((title, instruction)) = sh.awaiting.clone() {
+                ui.add_space(6.0);
+                egui::Frame::group(ui.style())
+                    .fill(ui.visuals().extreme_bg_color)
+                    .stroke(egui::Stroke::new(2.0, WARN))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(format!("ACTION NEEDED — {title}"))
+                                    .color(WARN)
+                                    .strong()
+                                    .size(15.0),
+                            );
+                        });
+                        ui.add_space(4.0);
+                        for line in instruction.lines() {
+                            ui.label(RichText::new(line).size(13.0));
+                        }
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new("the log below updates as the box responds")
+                                .weak()
+                                .size(11.0),
+                        );
+                    });
+                ui.add_space(4.0);
+            }
+
             ui.add_space(2.0);
             self.stepper(ui);
             ui.add_space(6.0);
@@ -533,6 +589,11 @@ impl App {
                         Lvl::Step => t,
                         Lvl::Detail => t.weak(),
                         Lvl::Warn => t.color(WARN),
+                        // Console evidence during a wait: present so the user
+                        // can see lines arriving, small so it does not compete
+                        // with the steps.
+                        Lvl::Observed => t.weak().size(11.0),
+                        Lvl::Resolved => t.color(OK),
                     });
                 }
                 if sh.log.is_empty() {

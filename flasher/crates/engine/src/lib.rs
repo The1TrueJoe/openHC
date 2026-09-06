@@ -6,10 +6,12 @@
 //! RAM installer, the caller waits for it to return, then runs stage 2. That
 //! keeps the "wait for the box" policy in the front end where a user can watch.
 pub mod event;
+pub mod mfgmode;
 pub mod network;
 pub mod updates;
 pub mod release;
 
 pub use event::{Event, Progress};
+pub use mfgmode::{MfgWatch, Stage};
 pub use release::Release;
 pub use updates::{GhRelease, latest_release};

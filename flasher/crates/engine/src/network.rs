@@ -173,6 +173,14 @@ pub fn stage1_ram_installer(
 /// Linux eMMC offset where the tiny /init expects the gzipped rootfs to be
 /// staged. MUST match ROOTFS_STAGE_MB in board/ea-common/boot-init/init.
 const ROOTFS_STAGE_OFF: u64 = 16 * 1024 * 1024; // 16 MiB
+
+/// How much room the staged rootfs actually has: the gap between where it is
+/// written and where p1 begins. Measured on an EA3, p1 starts at sector 65536
+/// = 32 MiB exactly, so the gap is 16 MiB and NOT negotiable -- a staged image
+/// one byte over this does not fail, it writes through the start of the
+/// partition it is meant to install, and the corruption is only discovered on
+/// the next boot.
+const ROOTFS_STAGE_MAX: u64 = cefdk::P1_START - ROOTFS_STAGE_OFF;
 /// eMMC offset for the tiny boot-initramfs (same slot the full initrd used).
 const BOOTINIT_EMMC_OFF: u64 = INITRD_EMMC_OFF; // 0x800000
 
@@ -210,9 +218,22 @@ pub fn install_self(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -
     )));
     dd_to_emmc(ssh, bootinit, BOOTINIT_EMMC_OFF)?;
 
+    // guard_partitions() proved p1 does not START inside our write region; this
+    // proves the write does not RUN INTO p1, which is a different question and
+    // the one that actually bites on a large rootfs. A Python-carrying image
+    // compresses well past 16 MiB.
+    if staged.len() as u64 > ROOTFS_STAGE_MAX {
+        bail!(
+            "staged rootfs is {} B but only {ROOTFS_STAGE_MAX} B are free between \
+             {ROOTFS_STAGE_OFF:#x} and p1 at {:#x} -- writing it would overwrite the \
+             start of p1. Install the rootfs directly with stage2_write_rootfs instead.",
+            staged.len(),
+            cefdk::P1_START
+        );
+    }
     p.emit(Event::step(format!(
-        "staged rootfs {} B (gz) -> eMMC {ROOTFS_STAGE_OFF:#x} (the tiny /init lays it onto p1)",
-        staged.len()
+        "staged rootfs {} B (gz) -> eMMC {ROOTFS_STAGE_OFF:#x} ({} B of {ROOTFS_STAGE_MAX} B gap used)",
+        staged.len(), staged.len()
     )));
     dd_to_emmc(ssh, staged, ROOTFS_STAGE_OFF)?;
 
@@ -444,6 +465,17 @@ fn is_root_on_p1(ssh: &Ssh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The staged rootfs is written 16 MiB before p1. If either constant moves
+    /// without the other, a normal-sized image starts corrupting the partition
+    /// it is supposed to install, so pin the relationship rather than the
+    /// numbers individually.
+    #[test]
+    fn staged_rootfs_gap_is_the_space_before_p1() {
+        assert_eq!(ROOTFS_STAGE_MAX, cefdk::P1_START - ROOTFS_STAGE_OFF);
+        assert_eq!(ROOTFS_STAGE_MAX, 16 * 1024 * 1024);
+        assert!(ROOTFS_STAGE_OFF + ROOTFS_STAGE_MAX <= cefdk::P1_START);
+    }
 
     /// The whole point of the manifest is refusing an image that would be
     /// truncated by the already-installed autoscript. A parse that silently
