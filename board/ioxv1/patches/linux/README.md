@@ -4,7 +4,7 @@ Buildroot applies every `*.patch` here to the kernel source at extract time
 (numeric order). These resurrect TI DaVinci **DM355** support — removed from
 mainline in v6.2 ("ARM: remove unused davinci board & drivers") — for the
 Control4 IO Extender V1 ("hammer" board), and boot it from device tree. Full
-status and rationale: `docs/kernel-7.1-port-log.md`.
+status and rationale: `https://the1truejoe.github.io/openHC/iox/kernel-port/`.
 
 - `0001-ARM-davinci-restore-dm355-clocks.patch`   **[cross-compile + link verified]**
       drivers/clk/davinci/psc-dm355.c, pll-dm355.c + DT init + guarded match
@@ -25,7 +25,7 @@ All four apply clean in sequence and link a 7.2 MB zImage on multi_v5 +
 ARCH_DAVINCI_DM355 with zero undefined references (arm-linux-gnueabi, 7.1.8).
 
 Reference sources: v6.1 (removed files) + the living da850, fetched per the
-commands in `docs/kernel-7.1-port-log.md`. The reconstructed Control4
+commands in `https://the1truejoe.github.io/openHC/iox/kernel-port/`. The reconstructed Control4
 board-hammer.c (the on-device IO map spec) is staged at
 `test/vendor-gpl/reconstructed/board-hammer.c`; the FPGA IR/serial + GPIO
 relays/contacts nodes are added to the dtsi once console boot is confirmed.

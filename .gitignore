@@ -22,3 +22,8 @@ __pycache__/
 
 # Device backups (eMMC dumps) — never commit these
 /backups/
+
+# docs site (site/dist is the built output; the lockfile IS committed)
+/site/dist/
+/site/.astro/
+/site/node_modules/

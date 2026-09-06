@@ -1,0 +1,44 @@
+---
+// "Edit this page" — opens the source file in VS Code while developing, and
+// points at GitHub once the site is published.
+//
+// The local half exists because editing happens in the editor now (Front Matter
+// CMS runs inside VS Code), not in a browser tab. Reading a page and wanting to
+// fix a line in it is the common case, and this saves hunting for the file.
+import { Icon } from '@astrojs/starlight/components';
+import Default from '@astrojs/starlight/components/EditLink.astro';
+
+const { entry } = Astro.locals.starlightRoute;
+
+// entry.filePath is relative to this package and the dev server runs from it,
+// so cwd + filePath is the absolute path. The scheme is `vscode://file/` with a
+// single slash before the path, which means stripping the leading slash a POSIX
+// path already has; on Windows the path starts `C:` and needs no stripping.
+const abs = entry.filePath
+  ? `${process.cwd()}/${entry.filePath}`.replace(/\\/g, '/').replace(/^\/+/, '')
+  : null;
+const localUrl = import.meta.env.DEV && abs ? `vscode://file/${abs}` : null;
+---
+
+{
+  localUrl ? (
+    <a href={localUrl} class="sl-flex print:hidden">
+      <Icon name="pencil" size="1.2em" />
+      Open in editor
+    </a>
+  ) : (
+    <Default />
+  )
+}
+
+<style>
+  a {
+    gap: 0.5rem;
+    align-items: center;
+    text-decoration: none;
+    color: var(--sl-color-gray-3);
+  }
+  a:hover {
+    color: var(--sl-color-white);
+  }
+</style>

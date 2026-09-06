@@ -36,10 +36,10 @@ is already shaped for it.
 
 Everything in the table above was decoded from the stock image rather than
 assumed; the evidence is in
-[docs/io-mcu-firmware.md](../../docs/io-mcu-firmware.md#the-per-board-profile-table).
+[https://the1truejoe.github.io/openHC/shared/io-mcu/](https://the1truejoe.github.io/openHC/shared/io-mcu/#the-per-board-profile-table).
 
 **Clean room.** Everything here is written from *observed behaviour* documented
-in [docs/io-mcu-firmware.md](../../docs/io-mcu-firmware.md) — frames captured off
+in [https://the1truejoe.github.io/openHC/shared/io-mcu/](https://the1truejoe.github.io/openHC/shared/io-mcu/) — frames captured off
 a live unit, and the semantics that had to be true for those frames to make
 sense. No vendor code is copied, disassembled into, or translated.
 
@@ -139,7 +139,7 @@ directory and no `test` target (see the state table above).
 
 Restoring it is the highest-value next step, because the vectors that matter
 already exist in the research: real frames captured off a live EA1, recorded in
-[docs/io-mcu-firmware.md](../../docs/io-mcu-firmware.md) — `PRODUCT_NAME`,
+[https://the1truejoe.github.io/openHC/shared/io-mcu/](https://the1truejoe.github.io/openHC/shared/io-mcu/) — `PRODUCT_NAME`,
 `UART_RECEIVE`, the `IROUT_SEND` frame that made hardware emit 38 kHz IR, and
 the NEC `IRIN_CAPTURED` capture. A suite should assert:
 
@@ -200,7 +200,7 @@ There is no `make test` target yet — see the state table.
 
 The TI serial bootloader is reachable today — `overlay/services/ohc-io` already
 drives it. Sequence and packet format are in
-[docs/io-mcu-firmware.md](../../docs/io-mcu-firmware.md). Because the bootloader
+[https://the1truejoe.github.io/openHC/shared/io-mcu/](https://the1truejoe.github.io/openHC/shared/io-mcu/). Because the bootloader
 occupies flash `0x0000..0x0FFF` and is never overwritten by an app-slot write, a
 bad application image is recoverable by re-running the bootloader handshake and
 sending a good one. Keep the vendor images from `/control4/firmware/io/` to hand

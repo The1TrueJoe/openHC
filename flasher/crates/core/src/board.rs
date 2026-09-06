@@ -3,10 +3,11 @@
 //! A unit must be identifiable from every side of a takeover — running stock
 //! Control4 (`/proc/c4board`), running openHC (`/opt/ohc/board.env`), or sitting
 //! at the CEFDK shell with no OS (the banner's `Type N, Rev M`). The type and
-//! revision pairs here are MEASURED against real units and recorded in
-//! `docs/<board>-recon.md`; where a variant has not been read off hardware its
-//! ids are `None`, and detection then reports an honest ambiguity instead of
-//! guessing — a wrong guess flashes the wrong image at someone's board.
+//! revision pairs here are MEASURED against real units and recorded on the
+//! per-board recon pages at <https://the1truejoe.github.io/openHC/>. Where a
+//! variant has not been read off hardware its ids are `None`, and detection
+//! then reports an honest ambiguity instead of guessing — a wrong guess
+//! flashes the wrong image at someone's board.
 
 use serde::{Deserialize, Serialize};
 

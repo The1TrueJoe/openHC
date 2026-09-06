@@ -10,7 +10,7 @@
 # Why a third menu entry rather than replacing anything: sda1's menu.lst already
 # has two entries (factory restore at (hd0,1), the vendor image at (hd0,2)) and
 # both stay byte-identical. Only `default` moves. Recovery is one digit, from a
-# serial console or over SSH from either image. See docs/hc800-recon.md.
+# serial console or over SSH from either image. See https://the1truejoe.github.io/openHC/hc800/.
 #
 # $1 = BINARIES_DIR (output/images). $2 = board name (BR2_ROOTFS_POST_SCRIPT_ARGS).
 set -euo pipefail

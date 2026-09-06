@@ -106,7 +106,7 @@ static void on_frame(const ohc_frame *f, void *user)
     case OHC_OP_CONTACT_GET: {
         /* u32 bitmask, bit N = contact N, and a CLOSED contact reads 1.
          * Confirmed on a live EA3 by shorting its input and watching the state
-         * go 0x00000000 -> 0x00000001 and back; see docs/io-mcu-firmware.md.
+         * go 0x00000000 -> 0x00000001 and back; see https://the1truejoe.github.io/openHC/shared/io-mcu/.
          * Width is fixed by the wire format (4 bytes), not by the contact
          * count: EA1 wires none, EA3 wires exactly one, at index 0.
          *

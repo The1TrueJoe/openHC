@@ -1,0 +1,29 @@
+---
+// The build-log index, generated from the entries themselves.
+//
+// These cards used to be hand-written HTML, which meant an edit to an entry's
+// `summary` silently disagreed with the card describing it — easy to do now
+// that the frontmatter is editable through /admin/. Reading the collection
+// makes that impossible.
+import { getCollection } from 'astro:content';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+const entries = (await getCollection('docs'))
+  .filter((e) => e.id.startsWith('log/') && e.id !== 'log/index')
+  .sort((a, b) => (a.data.sidebar?.order ?? 0) - (b.data.sidebar?.order ?? 0));
+---
+
+<ul class="ohc-log-list not-content">
+  {
+    entries.map((e) => (
+      <li>
+        <a href={`${base}/${e.id}/`}>
+          {e.data.topic && <span class="n">{e.data.topic}</span>}
+          <span class="t">{e.data.title}</span>
+          {e.data.summary && <span class="d">{e.data.summary}</span>}
+        </a>
+      </li>
+    ))
+  }
+</ul>

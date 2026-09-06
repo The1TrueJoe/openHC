@@ -6,7 +6,7 @@
 # value here is either SoC-generic or CA-1-specific, and inventing a family for
 # one board would just add a level of indirection with nothing in it.
 #
-# What this board is (confirmed on a live rev-4 unit — docs/ca1-recon.md):
+# What this board is (confirmed on a live rev-4 unit — https://the1truejoe.github.io/openHC/ca1/):
 #
 #   * i.MX6SL: ONE Cortex-A9 (ARMv7-A, VFPv3-D32 + NEON), 1 GB RAM.
 #   * 16 MB SPI-NOR (S25FL128S on ecspi2) holds U-Boot 2014.04 + a recovery

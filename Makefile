@@ -70,14 +70,14 @@ help:
 	@echo ""
 	@echo "  EA1 is the proven board. EA3 is built from recon, not yet booted."
 	@echo "  ioxv1 (DM355 IO Extender) is pre-boot: rootfs builds, but the kernel"
-	@echo "  needs the DM355 resurrection patches — see docs/kernel-7.1-port.md."
+	@echo "  needs the DM355 resurrection patches — see https://the1truejoe.github.io/openHC/iox/kernel-port/."
 	@echo "  ioxv1 netboots from U-Boot ('run tst' over TFTP), not 'make netboot'."
 	@echo "  ca1 (i.MX6SL) boots our 7.1.8 kernel — proven on hardware. Two paths:"
 	@echo "  persistent (boot.scr on the eMMC vfat partition; 'make image BOARD=ca1'"
 	@echo "  prints the steps) or RAM-only netboot ('make netboot BOARD=ca1', hold the"
 	@echo "  ID button at power-on — mfg mode, writes no flash). Its U-Boot console is"
 	@echo "  SHA-256 password-locked, so recover a bad boot.scr via the factory-restore"
-	@echo "  button + the recovery kernel's 'c4' shell — see docs/ca1-recon.md."
+	@echo "  button + the recovery kernel's 'c4' shell — see https://the1truejoe.github.io/openHC/ca1/."
 	@echo "  hc800 (Atom D525) is pre-boot and needs no patches either — it is a"
 	@echo "  PC. It boots from stock GRUB 0.97 via a third menu.lst entry;"
 	@echo "  'make image BOARD=hc800' prints the install steps."
@@ -111,7 +111,7 @@ mcu:
 	  hc800) echo "mcu: hc800's IO-MCU is a Stellaris LM3S1162, not a TM4C1231D5."; \
 	         echo "  Same DLE/STX framing and the same TI serial flash-loader, but a"; \
 	         echo "  different part and a different image — there is no openHC firmware"; \
-	         echo "  for it yet. See docs/io-mcu-firmware.md and docs/hc800-recon.md."; \
+	         echo "  for it yet. See https://the1truejoe.github.io/openHC/shared/io-mcu/ and https://the1truejoe.github.io/openHC/hc800/."; \
 	         exit 1 ;; \
 	  *) echo "mcu: $(BOARD) has native on-board IO — no companion MCU to build"; exit 1 ;; \
 	esac

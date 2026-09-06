@@ -10,7 +10,7 @@
 # source` BEFORE it falls through to loading the stock zImage. There is no
 # boot.scr on the unit, so dropping one onto the eMMC vfat partition takes over
 # the boot path with no serial console, no bootloader reflash and no fuse
-# changes — and deleting that one file restores stock. See docs/ca1-recon.md.
+# changes — and deleting that one file restores stock. See https://the1truejoe.github.io/openHC/ca1/.
 #
 # $1 = BINARIES_DIR (output/images). $2 = board name (BR2_ROOTFS_POST_SCRIPT_ARGS).
 set -euo pipefail

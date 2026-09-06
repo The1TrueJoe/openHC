@@ -3,7 +3,7 @@
  * Hand-written from the TM4C123x datasheet rather than pulling in TivaWare, so
  * the whole firmware stays under a licence we control and has no vendor code in
  * it. Peripheral choice is dictated by the stock image's own usage, recovered by
- * analysis (docs/io-mcu-firmware.md): UART0 is the host link, UART5/UART7 are
+ * analysis (https://the1truejoe.github.io/openHC/shared/io-mcu/): UART0 is the host link, UART5/UART7 are
  * the two user serial ports, TIMER0-3 drive IR.
  */
 #ifndef OHC_TM4C_H
@@ -164,7 +164,7 @@ bool ir_burst_timer_expired(void);
  * packages/ohc-iod/src/mcu.rs), so keep the two in step. */
 #define OHC_SYSCLK_HZ 50000000u
 
-/* Host link speed. NOT 115200 — see docs/io-mcu-firmware.md. */
+/* Host link speed. NOT 115200 — see https://the1truejoe.github.io/openHC/shared/io-mcu/. */
 #define OHC_HOST_BAUD 460800u
 
 void tm4c_clock_init(void);

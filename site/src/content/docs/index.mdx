@@ -1,0 +1,102 @@
+---
+title: openHC
+description: Open, kernel-up firmware for Control4 controllers — and the hardware research behind it.
+template: splash
+hero:
+  tagline: |
+    A modern Linux kernel, built from source, running on Control4 controllers
+    the vendor shipped locked. This is the firmware — and the full account of
+    how each box was opened.
+  actions:
+    - text: Read the build log
+      link: log/
+      icon: right-arrow
+    - text: Board status
+      link: start/status/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/The1TrueJoe/openHC
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+## Eight boards, four different machines
+
+Control4's controller line looks like a product family. It isn't. Underneath
+the identical black cases are four unrelated computers with four unrelated
+boot chains, and each one had to be opened on its own terms.
+
+<CardGrid>
+  <Card title="EA-1 / EA-3" icon="seti:powershell">
+    Intel Atom **CE5310**, i686, booting Intel **CEFDK** out of SPI-NOR with a
+    kernel in a raw eMMC container. A companion TM4C microcontroller owns the
+    IR and serial jacks. The EA-3's secure-boot fuse is blown, and it's taken
+    over anyway.
+    [EA family →](ea/)
+  </Card>
+  <Card title="HC-800" icon="laptop">
+    Not an embedded board at all: a **small x86 PC** with a Lite-On
+    motherboard, an AMI BIOS, an Atom D525 and **GRUB 0.97** reading a
+    plain-text `menu.lst`. Nothing in its boot chain is signed and it needs
+    zero kernel patches.
+    [HC-800 →](hc800/)
+  </Card>
+  <Card title="CA-1" icon="setting">
+    Freescale **i.MX6 SoloLite** with stock U-Boot in SPI-NOR. High Assurance
+    Boot is open, the console is password-locked, and the way in is a
+    `boot.scr` the vendor's own `bootcmd` already looks for.
+    [CA-1 →](ca1/)
+  </Card>
+  <Card title="IO Extender V1" icon="puzzle">
+    TI DaVinci **DM355** — an ARMv5 SoC mainline deleted in 6.2. Four files were
+    resurrected from git history to bring it back, and it now boots Linux 7.1.8
+    with all eight relays clicking.
+    [IO Extender →](iox/)
+  </Card>
+</CardGrid>
+
+## What the project actually is
+
+openHC builds a modern kernel and root filesystem from source with Buildroot,
+and installs them on hardware whose vendor never intended that. Two things fall
+out of that goal and shape everything else:
+
+- **No vendor code is redistributed.** Interfaces were learned by reading live
+  units and Control4's published GPL sources; the implementations are ours.
+- **Nothing irreversible, ever, if it can be avoided.** Every board has a
+  documented path back to stock, and the netboot loops used during bring-up
+  write no flash at all.
+
+<Aside type="note" title="Measured, inferred, or unproven">
+Almost every page here distinguishes what was **read off silicon** from what was
+**derived from firmware** from what is still a **guess**. That distinction is the
+most valuable thing in this repository — a plausible-looking wrong number costs
+days. Where something is unverified, it says so.
+</Aside>
+
+## Start where you like
+
+<CardGrid>
+  <LinkCard
+    title="The build log"
+    description="The narrative, in the order the problems were solved: getting a bootloader shell, netbooting, the 7 MB ceiling, secure boot, the IO MCU, resurrecting a dead SoC, and a GPU nobody expected to work."
+    href="log/"
+  />
+  <LinkCard
+    title="The controller matrix"
+    description="Every board side by side — SoC, storage, boot chain, radios, IO complement, with the evidence for each cell and an honest marker on the ones that are still inferred."
+    href="hardware/matrix/"
+  />
+  <LinkCard
+    title="Build and install"
+    description="Two commands to build an image, and the per-board install path: over SSH, over a serial console, or by copying three files onto a partition."
+    href="build/"
+  />
+  <LinkCard
+    title="Recovery"
+    description="Read this before writing anything to a device. What each button does, what each partition holds, and the one region on each board that must never be touched."
+    href="shared/recovery/"
+  />
+</CardGrid>

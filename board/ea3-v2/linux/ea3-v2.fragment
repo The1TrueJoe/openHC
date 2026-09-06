@@ -5,7 +5,7 @@
 # Two things differ, and both simplify the build:
 #
 #   1. THERE IS NO WI-FI on this board. No ath9k, no /sys/class/ieee80211, no
-#      wlan interface — see docs/ea3-recon.md. The wireless stack is dropped
+#      wlan interface — see https://the1truejoe.github.io/openHC/ea/ea3/. The wireless stack is dropped
 #      entirely, which also buys back image size against CEFDK's ~7 MB
 #      bootlinux copy window.
 #
@@ -147,7 +147,7 @@ CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc
 #     (0x30000000 reads 0x30000000), i.e. nothing has written it since CEFDK.
 #
 # This matters because it decides what can run here. WPE WebKit does not fit in
-# 186 MB; it fits comfortably in 1.2 GB. See docs/sgx545-3d.md.
+# 186 MB; it fits comfortably in 1.2 GB. See https://the1truejoe.github.io/openHC/ea/graphics/.
 #
 # memmap=nn@ss forces a range back to E820 System RAM, and it is additive --
 # without "exactmap" the rest of the map is left alone. The line below claims

@@ -1,0 +1,24 @@
+---
+title: The build log
+description: Entries on opening the Control4 controller line — what was tried, what was wrong, and what had to be true next.
+sidebar:
+  order: 0
+  label: Overview
+---
+
+import LogIndex from '../../../components/LogIndex.astro';
+
+One subject, told in pieces: **opening the Control4 controller line.** Each entry
+below stands on its own. A single problem, how I went at it, and what it turned
+out to actually be. Read them in any order. The
+[reference sections](/hardware/matrix/) hold the settled facts; these hold
+the reasoning.
+
+Fair warning about the shape of it. Roughly half of these are about being wrong. A
+fuse measurement at the wrong register offset held for weeks. A microcontroller
+looked like dead hardware for days because the host was talking at the wrong
+speed. Eight relays did nothing when driven correctly, because the pins were still
+muxed to a camera port that doesn't exist on the board. None of that's tidied
+away, because the wrong turns are most of what anyone can actually learn from.
+
+<LogIndex />

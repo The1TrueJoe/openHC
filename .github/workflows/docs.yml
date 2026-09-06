@@ -1,0 +1,80 @@
+# Build the openHC documentation site and publish it to GitHub Pages.
+#
+# The site lives in site/ (Astro + Starlight) and is entirely static. It is
+# built with `base: '/openHC'` for a project Pages site at
+# https://the1truejoe.github.io/openHC/ — if this repo is ever renamed or moved
+# to a user/org site, that `base` in site/astro.config.mjs must change with it,
+# or every internal link 404s in production while working fine locally.
+#
+# One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    # Only rebuild when something that can change the output changes. The site
+    # is self-contained, so nothing under board/ or flasher/ affects it.
+    paths:
+      - 'site/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# Pages needs id-token for the deploy, and pages: write to publish.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A second push supersedes the first, but never cancel a deploy that is already
+# uploading — a half-published site is worse than a stale one.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      # `npm ci` rather than `npm install`: the lockfile is committed, and a
+      # docs build should never silently pick up a different Starlight.
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Only the default branch publishes. On a pull request the build above is
+      # the whole point — it catches a broken link or a bad frontmatter schema
+      # before it reaches main.
+      - name: Upload artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -6,7 +6,7 @@
  * frequency, gate it on/off, and wait N timer ticks — and everything decided
  * here can be verified without a board.
  *
- * Payload layout (confirmed on real hardware, docs/io-mcu-firmware.md):
+ * Payload layout (confirmed on real hardware, https://the1truejoe.github.io/openHC/shared/io-mcu/):
  *
  *   u8      repeat_count    0xFF = repeat until IROUT_STOP_RAMP
  *   u24 BE  output_mask     bit N selects IR output N

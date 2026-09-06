@@ -17,7 +17,7 @@ for non-DT callers. irq_domain_simple_ops already provides
 irq_domain_xlate_onetwocell, so DT interrupt specifiers resolve.
 
 Cross-compiled against Linux 7.1.8 with arm-linux-gnueabi-gcc. See
-docs/kernel-7.1-port-log.md.
+https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  drivers/irqchip/Kconfig                   |   5 +
  drivers/irqchip/Makefile                  |   1 +

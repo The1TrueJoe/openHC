@@ -8,7 +8,7 @@
  * far enough to use (see "Selecting at runtime" below).
  *
  * Everything here was decoded from the stock image, not guessed. The decode and
- * the evidence are in docs/io-mcu-firmware.md#the-per-board-profile-table.
+ * the evidence are in https://the1truejoe.github.io/openHC/shared/io-mcu/#the-per-board-profile-table.
  *
  *   make fw BOARD=ea1
  *   make fw BOARD=ea3

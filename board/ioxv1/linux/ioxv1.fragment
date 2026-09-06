@@ -3,7 +3,7 @@
 # multi_v5_defconfig is the ARMv5 multiplatform base. It does NOT include DM355
 # (removed from mainline ~v6.2). The CONFIG_ARCH_DAVINCI* symbols below only
 # exist once ioxv1/patches/linux/ re-adds the SoC. Until then a build stops
-# in `make linux` — that is the expected WIP state (see docs/kernel-7.1-port-log.md).
+# in `make linux` — that is the expected WIP state (see https://the1truejoe.github.io/openHC/iox/kernel-port/).
 
 # --- DM355 SoC (re-added by ioxv1/patches/linux/) ---
 CONFIG_ARCH_MULTI_V5=y

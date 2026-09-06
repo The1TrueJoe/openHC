@@ -1,0 +1,211 @@
+/* openHC — Starlight theme overrides.
+ *
+ * The palette is copper-on-slate: this is a soldering-iron project, and the
+ * accent should read as annotation on a board photo rather than as a SaaS
+ * brand colour. Starlight puts the dark palette on bare :root and the light
+ * one behind [data-theme='light'], so both are defined here in that order.
+ */
+
+:root {
+  --sl-color-accent-low: #3a2109;
+  --sl-color-accent: #c2751d;
+  --sl-color-accent-high: #f0be86;
+
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #e6e5e3;
+  --sl-color-gray-2: #b6b4b0;
+  --sl-color-gray-3: #85827c;
+  --sl-color-gray-4: #565350;
+  --sl-color-gray-5: #35332f;
+  --sl-color-gray-6: #24221f;
+  --sl-color-black: #171614;
+
+  --ohc-rule: color-mix(in srgb, var(--sl-color-gray-5) 80%, transparent);
+  --ohc-surface: color-mix(in srgb, var(--sl-color-gray-6) 70%, transparent);
+  --sl-content-width: 50rem;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #f4e0c6;
+  --sl-color-accent: #9a5510;
+  --sl-color-accent-high: #4a2a08;
+
+  --sl-color-white: #171614;
+  --sl-color-gray-1: #24221f;
+  --sl-color-gray-2: #45423e;
+  --sl-color-gray-3: #6c6862;
+  --sl-color-gray-4: #9b9791;
+  --sl-color-gray-5: #d6d3cd;
+  --sl-color-gray-6: #eeebe5;
+  --sl-color-gray-7: #f7f5f1;
+  --sl-color-black: #ffffff;
+
+  --ohc-rule: color-mix(in srgb, var(--sl-color-gray-5) 90%, transparent);
+  --ohc-surface: color-mix(in srgb, var(--sl-color-gray-6) 60%, transparent);
+}
+
+/* --- typography ---------------------------------------------------------- */
+
+:root {
+  --sl-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --sl-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+}
+
+.sl-markdown-content h2 {
+  margin-top: 2.75rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--ohc-rule);
+  letter-spacing: -0.015em;
+}
+.sl-markdown-content h2:first-of-type { border-top: 0; padding-top: 0; }
+.sl-markdown-content h3 { letter-spacing: -0.01em; }
+
+/* Inline code should read as a part number, not as prose. */
+.sl-markdown-content
+  :not(pre, astro-island)
+  > code:not(:where(.not-content *)) {
+  font-size: 0.875em;
+  background: var(--ohc-surface);
+  border: 1px solid var(--ohc-rule);
+  border-radius: 0.25rem;
+  padding: 0.1em 0.35em;
+}
+
+/* --- tables -------------------------------------------------------------- */
+/* Nearly every page here is a register map, a pin map or a board comparison,
+ * so tables are the primary content type and get real attention. They are also
+ * frequently wider than the column: scroll them, never the page body. */
+
+.sl-markdown-content table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--sl-text-sm);
+  border: 1px solid var(--ohc-rule);
+  border-radius: 0.4rem;
+}
+.sl-markdown-content th,
+.sl-markdown-content td {
+  border: 0;
+  border-bottom: 1px solid var(--ohc-rule);
+  padding: 0.5rem 0.75rem;
+  vertical-align: top;
+}
+.sl-markdown-content thead th {
+  background: var(--ohc-surface);
+  font-weight: 600;
+  font-size: var(--sl-text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-2);
+  white-space: nowrap;
+}
+.sl-markdown-content tbody tr:last-child td { border-bottom: 0; }
+.sl-markdown-content td code { white-space: nowrap; }
+
+/* --- code blocks --------------------------------------------------------- */
+
+.sl-markdown-content .expressive-code { margin: 1.25rem 0; }
+
+/* --- the build-log index ------------------------------------------------- */
+
+.ohc-log-list {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  display: grid;
+  gap: 0.75rem;
+}
+.ohc-log-list li { margin: 0; }
+.ohc-log-list a {
+  display: block;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--ohc-rule);
+  border-radius: 0.5rem;
+  text-decoration: none;
+  color: inherit;
+  background: var(--ohc-surface);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.ohc-log-list a:hover {
+  border-color: var(--sl-color-accent);
+  transform: translateY(-1px);
+}
+.ohc-log-list .n {
+  font-family: var(--sl-font-mono);
+  font-size: var(--sl-text-xs);
+  color: var(--sl-color-text-accent);
+  letter-spacing: 0.1em;
+  /* The topic is authored in sentence case ("Secure boot"); the eyebrow style
+   * is what makes it read as a label. */
+  text-transform: uppercase;
+}
+.ohc-log-list .t {
+  display: block;
+  margin: 0.2rem 0 0.35rem;
+  font-size: var(--sl-text-lg);
+  font-weight: 600;
+  color: var(--sl-color-white);
+  line-height: 1.3;
+}
+.ohc-log-list .d {
+  display: block;
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-2);
+  line-height: 1.55;
+}
+
+/* --- verdict callouts ---------------------------------------------------- */
+/* Used on recon pages to mark a claim as measured on silicon versus inferred.
+ * The distinction is load-bearing across this whole site. */
+
+.ohc-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--sl-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.ohc-verdict.proven { color: #4ea96b; }
+.ohc-verdict.partial { color: #c2751d; }
+.ohc-verdict.unproven { color: #9b9791; }
+
+/* Wide content must never push the page sideways. */
+.sl-markdown-content pre { max-width: 100%; }
+
+/* --- wide tables ----------------------------------------------------------- */
+/* The controller comparison is seven columns wide. Squeezed into the text
+ * measure every cell wraps to one word per line, so instead the table keeps its
+ * natural width and scrolls sideways inside the column. Pulling it out into the
+ * page margins was the other option and it collides with both sidebars. */
+
+/* The wrapper is the scroll container; the table inside takes its natural
+ * width. Putting `width: max-content` on the table alone just grows the table's
+ * own box, so `overflow-x` never fires and it spills over the sidebar. */
+.ohc-wide {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--ohc-rule);
+  border-radius: 0.4rem;
+}
+.ohc-wide table {
+  display: table;
+  width: max-content;
+  min-width: 100%;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+}
+.ohc-wide td,
+.ohc-wide th {
+  white-space: nowrap;
+}

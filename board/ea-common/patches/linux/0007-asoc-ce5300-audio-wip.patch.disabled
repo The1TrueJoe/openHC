@@ -18,7 +18,7 @@ the stock ismdaudio.ko, which ships with DWARF debug info — so the names here
 are Intel's own. The bit fields come from audio_hal_write_vsymbol()'s
 (bitpos, width, mask, value) tuples, and every mask across 21 fields satisfies
 mask == ((1 << width) - 1) << bitpos, which is what makes it a decode rather
-than a guess. Full write-up in docs/ce5300-audio-regmap.md.
+than a guess. Full write-up in https://the1truejoe.github.io/openHC/ea/audio-regmap/.
 
 NOT YET FUNCTIONAL, and deliberately so: this probes and reports read-only
 rather than registering an ASoC component whose PCM ops cannot move samples,
@@ -53,7 +53,7 @@ Signed-off-by: openHC <openhc@localhost>
 + * dsp/firmware/auth. It is a plain linked-list DMA engine feeding an I2S port,
 + * which is exactly what ALSA wants and what a headless HA appliance needs.
 + *
-+ * The register map is documented in docs/ce5300-audio-regmap.md, recovered from
++ * The register map is documented in https://the1truejoe.github.io/openHC/ea/audio-regmap/, recovered from
 + * the stock ismdaudio.ko — which ships with DWARF debug info, so the field and
 + * enum names below are Intel's own, not guesses.
 + *
@@ -87,7 +87,7 @@ Signed-off-by: openHC <openhc@localhost>
 + * DMA control bit fields. Recovered from audio_hal_write_vsymbol()'s
 + * (bitpos, width, mask, value) tuples — every mask in every call satisfies
 + * mask == ((1 << width) - 1) << bitpos, across 21 fields, which is what makes
-+ * this a decode rather than a guess. See docs/ce5300-audio-regmap.md.
++ * this a decode rather than a guess. See https://the1truejoe.github.io/openHC/ea/audio-regmap/.
 + */
 +#define CE_DMA_EN30		BIT(30)		/* set to 1 to enable */
 +#define CE_DMA_EN29		BIT(29)		/* set to 1 to enable */

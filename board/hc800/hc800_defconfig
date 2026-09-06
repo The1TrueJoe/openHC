@@ -9,7 +9,7 @@
 # only other board that shares its IO-MCU family — the HC-250 — is ARMv7 and
 # shares nothing else.
 #
-# What this board is (confirmed on a live rev-4 unit — docs/hc800-recon.md):
+# What this board is (confirmed on a live rev-4 unit — https://the1truejoe.github.io/openHC/hc800/):
 #
 #   * Atom D525 (Pineview), 2 cores / 4 threads, 2 GB RAM, NM10/ICH7 chipset.
 #     Ordinary PC silicon end to end; no custom SoC anywhere.
@@ -22,14 +22,14 @@
 #     ports (host ttys, not MCU-routed like the EA family's combo ports),
 #     ttyS3 the LM3S1162 IO-MCU, ttyS4 the Zigbee EM357 NCP.
 #   * 6 IR out, 4 relays, 4 contacts behind the LM3S1162 on ttyS3 — panel
-#     counts; the IR figure is disputed, see docs/hc800-recon.md.
+#     counts; the IR figure is disputed, see https://the1truejoe.github.io/openHC/hc800/.
 #   * Realtek RTL8111/8168 GbE (mainline r8169) and an RTL8192SU USB Wi-Fi
 #     (staging r8712u). ALC888-VD HDA codec: 2 line out, 1 line in, coax S/PDIF.
 #
 # STATUS: pre-boot. This builds a toolchain, kernel and rootfs; nobody has
 # booted openHC on this hardware yet. It needs NO kernel patches at all — every
 # driver is mainline and has been for a decade — which makes it the cheapest
-# board in the tree to bring up. See docs/hc800-recon.md#what-this-means-for-the-port.
+# board in the tree to bring up. See https://the1truejoe.github.io/openHC/hc800/#what-this-means-for-the-port.
 
 # --- arch: x86_64, Bonnell tuning ---
 # The ONE place this tree deliberately departs from the vendor. Control4 ships a

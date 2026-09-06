@@ -1,0 +1,34 @@
+---
+// Wraps Starlight's page title so build-log entries get a topic eyebrow and a
+// standfirst. Each entry stands on its own; the eyebrow says which thread of
+// the project it belongs to, not where it sits in a sequence.
+// Everything else renders exactly as the default component does.
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+
+const { entry } = Astro.locals.starlightRoute;
+const topic = (entry.data as { topic?: string }).topic;
+const summary = (entry.data as { summary?: string }).summary;
+---
+
+{topic && <p class="ohc-eyebrow">{topic}</p>}
+<Default><slot /></Default>
+{summary && <p class="ohc-standfirst">{summary}</p>}
+
+<style>
+  .ohc-eyebrow {
+    margin: 0 0 0.35rem;
+    font-size: var(--sl-text-xs);
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--sl-color-text-accent);
+  }
+  .ohc-standfirst {
+    margin-top: 0.75rem;
+    font-size: var(--sl-text-lg);
+    line-height: 1.6;
+    color: var(--sl-color-gray-2);
+    border-left: 2px solid var(--sl-color-accent);
+    padding-left: 1rem;
+  }
+</style>

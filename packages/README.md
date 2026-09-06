@@ -91,7 +91,7 @@ what serves it.
 
 Nothing starts the webview at boot. `S01splash` owns the framebuffer until
 someone runs it by hand, which is deliberate while the display path is still
-being brought up. See `docs/sgx545-3d.md` for what is verified and what is not.
+being brought up. See `https://the1truejoe.github.io/openHC/ea/graphics/` for what is verified and what is not.
 
 ## Layout
 

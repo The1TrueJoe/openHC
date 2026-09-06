@@ -1,7 +1,7 @@
 .git
 output
 dl
-# Device backups (docs/recovery.md tells you to take a full 7.6 GB eMMC dump
+# Device backups (the Recovery docs tell you to take a full 7.6 GB eMMC dump
 # before the first write). These are NOT build inputs and must never be pulled
 # into the build context — a multi-GB context slows every build to a crawl.
 backups
@@ -9,6 +9,7 @@ backups
 # backups/<board>/*.img and the dumps were being shipped to the daemon.
 **/*.img
 **/*.bin
-docs
+# The documentation site: not a build input, and node_modules is enormous.
+site
 # Rust build output — not a build input, and large.
 flasher/target

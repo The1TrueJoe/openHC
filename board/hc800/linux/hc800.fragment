@@ -9,7 +9,7 @@
 # leaves it off or builds it as a module.
 #
 # Everything here is mainline. This board needs no patches. See
-# docs/hc800-recon.md.
+# https://the1truejoe.github.io/openHC/hc800/.
 
 # ── all-builtin, no loadable modules ──────────────────────────────────────
 # Same call as the EA family: the image is self-contained, so there is no

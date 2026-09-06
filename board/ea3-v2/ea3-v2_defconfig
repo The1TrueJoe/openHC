@@ -19,7 +19,7 @@
 #
 # NOT YET BOOTED ON HARDWARE. The boot chain looks identical to the EA1's
 # (CEFDK 36-34, no GRUB, same recovery layout) but no EA3 has been netbooted and
-# SEC_BOOT has not been read on one. See docs/ea3-recon.md.
+# SEC_BOOT has not been read on one. See https://the1truejoe.github.io/openHC/ea/ea3/.
 
 BR2_TARGET_GENERIC_HOSTNAME="openhc-ea3"
 BR2_TARGET_GENERIC_ISSUE="openHC EA3 (kernel-up)"
@@ -46,7 +46,7 @@ BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTE
 # our kernel in the raw eMMC gap (~8 MiB, past the container, before p1) + a
 # stored autoscript that `emmc rd`'s it and `bootlinux`'es it. The signed stock
 # kernel stays in the container untouched as a `script off` software-recovery.
-# See docs/ea3-recon.md and tools/ohc-ea-takeover.py.
+# See https://the1truejoe.github.io/openHC/ea/ea3/ and tools/ohc-ea-takeover.py.
 #
 # Measured live: mmcblk0 7.28 GiB = p1 (6 GiB ext4) + p2 (1 GiB restore payload,
 # NEVER write) + p3 (32 MiB persistent). Writing p1 is reversible via the

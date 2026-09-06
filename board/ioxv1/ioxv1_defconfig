@@ -35,7 +35,7 @@ BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1 (kernel-up)"
 # --- kernel: mainline stable, same version as the EA family ---
 # Mainline dropped DM355 in ~v6.2; the SoC (mach-davinci/dm355.c, clk psc/pll,
 # irq-davinci-aintc) + the hammer device tree are re-added by the patches in
-# ioxv1/patches/linux/. See docs/kernel-7.1-port-log.md.
+# ioxv1/patches/linux/. See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"

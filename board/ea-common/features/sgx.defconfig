@@ -1,6 +1,6 @@
 # PowerVR SGX545 3D — kernel driver for the CE5300's GPU (PCI 01:02.0,
 # 8086:089b). Ported from the GPL DDK 1.7 tree Intel published for Cedarview,
-# which uses the same core; see docs/sgx545-3d.md.
+# which uses the same core; see https://the1truejoe.github.io/openHC/ea/graphics/.
 #
 # Kernel half only. It gives you /dev/dri/card0 and the SGX brought up and
 # reset; GLES2 additionally needs the userspace blobs and pvrsrvctl to upload

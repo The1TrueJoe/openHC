@@ -10,7 +10,7 @@ davinci timer + ns16550a console (fixed 24 MHz ref), the GPIO controller at
 on async EMIF CS1 (IRQ on GPIO1, reset GPIO101, 16-bit, no EEPROM -> MAC
 forced). Boots via appended DTB; network brings up SSH.
 
-See docs/kernel-7.1-port-log.md.
+See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  arch/arm/boot/dts/ti/davinci/Makefile         |  3 +
  arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 52 ++++++++++

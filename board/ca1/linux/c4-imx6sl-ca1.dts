@@ -4,7 +4,7 @@
  *
  * Reconstructed for a MAINLINE kernel from the vendor DTB pulled off a live
  * rev-4 unit (c4-imx6sl-0-4.dtb, kernel 4.1.52-2.180.29). Full derivation and
- * the evidence behind every claim here: docs/ca1-recon.md.
+ * the evidence behind every claim here: https://the1truejoe.github.io/openHC/ca1/.
  *
  * Deliberate differences from the vendor tree, all of them deletions or fixes:
  *
@@ -295,7 +295,7 @@
  * ── UART5 → ttymxc4: Zigbee NCP (EM35x, RTS/CTS) ───────────────────────
  * The part is unconfirmed: on the recon unit this NCP returned nothing to an
  * EZSP/ASH reset at any baud, with or without flow control, before or after
- * pulsing zigbee_reset. See docs/ca1-recon.md.
+ * pulsing zigbee_reset. See https://the1truejoe.github.io/openHC/ca1/.
  */
 &uart5 {
 	pinctrl-names = "default";

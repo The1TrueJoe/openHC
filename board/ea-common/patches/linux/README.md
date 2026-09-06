@@ -107,7 +107,7 @@ That fourth bus is where the **ADAU1451 audio codec (0x38)** lives — Control4'
 own ASoC device name `"adau1451.3-0038"` says bus 3, address 0x38. With DEVS=3
 the codec is not merely misconfigured, it is unreachable: `i2cdetect` finds
 nothing at 0x38 on any bus and i2c-1/i2c-2 come up entirely empty. **Audio cannot
-work without this line.** See `docs/ea-audio.md`.
+work without this line.** See `https://the1truejoe.github.io/openHC/ea/audio/`.
 
 *Replaceable by a DTB* — both halves (the node and a `fixed-clock`).
 
@@ -144,7 +144,7 @@ EA audio path missing from Control4's GPL drop (the PCM/DMA platform component).
 
 Deliberately probe-only: it maps BAR0 and logs, but does **not** register an
 ASoC component, because a PCM device whose trigger cannot move samples is worse
-than no sound card at all. Register map in `docs/ce5300-audio-regmap.md`.
+than no sound card at all. Register map in `https://the1truejoe.github.io/openHC/ea/audio-regmap/`.
 
 *Could be an out-of-tree module* once it does something.
 

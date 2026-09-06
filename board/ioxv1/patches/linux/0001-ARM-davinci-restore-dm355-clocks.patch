@@ -21,7 +21,7 @@ the davinci clk driver still links when DM355 is off (e.g. a da850 build) --
 the symbol itself is added by the SoC patch. Cross-compiled against Linux
 7.1.8 with arm-linux-gnueabi-gcc: both files build warning-clean, the clk
 driver stays link-clean with DM355 off, and the references resolve with
-DM355 on. Not-yet-upstream. See docs/kernel-7.1-port-log.md.
+DM355 on. Not-yet-upstream. See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  drivers/clk/davinci/Makefile    |   2 +
  drivers/clk/davinci/pll-dm355.c |  97 +++++++++++++++++++++++++++++

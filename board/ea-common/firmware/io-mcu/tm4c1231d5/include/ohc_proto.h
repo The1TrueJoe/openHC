@@ -1,7 +1,7 @@
 /* openHomeController IO-processor firmware — wire protocol.
  *
  * Clean-room implementation of the DLE/STX protocol the Control4 IO MCUs speak,
- * written from observed behaviour (docs/io-mcu-firmware.md). No vendor code.
+ * written from observed behaviour (https://the1truejoe.github.io/openHC/shared/io-mcu/). No vendor code.
  *
  * Deliberately free of hardware dependencies so it builds and is tested on the
  * host: the MCU side supplies bytes in and takes bytes out.

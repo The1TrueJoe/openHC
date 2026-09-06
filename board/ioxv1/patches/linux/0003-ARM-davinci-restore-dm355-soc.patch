@@ -15,7 +15,7 @@ DAVINCI_AINTC and, via the clk Makefile, the DM355 psc/pll drivers), the
 DM355_DT machine (ti,dm355 compatible), and DAVINCI_CPU_ID_DM355.
 
 Cross-compiled against Linux 7.1.8 with arm-linux-gnueabi-gcc. See
-docs/kernel-7.1-port-log.md.
+https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  arch/arm/mach-davinci/Kconfig    |  7 ++++
  arch/arm/mach-davinci/Makefile   |  1 +
@@ -118,7 +118,7 @@ index 0000000..b4a970b
 + * trimmed to a device-tree machine: this file provides only the static IO
 + * mapping and SoC (JTAG) identification used by .map_io. Clocks, the AINTC,
 + * the timer and all peripherals come from the device tree (dm355.dtsi) and
-+ * their in-tree drivers -- see docs/kernel-7.1-port-log.md.
++ * their in-tree drivers -- see https://the1truejoe.github.io/openHC/iox/kernel-port/.
 + */
 +
 +#include <linux/init.h>
