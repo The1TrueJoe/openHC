@@ -117,7 +117,11 @@ jobs:
       matrix:
         board: ${{ fromJSON(needs.select.outputs.boards) }}
     steps:
+      # sgx545-ce is a submodule and board/Config.in sources its Config.in
+      # unconditionally, so defconfig fails for every board without it.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Same list as build/Dockerfile. If that changes, change it here too --
       # they are two copies of one fact, and CI is the one that fails loudly.
