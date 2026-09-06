@@ -12,7 +12,17 @@
 name: flasher
 
 on:
+  # Only the flasher's own sources can change the binaries. `paths` applies to
+  # push and pull_request only, so releases, schedules and manual runs are
+  # unaffected by it and still build everything.
   push:
+    paths:
+      - 'flasher/**'
+      - '.github/workflows/flasher.yml'
+  pull_request:
+    paths:
+      - 'flasher/**'
+      - '.github/workflows/flasher.yml'
   release:
     types: [published]
   workflow_dispatch:

@@ -18,9 +18,20 @@
 name: images
 
 on:
+  # These are exactly the paths the `select` job below inspects, so a change
+  # outside them would only ever resolve to an empty board list. Filtering here
+  # means we do not spin up a runner to reach that conclusion.
   push:
     branches: [main]
+    paths: &image-paths
+      - 'board/**'
+      - 'packages/**'
+      - 'build/**'
+      - 'flasher/**'      # post-image calls ohc-flash
+      - 'Makefile'
+      - '.github/workflows/images.yml'
   pull_request:
+    paths: *image-paths
   workflow_dispatch:
     inputs:
       board:
