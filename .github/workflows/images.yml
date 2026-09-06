@@ -1,0 +1,225 @@
+# Build openHC images for every board.
+#
+# Runs Buildroot DIRECTLY on the runner rather than through build/Dockerfile.
+# That is deliberate: the Dockerfile keeps sources off a developer's machine,
+# but in CI it actively hurts, because Buildroot's dl/ and output/ live in
+# BuildKit cache mounts and cache mounts are NOT exported by any of the GitHub
+# cache backends. Run it natively and actions/cache can hold the one thing worth
+# holding. build/build.sh takes BUILDROOT_DIR, so it does not care either way.
+#
+# What is shared, and why that is the whole point: every board re-downloads the
+# same ~GB of upstream tarballs, so dl/ is cached once under a key that ignores
+# the board entirely. The toolchain is NOT shared -- each board builds its own,
+# in parallel. That is a deliberate trade: sharing a toolchain across boards
+# means an external-toolchain tarball and a second pipeline to maintain, and
+# this repo is public, so runner minutes are free. Wall-clock is what matters,
+# and parallel matrix jobs already give us that.
+
+name: images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Single board to build (blank = all)"
+        required: false
+        default: ""
+  # Publishing a release rebuilds and attaches the images to it, named by tag.
+  release:
+    types: [published]
+  schedule:
+    # Nightly full matrix: catches upstream breakage (a Buildroot mirror going
+    # away, a package bumping) on a day nobody pushed.
+    - cron: "0 4 * * *"
+
+# A second push supersedes the first; there is no value in finishing an image
+# for a commit that is already history.
+concurrency:
+  group: images-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+# gh needs write access to attach the image bundles to a release.
+permissions:
+  contents: write
+
+env:
+  BUILDROOT_REF: 2024.02.9
+
+jobs:
+  # Which boards does this change actually affect? Everything below board/ is
+  # board-scoped except the shared trees, so a CA-1 change has no business
+  # rebuilding five EA images.
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      boards: ${{ steps.pick.outputs.boards }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALL='["ea1-v1","ea1-v2","ea1-v2-poe","ea3-v1","ea3-v2","ioxv1","ca1","hc800"]'
+
+          # Explicit request, or a scheduled/dispatch run with no board: build all.
+          if [ -n "${{ github.event.inputs.board }}" ]; then
+            echo "boards=[\"${{ github.event.inputs.board }}\"]" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "${{ github.event_name }}" != "push" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          # First push to a branch has no usable base; build everything.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+
+          # Shared trees affect every board. build/ and the flasher are in here
+          # because build.sh drives the build and post-image calls ohc-flash.
+          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|packages/|build/|flasher/|Makefile)'; then
+            echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          sel=()
+          # ea-common is shared by the EA family only.
+          if echo "$changed" | grep -qE '^board/ea-common/'; then
+            sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
+          fi
+          for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
+            echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")
+          done
+          # Workflow-only or docs-only change: nothing to build.
+          if [ ${#sel[@]} -eq 0 ]; then
+            echo "boards=[]" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          printf -v j '"%s",' $(printf '%s\n' "${sel[@]}" | sort -u)
+          echo "boards=[${j%,}]" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: select
+    if: needs.select.outputs.boards != '[]'
+    runs-on: ubuntu-latest
+    # Buildroot from cold is long; the hard ceiling is 6 h and a job killed at
+    # the limit leaves no artifact and no useful log tail.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(needs.select.outputs.boards) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same list as build/Dockerfile. If that changes, change it here too --
+      # they are two copies of one fact, and CI is the one that fails loudly.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex git rsync unzip wget cpio file figlet \
+            python3 libncurses-dev libssl-dev ca-certificates perl patch xz-utils
+
+      # The one genuinely shared artefact. Keyed on the board files that pin
+      # versions, NOT on the board, so all eight matrix jobs hit the same entry.
+      # restore-keys means a version bump reuses the previous download set and
+      # fetches only what actually moved.
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
+          restore-keys: |
+            dl-${{ env.BUILDROOT_REF }}-
+
+      - name: Fetch Buildroot
+        run: |
+          set -e
+          git clone --depth 1 --branch "$BUILDROOT_REF" \
+            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          for p in build/buildroot-patches/*.patch; do
+            [ -e "$p" ] || continue
+            echo ">> buildroot patch: ${p##*/}"
+            patch -d "$HOME/buildroot" -p1 --forward --batch < "$p"
+          done
+
+      # The version string CI stamps into the image and reuses as the bundle
+      # name: the release tag on a release, else <short-sha>-dev. post-build.sh
+      # reads OHC_VERSION and writes it into /etc/openhc-release so the flasher
+      # can compare an installed box against the latest release.
+      - name: Compute version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            v="${{ github.event.release.tag_name }}"
+          else
+            v="$(git rev-parse --short HEAD)-dev"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "openHC version: $v"
+
+      - name: Build ${{ matrix.board }}
+        env:
+          BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
+          BOARD: ${{ matrix.board }}
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -e
+          # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
+          # OHC_VERSION is exported here so Buildroot's post-build hook stamps it.
+          BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
+            OHC_VERSION="${{ steps.ver.outputs.version }}" bash ./build/build.sh
+
+      # Bundle the images into one zip the flasher can consume directly
+      # (Release::open reads the canonical filenames inside — bzImage,
+      # rootfs.ext2, ...). output/ also holds the multi-GB build tree and
+      # target/, which is of no use to anyone downloading this, so only images/
+      # goes in. The bundle name carries the version: openhc-<board>-<version>.
+      - name: Bundle images
+        if: success()
+        id: bundle
+        run: |
+          bundle="openhc-${{ matrix.board }}-${{ steps.ver.outputs.version }}.zip"
+          ( cd output/images && zip -r -X "../../$bundle" . )
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          ls -l "$bundle"
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          # Per-OS-unique artifact name (v4 requires it); the zip inside carries
+          # the versioned bundle name.
+          name: openhc-${{ matrix.board }}
+          path: ${{ steps.bundle.outputs.bundle }}
+          retention-days: 14
+          if-no-files-found: error
+
+      # On a release, attach the bundle so the flasher can pull the latest image
+      # for a board straight from the release.
+      - name: Attach to release
+        if: success() && github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.bundle.outputs.bundle }}" --clobber
+
+      # A build that fails deep in a package leaves the reason in Buildroot's
+      # log, not in the step output, and without this you re-run the whole
+      # thing blind just to read it.
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ matrix.board }}
+          path: |
+            output/build/*/build/*/config.log
+            output/build/${{ matrix.board }}/*.log
+          retention-days: 7
+          if-no-files-found: ignore
