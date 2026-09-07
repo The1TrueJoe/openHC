@@ -48,6 +48,24 @@ BR2_x86_64=y
 # what ea-common calls BR2_x86_atom (Buildroot: "since gcc 4.9 ... use bonnell").
 BR2_x86_bonnell=y
 
+# objtool needs host libelf, and x86_64 needs objtool.
+#
+# This is the bill for going 64-bit above. CONFIG_UNWINDER_ORC is the default
+# unwinder on x86_64 and is generated at build time by tools/objtool, which
+# #includes <gelf.h>. The vendor's i686 kernel never built objtool at all, so
+# the dependency does not exist until the arch flips, and then the kernel
+# stops with a message that names itself rather than the missing host header:
+#
+#   tools/objtool/include/objtool/elf.h:10:10:
+#       fatal error: gelf.h: No such file or directory
+#
+# This option makes Buildroot build host-elfutils first. Preferred over
+# apt-installing libelf-dev in build/Dockerfile and .github/workflows/images.yml
+# because it fixes every builder at once rather than the two we remember.
+# ea-common carries the identical option for the identical reason — see the
+# note there; this board is standalone and inherits nothing from it.
+BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
+
 BR2_OPTIMIZE_S=y
 # musl, matching every other board in this tree.
 BR2_TOOLCHAIN_BUILDROOT_MUSL=y
@@ -156,6 +174,20 @@ BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
 BR2_PACKAGE_ALSA_UTILS_IECSET=y
 
 # --- rootfs overlay + image publishing ---
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/rootfs-overlay"
+# BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and
+# kconfig takes the last assignment of a symbol, not the union — naming only the
+# board overlay here silently dropped board/common/rootfs-overlay, and with it
+# S40net. That is the script this file's own "reachability" note above says
+# brings eth0 up, so the image built to be reached over the network came up with
+# no address on it. ca1 gets this right; hc800 did not. Also lost were
+# S09hostname (the per-unit MAC suffix), S45netmon, S41wifi-ap and the avahi
+# service file. Order matters: later overlays overwrite earlier ones, which is
+# how hc800/rootfs-overlay/init replaces the EA pivot — see the note there.
+#
+# The shared scripts are all board.env-driven and no-op on what this board does
+# not have: OHC_WIFI_IFACE is unset in hc800's board.env, so S41wifi-ap and
+# S45netmon exit immediately, and S90ohcweb skips itself when ohc-webd was not
+# built in.
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/hc800/rootfs-overlay"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="hc800"

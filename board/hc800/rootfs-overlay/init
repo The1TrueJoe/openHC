@@ -1,0 +1,45 @@
+#!/bin/sh
+# openHC initramfs /init — HC-800.
+#
+# This is Buildroot's own fs/cpio/init (the one it installs for a cpio rootfs
+# with dynamic device creation), kept here verbatim so that including
+# board/common/rootfs-overlay is safe on this board.
+#
+# Why an override at all: hc800_defconfig lists both overlays and the board one
+# is applied second, so this file replaces the SHARED /init. The shared one
+# exists to pivot from a RAM rootfs to a persistent openHC rootfs on
+# /dev/mmcblk0p1, and this board has no eMMC — it would spin its full search
+# loop (100 x 0.1s), print
+#
+#     openHC: WARNING /dev/mmcblk0p1 never appeared after 100 tries
+#
+# and then fall through to exactly what this script does. Ten seconds and an
+# alarming line in the middle of a first bring-up, to reach the same place.
+#
+# There is nothing to pivot TO, by design. GRUB loads rootfs.cpio.gz as an
+# external initrd, the kernel unpacks it as the initramfs, and that IS the
+# rootfs — no root= on the kernel line and nothing mounted from disk. The
+# vendor's sda4 root and the sda2 factory-restore image are never touched, which
+# is what makes this board's bring-up non-destructive. If openHC ever grows an
+# on-disk rootfs here, this is the file that learns to mount it.
+#
+# Buildroot only installs its fs/cpio/init when no /init already exists
+# (ROOTFS_CPIO_ADD_INIT is guarded by `if [ ! -e $(TARGET_DIR)/init ]`), so
+# shipping one in the overlay SUPPRESSES it — which is why this has to carry
+# the devtmpfs mount and the console re-open rather than just exec'ing init. The
+# `mknod /dev/console` half of that hook is unconditional and still runs.
+
+# devtmpfs does not get automounted for initramfs
+/bin/mount -t devtmpfs devtmpfs /dev
+
+# use the /dev/console device node from devtmpfs if possible to not
+# confuse glibc's ttyname_r().
+# This may fail (E.G. booted with console=), and errors from exec will
+# terminate the shell, so use a subshell for the test
+if (exec 0</dev/console) 2>/dev/null; then
+    exec 0</dev/console
+    exec 1>/dev/console
+    exec 2>/dev/console
+fi
+
+exec /sbin/init "$@"
