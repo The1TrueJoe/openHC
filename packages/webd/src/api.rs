@@ -69,7 +69,7 @@ async fn serials(State(c): State<Arc<Config>>) -> Json<Vec<crate::board::SerialP
 // ── Wi-Fi control (the captive portal is a separate app, portal; these let
 //    the dashboard drive the same scan/join over its API) ──────────────────────
 async fn wifi_scan() -> Json<Vec<String>> {
-    Json(ohc_wifi::scan_cache())
+    Json(wifi::scan_cache())
 }
 
 #[derive(serde::Deserialize)]
@@ -79,7 +79,7 @@ struct WifiBody {
 }
 async fn wifi_connect(State(c): State<Arc<Config>>, Json(b): Json<WifiBody>) -> Response {
     let iface = load(&c).wifi_iface;
-    match ohc_wifi::apply(&iface, b.ssid.trim(), b.psk.as_deref().unwrap_or("").trim()) {
+    match wifi::apply(&iface, b.ssid.trim(), b.psk.as_deref().unwrap_or("").trim()) {
         Ok(ssid) => Json(serde_json::json!({ "joining": ssid })).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &e),
     }

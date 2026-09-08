@@ -31,7 +31,7 @@ async fn main() {
 }
 
 async fn scan() -> Json<Vec<String>> {
-    Json(ohc_wifi::scan_cache())
+    Json(wifi::scan_cache())
 }
 
 #[derive(serde::Deserialize)]
@@ -41,8 +41,8 @@ struct ConnectBody {
 }
 
 async fn connect(Json(b): Json<ConnectBody>) -> Response {
-    let iface = ohc_wifi::wifi_iface();
-    match ohc_wifi::apply(&iface, b.ssid.trim(), b.psk.as_deref().unwrap_or("").trim()) {
+    let iface = wifi::wifi_iface();
+    match wifi::apply(&iface, b.ssid.trim(), b.psk.as_deref().unwrap_or("").trim()) {
         Ok(ssid) => Json(serde_json::json!({ "joining": ssid })).into_response(),
         Err(e) => {
             (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))).into_response()
@@ -53,7 +53,7 @@ async fn connect(Json(b): Json<ConnectBody>) -> Response {
 async fn portal() -> Response {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        ohc_wifi::PORTAL_HTML,
+        wifi::PORTAL_HTML,
     )
         .into_response()
 }
