@@ -53,13 +53,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Ubuntu's gcc-arm-none-eabi is a full bare-metal cross toolchain; we link
-      # -nostdlib and supply our own libc_min, so no newlib is needed.
+      # libnewlib-arm-none-eabi is NOT optional, despite -nostdlib.
+      #
+      # We link -nostdlib and supply our own libc_min.c, so no newlib *library*
+      # is used — but both ohc_proto.c and main.c #include <string.h>, and the
+      # HEADERS live in libnewlib, which Ubuntu splits out of gcc-arm-none-eabi
+      # and lists only as a recommend. With --no-install-recommends every job
+      # died identically:
+      #
+      #     src/main.c:28:10: fatal error: string.h: No such file or directory
+      #
+      # This does not reproduce on the maintainer's Mac, where the
+      # gcc-arm-embedded cask bundles the headers with the compiler — which is
+      # exactly the class of difference this workflow exists to catch.
       - name: Install the cross toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi
           arm-none-eabi-gcc --version | head -1
+          echo "string.h: $(arm-none-eabi-gcc -print-file-name=include)/string.h"
+          test -f "$(arm-none-eabi-gcc -print-file-name=include)/string.h" \
+            || { echo 'no bare-metal string.h — libnewlib missing'; exit 1; }
 
       - name: Build ${{ matrix.name }}
         run: make -C ${{ matrix.dir }} ${{ matrix.target }} ${{ matrix.args }}
