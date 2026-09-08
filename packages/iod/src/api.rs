@@ -54,12 +54,12 @@ pub fn router(cfg: Arc<Config>) -> Router {
 
 /// Permissive CORS, deliberately.
 ///
-/// The config GUI is served by webd on :80 and talks to iod on :7070, so every
-/// request from it is cross-origin. This is a LAN appliance on a private
-/// network with no credentials in play — the alternative is proxying every REST
-/// call AND the WebSockets through webd, which buys no security (anything that
-/// can reach :80 can reach :7070) and adds a hop to a serial terminal where
-/// latency is felt directly.
+/// Not for the config GUI — that reaches iod through webd's `/iod` proxy and is
+/// same-origin. This is for everything else: a dashboard on another host, a
+/// scratch page, an automation tool's browser client. Those are cross-origin by
+/// nature, and refusing them would buy no security on a LAN appliance where
+/// anything that can reach :80 can reach :7070 directly anyway. Authentication
+/// is what protects this (`IOD_TOKEN`); the origin header never was.
 async fn cors(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::http::header::{
         ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,

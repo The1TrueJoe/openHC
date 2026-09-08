@@ -10,8 +10,13 @@
 // every IO on the controller and answers on :7070. Separate processes on
 // purpose — one owner for a UART that can only answer one question at a time.
 
-export const IOD = `${location.protocol}//${location.hostname}:7070`;
-const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:7070`;
+// Same origin, always. webd proxies /iod through to the IO server, so this
+// page needs exactly ONE port reachable — whichever one it was itself served
+// from. Talking straight to iod's :7070 would mean a second port had to be open
+// from wherever the operator is sitting, and one restrictive network turns the
+// whole config GUI into an error card while the controller is perfectly fine.
+export const IOD = `${location.origin}/iod`;
+const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/iod`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
  *  protected controller can be opened with ?token=… without a login screen the

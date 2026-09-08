@@ -9,7 +9,7 @@ use axum::{
     },
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 use std::sync::Arc;
@@ -36,6 +36,9 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .route("/api/wifi/scan", get(wifi_scan))
         .route("/api/wifi/connect", post(wifi_connect))
         .route("/api/openapi.json", get(openapi))
+        // Everything the IO server owns, on this origin. See proxy.rs for why
+        // the GUI must not be asked to reach a second port itself.
+        .route("/iod/{*rest}", any(crate::proxy::handler))
         .fallback(fallback)
         .layer(CompressionLayer::new())
         .with_state(cfg)

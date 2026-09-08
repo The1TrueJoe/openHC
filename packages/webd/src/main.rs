@@ -11,6 +11,7 @@
 //! UI compiled into this binary, plus a WebSocket serial bridge for the in-UI
 //! terminal. Single-threaded tokio runtime — this box has one Cortex-A9.
 mod api;
+mod proxy;
 mod board;
 mod system;
 
