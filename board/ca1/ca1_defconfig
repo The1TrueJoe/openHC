@@ -164,7 +164,7 @@ BR2_PACKAGE_SER2NET=y
 # C++ toolchain — needed by Node.js and ser2net's gensio C++ bindings.
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
-# The web dashboard + API is the Rust ohc-webd binary (packages/), cross-built
+# The web dashboard + API is the Rust webd binary (packages/), cross-built
 # on the host with the React UI embedded and dropped into the overlay by
 # packages/build.sh — so no python3/ttyd interpreter or per-port terminal daemon
 # is needed on the target. board/common S90ohcweb just runs the one binary.

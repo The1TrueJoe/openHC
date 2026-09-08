@@ -3,8 +3,8 @@
 #
 #   packages/build.sh [ca1|ea1|ea3|...]     (default: ca1)
 #
-# Cross-compiles ohc-webd (Rust, with the React UI embedded) for the board's
-# arch and drops it at board/common/rootfs-overlay/opt/ohc/bin/ohc-webd, which
+# Cross-compiles webd (Rust, with the React UI embedded) for the board's
+# arch and drops it at board/common/rootfs-overlay/opt/ohc/bin/webd, which
 # the Buildroot image then bundles. The Mac's Homebrew rustc has no cross std, so
 # we resolve a cargo whose toolchain does (rustup's) and pin RUSTC beside it.
 set -euo pipefail
@@ -34,14 +34,14 @@ CARGO="$(pick_cargo)"
 export RUSTC="$(dirname "$CARGO")/rustc"
 
 echo ">> UI (must build before cargo — build.rs embeds ui/dist)"
-( cd "$HERE/ohc-webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )
+( cd "$HERE/webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )
 
-echo ">> ohc-webd + ohc-portal for $BOARD ($TARGET)"
-( cd "$HERE" && "$CARGO" build --release -p ohc-webd -p ohc-portal --target "$TARGET" )
+echo ">> webd + portal for $BOARD ($TARGET)"
+( cd "$HERE" && "$CARGO" build --release -p webd -p portal --target "$TARGET" )
 
 DEST="$REPO/board/common/rootfs-overlay/opt/ohc/bin"
 mkdir -p "$DEST"
-for bin in ohc-webd ohc-portal; do
+for bin in webd portal; do
     install -m 0755 "$HERE/target/$TARGET/release/$bin" "$DEST/$bin"
     echo ">> staged $DEST/$bin ($(du -h "$DEST/$bin" | cut -f1))"
 done

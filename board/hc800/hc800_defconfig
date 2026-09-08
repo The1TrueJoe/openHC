@@ -193,7 +193,7 @@ BR2_PACKAGE_ALSA_UTILS_IECSET=y
 BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 
 # --- framebuffer boot splash ---
-# The same openHC banner the EA boards draw, on the same binary. ohc-splash
+# The same openHC banner the EA boards draw, on the same binary. splash
 # opens /dev/fb0, reads the geometry back with FBIOGET_[VF]SCREENINFO and mmaps
 # it, so it does not care that the EA's node comes from ce5300-fb and this one
 # comes from i915's fbdev emulation -- 1280x720x32 either way. figlet is pulled
@@ -206,14 +206,14 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 #
 # Needs the DRM/fbdev block in hc800.fragment; without it there is no /dev/fb0
 # and S01splash says so on the console instead of drawing.
-BR2_PACKAGE_OHC_SPLASH=y
+BR2_PACKAGE_SPLASH=y
 
 # --- component video output (the only one that actually works) ---
 # The THS8200 DAC on i2c-6 @0x21 is the sole video output anything drives on
 # this board: the ADV7511 next to it is fitted and answers but is never
 # configured, not even by Control4's own OS 3.x (see the HC-800 docs page).
 #
-# ohc-ths8200 replays a register set CAPTURED OFF THIS HARDWARE while the vendor
+# ths8200 replays a register set CAPTURED OFF THIS HARDWARE while the vendor
 # had it running at 720p — board/hc800/video/ths8200-720p60.regs, whose timings
 # cross-check against CEA-861 720p60 exactly (htotal 1650, vtotal 750, hsync 40,
 # hfront 110). It reads the chip's VERSION register first and refuses to write
@@ -221,7 +221,7 @@ BR2_PACKAGE_OHC_SPLASH=y
 # rather than 138 stray writes.
 #
 # Needs CONFIG_I2C_CHARDEV and CONFIG_I2C_I801, both already in the fragment.
-BR2_PACKAGE_OHC_THS8200=y
+BR2_PACKAGE_THS8200=y
 
 # --- rootfs overlay + image publishing ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and
@@ -236,7 +236,7 @@ BR2_PACKAGE_OHC_THS8200=y
 #
 # The shared scripts are all board.env-driven and no-op on what this board does
 # not have: OHC_WIFI_IFACE is unset in hc800's board.env, so S41wifi-ap and
-# S45netmon exit immediately, and S90ohcweb skips itself when ohc-webd was not
+# S45netmon exit immediately, and S90ohcweb skips itself when webd was not
 # built in.
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/hc800/rootfs-overlay"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/post-image.sh"

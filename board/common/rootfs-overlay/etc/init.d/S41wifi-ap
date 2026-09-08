@@ -6,7 +6,7 @@
 #   (a) joins a previously-saved home network in station mode, or
 #   (b) if none is saved (or the join fails), brings wlan up as an OPEN AP named
 #       for the hostname (openhc-<model>-<mac>) and raises a captive portal —
-#       ohc-webd redirects :80 to it — so a phone can pick a network
+#       webd redirects :80 to it — so a phone can pick a network
 #       and hand us its credentials. Submitting them writes the station config
 #       and restarts this script, which then takes path (a).
 #
@@ -39,9 +39,9 @@ OHC_WIFI_AP_CAPABLE="${OHC_WIFI_AP_CAPABLE:-1}"
 AP_ADDR="10.42.0.1"
 AP_PORT="8080"                     # the setup portal's own port (webd keeps :80)
 STA_CONF="/etc/wpa_supplicant/wpa_supplicant-${WIFI}.conf"
-SCAN_CACHE="/tmp/ohc-wifi-scan"    # SSIDs the portal offers, captured at AP start
-PORTAL=/opt/ohc/bin/ohc-portal     # the captive-portal web app, run only with the AP
-PORTAL_FLAG="/tmp/ohc-ap-portal"   # holds the portal URL; ohc-webd redirects :80 probes here while it exists
+SCAN_CACHE="/tmp/wifi-scan"    # SSIDs the portal offers, captured at AP start
+PORTAL=/opt/ohc/bin/portal     # the captive-portal web app, run only with the AP
+PORTAL_FLAG="/tmp/ohc-ap-portal"   # holds the portal URL; webd redirects :80 probes here while it exists
 
 have_link() { [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = 1 ]; }
 
@@ -122,7 +122,7 @@ start_ap() {
     printf 'Wi-Fi AP: %s ' "$SSID"
     if start-stop-daemon -S -q -b --exec /usr/sbin/hostapd -- -B /etc/hostapd/hostapd.conf \
        && start-stop-daemon -S -q -b --exec /usr/sbin/dnsmasq -- --conf-file=/etc/dnsmasq-ap.conf; then
-        # the captive portal is its own app (ohc-portal) on its own port — the
+        # the captive portal is its own app (portal) on its own port — the
         # dashboard stays put on :80 and just redirects probes here (PORTAL_FLAG).
         [ -x "$PORTAL" ] && start-stop-daemon -S -q -b --exec "$PORTAL" -- "0.0.0.0:$AP_PORT"
         echo "http://$AP_ADDR:$AP_PORT/" > "$PORTAL_FLAG"

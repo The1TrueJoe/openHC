@@ -88,7 +88,7 @@ BR2_PACKAGE_AVAHI_DAEMON=y
 # The shared scripts are board.env-driven and no-op on what this board does not
 # have: OHC_WIFI_IFACE is unset in ioxv1's board.env (dm9000, wired only), so
 # S41wifi-ap and S45netmon exit immediately, and S90ohcweb skips itself when
-# ohc-webd was not built in. Order matters -- later overlays overwrite earlier
+# webd was not built in. Order matters -- later overlays overwrite earlier
 # ones, which is how ioxv1/rootfs-overlay/init replaces the EA pivot.
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/rootfs-overlay"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/post-image.sh"

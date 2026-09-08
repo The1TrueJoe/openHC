@@ -85,7 +85,7 @@ the boards whose install is manual. On the HC-800 in particular, running
 
 ## The dashboard
 
-`ohc-webd` — a Rust server with an embedded React UI, is built on the host rather
+`webd` — a Rust server with an embedded React UI, is built on the host rather
 than in the container, because it cross-compiles with `rust-lld` and needs no
 cross-binutils:
 

@@ -2,7 +2,7 @@
 # (not globbed) so non-Rust packages can live under packages/ later too.
 [workspace]
 resolver = "2"
-members = ["ohc-wifi", "ohc-webd", "ohc-portal"]
+members = ["wifi", "webd", "portal"]
 
 [workspace.package]
 version = "0.1.0"

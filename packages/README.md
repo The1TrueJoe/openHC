@@ -16,20 +16,20 @@ it in and `board/Config.in` sources its `Config.in`:
 
 | | |
 |---|---|
-| `board/common/packages/ohc-splash`, `figlet` | base firmware features, on every board |
-| `board/hc800/packages/ohc-ths8200` | HC-800 video DAC — that silicon is on one board |
-| `board/ea-common/packages/sgx545-*`, `wpebackend-pvr`, `ohc-webview` | the CE5300 graphics stack |
+| `board/common/packages/splash`, `figlet` | base firmware features, on every board |
+| `board/hc800/packages/ths8200` | HC-800 video DAC — that silicon is on one board |
+| `board/ea-common/packages/sgx545-*`, `wpebackend-pvr`, `webview` | the CE5300 graphics stack |
 
 And things that are just *files* are just files: `/etc/motd` is
 `board/common/rootfs-overlay/etc/motd`, not a package that shells out to figlet
 during the build.
 
-## ohc-webd
+## webd
 
 The controller dashboard + REST API. A single self-contained binary (~1.5 MB,
 static musl) that:
 
-- serves the **React UI** (in `ohc-webd/ui/`, compiled *into* the binary by
+- serves the **React UI** (in `webd/ui/`, compiled *into* the binary by
   `build.rs`),
 - exposes a **board-agnostic REST API** — everything is driven by
   `/opt/ohc/board.env`, so one build runs on any board and differs only in that
@@ -43,19 +43,19 @@ static musl) that:
 Stack: `axum` (single-thread tokio), `libc` termios for serial (no serialport
 crate), UI is Vite + React + TypeScript with CSS-variable design tokens. API docs
 at `/api/openapi.json`. It can also **control Wi-Fi** — `GET /api/wifi/scan` and
-`POST /api/wifi/connect` — via the shared `ohc-wifi` crate, so the dashboard drives
+`POST /api/wifi/connect` — via the shared `wifi` crate, so the dashboard drives
 the same join flow the setup portal does.
 
-## ohc-portal
+## portal
 
 The captive-portal Wi-Fi setup — a **separate** web app (~700 KB), deliberately
 kept out of the dashboard. `S41wifi-ap` runs it only while the setup AP is up, on
 its **own port `:8080`** (the dashboard keeps `:80`). The dashboard 302-redirects
 the phone's OS connectivity check to it while the AP is up, which is what trips the
 captive-portal popup. It serves a self-contained setup page for *every* path plus
-the same scan/join API, and does no wireless I/O itself — it hands off to `ohc-wifi`.
+the same scan/join API, and does no wireless I/O itself — it hands off to `wifi`.
 
-## ohc-wifi
+## wifi
 
 A tiny pure-std lib (no deps) shared by the two binaries above: reads the scanned
 SSID cache, writes the `wpa_supplicant` station config (escaping SSID/PSK against
@@ -83,7 +83,7 @@ the binary into the overlay. The init script `S90ohcweb` runs this one binary
 Three packages that only make sense together, on boards with the `sgx` feature:
 
 ```
-ohc-webview            creates one WebKit view, loads a URL, runs a main loop
+webview            creates one WebKit view, loads a URL, runs a main loop
    |  links
 WPE WebKit             browser engine, renders through EGL/GLES, no X, no
    |  dlopens          window system of its own
@@ -92,9 +92,9 @@ wpebackend-pvr         libwpe backend: hands WPE the DDK's framebuffer EGL
 sgx545-um  +  sgx545-ce    PowerVR DDK userspace + our GPL kernel driver
 ```
 
-`ohc-webview` defaults to `http://localhost/`, which is **ohc-webd** above — the
+`webview` defaults to `http://localhost/`, which is **webd** above — the
 dashboard is what a controller should show when nobody has said otherwise.
-`OHC_WEBVIEW_URL` overrides it, and that is the seam: a layer built on top of
+`WEBVIEW_URL` overrides it, and that is the seam: a layer built on top of
 openHC points the surface somewhere else without openHC needing to know or care
 what serves it.
 
@@ -106,16 +106,16 @@ being brought up. See `https://the1truejoe.github.io/openHC/ea/graphics/` for wh
 
 ```
 packages/
-  Cargo.toml            virtual workspace (ohc-wifi, ohc-webd, ohc-portal)
+  Cargo.toml            virtual workspace (wifi, webd, portal)
   .cargo/config.toml    cross targets (rust-lld linker)
   rust-toolchain.toml   pins the rustup toolchain
   build.sh              host build + stage both binaries into the overlay
-  ohc-wifi/             shared lib: scan cache, wpa config, portal page
-  ohc-webd/
+  wifi/             shared lib: scan cache, wpa config, portal page
+  webd/
     Cargo.toml
     build.rs            embeds ui/dist
     src/                main, api, serial (libc termios), board, system
     ui/                 Vite + React + TS dashboard
-  ohc-portal/           standalone captive-portal app (:80, AP-only)
+  portal/           standalone captive-portal app (:80, AP-only)
     src/main.rs
 ```

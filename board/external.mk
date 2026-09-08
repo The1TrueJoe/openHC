@@ -4,7 +4,7 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 #
 # ...and every package that lives WITH A BOARD instead. This glob covers
 # board/<anything>/packages/, so ea-common (the CE5300 SGX/WPE stack), hc800
-# (ohc-ths8200 — that DAC is HC-800 silicon) and common (ohc-splash, a base
+# (ths8200 — that DAC is HC-800 silicon) and common (splash, a base
 # firmware feature) are all picked up without naming each one here.
 #
 # The split is deliberate: `packages/` at the repo root is for SERVICES — the

@@ -125,7 +125,7 @@ define SGX545_UM_INSTALL_TARGET_CMDS
 	# It therefore belongs to the system and not to any one program. WPE
 	# in particular spawns a separate WebProcess to do its rendering, and
 	# that process is the one that needs the shim; ld.so.preload covers it
-	# without ohc-webview having to know how WebKit spawns children.
+	# without webview having to know how WebKit spawns children.
 	#
 	# The shim overrides exactly one symbol, drmOpen, which nothing else on
 	# this system calls, and honours SGX_BUSID if a board ever needs a

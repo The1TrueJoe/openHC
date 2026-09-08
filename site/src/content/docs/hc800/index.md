@@ -407,7 +407,7 @@ That agreement is what makes the capture trustworthy: it validates both the dump
 and mainline's GPL `ths8200_regs.h`, independently.
 
 All 138 registers are in `board/hc800/video/ths8200-720p60.regs`, and
-`packages/ohc-ths8200` replays them over `/dev/i2c-6` at boot (`S47video`). The
+`packages/ths8200` replays them over `/dev/i2c-6` at boot (`S47video`). The
 tool reads `VERSION` first and refuses to write unless it reads `0x04`, so a
 wrong bus or address costs a message rather than 138 stray writes into whatever
 else answers. The register values are data, not compiled in — re-capturing from

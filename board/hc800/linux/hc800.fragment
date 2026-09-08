@@ -226,7 +226,7 @@ CONFIG_DRM_I915=y
 # device node is its own symbol since 6.6: DRM_FBDEV_EMULATION selects FB_CORE,
 # NOT FB, and FB_DEVICE (which creates /dev/fbX) defaults to the value of FB.
 # Set all three rather than rely on that chain -- the failure mode is a working
-# framebuffer console with no node for ohc-splash to open, which looks like a
+# framebuffer console with no node for splash to open, which looks like a
 # broken splash rather than a missing kconfig symbol.
 CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_FB=y

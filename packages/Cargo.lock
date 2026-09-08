@@ -404,25 +404,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohc-portal"
+name = "portal"
 version = "0.1.0"
 dependencies = [
  "axum",
- "ohc-wifi",
+ "wifi",
  "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "ohc-webd"
+name = "webd"
 version = "0.1.0"
 dependencies = [
  "axum",
  "flate2",
  "futures-util",
  "libc",
- "ohc-wifi",
+ "wifi",
  "serde",
  "serde_json",
  "tokio",
@@ -430,7 +430,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohc-wifi"
+name = "wifi"
 version = "0.1.0"
 
 [[package]]

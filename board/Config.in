@@ -28,9 +28,9 @@ config BR2_OHC_EA_KERNEL_DRIVERS
 # Buildroot packages live in <repo>/packages/ (BR2_EXTERNAL_OPENHC_PATH is board/).
 source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/figlet/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/ohc-splash/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ohc-ths8200/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/splash/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-ce/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-um/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/wpebackend-pvr/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/ohc-webview/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/webview/Config.in"

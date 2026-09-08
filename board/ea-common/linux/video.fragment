@@ -10,7 +10,7 @@ CONFIG_FB_SYS_FILLRECT=y
 CONFIG_FB_SYS_COPYAREA=y
 CONFIG_FB_SYS_IMAGEBLIT=y
 CONFIG_FB_SYSMEM_HELPERS=y
-# No fbcon. The splash is drawn by ohc-splash straight onto /dev/fb0, and the
+# No fbcon. The splash is drawn by splash straight onto /dev/fb0, and the
 # console stays on ttyS0 — a text console would only fight it for the surface
 # (it clears the framebuffer on takeover, which is what ate the first splash).
 # CONFIG_FRAMEBUFFER_CONSOLE is not set

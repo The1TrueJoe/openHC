@@ -96,7 +96,7 @@ BR2_PACKAGE_PCIUTILS=y
 # --- framebuffer splash (EA only: ce5300-fb gives these boards a /dev/fb0) ---
 # Drawn straight to the framebuffer, not through a console. See video.fragment,
 # which deliberately leaves CONFIG_FRAMEBUFFER_CONSOLE off.
-BR2_PACKAGE_OHC_SPLASH=y
+BR2_PACKAGE_SPLASH=y
 
 # ── C library: glibc, not the shared musl default ──────────────────────────
 #

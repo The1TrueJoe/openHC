@@ -27,4 +27,4 @@ BR2_PACKAGE_WPEBACKEND_PVR=y
 
 # ...and the surface that actually puts a page on the screen. WebKit is built
 # with ENABLE_MINIBROWSER=OFF, so without this nothing creates a view.
-BR2_PACKAGE_OHC_WEBVIEW=y
+BR2_PACKAGE_WEBVIEW=y

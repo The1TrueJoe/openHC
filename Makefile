@@ -58,7 +58,7 @@ help:
 	@echo "openHC — Control4 EA-series kernel-up build"
 	@echo ""
 	@echo "  make image [BOARD=...]       build the netboot kernel image (Docker Buildroot)"
-	@echo "  make webd  [BOARD=...]       build the ohc-webd dashboard (Rust+React) into the overlay"
+	@echo "  make webd  [BOARD=...]       build the webd dashboard (Rust+React) into the overlay"
 	@echo "  make mcu   [BOARD=ea1|ea3]   build the TM4C IO-MCU firmware (EA only)"
 	@echo "  make netboot                 serve $(IMAGE) to the target (EA CEFDK path)"
 	@echo "  make probe                   drop CEFDK to its shell (cookie, no kernel)"
@@ -90,7 +90,7 @@ image:
 		--build-arg BOARD=$(BOARD) $(if $(JOBS),--build-arg BR2_JLEVEL=$(JOBS)) \
 		--output type=local,dest=output/images .
 
-# Build the ohc-webd dashboard (Rust server + embedded React UI) on the host and
+# Build the webd dashboard (Rust server + embedded React UI) on the host and
 # stage it into board/common/rootfs-overlay/opt/ohc/bin, so the next `make image`
 # bundles it. Needs rustup (with the board's target added) + node/npm. See
 # packages/README.md. Cross-compiles with rust-lld — no Docker or cross-binutils.

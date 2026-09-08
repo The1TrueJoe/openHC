@@ -41,7 +41,7 @@ BR2_PACKAGE_LIBGPIOD_TOOLS=y
 # board/common/rootfs-overlay/etc/motd — a base firmware feature, shipped the
 # way every other base firmware feature is shipped.
 #
-# figlet itself stays in the image, because ohc-splash renders the banner ON THE
+# figlet itself stays in the image, because splash renders the banner ON THE
 # DEVICE at boot (S01splash), which is what lets the splash text change without
 # rebuilding anything.
 

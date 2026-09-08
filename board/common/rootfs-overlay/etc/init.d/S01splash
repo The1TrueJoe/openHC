@@ -4,7 +4,7 @@
 #
 # SHARED across boards (board/common). It lived in ea-common until the HC-800
 # became the second user; nothing in it was ever CE5300-specific except one
-# error string, because ohc-splash asks the framebuffer for its own geometry
+# error string, because splash asks the framebuffer for its own geometry
 # (FBIOGET_[VF]SCREENINFO) rather than being told.
 #
 # Where /dev/fb0 comes from is per-board and does not change anything here:
@@ -33,9 +33,9 @@ case "$1" in
 	start)
 		# Quiet when the board never asked for a splash: this script is in
 		# the SHARED overlay now, so it also runs on images that do not
-		# select BR2_PACKAGE_OHC_SPLASH, and announcing a missing binary on
+		# select BR2_PACKAGE_SPLASH, and announcing a missing binary on
 		# every one of those is noise, not diagnosis.
-		[ -x /usr/bin/ohc-splash ] || exit 0
+		[ -x /usr/bin/splash ] || exit 0
 
 		# From here on the board DID opt in, so every failure is loud. This
 		# used to exit 0 in silence, and a board that drew nothing then also
@@ -54,9 +54,9 @@ case "$1" in
 		fi
 
 		printf "Splash: "
-		# ohc-splash explains itself on stderr (e.g. "need 32bpp, got 16").
+		# splash explains itself on stderr (e.g. "need 32bpp, got 16").
 		# Let that through: it is the whole diagnosis.
-		if figlet -f slant "$BANNER_TEXT" | /usr/bin/ohc-splash - "$FBDEV"; then
+		if figlet -f slant "$BANNER_TEXT" | /usr/bin/splash - "$FBDEV"; then
 			echo "OK ($FBDEV)"
 		else
 			echo "FAILED to draw to $FBDEV"
