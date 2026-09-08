@@ -38,6 +38,16 @@ Events are opt-in because they are not small: pushing a chatty projector's byte
 stream at a page that only wanted contact changes is a waste. State always
 flows, because a client holding a stale mirror is actively wrong.
 
+## Reaching it
+
+`:7070` directly, or — from a browser — through webd's proxy on the port the
+page was served from: `/iod/api/…` and `/iod/ws/…`. The GUI uses the proxy so
+it needs exactly ONE port reachable. A page on :80 that fetches :7070 requires
+both to be open from wherever the operator is sitting, and a single restrictive
+network turns the whole config UI into an error card while the box is fine.
+
+Everything below works identically on either path.
+
 ## The control socket — `ws://host:7070/ws/control`
 
 The primary surface. Commands, state and events on one connection. This is what
