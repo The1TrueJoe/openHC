@@ -96,6 +96,23 @@ attach and never a chip that has already told userspace what its lines are.
 | `OHC_RELAYS` / `OHC_CONTACTS` | how many lines to expose |
 | `OHC_IO_MCU_LDISC` | discipline number, default 29 |
 
+## What each board actually gets
+
+| Board | Relays | Contacts | Lines on the chip |
+|---|---|---|---|
+| HC-800 | 4 | 4 | 8 |
+| EA3 | 1 | 1 | 2 |
+| EA1 | 0 | 0 | **none — the script skips** |
+| CA-1 | — | — | no IO microcontroller at all |
+| IO Extender V1 | 8 | 8 | native SoC GPIO; this driver is not involved |
+
+The EA1 is worth calling out. It has an IO microcontroller, and it has no relays
+or contacts — its IO is two MCU-routed UARTs and the IR jacks. The driver
+refuses to register a chip with no lines, so `S12iomcu` checks the counts and
+says so rather than letting a correct outcome look like a failure. The EA1's win
+from moving this into the kernel is not GPIO; it is the serial work listed at the
+bottom of this page.
+
 ## Two details that are not obvious
 
 **There is no SET opcode.** The firmware offers only `RELAY_GET` and

@@ -28,6 +28,16 @@ start() {
     [ -n "$OHC_IO_MCU_TTY" ] || { echo "iomcu: OHC_IO_MCU_TTY is unset in board.env"; return 1; }
     [ -d "$PARAMS" ] || { echo "iomcu: gpio-ohc-iomcu is not in this kernel"; return 1; }
 
+    # A board can have an IO microcontroller and still have no GPIO-able lines
+    # behind it: the EA1's IO is two MCU-routed UARTs and IR, with zero relays
+    # and zero contacts. The driver refuses a chip with no lines, so skip here
+    # and say why rather than letting that look like a failure.
+    lines=$(( ${OHC_RELAYS:-0} + ${OHC_CONTACTS:-0} ))
+    [ "$lines" -gt 0 ] || {
+        echo "iomcu: no relays or contacts on this board — nothing to expose as GPIO"
+        return 0
+    }
+
     # Geometry first: the driver latches it when the discipline attaches.
     [ -n "$OHC_RELAYS" ]   && echo "$OHC_RELAYS"   > "$PARAMS/relays"
     [ -n "$OHC_CONTACTS" ] && echo "$OHC_CONTACTS" > "$PARAMS/contacts"
