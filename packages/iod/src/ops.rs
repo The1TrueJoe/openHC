@@ -200,10 +200,17 @@ async fn mcu_info(c: &Arc<Config>) -> Out {
 
 /// Hold the MCU in reset briefly, then let it run.
 ///
-/// 100 ms is far longer than the part needs and short enough that a relay
-/// holding a real load is not left in an undefined state for any length of
-/// time. Afterwards the link is re-identified so the caller learns whether it
-/// actually came back rather than being told "reset" and left to guess.
+/// Tries the polarity board.env documents first, and if the part stays silent,
+/// tries the opposite before giving up. That second attempt is not superstition:
+/// the HC-800's GPIO offsets were derived by translating the vendor's sysfs
+/// numbers through a chip base, and the ACTIVE SENSE of the line was never
+/// verified against hardware — it is a comment, not a measurement. Reporting
+/// which polarity actually revived the part turns this from a guess into the
+/// answer, and board.env can then be corrected.
+///
+/// The line is left in whichever state produced a live MCU. If neither did, it
+/// is left at the documented "released" level, because a controller with a dead
+/// MCU should not also be one holding it in reset.
 async fn mcu_reset(c: &Arc<Config>) -> Out {
     let chip_label = c
         .board
@@ -211,7 +218,7 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         .gpio_chip
         .clone()
         .ok_or_else(|| Fault::NoSuch("this board declares no GPIO chip".into()))?;
-    let line = c
+    let line_no = c
         .board
         .io
         .io_reset_gpio
@@ -225,31 +232,55 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         if held.is_none() {
             let chip = crate::gpio::find_chip(&chip_label).map_err(|e| Fault::Io(e.to_string()))?;
             *held = Some(
-                crate::gpio::request_output(&chip, line, true)
+                crate::gpio::request_output(&chip, line_no, true)
                     .map_err(|e| Fault::Io(format!("cannot claim the reset line: {e}")))?,
             );
         }
-        // board.env: 1 = released, so low is the assert.
-        crate::gpio::pulse_low(held.as_ref().unwrap(), Duration::from_millis(200))
-            .map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
     }
 
-    // The part needs a moment to boot before it will answer.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // `released` is the level board.env says leaves the part running.
+    for released in [true, false] {
+        {
+            let held = c.io_reset.lock().unwrap();
+            let line = held.as_ref().expect("claimed above");
+            line.set(!released).map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
+            std::thread::sleep(Duration::from_millis(200));
+            line.set(released).map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
+        }
+        // The part needs a moment to boot before it will answer.
+        tokio::time::sleep(Duration::from_millis(600)).await;
 
-    let mut back = None;
-    if let Some(l) = &c.link {
-        let mut l = l.lock().await;
-        for _ in 0..8 {
-            if let Ok((name, ver)) = l.identify() {
-                back = Some(json!({ "product": name, "version": ver }));
-                break;
+        if let Some(l) = &c.link {
+            let mut l = l.lock().await;
+            for _ in 0..6 {
+                if let Ok((name, ver)) = l.identify() {
+                    c.bus.set("mcu/link", json!(true));
+                    return Ok(json!({
+                        "reset": true, "chip": chip_label, "line": line_no,
+                        // The useful part: which sense actually worked.
+                        "released_level": if released { 1 } else { 0 },
+                        "matched_board_env": released,
+                        "answering": { "product": name, "version": ver },
+                    }));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
         }
     }
-    c.bus.set("mcu/link", json!(back.is_some()));
-    Ok(json!({ "reset": true, "chip": chip_label, "line": line, "answering": back }))
+
+    // Neither worked. Leave the pin where board.env says "running".
+    if let Ok(held) = c.io_reset.lock() {
+        if let Some(line) = held.as_ref() {
+            let _ = line.set(true);
+        }
+    }
+    c.bus.set("mcu/link", json!(false));
+    Ok(json!({
+        "reset": true, "chip": chip_label, "line": line_no, "answering": null,
+        "tried": ["released=1", "released=0"],
+        "note": "the part did not answer at either polarity; it may need a power cycle, \
+                 or this may not be its reset line",
+    }))
 }
 
 async fn contacts(c: &Arc<Config>) -> Out {

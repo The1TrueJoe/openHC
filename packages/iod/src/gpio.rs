@@ -183,12 +183,3 @@ fn set(line: &Line, high: bool) -> io::Result<()> {
     }
     Ok(())
 }
-
-/// Drive `line` low for `hold`, then high — and leave it high.
-///
-/// The line is not released afterwards; see [`Line`] for why that matters.
-pub fn pulse_low(line: &Line, hold: std::time::Duration) -> io::Result<()> {
-    line.set(false)?;
-    std::thread::sleep(hold);
-    line.set(true)
-}
