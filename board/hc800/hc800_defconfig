@@ -172,6 +172,11 @@ BR2_PACKAGE_ALSA_UTILS_APLAY=y
 BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
 # iecset drives the IEC958 status bits — i.e. the coax S/PDIF jack specifically.
 BR2_PACKAGE_ALSA_UTILS_IECSET=y
+# alsactl, because S46audio calls `alsactl store` after unmuting. It tolerates
+# the binary being absent (|| true) and the rootfs is RAM anyway, so this is not
+# load bearing today — but it is what makes the mixer state survive the day
+# openHC grows a writable /var, and it costs a few KB.
+BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 
 # --- framebuffer boot splash ---
 # The same openHC banner the EA boards draw, on the same binary. ohc-splash

@@ -211,6 +211,19 @@ CONFIG_FB_DEVICE=y
 # VGA_CONSOLE stays at its defconfig value so a monitor on the internal header
 # still shows a panic before i915 takes over ("Replacing VGA console driver").
 
+# ── read the config back off the running box ──────────────────────────────
+# The vendor kernel has /proc/config.gz and it has been worth its weight in this
+# port — every "does the vendor set X?" question was answered by reading it
+# instead of guessing. Ours had no equivalent, which bit immediately: the CI
+# artifact could not be checked for CONFIG_DRM_I915 because there was nothing
+# embedded in the bzImage to extract, so the evidence had to come from grepping
+# the build log for compiled object files.
+#
+# ~30 KB of gzipped config in the image, and the first person to debug this on
+# hardware can run `zcat /proc/config.gz | grep DRM` instead of asking CI.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+
 # ── note on the stack protector ───────────────────────────────────────────
 # ea-common has to disable STACKPROTECTOR: musl + i386 + 7.1.8 disagree about
 # the per-CPU canary and the kernel panics in do_idle. x86_64 puts the canary at

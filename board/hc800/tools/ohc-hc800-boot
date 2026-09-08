@@ -13,20 +13,34 @@
 #
 # ── READ THIS BEFORE `arm` ────────────────────────────────────────────────
 #
-# ARM WITH A HAND ON THE POWER. Not because it is expected to fail, but because
-# the one failure this box cannot recover from by itself is a SILENT HANG: a
-# kernel that stops without panicking leaves no console, no network and no
-# watchdog, and the only cure is a power cycle. Everything below is built to
-# make every OTHER failure self-healing; none of it helps with that one.
+# ARM WITH A HAND ON THE POWER, and read the four layers below first.
 #
-# What IS handled:
+#   1. BOOT-ONCE. `default saved` + `savedefault 1` on our entry: GRUB rewrites
+#      the default to the VENDOR entry at boot time, BEFORE the kernel is handed
+#      control. openHC gets exactly one attempt per `arm`, whatever happens.
+#   2. FALLBACK. `fallback 1` covers a kernel or initrd that cannot be READ.
+#   3. A VISIBLE MENU ON SERIAL. `arm` sets `timeout 10` and comments out
+#      `hiddenmenu`. menu.lst already has `serial --unit=0` / `terminal serial`
+#      and this board's console is bidirectional, so ttyS0 @115200 gets ten
+#      seconds to pick ANY entry -- including the factory image -- with no disk
+#      write and no physical access.
+#   4. THE FACTORY-DEFAULT BUTTON, the one that works when nothing else does.
+#      Control4 patched this GRUB with a hardware path: stage2 contains
+#      "Factory default button asserted" and menu.lst carries
+#      `support_factorydefault 1` / `factorydefault 0`. Hold that button at
+#      power-on and GRUB boots ENTRY 0 regardless of `default`. It runs below
+#      the OS, so a broken openHC entry cannot defeat it. Entry 0 is
+#      self-contained on sda2 -- own kernel, own rootfs, own restore_images --
+#      so it survives anything done to sda3 or sda4.
 #
-#   * kernel or initrd missing/corrupt  -> GRUB's `fallback` takes the vendor entry
-#   * kernel panics                     -> panic=10 reboots, and by then the
-#                                          default has already reverted
-#   * openHC boots but is unreachable   -> the NEXT boot is the vendor image
-#                                          anyway, because `savedefault` ran
-#                                          before openHC did
+# WHAT IS STILL NOT RECOVERABLE:
+#
+#   * A SILENT HANG with nobody present. A kernel that stops without panicking
+#     leaves no console, no network and no armed watchdog; layers 1-2 have
+#     already done their work and layer 4 needs a finger on a button. Nothing is
+#     damaged -- the box just sits there until power-cycled. Hence the flag.
+#   * CORRUPTING sda1, which every layer above needs GRUB to read. There is a
+#     byte-exact backup in backups/hc800/ with the restore command in its README.
 #
 # The mechanism is GRUB Legacy's `savedefault`, which is present in this unit's
 # installed stage2 (verified by string-dumping it). `default saved` makes GRUB
@@ -108,6 +122,26 @@ cmd_status() {
     fi
     echo "== backup =="
     [ -f "$BACKUP" ] && echo "  $BACKUP present" || echo "  no backup yet (nothing armed)"
+    echo "== recovery posture =="
+    if grep -q "^support_factorydefault" "$MENU" 2>/dev/null; then
+        echo "  factory-default BUTTON honoured by GRUB (support_factorydefault present)"
+    else
+        echo "  WARNING: no support_factorydefault line — the hardware button path is OFF"
+    fi
+    if grep -q "^hiddenmenu" "$MENU" 2>/dev/null; then
+        echo "  menu HIDDEN, $(grep -m1 '^timeout' "$MENU" | tr -s ' 	' ' ') — serial cannot pick an entry"
+    else
+        echo "  menu VISIBLE, $(grep -m1 '^timeout' "$MENU" | tr -s ' 	' ' ') — serial can pick any entry"
+    fi
+    mkdir -p /tmp/ohc-p2
+    if mount -o ro /dev/sda2 /tmp/ohc-p2 2>/dev/null || is_mounted /tmp/ohc-p2; then
+        k=$(ls /tmp/ohc-p2/boot/bzImage >/dev/null 2>&1 && echo "kernel present" || echo "NO KERNEL")
+        n=$(ls /tmp/ohc-p2/restore_images/*.tgz 2>/dev/null | wc -l)
+        echo "  sda2 factory system: $k, $n restore image(s)"
+        umount /tmp/ohc-p2 2>/dev/null
+    else
+        echo "  sda2 factory system: COULD NOT MOUNT"
+    fi
     unmount_all
 }
 
@@ -155,15 +189,33 @@ cmd_arm() {
 
     # `default saved` is what makes savedefault mean anything. fallback 1 covers
     # the case where our kernel or initrd cannot be READ at all.
-    sed -i 's/^default[ \t].*/default		saved/' "$MENU"
-    sed -i 's/^fallback[ \t].*/fallback		1/' "$MENU"
+    # Rewritten without embedded tabs: busybox sed does not expand \t in a
+    # replacement, so a tab has to be a literal one, and a literal tab in a
+    # shell script is an invitation for an editor to eat it. GRUB Legacy
+    # accepts spaces here exactly as it accepts tabs.
+    sed -i 's/^default[ 	].*/default saved/' "$MENU"
+    sed -i 's/^fallback[ 	].*/fallback 1/' "$MENU"
+
+    # Recovery layer 3: a menu a serial console can actually use. The stock
+    # file is `timeout 0` + `hiddenmenu`, which boots instantly with no way
+    # in. Ten seconds on a console that already exists costs nothing and
+    # turns "the box will not boot" into "pick another entry", with no disk
+    # write and no physical access. disarm restores the silent boot.
+    sed -i 's/^timeout[ 	].*/timeout 10/' "$MENU"
+    sed -i 's/^hiddenmenu/#hiddenmenu   # openHC: shown so serial can recover/' "$MENU"
 
     echo "== menu.lst is now =="; sed 's/^/  /' "$MENU"
     finish_write
     echo ""
     echo "ARMED. Next boot: openHC, ONCE. The boot after that: the vendor image,"
     echo "whatever happens — savedefault rewrites the default before the kernel runs."
-    echo "Watch ttyS0 @115200. Reboot when ready:  reboot"
+    echo ""
+    echo "You now get a 10-second GRUB menu on ttyS0 @115200. If openHC misbehaves,"
+    echo "press a key there and pick entry 1 (vendor) or entry 0 (factory image)."
+    echo "If it will not even reach the menu: hold the factory-default button at"
+    echo "power-on and GRUB boots the factory image regardless of any of this."
+    echo ""
+    echo "Reboot when ready:  reboot"
 }
 
 cmd_disarm() {
