@@ -1,12 +1,17 @@
 //! webd — openHC controller dashboard + REST API.
 //!
+//! IT DOES NOT TOUCH IO. Serial ports, IR, relays and contacts belong to iod,
+//! which owns them behind its own API — webd used to serve /api/radios,
+//! /api/serials and a /ws/serial bridge, and those opened the very same ttys.
+//! Two processes with one UART open each get half the bytes, and which half is
+//! a race; that is the whole reason iod exists. The UI calls iod directly.
+//!
 //! Board-agnostic: everything it shows comes from /opt/ohc/board.env, and the
 //! serial/radio endpoints act on whatever that file declares. Serves the React
 //! UI compiled into this binary, plus a WebSocket serial bridge for the in-UI
 //! terminal. Single-threaded tokio runtime — this box has one Cortex-A9.
 mod api;
 mod board;
-mod serial;
 mod system;
 
 use std::sync::Arc;
