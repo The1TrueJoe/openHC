@@ -128,10 +128,13 @@ struct ohc_iomcu {
 
 	u8 seq;
 
-	/* Cached line state, refreshed by the poller. */
+	/*
+	 * Contact state, refreshed by the poller. Relays are deliberately NOT
+	 * cached: they are read rarely and a stale relay reading is a worse
+	 * thing to hand out than a slow one.
+	 */
 	u32 contact_mask;
-	u32 relay_mask;
-	bool cache_valid;
+	bool contacts_valid;
 
 	struct delayed_work poll_work;
 	const char **names;
@@ -336,20 +339,23 @@ static int ohc_gpio_get(struct gpio_chip *gc, unsigned int off)
 	bool on;
 
 	if (ohc_is_relay(mcu, off)) {
-		if (mcu->cache_valid)
-			return !!(mcu->relay_mask & BIT(off));
 		if (ohc_relay_get(mcu, off, &on))
 			return -EIO;
 		return on;
 	}
 
-	/* Contacts come from the poller's cache; see poll_ms. */
-	if (!mcu->cache_valid) {
+	/*
+	 * Contacts come from the poller's cache. Falling back to a live read
+	 * covers the window before the first poll completes, and the case where
+	 * polling is switched off with poll_ms=0.
+	 */
+	if (!mcu->contacts_valid) {
 		u32 mask;
 
 		if (ohc_contacts_get(mcu, &mask))
 			return -EIO;
 		mcu->contact_mask = mask;
+		mcu->contacts_valid = true;
 	}
 	return !!(mcu->contact_mask & BIT(off - mcu->n_relays));
 }
@@ -378,22 +384,16 @@ static int ohc_gpio_set(struct gpio_chip *gc, unsigned int off, int value)
 	if (ret)
 		return ret;
 	if (on == !!value)
-		goto record;
+		return 0;
 	ret = ohc_relay_toggle(mcu, off, &now);
 	if (ret)
 		return ret;
-	on = now;
-record:
-	if (on)
-		mcu->relay_mask |= BIT(off);
-	else
-		mcu->relay_mask &= ~BIT(off);
 
 	/*
 	 * The firmware acknowledged a state that is not the one asked for.
 	 * Saying so beats reporting success for a relay that did not move.
 	 */
-	return (on == !!value) ? 0 : -EIO;
+	return (now == !!value) ? 0 : -EIO;
 }
 
 static void ohc_poll(struct work_struct *work)
@@ -402,8 +402,10 @@ static void ohc_poll(struct work_struct *work)
 					     struct ohc_iomcu, poll_work);
 	u32 mask;
 
-	if (!ohc_contacts_get(mcu, &mask))
+	if (!ohc_contacts_get(mcu, &mask)) {
 		mcu->contact_mask = mask;
+		mcu->contacts_valid = true;
+	}
 
 	if (poll_ms > 0)
 		schedule_delayed_work(&mcu->poll_work, msecs_to_jiffies(poll_ms));
@@ -506,20 +508,25 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
 	 * next one starts or the line goes quiet. Length says how much payload
 	 * to expect, so check for a whole frame on every chunk.
 	 */
-	if (mcu->state == RX_BODY && mcu->body_len >= 6) {
+	while (mcu->state == RX_BODY && mcu->body_len >= 6) {
 		int want = 5 + (((int)mcu->body[3] << 8) | mcu->body[4]) + 1;
+		int saved;
 
-		if (mcu->body_len >= want) {
-			int saved = mcu->body_len;
+		if (want < 6 || mcu->body_len < want)
+			break;
 
-			mcu->body_len = want;
-			ohc_frame_complete(mcu);
-			mcu->body_len = saved - want;
-			if (mcu->body_len > 0)
-				memmove(mcu->body, mcu->body + want, mcu->body_len);
-			else
-				mcu->body_len = 0;
-		}
+		saved = mcu->body_len;
+		mcu->body_len = want;
+		ohc_frame_complete(mcu);
+
+		/*
+		 * Loop rather than return: a reply and an unsolicited IR capture
+		 * can land in the same read, and completing only the first would
+		 * leave the second stuck until the next byte happened to arrive.
+		 */
+		mcu->body_len = saved - want;
+		if (mcu->body_len > 0)
+			memmove(mcu->body, mcu->body + want, mcu->body_len);
 	}
 }
 
