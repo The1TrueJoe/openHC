@@ -49,7 +49,13 @@ def crc16_arc(data: bytes) -> int:
 def build_header(name: str, version: str) -> bytes:
     stamp = datetime.datetime.now().strftime("DATE: %-m/%-d/%Y %-I:%M:%S %p")
     h = bytearray()
-    h += bytes([0x00, len(name)]) + name.encode() + b"\xff\xff"
+    # NUL after the name, then the 0xFF separator. Every field in the stock
+    # header is NUL-terminated and an earlier version of this dropped it here
+    # only — which produced a name running straight into the 0xFF padding. If
+    # the bootloader reads this as a C string that is a buffer overrun waiting
+    # to happen, and it costs one byte to match the vendor exactly:
+    #   stock: 00 0c "IR_Processor" 00 ff ff
+    h += bytes([0x00, len(name)]) + name.encode() + b"\x00\xff\xff"
     h += b"Copyright openHC\x00\xff\xff"
     h += b"FWVERS:\x00" + version.encode() + b"\x00\xff\xff"
     h += stamp.encode() + b"\x00"
