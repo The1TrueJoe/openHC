@@ -11,6 +11,37 @@
 #   disarm    restore the stock menu.lst                   (writes sda1)
 #   unstage   remove our kernel+initrd from sda3           (writes sda3)
 #
+# ── BEFORE YOU USE THIS AT ALL: TRY KEXEC INSTEAD ─────────────────────────
+#
+# This tool edits the bootloader. There is a way to boot an openHC kernel that
+# edits NOTHING, and it should be the first thing tried.
+#
+# The vendor kernel is built CONFIG_KEXEC=y, and a static i686 kexec-tools
+# (CI: .github/workflows/tools.yml -> artifact `kexec-i686-static`) runs on the
+# stock OS 3.x userspace. Staging the kernel in tmpfs and kexec'ing it touches
+# NO partition: sda1 is never written, menu.lst is never edited, and factory
+# recovery is not merely preserved but never approached. Failure costs a power
+# cycle back into a completely unmodified box.
+#
+# TESTED as far as it can be without rebooting — on 2026-09-08 the 64-bit
+# openHC bzImage loaded cleanly from the 32-bit vendor kernel
+# (kexec_loaded 0 -> 1 -> 0, exit 0), which was the real open question.
+#
+#   cat kexec-i686-static | ssh root@<ip> 'cat > /tmp/kexec; chmod +x /tmp/kexec'
+#   cat openhc-bzImage    | ssh root@<ip> 'cat > /tmp/ohc-bzImage'
+#   cat openhc-initrd.gz  | ssh root@<ip> 'cat > /tmp/ohc-initrd.gz'
+#   ssh root@<ip> '/tmp/kexec -l /tmp/ohc-bzImage --initrd=/tmp/ohc-initrd.gz \
+#                    --append="console=ttyS0,115200"'
+#   ssh root@<ip> 'cat /sys/kernel/kexec_loaded'    # must read 1
+#   # ...watch ttyS0, THEN the point of no return:
+#   ssh root@<ip> '/tmp/kexec -e'
+#
+# `kexec -u` unloads at any point before `-e`. /tmp is 32 MB of tmpfs and
+# kernel+initrd is ~19 MB, so it fits with little to spare.
+#
+# USE THIS TOOL INSTEAD when you want openHC to SURVIVE a reboot — a kexec'd
+# kernel does not persist, so the next power cycle returns to the vendor image.
+#
 # ── READ THIS BEFORE `arm` ────────────────────────────────────────────────
 #
 # ARM WITH A HAND ON THE POWER, and read the four layers below first.
