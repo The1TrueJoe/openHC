@@ -387,6 +387,32 @@ open. And leave `FRAMEBUFFER_CONSOLE` **off**: fbcon clears the framebuffer when
 it takes the surface, which is what ate the EA's first splash.
 :::
 
+### The output that does work, and how openHC drives it
+
+The THS8200 is configured, in-kernel, at every vendor boot — and the vendor
+driver exposes its live register state at `/proc/driver/ths8200/dump`. Reading
+that off a working unit gives a **known-good 720p60 register set that was never
+reconstructed from a datasheet**, and every timing in it cross-checks against
+CEA-861 exactly:
+
+| register | value | decodes to | 720p60 |
+|---|---|---|---|
+| `DTG1_TOT_PIXELS` | `0x06,0x72` | htotal 1650 | 1650 |
+| `DTG1_FRAME_SZ` | `0x27,0xee` | vtotal 750 | 750 |
+| `DTG1_SPEC_A` | `0x28` | hsync 40 | 40 |
+| `DTG1_SPEC_B` | `0x6e` | hfront 110 | 110 |
+| `VERSION` | `0x04` | the chip answering | — |
+
+That agreement is what makes the capture trustworthy: it validates both the dump
+and mainline's GPL `ths8200_regs.h`, independently.
+
+All 138 registers are in `board/hc800/video/ths8200-720p60.regs`, and
+`packages/ohc-ths8200` replays them over `/dev/i2c-6` at boot (`S47video`). The
+tool reads `VERSION` first and refuses to write unless it reads `0x04`, so a
+wrong bus or address costs a message rather than 138 stray writes into whatever
+else answers. The register values are data, not compiled in — re-capturing from
+hardware does not mean rebuilding the image.
+
 ### It costs almost nothing to use
 
 Measured on the live unit, writing a full 1280x720x32 frame to `/dev/fb0`:
