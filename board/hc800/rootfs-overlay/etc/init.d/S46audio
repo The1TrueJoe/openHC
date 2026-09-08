@@ -50,7 +50,16 @@ case "${1:-start}" in
         set_one Master     "$LEVEL"
         set_one Front      "$LEVEL"
         set_one Headphone  "$LEVEL"
-        set_one Line       "$LEVEL"        # 0x1a capture path
+
+        # NOT `Line`. That control is the line INPUT's analog passthrough to the
+        # outputs, not an output level — unmuting it at 70% pipes whatever is on
+        # the rear line-in jack straight to the speakers, which is a surprise at
+        # best and a feedback loop at worst.
+        #
+        # Checked against the vendor image on a live unit, which deliberately
+        # leaves it at 0% and muted while holding Master/Front/Headphone at 100%.
+        # Capture level belongs to whatever is doing the capturing.
+        amixer -c "$CARD" -q sset Line 0% mute >/dev/null 2>&1 && printf "Line=muted " 
         # IEC958 is the S/PDIF switch, not a volume — it takes on/off only, and
         # there are TWO digital outs behind it on this board (coax 0x1e and the
         # internal HDMI 0x11), which is why the codec exposes four PCMs.
