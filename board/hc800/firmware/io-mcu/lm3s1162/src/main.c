@@ -181,6 +181,14 @@ static void on_frame(const ohc_frame *f, void *user)
             }
 #endif
         }
+        /* Two bytes, and the encoding is NOT yet decoded. A live HC-800 with
+         * its stock firmware answers RELAY_GET with `ff 00`, which cannot be a
+         * plain "bit N = relay N energised" map on a four-relay board — that
+         * would read 0x0f at most. Candidates: active-low, a present/valid
+         * mask, or an uninitialised sentinel. Do not guess: we report what we
+         * are tracking, which is honest about a firmware that drives no pins
+         * yet (OHC_RELAY_PINS_KNOWN is 0), and the decode stays an open item.
+         * Shorting a contact and toggling a relay on a live unit settles it. */
         uint8_t st[2] = { (uint8_t)(relay_state & 0xFFu), 0 };
         send_frame(OHC_OP_RELAY_STATE, f->seq, OHC_FLAG_RESPONSE, st, sizeof st);
         break;
@@ -223,7 +231,19 @@ static void on_frame(const ohc_frame *f, void *user)
     }
 
     case OHC_OP_AUTO_BAUD_GET: {
-        static const uint8_t r[4] = { 0x00, 0x07, 0x00, 0x00 };
+        /* The payload is a 32-BIT BIG-ENDIAN BAUD RATE. This is not what the
+         * protocol notes used to say — they read the EA's reply as "00 07 then
+         * a 16-bit measured carrier period", because 460800 happens to encode
+         * as 00 07 08 00 and the leading 00 07 looks like a header.
+         *
+         * A live HC-800 settles it: it answers 00 01 c2 07 = 115207, which is
+         * 0.006% off the nominal 115200 — a MEASUREMENT, not a constant, and
+         * meaningless as a "carrier period". Read the EA's the same way and
+         * 00 07 08 00 is exactly 460800.
+         *
+         * We do not measure, so we report the rate we were configured for. */
+        uint8_t r[4];
+        put_be32(r, OHC_HOST_BAUD);
         send_frame(OHC_OP_AUTO_BAUD_RESP, f->seq, OHC_FLAG_RESPONSE, r, sizeof r);
         break;
     }
@@ -259,8 +279,9 @@ int main(void)
             uint8_t b = (uint8_t)c;
             if (b == 0x55u) {
                 if (++sync_run >= 2u) {
+                    uint8_t r[4];
                     sync_run = 0;
-                    static const uint8_t r[4] = { 0x00, 0x07, 0x00, 0x00 };
+                    put_be32(r, OHC_HOST_BAUD);   /* BE32 baud — see the handler */
                     send_frame(OHC_OP_AUTO_BAUD_RESP, 0, OHC_FLAG_RESPONSE, r, sizeof r);
                 }
                 continue;

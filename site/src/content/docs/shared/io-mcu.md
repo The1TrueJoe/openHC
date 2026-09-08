@@ -112,7 +112,54 @@ answering**:
 | `0x56` | `0x55` | `00 00` | RELAY_TOGGLE / STATE_GET |
 | `0x74` | `0x75` | `00 00 00 00` | CONTACT_GET (u32 bitmask) |
 | `0xa1` | `0xa4` | `01` | UART_SEND → READY_FOR_DATA |
-| `0xd2` | `0xd7` | `00 07 <u16>` | AUTO_BAUD_GET (the u16 varies per sync — a timing measurement) |
+| `0xd2` | `0xd7` | `<u32 BE baud>` | AUTO_BAUD_GET — see below; NOT `00 07` + a u16 |
+
+#### AUTO_BAUD_GET returns a 32-bit baud rate
+
+This row was read wrong for a long time, and the HC-800 is what exposed it. The
+EA's four payload bytes are `00 07 08 00`, which invites the reading "`00 07`,
+then a 16-bit measurement" — and that is what this page used to say.
+
+It is one **32-bit big-endian integer**, and it is the baud rate:
+
+```
+EA1/EA3   00 07 08 00  =  460800   exactly the link rate
+HC-800    00 01 c2 07  =  115207   the link rate, MEASURED (nominal 115200)
+```
+
+The HC-800 is the giveaway: 115207 is 0.006% off nominal, so it is a measurement
+rather than a constant — and it is meaningless as a "carrier period", while
+being obviously right as a baud. Read the EA's the same way and `00 07 08 00`
+lands exactly on its 460800. The leading `00 07` was never a header; it is the
+top half of the number.
+
+Captured from a live HC-800 with `ioserver` suspended:
+
+```
+--> 10 02 d2 13 00 00 00 1b        AUTO_BAUD_GET
+<-- 10 02 d7 13 02 00 04 00 01 c2 07 46
+```
+
+Note also that this is the one opcode where **the reply is not request+1**:
+`0xd2` answers `0xd7`, not `0xd3`.
+
+#### RELAY_GET's two bytes are not decoded
+
+The same session asked a live HC-800 — a board with **four** relays — and got:
+
+```
+--> 10 02 54 11 00 00 00 9b        RELAY_GET
+<-- 10 02 55 11 02 00 02 ff 00 97
+```
+
+`ff 00`. That cannot be a plain "bit N = relay N energised" map, which would
+read `0x0f` at most on four relays. Active-low, a present/valid mask, and an
+uninitialised sentinel are all live candidates. Settling it needs a unit whose
+relays can safely be toggled and watched, so openHC's LM3S firmware reports what
+it is tracking rather than guessing an encoding.
+
+`CONTACT_GET` in the same capture returned `00 00 00 00` — a u32 bitmask with
+every contact open, exactly as documented above and confirming that half.
 
 **`CAPABILITIES_GET` (0x94) isn't implemented**, nor are `IR_PIN_STATE_GET`
 (0x12), `IR_MODE_GET` (0x42) or `IROUT_STATUS` (0x68) as queries, tried with both
