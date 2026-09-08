@@ -129,7 +129,10 @@ impl Bus {
     }
 
     fn send(&self, msg: Msg) {
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        // Pre-increment, so the counter always holds the LAST seq assigned and
+        // the first real message is 1. `snapshot` depends on that: it must be
+        // able to name a position without consuming one.
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         // Err just means nobody is listening.
         let _ = self.tx.send(Envelope { seq, ts: now(), msg });
     }
@@ -155,9 +158,20 @@ impl Bus {
         self.send(Msg::Event { topic: topic.to_string(), data });
     }
 
-    /// The current state document as a message, for a client that just arrived.
+    /// The current state document, for a client that just arrived.
+    ///
+    /// Its `seq` is the last sequence number REFLECTED in the document, not a
+    /// new one. A snapshot goes to a single socket, so consuming a global
+    /// sequence number would punch a gap in every other client's stream — and a
+    /// gap is exactly what those numbers exist to make detectable. A client can
+    /// therefore expect strictly increasing seq across the snapshot and
+    /// everything after it; 0 means nothing has been published yet.
     pub fn snapshot(&self) -> Envelope {
-        Envelope { seq: self.seq.load(Ordering::Relaxed), ts: now(), msg: Msg::Snapshot { state: self.state.doc() } }
+        Envelope {
+            seq: self.seq.load(Ordering::Relaxed),
+            ts: now(),
+            msg: Msg::Snapshot { state: self.state.doc() },
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Envelope> {
@@ -217,6 +231,22 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 2, "duplicate writes must not publish: {seen:?}");
+    }
+
+    #[test]
+    fn snapshot_seq_does_not_collide_with_the_next_message() {
+        let bus = Bus::new();
+        // Nothing published: the snapshot names position 0, and the first real
+        // message must be 1 so a client sees a strictly increasing stream.
+        assert_eq!(bus.snapshot().seq, 0);
+        let mut rx = bus.subscribe();
+        bus.set("relay/0", serde_json::json!(true));
+        assert_eq!(rx.try_recv().unwrap().seq, 1);
+        // And a snapshot taken now reports the last seq it reflects, not the
+        // next one to be handed out.
+        assert_eq!(bus.snapshot().seq, 1);
+        bus.set("relay/0", serde_json::json!(false));
+        assert_eq!(rx.try_recv().unwrap().seq, 2);
     }
 
     #[test]

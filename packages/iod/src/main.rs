@@ -51,6 +51,11 @@ pub struct Config {
 async fn poller(cfg: Arc<Config>) {
     use std::time::Duration;
     let n = cfg.board.io.contacts;
+    // Relays are read ONCE here rather than every cycle. iod is the only thing
+    // that can change one, so the mirror stays true without four extra MCU
+    // round-trips five times a second — but it has to be seeded, or a client
+    // that connects before anybody touches a relay is shown nothing at all.
+    let mut relays_known = false;
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let Some(l) = &cfg.link else { return };
@@ -67,6 +72,21 @@ async fn poller(cfg: Arc<Config>) {
         match contacts {
             Ok(mask) => {
                 cfg.bus.set("mcu/link", serde_json::json!(true));
+                // Seed on the first successful poll, and again after the link
+                // comes back: while it was down a relay could have been changed
+                // by something we could not see, so the mirror is a guess until
+                // it is re-read.
+                if !relays_known && cfg.board.io.relays > 0 {
+                    if let Some(l) = &cfg.link {
+                        let r = { l.lock().await.relays(cfg.board.io.relays) };
+                        if let Ok(on) = r {
+                            for (i, v) in on.iter().enumerate() {
+                                cfg.bus.set(&format!("relay/{i}"), serde_json::json!(v));
+                            }
+                            relays_known = true;
+                        }
+                    }
+                }
                 // Contact position is state: `set` publishes only on a real
                 // change, so five polls a second do not become five messages.
                 for i in 0..n {
@@ -75,7 +95,10 @@ async fn poller(cfg: Arc<Config>) {
             }
             // Every other reading is meaningless while this is false, which is
             // exactly why it is worth its own piece of state.
-            Err(_) => cfg.bus.set("mcu/link", serde_json::json!(false)),
+            Err(_) => {
+                cfg.bus.set("mcu/link", serde_json::json!(false));
+                relays_known = false;
+            }
         }
 
         for f in strays {
@@ -164,6 +187,13 @@ fn main() {
         // Poll the contacts so clients can be told when one CHANGES. The MCU
         // has no unsolicited notify, so somebody has to poll; doing it once
         // here beats every client doing it separately over the same UART.
+        // The configured line rates, so the GUI shows a port's baud before
+        // anybody opens a terminal on it.
+        for (i, p) in cfg.board.io.serials.iter().enumerate() {
+            cfg.bus.set(&format!("serial/{i}/baud"), serde_json::json!(p.baud));
+            cfg.bus.set(&format!("serial/{i}/viewers"), serde_json::json!(0));
+        }
+
         if cfg.link.is_some() {
             // Ask the MCU to report IR it receives. Without this the receiver
             // is deaf and no ir/rx event can ever fire.
