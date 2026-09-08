@@ -2,7 +2,7 @@
 title: Secondary firmware
 description: The auxiliary processors beside the main SoC, and how the tree is organised around them.
 sidebar:
-  order: 4
+  order: 5
 ---
 
 The main SoC isn't the only processor on these boards. Each controller carries
