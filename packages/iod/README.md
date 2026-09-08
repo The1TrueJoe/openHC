@@ -12,7 +12,8 @@ Extender and a CA-1 is `/opt/ohc/board.env` and nothing else.
 ## State and events are different things
 
 This distinction runs through the whole API, and getting it wrong is the classic
-control-system integration bug.
+control-system integration bug. It is also exactly what MQTT's retained flag
+means, which is why the topic map falls out of it for free.
 
 **State** is what the box currently *is* — relay 2 is closed, contact 1 is made,
 the MCU link is up. It has a value at every instant, a new client must be told it
@@ -31,8 +32,8 @@ missed them. These stream, and are never retained.
 | examples | `relay/0`, `contact/0`, `mcu/link`, `serial/0/baud`, `serial/0/viewers` | `ir/rx`, `serial/0/rx` |
 | on connect | snapshot | nothing |
 | duplicates | suppressed — a delta means a real change | never suppressed |
-| over MQTT | retained | not retained |
-| subscription | always delivered | opt-in |
+| retained | yes | no |
+| a late subscriber | is told immediately | has missed it |
 
 Events are opt-in because they are not small: pushing a chatty projector's byte
 stream at a page that only wanted contact changes is a waste. State always
@@ -40,150 +41,113 @@ flows, because a client holding a stale mirror is actively wrong.
 
 ## Reaching it
 
-`:7070` directly, or — from a browser — through webd's proxy on the port the
-page was served from: `/iod/api/…` and `/iod/ws/…`. The GUI uses the proxy so
-it needs exactly ONE port reachable. A page on :80 that fetches :7070 requires
-both to be open from wherever the operator is sitting, and a single restrictive
-network turns the whole config UI into an error card while the box is fine.
+IO control is **MQTT**, and only MQTT. iod serves its own topics — there is no
+broker to install:
 
-Everything below works identically on either path.
+* **browser** — `ws://<host>/mqtt`, proxied by webd from the port the page was
+  served on. mqtt.js on the other end. One open port for the whole GUI.
+* **anything else** — plain MQTT on `:1883`, or point iod at your existing
+  broker and subscribe there.
 
-## The control socket — `ws://host:7070/ws/control`
+Those are the same topics in all three cases. A relay closed from the config
+GUI, from Home Assistant, or from `mosquitto_pub` is the same publication.
 
-The primary surface. Commands, state and events on one connection. This is what
-the GUI's panels use and what an external control system should use.
+REST keeps what MQTT is bad at, on `:7070` (or `/iod/…` through webd):
 
-On connect you are sent the state document:
+```
+GET  /api/health            never authenticated
+GET  /api/io                what the board HAS — needed before you know the topics
+GET  /api/io/mcu            part, firmware version, measured baud
+GET  /api/config            MQTT settings, minus the password
+POST /api/config            change them; the connection restarts, no reboot
+```
+
+Configuration lives on REST deliberately: editing your own transport over that
+transport is a good way to lose a controller.
+
+## Topics
+
+`<prefix>/<id>/…`, where prefix defaults to `openhc` and id to the hostname.
+
+```
+<base>/status              online | offline    retained, last will
+<base>/state/relay/0       ON | OFF            retained
+<base>/state/contact/0     ON | OFF            retained
+<base>/state/mcu/link      ON | OFF            retained
+<base>/state/serial/0/baud 115200              retained
+<base>/state/serial/0/viewers                  retained
+<base>/event/ir/rx         {"pronto":"…"}      NOT retained
+<base>/event/serial/0/rx   {"b64":"…"}         NOT retained
+<base>/error               {"code":…,"message":…}
+<base>/cmd/relay/0/set     <- ON | OFF | TOGGLE
+<base>/cmd/ir/0/send       <- pronto hex
+<base>/cmd/serial/0/write  <- bytes
+<base>/cmd/serial/0/baud   <- 115200
+<base>/cmd/raw             <- any command, as JSON
+```
+
+Command payloads are the plain strings an automation tool sends, because half
+of what publishes here will be a Home Assistant switch or a one-line shell
+script. `cmd/raw` takes the full JSON form for everything else:
 
 ```json
-{"seq":41,"ts":1757370000.5,"type":"snapshot",
- "state":{"relay":{"0":false,"1":true},"contact":{"0":false},
-          "mcu":{"link":true},"serial":{"0":{"baud":115200,"viewers":1}}}}
+{"op":"serial.write","index":0,"data":"PWR ON\r"}
 ```
 
-Then deltas as things change:
+Subscribing IS the snapshot — state is retained, so a page loaded an hour after
+the last change still renders the truth with no separate "give me everything"
+round trip.
 
-```json
-{"seq":42,"ts":1757370012.1,"type":"state","path":"relay/0","value":true}
-```
+`relay/N/set` is **idempotent**. The IO microcontroller has no set opcode, only
+`TOGGLE` and `GET`, so iod reads first and toggles only on a mismatch. Toggle is
+not idempotent: a retained message replayed on a broker reconnect, or an
+automation that fires twice, would otherwise leave the relay inverted.
 
-Subscribe to the events you want; filters use MQTT's rules (`#`, a trailing
-`/#`, or a bare prefix matching its own subtree):
+## Serving, bridging, or both
 
-```json
-{"op":"subscribe","topics":["ir/rx","serial/0/rx"]}
-```
-```json
-{"seq":43,"ts":1757370033.9,"type":"event","topic":"ir/rx",
- "data":{"pronto":"0000 006d 0022 0002 …","bytes":68}}
-```
+Two independent switches:
 
-Commands carry an `id`, echoed on the reply, so several can be in flight:
+* **serve** — carry the topics here. The config GUI needs this; it is on by
+  default and the settings page says plainly what turning it off costs.
+* **bridge** — also connect out to somebody else's broker.
 
-```json
-{"id":7,"op":"relay.set","index":1,"on":true}
-{"id":7,"ok":true,"result":{"index":1,"on":true}}
-```
-```json
-{"id":8,"ok":false,"error":{"code":"bad_request","status":400,
-                            "message":"relay 9 does not exist (0..3)"}}
-```
-
-`seq` is monotonic across the whole stream. If you fall behind, you are told —
-and resent the snapshot — rather than silently losing a relay change:
-
-```json
-{"type":"lagged","missed":12}
-```
-
-### Commands
-
-| `op` | arguments | notes |
-|---|---|---|
-| `capabilities` | | what this board has; sections are absent when the count is zero |
-| `state.get` | | the mirror, served from memory |
-| `mcu.info` | | part, firmware version, measured baud |
-| `contact.get` | | forces a read rather than using the mirror |
-| `relay.get` | | |
-| `relay.set` | `index`, `on` | **idempotent** — see below |
-| `relay.toggle` | `index` | |
-| `ir.send` | `port`, `pronto`, `repeat` | Pronto type `0000` only; durations are carrier periods |
-| `serial.list` | | ports and the bauds iod accepts |
-| `serial.baud` | `index`, `baud` | applies to the shared session — every viewer moves together |
-| `serial.write` | `index`, `data`, `hex?`, `b64?` | write without holding a terminal open |
-| `subscribe` / `unsubscribe` | `topics` | socket-level; events only |
-| `ping` | | |
-
-`relay.set` matters more than it looks. The IO microcontroller has no *set*
-opcode, only `TOGGLE` and `GET`, so iod reads first and toggles only on a
-mismatch. Toggle is not idempotent: a retained MQTT message replayed when a
-broker reconnects, or an automation that fires twice, would otherwise leave the
-relay inverted.
-
-## The terminal socket — `ws://host:7070/ws/serial/{index}`
-
-Raw bytes, because a console stream is not JSON. It attaches to the **same
-shared session** the control socket reports on: iod opens each port once, and
-every viewer sees the same stream and can type into it. Two installers on one
-console see each other's keystrokes — which is what makes it a shared console
-rather than two people fighting over a cable. Joining replays recent scrollback,
-so arriving mid-session does not mean staring at a blank screen.
-
-`serial/{n}/viewers` in the state mirror is how the UI says somebody else is here.
-
-## REST
-
-The same commands, one per request, for scripts and curl. It cannot deliver
-events, so anything reactive wants the socket.
-
-```
-GET  /api/health                     (never authenticated)
-GET  /api/io                         capabilities
-GET  /api/state
-GET  /api/io/mcu
-GET  /api/io/contacts
-GET  /api/io/relays
-POST /api/io/relays/set              {"index":1,"on":true}
-POST /api/io/relays/toggle           {"index":1}
-POST /api/io/ir/{port}/send          {"pronto":"0000 …","repeat":1}
-GET  /api/io/serial
-POST /api/io/serial/{index}/baud     {"baud":9600}
-POST /api/io/serial/{index}/write    {"data":"hello\r"}
-```
-
-## MQTT
-
-A bridge, not the core — a browser cannot speak raw MQTT and a controller has to
-work with no broker on the network. Configure it in `/etc/openhc/iod.conf`.
-
-```
-<prefix>/<id>/status              online | offline   retained, last will
-<prefix>/<id>/state/relay/0       ON | OFF           retained
-<prefix>/<id>/state/contact/0     ON | OFF           retained
-<prefix>/<id>/event/ir/rx         {"pronto":"…"}     not retained
-<prefix>/<id>/event/serial/0/rx   {"b64":"…"}        not retained
-<prefix>/<id>/cmd/relay/0/set     <- ON | OFF | TOGGLE
-<prefix>/<id>/cmd/ir/0/send       <- pronto hex
-<prefix>/<id>/cmd/serial/0/write  <- bytes
-<prefix>/<id>/cmd/serial/0/baud   <- 115200
-<prefix>/<id>/cmd/raw             <- any control-socket command, as JSON
-```
-
-Command payloads are the plain strings an automation tool sends, because half of
-what publishes here will be a Home Assistant switch or a one-line shell script.
-`cmd/raw` is the escape hatch for everything else.
+Independent on purpose. If the GUI depended on the house broker, a broker that
+was down or misconfigured would take out the very screen you would use to fix
+it.
 
 `mqtts://` uses rustls with the **ring** provider — chosen over rustls's default
 because that one needs CMake and a cross C toolchain, and this workspace links
 with `rust-lld` precisely so it needs neither. A private or self-signed broker
-**must** set `IOD_MQTT_CA`: a minimal firmware image ships no system trust store,
+**must** set a CA path: a minimal firmware image ships no system trust store,
 and iod refuses to connect rather than skipping verification.
 
 ### Home Assistant
 
-With discovery enabled (the default), the controller appears by itself, relays as
-switches and contacts as binary sensors, no YAML by hand. That is the payoff for
-doing the retained/not-retained split properly.
+With discovery enabled (the default), the controller appears by itself, relays
+as switches and contacts as binary sensors, no YAML by hand. That is the payoff
+for retaining state and not retaining events.
+
+## The serial terminal — `ws://host/iod/ws/serial/{n}`
+
+Raw bytes, and the one thing that is deliberately NOT MQTT. A console is a byte
+stream with backpressure and scrollback; publishing every keystroke and
+base64-ing every chunk would be a worse terminal and no simpler.
+
+iod opens each port once and every viewer shares that session: all of them see
+the same stream, any of them can type, and joining replays recent scrollback so
+arriving mid-session is not a blank screen. `serial/{n}/viewers` is how the UI
+says somebody else is on the same console.
+
+Serial RX is *also* published as an event, so an external system can trigger on
+what a device says without holding a terminal open.
+
+## Settings
+
+`/etc/openhc/iod.json`, written by the GUI's settings page. Environment
+variables from `/etc/openhc/iod.conf` **override** it and are shown in the UI as
+read-only — a fleet provisioned by dropping in a conf file should not find the
+GUI silently disagreeing, and an operator should see why their edit will not
+take rather than watching it vanish on restart.
 
 ## Authentication
 
@@ -192,10 +156,17 @@ a bench with a serial cable and no configuration. Set it on anything reachable
 from a wider network — without it, anything that can route to the box can close
 a relay.
 
-Clients send `Authorization: Bearer <token>`, or `?token=…` on the URL. The
-query form is not a weaker option by choice: the browser WebSocket API cannot
-set request headers. `/api/health` stays open so a monitor can see the daemon is
-up without holding a credential.
+The token is used three ways, because it is one secret for the box rather than
+one per protocol:
+
+* REST — `Authorization: Bearer <token>`
+* WebSockets — `?token=…` on the URL. Not a weaker option by choice: the browser
+  WebSocket API cannot set request headers.
+* MQTT — as the CONNECT password. A client that gets it wrong is refused with
+  `BadUserNamePassword` rather than being quietly ignored.
+
+`/api/health` stays open so a monitor can see the daemon is up without holding
+a credential.
 
 ## Not done yet
 

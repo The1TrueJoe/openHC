@@ -124,11 +124,6 @@ fn one() -> u8 {
     1
 }
 
-/// Bauds the UART driver and the far end can both be expected to agree on.
-/// A free-form integer would let a UI ask for 9601 and get silence.
-pub const BAUDS: [u32; 12] =
-    [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600];
-
 pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
     match cmd {
         Cmd::Capabilities => Ok(capabilities(c)),
@@ -138,7 +133,7 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::RelaySet { index, on } => relay_write(c, index, Some(on)).await,
         Cmd::RelayToggle { index } => relay_write(c, index, None).await,
         Cmd::IrSend { port, pronto, repeat } => ir_send(c, port, &pronto, repeat).await,
-        Cmd::SerialList => Ok(json!({ "serials": c.board.io.serials, "bauds": BAUDS })),
+        Cmd::SerialList => Ok(json!({ "serials": c.board.io.serials })),
         Cmd::StateGet => Ok(c.bus.state.doc()),
         Cmd::SerialBaud { index, baud } => serial_baud(c, index, baud),
         Cmd::SerialWrite { index, data, hex, b64 } => serial_write(c, index, &data, hex, b64),
@@ -177,8 +172,8 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
         m.insert("contacts".into(), json!({ "count": io.contacts }));
     }
     if !io.serials.is_empty() {
+        // Each port carries its own permitted rates; see SerialPort::bauds.
         m.insert("serials".into(), json!(io.serials));
-        m.insert("bauds".into(), json!(BAUDS));
     }
     v
 }
@@ -301,8 +296,21 @@ fn session(c: &Arc<Config>, index: usize) -> Result<std::sync::Arc<crate::serial
 }
 
 fn serial_baud(c: &Arc<Config>, index: usize, baud: u32) -> Out {
-    if !BAUDS.contains(&baud) {
-        return Err(Fault::Bad(format!("unsupported baud {baud}")));
+    // Checked against THIS port's list. A rate a host UART reaches happily may
+    // be one the IO microcontroller cannot be asked for at all.
+    let port = c
+        .board
+        .io
+        .serials
+        .get(index)
+        .ok_or_else(|| Fault::NoSuch(format!("no serial port {index}")))?;
+    if !port.bauds.contains(&baud) {
+        return Err(Fault::Bad(format!(
+            "{baud} is not available on {} ({} transport); supported: {}",
+            port.label,
+            port.transport,
+            port.bauds.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+        )));
     }
     let s = session(c, index)?;
     s.set_baud(baud);

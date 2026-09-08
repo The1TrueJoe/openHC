@@ -27,7 +27,6 @@ export function OverviewPanel({ caps }: { caps: Capabilities }) {
           <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <Row k="Part" v={mcu.part} />
             <Row k="Firmware" v={mcu.version} />
-            <Row k="Product" v={mcu.product} mono />
             <Row
               k="Link"
               v={`${mcu.baud} baud${mcu.measured_baud ? ` · reports ${mcu.measured_baud}` : ''}`}

@@ -32,6 +32,10 @@ export interface SerialPort {
   baud: number;
   /** 'host' — a real tty. 'mcu' — routed through the IO protocol, no device node. */
   transport: 'host' | 'mcu';
+  /** What THIS port will actually run at. Per port, not one global list: a
+   *  host 16550A and a UART reached over the IO microcontroller's protocol do
+   *  not have the same ceiling. */
+  bauds: number[];
 }
 
 /** Exactly what the board has. A section is ABSENT when the count is zero —
@@ -46,7 +50,6 @@ export interface Capabilities {
   relays?: { count: number };
   contacts?: { count: number };
   serials?: SerialPort[];
-  bauds?: number[];
 }
 
 export interface McuInfo {

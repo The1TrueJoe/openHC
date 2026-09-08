@@ -36,6 +36,14 @@ pub struct SerialPort {
     /// `mcu`  — bytes travel over the IO protocol's UART opcodes; there is no
     ///          device node, which is exactly why this distinction exists.
     pub transport: &'static str,
+    /// What this PORT will actually run at.
+    ///
+    /// Per port, not one global list, because the ceiling is a property of what
+    /// is behind the connector. A host 16550A driving an RS-232 transceiver and
+    /// a UART reached over the IO microcontroller's protocol do not have the
+    /// same limits, and offering a rate the hardware cannot reach is offering a
+    /// setting whose only effect is garbage on the wire.
+    pub bauds: Vec<u32>,
 }
 
 #[derive(Serialize, Clone)]
@@ -114,6 +122,27 @@ impl Board {
             _ => Backend::None,
         };
 
+        // Rates a port may be set to. Overridable per transport in board.env,
+        // because these are hardware facts and boards differ.
+        let bauds = |key: &str, fallback: &[u32]| -> Vec<u32> {
+            e.get(key)
+                .map(|s| s.split_whitespace().filter_map(|t| t.parse().ok()).collect::<Vec<u32>>())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| fallback.to_vec())
+        };
+        // The classic RS-232 ladder, and where Control4's own configuration
+        // stops. A 16550A can be divided further, but the line drivers on these
+        // controllers are not specified past 115200 and nothing at the far end
+        // of a serial cable expects to be.
+        let host_bauds = bauds("OHC_SERIAL_BAUDS_HOST",
+            &[1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200]);
+        // MCU-routed ports are more constrained: the rate is set by an opcode
+        // the firmware interprets, not by a divisor we control. This list is
+        // the conservative common set, and is UNVERIFIED against the firmware —
+        // see the note in the EA board.env.
+        let mcu_bauds = bauds("OHC_SERIAL_BAUDS_MCU",
+            &[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]);
+
         // Host UARTs: "dev:label:baud", space separated. Labels use underscores
         // so the field itself stays whitespace-free.
         let mut serials: Vec<SerialPort> = e
@@ -128,6 +157,7 @@ impl Board {
                             label: p.get(1).map(|x| x.replace('_', " ")).unwrap_or_default(),
                             baud: p.get(2).and_then(|x| x.parse().ok()).unwrap_or(115200),
                             transport: "host",
+                            bauds: host_bauds.clone(),
                         }
                     })
                     .collect()
@@ -143,6 +173,7 @@ impl Board {
                 label: format!("Serial {}", i + 1),
                 baud: 115200,
                 transport: "mcu",
+                bauds: mcu_bauds.clone(),
             });
         }
 

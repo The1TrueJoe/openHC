@@ -1,8 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, Terminal, ToggleLeft, AlertTriangle, Settings } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
-import { SerialPanel } from './panels/Serial';
 import { OverviewPanel } from './panels/Overview';
 import { SettingsPanel } from './panels/Settings';
 
@@ -25,11 +24,10 @@ type Dest = { id: string; label: string; icon: typeof Cpu; render: (c: Capabilit
  *  does not appear. */
 function destinations(c: Capabilities): Dest[] {
   const d: Dest[] = [{ id: 'overview', label: 'Overview', icon: Cpu, render: (c) => <OverviewPanel caps={c} /> }];
-  if (c.relays || c.contacts || c.ir) {
+  // Serial lives on the IO page — it IS IO, and a rail entry for it implied
+  // otherwise. The terminal itself opens as a window over that page.
+  if (c.relays || c.contacts || c.ir || c.serials?.length) {
     d.push({ id: 'io', label: 'IO', icon: ToggleLeft, render: (c) => <IoPanel caps={c} /> });
-  }
-  if (c.serials?.length) {
-    d.push({ id: 'serial', label: 'Serial', icon: Terminal, render: (c) => <SerialPanel caps={c} /> });
   }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
