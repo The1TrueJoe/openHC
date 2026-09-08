@@ -48,16 +48,51 @@ jobs:
           rustup target add ${{ matrix.target }}
           rustc --version && cargo --version
 
-      # iod has no UI to embed, so it builds on its own. webd's build.rs wants
-      # ui/dist, which needs npm — kept out of this job so a Rust error is not
-      # hidden behind a frontend build.
-      - name: cargo check — every crate, for ${{ matrix.board }}
+      # Rust first, WITHOUT webd. webd's build.rs embeds ui/dist, so building it
+      # before the UI exists would produce a binary that silently serves the
+      # fallback page — and a Rust error would be buried under a frontend build.
+      # Checking the rest first keeps the two failures separable.
+      - name: cargo check — every crate but webd, for ${{ matrix.board }}
         working-directory: packages
         run: cargo check --workspace --target ${{ matrix.target }} --exclude webd
 
-      - name: Build iod for ${{ matrix.board }}
+      # portal too — it is in the artifact, and `cargo check` would not have
+      # produced a binary for it.
+      - name: Build iod + portal for ${{ matrix.board }}
         working-directory: packages
-        run: cargo build --release -p iod --target ${{ matrix.target }}
+        run: cargo build --release -p iod -p portal --target ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/webd/ui/package-lock.json
+
+      # MUST precede cargo: build.rs reads ui/dist at compile time, and an
+      # absent dist is not an error there — it is a binary with no UI in it.
+      - name: Build the config GUI
+        working-directory: packages/webd/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          test -f dist/index.html || { echo "UI build produced no index.html"; exit 1; }
+          du -sh dist
+
+      - name: Build webd for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo build --release -p webd --target ${{ matrix.target }}
+
+      - name: Confirm the UI really got embedded
+        working-directory: packages
+        run: |
+          f=target/${{ matrix.target }}/release/webd
+          ls -l "$f"
+          # The fallback page ships in every build; the real UI does not. If the
+          # binary has no asset table entry for index.html, build.rs saw no dist.
+          if ! strings "$f" | grep -q "index.html"; then
+            echo "webd has no embedded index.html — build.rs did not see ui/dist"; exit 1
+          fi
+          echo "OK: UI embedded"
 
       - name: What did we get?
         working-directory: packages
@@ -74,7 +109,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: iod-${{ matrix.board }}
-          path: packages/target/${{ matrix.target }}/release/iod
+          name: daemons-${{ matrix.board }}
+          path: |
+            packages/target/${{ matrix.target }}/release/iod
+            packages/target/${{ matrix.target }}/release/webd
+            packages/target/${{ matrix.target }}/release/portal
           retention-days: 14
           if-no-files-found: error
