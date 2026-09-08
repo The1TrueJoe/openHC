@@ -18,12 +18,26 @@ const GPIO_V2_LINE_NUM_ATTRS_MAX: usize = 10;
 
 const GPIO_V2_LINE_FLAG_OUTPUT: u64 = 1 << 1;
 
+// Request numbers are 32-bit bit patterns, but the TYPE of ioctl's second
+// argument is not portable: musl declares it `c_int`, glibc and macOS declare
+// it `c_ulong`. Writing each literal as u32 and casting to the right alias
+// keeps the bits identical either way.
+//
+// Worth spelling out rather than reaching for `libc::Ioctl`, which does not
+// exist off Linux and so breaks `cargo check` on the machine these are written
+// on. This is the class of bug the host build cannot catch at all — the targets
+// disagree with each other AND with the host.
+#[cfg(target_env = "musl")]
+type Req = libc::c_int;
+#[cfg(not(target_env = "musl"))]
+type Req = libc::c_ulong;
+
 // _IOR(0xB4, 0x01, struct gpiochip_info)
-const GPIO_GET_CHIPINFO_IOCTL: libc::c_ulong = 0x8044b401;
+const GPIO_GET_CHIPINFO_IOCTL: Req = 0x8044_b401_u32 as Req;
 // _IOWR(0xB4, 0x07, struct gpio_v2_line_request)
-const GPIO_V2_GET_LINE_IOCTL: libc::c_ulong = 0xc250b407;
+const GPIO_V2_GET_LINE_IOCTL: Req = 0xc250_b407_u32 as Req;
 // _IOWR(0xB4, 0x0f, struct gpio_v2_line_values)
-const GPIO_V2_LINE_SET_VALUES_IOCTL: libc::c_ulong = 0xc010b40f;
+const GPIO_V2_LINE_SET_VALUES_IOCTL: Req = 0xc010_b40f_u32 as Req;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
