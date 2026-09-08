@@ -1,0 +1,80 @@
+# Cross-build the openHC userspace daemons for every board target.
+#
+# These are the SERVICES in packages/ — iod (the IO server), webd (the config
+# GUI it is a client of), portal, and the wifi lib they share. They are Rust,
+# static musl, and staged into the rootfs overlay rather than built by
+# Buildroot, so nothing else in CI compiles them.
+#
+# Why this exists: the maintainer's Mac has only Homebrew's cargo, which has no
+# cross std for any of these targets, so `cargo check` locally only ever proves
+# the code compiles for macOS. That is a weak check for a daemon whose serial
+# layer is libc termios — B460800 does not even exist on Darwin. CI is the only
+# place these are compiled for what they actually run on.
+
+name: daemons
+
+on:
+  push:
+    paths: &daemon-paths
+      - 'packages/**'
+      - '.github/workflows/daemons.yml'
+  pull_request:
+    paths: *daemon-paths
+  workflow_dispatch:
+
+concurrency:
+  group: daemons-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: hc800
+            target: x86_64-unknown-linux-musl
+          - board: ea1
+            target: i686-unknown-linux-musl
+          - board: ca1
+            target: armv7-unknown-linux-musleabihf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the target's std
+        run: |
+          rustup target add ${{ matrix.target }}
+          rustc --version && cargo --version
+
+      # iod has no UI to embed, so it builds on its own. webd's build.rs wants
+      # ui/dist, which needs npm — kept out of this job so a Rust error is not
+      # hidden behind a frontend build.
+      - name: cargo check — every crate, for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo check --workspace --target ${{ matrix.target }} --exclude webd
+
+      - name: Build iod for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo build --release -p iod --target ${{ matrix.target }}
+
+      - name: What did we get?
+        working-directory: packages
+        run: |
+          f=target/${{ matrix.target }}/release/iod
+          ls -l "$f"
+          file "$f"
+          # Static musl: it has to run on a rootfs that may have no loader at
+          # all beyond busybox, so a NEEDED entry here is a bug, not a detail.
+          if command -v readelf >/dev/null && readelf -d "$f" 2>/dev/null | grep -q NEEDED; then
+            echo "iod is dynamically linked — expected a static musl binary"; exit 1
+          fi
+          echo "OK: static"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iod-${{ matrix.board }}
+          path: packages/target/${{ matrix.target }}/release/iod
+          retention-days: 14
+          if-no-files-found: error

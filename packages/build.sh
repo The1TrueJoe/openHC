@@ -15,6 +15,10 @@ REPO="$(cd "$HERE/.." && pwd)"
 case "$BOARD" in
   ca1)          TARGET=armv7-unknown-linux-musleabihf ;;
   ea1|ea3|ea5)  TARGET=i686-unknown-linux-musl ;;
+  # The HC-800 is the one 64-bit board: openHC builds it x86_64 even though
+  # Control4 shipped a 32-bit kernel on the same silicon.
+  hc800)        TARGET=x86_64-unknown-linux-musl ;;
+  ioxv1)        TARGET=armv5te-unknown-linux-musleabi ;;
   *) echo "build.sh: unknown board '$BOARD'"; exit 1 ;;
 esac
 
@@ -36,12 +40,12 @@ export RUSTC="$(dirname "$CARGO")/rustc"
 echo ">> UI (must build before cargo — build.rs embeds ui/dist)"
 ( cd "$HERE/webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )
 
-echo ">> webd + portal for $BOARD ($TARGET)"
-( cd "$HERE" && "$CARGO" build --release -p webd -p portal --target "$TARGET" )
+echo ">> iod + webd + portal for $BOARD ($TARGET)"
+( cd "$HERE" && "$CARGO" build --release -p iod -p webd -p portal --target "$TARGET" )
 
 DEST="$REPO/board/common/rootfs-overlay/opt/ohc/bin"
 mkdir -p "$DEST"
-for bin in webd portal; do
+for bin in iod webd portal; do
     install -m 0755 "$HERE/target/$TARGET/release/$bin" "$DEST/$bin"
     echo ">> staged $DEST/$bin ($(du -h "$DEST/$bin" | cut -f1))"
 done

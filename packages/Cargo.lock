@@ -347,6 +347,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iod"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -404,36 +416,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "portal"
-version = "0.1.0"
-dependencies = [
- "axum",
- "wifi",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "webd"
-version = "0.1.0"
-dependencies = [
- "axum",
- "flate2",
- "futures-util",
- "libc",
- "wifi",
- "serde",
- "serde_json",
- "tokio",
- "tower-http",
-]
-
-[[package]]
-name = "wifi"
-version = "0.1.0"
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -450,6 +432,17 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "portal"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wifi",
+]
 
 [[package]]
 name = "ppv-lite86"
@@ -849,6 +842,25 @@ checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
 dependencies = [
  "wit-bindgen",
 ]
+
+[[package]]
+name = "webd"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "flate2",
+ "futures-util",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "wifi",
+]
+
+[[package]]
+name = "wifi"
+version = "0.1.0"
 
 [[package]]
 name = "windows-link"
