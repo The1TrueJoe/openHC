@@ -152,8 +152,37 @@ cmd_stage() {
     need=$(( $(wc -c < "/tmp/$KERNEL") + $(wc -c < "/tmp/$INITRD") ))
     free=$(( $(df -k "$P3" | tail -1 | awk '{print $4}') * 1024 ))
     [ "$free" -gt "$need" ] || { unmount_all; die "sda3 has $free bytes free, need $need"; }
+    # Fingerprint what we must NOT disturb, before touching anything. sda3 is
+    # also where the VENDOR kernel lives, and the currently-default boot entry
+    # loads it from here — so a botched write to this partition costs the normal
+    # boot, not just ours. Proving it is byte-identical afterwards is cheap.
+    vend_before=$(md5sum "$P3/boot/bzImage-3.16.38-8.260.24" 2>/dev/null | cut -d" " -f1)
+    menu_before=$(md5sum "$MENU" 2>/dev/null | cut -d" " -f1)
+
     cp "/tmp/$KERNEL" "$P3/boot/$KERNEL" || { unmount_all; die "copy failed"; }
     cp "/tmp/$INITRD" "$P3/boot/$INITRD" || { unmount_all; die "copy failed"; }
+    sync
+
+    # Verify the copies rather than trusting cp's exit status: a short write on
+    # a nearly-full filesystem returns 0 from cp on some busybox builds, and a
+    # truncated kernel is a boot that dies with no useful message.
+    for f in "$KERNEL" "$INITRD"; do
+        a=$(md5sum "/tmp/$f" | cut -d" " -f1)
+        b=$(md5sum "$P3/boot/$f" | cut -d" " -f1)
+        if [ "$a" != "$b" ]; then
+            rm -f "$P3/boot/$f"; finish_write
+            die "$f did not copy intact ($a != $b) — removed the bad copy"
+        fi
+        echo "  $f  md5 $a  OK"
+    done
+
+    vend_after=$(md5sum "$P3/boot/bzImage-3.16.38-8.260.24" 2>/dev/null | cut -d" " -f1)
+    menu_after=$(md5sum "$MENU" 2>/dev/null | cut -d" " -f1)
+    [ "$vend_before" = "$vend_after" ] || { finish_write; die "VENDOR KERNEL CHANGED — stop and investigate"; }
+    [ "$menu_before" = "$menu_after" ] || { finish_write; die "menu.lst CHANGED during stage — stop and investigate"; }
+    echo "  vendor kernel unchanged ($vend_after)"
+    echo "  menu.lst unchanged      ($menu_after)"
+
     finish_write
     echo "staged. Nothing boots differently yet — menu.lst is untouched."
 }
