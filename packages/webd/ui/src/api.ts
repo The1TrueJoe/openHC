@@ -1,22 +1,22 @@
-// The client for iod's control socket.
+// The client: MQTT for IO, REST for everything else.
 //
-// One socket carries three things: a mirror of everything the box currently IS,
-// a stream of things that HAPPEN, and commands with correlation ids. That is
-// deliberately not three connections — a UI that polls `/api/io/relays` shows a
-// relay somebody else just closed as still open until the next poll, and two
-// installers on the same page then disagree about the hardware.
+// IO control is MQTT and only MQTT. The topics this page publishes and
+// subscribes to are byte-for-byte the ones Home Assistant or a Node-RED flow
+// would use, so there is one set of semantics to document and one to get right
+// — rather than a bespoke browser protocol kept in step with the MQTT one
+// forever.
 //
-// webd serves this page on :80 and answers system/network questions; iod owns
-// every IO on the controller and answers on :7070. Separate processes on
-// purpose — one owner for a UART that can only answer one question at a time.
+// REST keeps what MQTT is bad at: what the board IS (needed before you know
+// which topics exist) and how it is CONFIGURED (editing your own transport over
+// that transport is a good way to lose a controller).
+//
+// Everything is same-origin. webd proxies both `/iod/*` and `/mqtt` through to
+// the IO server, so the whole GUI needs exactly one port reachable — the one it
+// was served from.
+import mqtt, { type MqttClient } from 'mqtt';
 
-// Same origin, always. webd proxies /iod through to the IO server, so this
-// page needs exactly ONE port reachable — whichever one it was itself served
-// from. Talking straight to iod's :7070 would mean a second port had to be open
-// from wherever the operator is sitting, and one restrictive network turns the
-// whole config GUI into an error card while the controller is perfectly fine.
-export const IOD = `${location.origin}/iod`;
-const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/iod`;
+const HTTP = `${location.origin}/iod`;
+const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
  *  protected controller can be opened with ?token=… without a login screen the
@@ -54,12 +54,40 @@ export interface McuInfo {
   baud: number;
   product: string;
   version: string;
-  /** What the MCU says it measured, which is a useful link check: an HC-800
-   *  reports ~115207 against a nominal 115200. */
+  /** What the MCU says it measured, a useful link check: an HC-800 reports
+   *  ~115207 against a nominal 115200. */
   measured_baud: number | null;
 }
 
-/** The mirrored state tree, exactly as iod publishes it. */
+export interface MqttConfig {
+  serve: boolean;
+  listen_port: number;
+  bridge: boolean;
+  url: string;
+  username: string;
+  password_set: boolean;
+  ca_path: string;
+  client_cert_path: string;
+  client_key_path: string;
+  prefix: string;
+  client_id: string;
+  discovery: string;
+}
+
+/** What the settings form may WRITE. `password_set` is read-only status, and
+ *  `password` only ever travels in this direction — the daemon never sends a
+ *  stored secret back to a page load. */
+export type MqttWrite = Partial<Omit<MqttConfig, 'password_set'>> & { password?: string };
+
+export interface ConfigDoc {
+  mqtt: MqttConfig;
+  /** Fields pinned by the environment. The UI shows these read-only rather
+   *  than accepting an edit that a restart would silently discard. */
+  pinned: string[];
+  topics: { base: string };
+}
+
+/** The mirrored state, exactly as the retained topics describe it. */
 export interface IoState {
   relay?: Record<string, boolean>;
   contact?: Record<string, boolean>;
@@ -67,90 +95,127 @@ export interface IoState {
   serial?: Record<string, { baud?: number; viewers?: number }>;
 }
 
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
+async function j<T>(url: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(auth(url), init);
+  if (!r.ok) {
+    let detail = `${r.status}`;
+    try { const b = await r.json(); if (b?.error) detail = b.error; } catch { /* not json */ }
+    throw new Error(detail);
+  }
+  return r.json();
+}
 
-export class Control {
+export const rest = {
+  capabilities: () => j<Capabilities>(`${HTTP}/api/io`),
+  mcu: () => j<McuInfo>(`${HTTP}/api/io/mcu`),
+  config: () => j<ConfigDoc>(`${HTTP}/api/config`),
+  saveConfig: (mqtt: MqttWrite) =>
+    j<{ ok: boolean }>(`${HTTP}/api/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mqtt }),
+    }),
+};
+
+/** `ON`/`OFF` become booleans, digits become numbers, everything else stays a
+ *  string. iod publishes scalars bare so a shell script can read them without
+ *  a JSON parser; this is the other half of that bargain. */
+function decode(raw: string): boolean | number | string {
+  if (raw === 'ON') return true;
+  if (raw === 'OFF') return false;
+  if (raw !== '' && !Number.isNaN(Number(raw))) return Number(raw);
+  return raw;
+}
+
+export class Io {
   state: IoState = {};
   connected = false;
+  base = '';
+  lastError: string | null = null;
 
-  #ws: WebSocket | null = null;
-  #id = 0;
-  #pending = new Map<number, Pending>();
-  #topics = new Set<string>();
+  #c: MqttClient | null = null;
   #onChange = new Set<() => void>();
   #onEvent = new Set<(topic: string, data: any) => void>();
-  #retry: number | null = null;
 
-  /** Re-render hook. Every state delta calls these. */
+  /** Re-render hook; every retained or live state message calls these. */
   watch(fn: () => void) {
     this.#onChange.add(fn);
     return () => this.#onChange.delete(fn);
   }
-  /** Events, which are not state: serial bytes, IR received. */
+  /** Events, which are not state: IR received, serial bytes. `topic` is the
+   *  part after `<base>/event/`. */
   onEvent(fn: (topic: string, data: any) => void) {
     this.#onEvent.add(fn);
     return () => this.#onEvent.delete(fn);
   }
 
-  open() {
-    if (this.#ws) return;
-    const ws = new WebSocket(auth(`${WS}/ws/control`));
-    this.#ws = ws;
+  connect(base: string) {
+    if (this.#c) return;
+    this.base = base;
+    const c = mqtt.connect(WS, {
+      protocolVersion: 4,
+      // The API token doubles as the MQTT password: one secret for the box.
+      password: token || undefined,
+      username: token ? 'openhc' : undefined,
+      reconnectPeriod: 2000,
+      clean: true,
+    });
+    this.#c = c;
 
-    ws.onopen = () => {
+    c.on('connect', () => {
       this.connected = true;
-      // Re-subscribe: a reconnected socket is a NEW subscription state on the
-      // server, and silently losing the serial feed after a blip is the kind of
-      // bug that looks like broken hardware.
-      if (this.#topics.size) ws.send(JSON.stringify({ op: 'subscribe', topics: [...this.#topics] }));
+      // State is retained, so subscribing IS the snapshot — no separate
+      // "give me everything" round trip, and a page loaded an hour after the
+      // last change still renders the truth.
+      c.subscribe([`${base}/state/#`, `${base}/status`, `${base}/error`]);
       this.#changed();
-    };
+    });
+    c.on('close', () => { this.connected = false; this.#changed(); });
+    c.on('error', (e) => { this.lastError = String(e?.message ?? e); this.#changed(); });
 
-    ws.onmessage = (m) => {
-      let msg: any;
-      try { msg = JSON.parse(m.data); } catch { return; }
-
-      // A command reply, matched by the id we sent.
-      if (msg.id != null && this.#pending.has(msg.id)) {
-        const p = this.#pending.get(msg.id)!;
-        this.#pending.delete(msg.id);
-        msg.ok ? p.resolve(msg.result) : p.reject(new Error(msg.error?.message ?? 'command failed'));
+    c.on('message', (topic, payload) => {
+      const body = payload.toString();
+      if (topic === `${base}/error`) {
+        try { this.lastError = JSON.parse(body).message ?? body; } catch { this.lastError = body; }
+        this.#changed();
         return;
       }
-
-      switch (msg.type) {
-        case 'snapshot':
-          this.state = msg.state ?? {};
-          this.#changed();
-          break;
-        case 'state':
-          this.#apply(msg.path, msg.value);
-          this.#changed();
-          break;
-        case 'event':
-          this.#onEvent.forEach((f) => f(msg.topic, msg.data));
-          break;
-        // We fell behind and the bus dropped messages for us. iod resends the
-        // snapshot straight after, so there is nothing to do but not pretend
-        // the mirror was continuous.
-        case 'lagged':
-          break;
+      const state = topic.startsWith(`${base}/state/`) && topic.slice(base.length + 7);
+      if (state) {
+        this.#apply(state, decode(body));
+        this.#changed();
+        return;
       }
-    };
-
-    const down = () => {
-      this.connected = false;
-      this.#ws = null;
-      this.#pending.forEach((p) => p.reject(new Error('socket closed')));
-      this.#pending.clear();
-      this.#changed();
-      // Reconnect: a controller reboot, or webd restarting, should not require
-      // the installer to reload the page from a ladder.
-      if (this.#retry == null) this.#retry = window.setTimeout(() => { this.#retry = null; this.open(); }, 1500);
-    };
-    ws.onclose = down;
-    ws.onerror = () => ws.close();
+      const ev = topic.startsWith(`${base}/event/`) && topic.slice(base.length + 7);
+      if (ev) {
+        let data: any = body;
+        try { data = JSON.parse(body); } catch { /* not json */ }
+        this.#onEvent.forEach((f) => f(ev, data));
+      }
+    });
   }
+
+  /** Events are opt-in. Subscribing every open page to a chatty serial port's
+   *  byte stream would be a waste; state is small and always wanted. */
+  subscribeEvents(...topics: string[]) {
+    const full = topics.map((t) => `${this.base}/event/${t}`);
+    this.#c?.subscribe(full);
+    return () => this.#c?.unsubscribe(full);
+  }
+
+  #publish(tail: string, body: string) {
+    if (!this.#c?.connected) throw new Error('not connected to the IO server');
+    this.lastError = null;
+    this.#c.publish(`${this.base}/cmd/${tail}`, body);
+  }
+
+  // Commands. Fire-and-forget by design: the answer is not a return value, it
+  // is the retained state topic changing — which every other open page sees too.
+  relaySet = (i: number, on: boolean) => this.#publish(`relay/${i}/set`, on ? 'ON' : 'OFF');
+  relayToggle = (i: number) => this.#publish(`relay/${i}/set`, 'TOGGLE');
+  sendIr = (port: number, pronto: string) => this.#publish(`ir/${port}/send`, pronto);
+  setBaud = (i: number, baud: number) => this.#publish(`serial/${i}/baud`, String(baud));
+  serialWrite = (i: number, data: string) => this.#publish(`serial/${i}/write`, data);
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {
@@ -159,59 +224,17 @@ export class Control {
     for (const p of parts.slice(0, -1)) cur = cur[p] ??= {};
     cur[parts[parts.length - 1]] = value;
   }
-
   #changed() {
     // Replace the object so React sees a new reference.
     this.state = { ...this.state };
     this.#onChange.forEach((f) => f());
   }
-
-  /** Issue a command and wait for its reply. */
-  send<T = any>(body: Record<string, unknown>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const ws = this.#ws;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error('not connected'));
-      const id = ++this.#id;
-      this.#pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ id, ...body }));
-    });
-  }
-
-  /** Events are opt-in; state always flows. Subscribing to a chatty serial
-   *  port should be a decision, not the default for every open page. */
-  subscribe(...topics: string[]) {
-    topics.forEach((t) => this.#topics.add(t));
-    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ op: 'subscribe', topics }));
-    return () => this.unsubscribe(...topics);
-  }
-  unsubscribe(...topics: string[]) {
-    topics.forEach((t) => this.#topics.delete(t));
-    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ op: 'unsubscribe', topics }));
-  }
-
-  // Typed shorthands for what the panels actually do.
-  capabilities = () => this.send<Capabilities>({ op: 'capabilities' });
-  mcu = () => this.send<McuInfo>({ op: 'mcu.info' });
-  relaySet = (index: number, on: boolean) => this.send({ op: 'relay.set', index, on });
-  relayToggle = (index: number) => this.send({ op: 'relay.toggle', index });
-  sendIr = (port: number, pronto: string, repeat = 1) => this.send({ op: 'ir.send', port, pronto, repeat });
-  setBaud = (index: number, baud: number) => this.send({ op: 'serial.baud', index, baud });
 }
 
-export const control = new Control();
+export const io = new Io();
 
-/** The terminal socket: raw bytes, because a console stream is not JSON.
- *  It attaches to the same shared session the control socket reports on, so
- *  every viewer of a port sees the same stream. */
-export const serialSocket = (index: number) => new WebSocket(auth(`${WS}/ws/serial/${index}`));
-
-/** REST, for the one thing that happens before the socket is up. */
-export async function fetchCapabilities(): Promise<Capabilities> {
-  const r = await fetch(auth(`${IOD}/api/io`));
-  if (!r.ok) {
-    let detail = `${r.status}`;
-    try { const b = await r.json(); if (b?.error) detail = b.error; } catch { /* not json */ }
-    throw new Error(detail);
-  }
-  return r.json();
-}
+/** The terminal socket: raw bytes, because a console is a byte stream with
+ *  backpressure and scrollback, none of which pub/sub does well. It attaches to
+ *  the shared session iod reports on, so every viewer sees the same stream. */
+export const serialSocket = (index: number) =>
+  new WebSocket(auth(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/iod/ws/serial/${index}`));

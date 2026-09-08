@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Users } from 'lucide-react';
-import { control, serialSocket, type Capabilities } from '../api';
+import { io, serialSocket, type Capabilities } from '../api';
 import { useIoState } from '../App';
 
 /** Bauds iod will accept. Sent in the capabilities so the list cannot drift
@@ -133,10 +133,10 @@ function Term({
     };
   }, [index]);
 
-  async function changeBaud(next: number) {
+  function changeBaud(next: number) {
     setNote(null);
     try {
-      await control.setBaud(index, next);
+      io.setBaud(index, next);
       // Every viewer moves together — the session is shared, so a console at
       // two different bauds is not a thing that can exist. iod announces the
       // reopen on the stream itself, which is why nothing is printed here.

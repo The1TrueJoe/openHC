@@ -179,39 +179,9 @@ impl Bus {
     }
 }
 
-/// Does `topic` match subscription `filter`?
-///
-/// `#` matches everything, a trailing `/#` matches a subtree, and a bare
-/// prefix matches its own subtree — MQTT's rules, because half the consumers
-/// of this will be MQTT-shaped anyway and inventing a second syntax helps
-/// nobody.
-pub fn matches(filter: &str, topic: &str) -> bool {
-    if filter == "#" {
-        return true;
-    }
-    if let Some(base) = filter.strip_suffix("/#").or_else(|| filter.strip_suffix('#')) {
-        let base = base.trim_end_matches('/');
-        return topic == base || topic.starts_with(&format!("{base}/"));
-    }
-    topic == filter || topic.starts_with(&format!("{filter}/"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn filters_match_subtrees_not_prefixes() {
-        assert!(matches("#", "anything/at/all"));
-        assert!(matches("serial/0/rx", "serial/0/rx"));
-        assert!(matches("serial", "serial/0/rx"));
-        assert!(matches("serial/#", "serial/0/rx"));
-        assert!(matches("ir", "ir/rx"));
-        // A filter must not match a topic that merely starts with the same
-        // letters: subscribing to port 1 should not deliver port 10.
-        assert!(!matches("serial/1", "serial/10/rx"));
-        assert!(!matches("ir", "irrelevant/thing"));
-    }
 
     #[test]
     fn state_deltas_only_fire_on_change() {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Zap, CircleDot, Circle, Radio } from 'lucide-react';
-import { control, type Capabilities } from '../api';
+import { io, type Capabilities } from '../api';
 import { useIoState } from '../App';
 
 export function IoPanel({ caps }: { caps: Capabilities }) {
@@ -13,17 +13,19 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
 
   const linkUp = state.mcu?.link !== false;
 
-  async function setRelay(i: number, on: boolean) {
+  function setRelay(i: number, on: boolean) {
     setBusy(i);
     setNote(null);
     try {
       // set, not toggle: the UI knows what it wants the relay to BE. Toggle
       // from a stale view closes a relay that somebody else just closed.
-      await control.relaySet(i, on);
+      io.relaySet(i, on);
     } catch (e) {
       setNote(String((e as Error).message));
     } finally {
-      setBusy(null);
+      // Publishing is fire-and-forget: the answer arrives as the retained
+      // relay topic changing, which every other open page sees too.
+      setTimeout(() => setBusy(null), 150);
     }
   }
 
@@ -115,18 +117,18 @@ function IrSection({ caps }: { caps: Capabilities }) {
   // system would trigger automations from.
   useEffect(() => {
     if (!caps.ir?.receiver) return;
-    const off = control.subscribe('ir/rx');
-    const un = control.onEvent((topic, data) => {
+    const off = io.subscribeEvents('ir/rx');
+    const un = io.onEvent((topic: string, data: any) => {
       if (topic !== 'ir/rx') return;
       setHeard((p) => [{ pronto: data.pronto, at: new Date().toLocaleTimeString() }, ...p].slice(0, 6));
     });
     return () => { off(); un(); };
   }, [caps.ir?.receiver]);
 
-  async function send() {
+  function send() {
     setNote(null);
     try {
-      await control.sendIr(port, pronto.trim());
+      io.sendIr(port, pronto.trim());
       setNote('sent');
     } catch (e) {
       setNote(String((e as Error).message));

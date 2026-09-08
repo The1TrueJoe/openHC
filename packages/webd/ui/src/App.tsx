@@ -1,9 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, Terminal, ToggleLeft, AlertTriangle } from 'lucide-react';
-import { control, fetchCapabilities, type Capabilities, type IoState } from './api';
+import { Cpu, Terminal, ToggleLeft, AlertTriangle, Settings } from 'lucide-react';
+import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { SerialPanel } from './panels/Serial';
 import { OverviewPanel } from './panels/Overview';
+import { SettingsPanel } from './panels/Settings';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -11,8 +12,8 @@ import { OverviewPanel } from './panels/Overview';
  *  of the relay states to keep in step. */
 export function useIoState(): IoState {
   return useSyncExternalStore(
-    (cb) => control.watch(cb),
-    () => control.state,
+    (cb) => io.watch(cb),
+    () => io.state,
   );
 }
 
@@ -30,6 +31,9 @@ function destinations(c: Capabilities): Dest[] {
   if (c.serials?.length) {
     d.push({ id: 'serial', label: 'Serial', icon: Terminal, render: (c) => <SerialPanel caps={c} /> });
   }
+  // Always present: this is where you point the controller at a house broker,
+  // and it must be reachable even when the IO side is not working.
+  d.push({ id: 'settings', label: 'Settings', icon: Settings, render: () => <SettingsPanel /> });
   return d;
 }
 
@@ -39,10 +43,14 @@ export default function App() {
   const [at, setAt] = useState('overview');
 
   useEffect(() => {
-    // REST once for the board's shape — it never changes while running — then
-    // the socket for everything that does.
-    fetchCapabilities().then(setCaps).catch((e) => setErr(String(e.message ?? e)));
-    control.open();
+    // REST first, for two things MQTT cannot supply: the board's shape, and
+    // the topic root to subscribe under. Only then does the IO client connect.
+    Promise.all([rest.capabilities(), rest.config()])
+      .then(([caps, cfg]) => {
+        setCaps(caps);
+        io.connect(cfg.topics.base);
+      })
+      .catch((e: unknown) => setErr(String((e as Error).message ?? e)));
   }, []);
 
   if (err) {

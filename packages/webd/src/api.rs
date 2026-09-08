@@ -39,6 +39,9 @@ pub fn router(cfg: Arc<Config>) -> Router {
         // Everything the IO server owns, on this origin. See proxy.rs for why
         // the GUI must not be asked to reach a second port itself.
         .route("/iod/{*rest}", any(crate::proxy::handler))
+        // IO control is MQTT, and the browser speaks it here. Same origin as
+        // the page, so one open port is enough for the whole GUI.
+        .route("/mqtt", any(crate::proxy::handler))
         .fallback(fallback)
         .layer(CompressionLayer::new())
         .with_state(cfg)

@@ -35,7 +35,10 @@ fn upstream() -> String {
 pub async fn handler(mut req: Request) -> Response {
     let addr = upstream();
 
-    // Strip the mount point: /iod/api/io upstream is /api/io.
+    // Strip the mount point: /iod/api/io upstream is /api/io. `/mqtt` is
+    // mounted at the same path upstream, so it passes through untouched — the
+    // browser's MQTT client connects to ws://<this host>/mqtt and never learns
+    // that iod is a separate process on another port.
     let path = req.uri().path();
     let rest = path.strip_prefix("/iod").unwrap_or(path);
     let rest = if rest.is_empty() { "/" } else { rest };

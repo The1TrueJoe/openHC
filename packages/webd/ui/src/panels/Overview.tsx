@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { control, type Capabilities, type McuInfo } from '../api';
+import { rest, type Capabilities, type McuInfo } from '../api';
 
 export function OverviewPanel({ caps }: { caps: Capabilities }) {
   const [mcu, setMcu] = useState<McuInfo | null>(null);
   useEffect(() => {
-    if (caps.backend === 'mcu' && caps.mcu_linked) control.mcu().then(setMcu).catch(() => {});
+    if (caps.backend === 'mcu' && caps.mcu_linked) rest.mcu().then(setMcu).catch(() => {});
   }, [caps]);
 
   return (

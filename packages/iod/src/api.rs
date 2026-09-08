@@ -1,15 +1,19 @@
-//! The wire surfaces. All three of them are adapters over [`crate::ops`].
+//! The HTTP surfaces — deliberately NOT where IO control lives.
 //!
-//! * `/ws/control` — the real one. Commands, state and events on a single
-//!   socket. This is what webd's panels use and what an external control system
-//!   should use: connect once, get a state snapshot, subscribe to the events you
-//!   care about, issue commands with correlation ids.
-//! * REST — the same commands, one per request, for scripts and curl. Stateless
-//!   and convenient; it cannot deliver events, so anything reactive wants the
-//!   socket instead.
-//! * `/ws/serial/{n}` — raw bytes for a terminal. Not a separate implementation:
-//!   it attaches to the same shared session the control socket reports on.
-use crate::events::{matches, Msg};
+//! IO control is MQTT, and only MQTT: `/mqtt` here is an MQTT-over-WebSocket
+//! endpoint for the browser, and it speaks exactly the topics an external
+//! broker sees. One set of semantics for the config GUI, Home Assistant, a
+//! Node-RED flow and a shell script — rather than a bespoke JSON protocol that
+//! has to be kept in step with the MQTT one forever.
+//!
+//! What is left over HTTP is what MQTT is bad at:
+//!
+//! * **what the board IS** — `/api/io` capabilities. A client needs this before
+//!   it knows which topics exist, so it cannot itself arrive over those topics.
+//! * **configuration** — `/api/config`, including the broker settings. Editing
+//!   your own transport over that transport is a bad way to lose a controller.
+//! * **the serial terminal** — `/ws/serial/{n}`, raw bytes. A console is a byte
+//!   stream with backpressure and scrollback, none of which pub/sub does well.
 use crate::ops::{self, Cmd, Fault};
 use crate::Config;
 use axum::{
@@ -19,34 +23,26 @@ use axum::{
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
 
 type Ctx = State<Arc<Config>>;
 
 pub fn router(cfg: Arc<Config>) -> Router {
     Router::new()
-        // The primary surface.
-        .route("/ws/control", get(ws_control))
-        // A terminal wants bytes, not JSON.
+        // IO control: MQTT over a WebSocket, for the browser.
+        .route("/mqtt", get(ws_mqtt))
+        // A terminal wants bytes, not packets.
         .route("/ws/serial/{index}", get(ws_serial))
-        // REST, for everything that is a one-shot question.
+        // What the board is, and how it is configured.
         .route("/api/health", get(health))
         .route("/api/io", get(|s: Ctx| run(s, Cmd::Capabilities)))
-        .route("/api/state", get(|s: Ctx| run(s, Cmd::StateGet)))
         .route("/api/io/mcu", get(|s: Ctx| run(s, Cmd::McuInfo)))
-        .route("/api/io/contacts", get(|s: Ctx| run(s, Cmd::ContactGet)))
-        .route("/api/io/relays", get(|s: Ctx| run(s, Cmd::RelayGet)))
-        .route("/api/io/relays/set", post(relay_set))
-        .route("/api/io/relays/toggle", post(relay_toggle))
-        .route("/api/io/ir/{port}/send", post(ir_send))
-        .route("/api/io/serial", get(|s: Ctx| run(s, Cmd::SerialList)))
-        .route("/api/io/serial/{index}/baud", post(serial_baud))
-        .route("/api/io/serial/{index}/write", post(serial_write))
+        .route("/api/config", get(get_config).post(put_config))
         .layer(axum::middleware::from_fn(cors))
         .layer(axum::middleware::from_fn(auth))
         .with_state(cfg)
@@ -117,7 +113,7 @@ async fn auth(req: axum::extract::Request, next: axum::middleware::Next) -> axum
 
 /// Compare without an early return, so the time taken does not reveal how much
 /// of a guessed token was right.
-fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -146,188 +142,167 @@ async fn run(State(c): Ctx, cmd: Cmd) -> axum::response::Response {
     }
 }
 
-#[derive(Deserialize)]
-struct RelaySetReq {
-    /// Relay index, 0-based. Not a mask: the protocol addresses one relay at a
-    /// time and answers with that relay's state, so an API taking a mask could
-    /// not report back what it had done.
-    index: u8,
-    on: bool,
-}
-#[derive(Deserialize)]
-struct RelayIdx {
-    index: u8,
-}
-#[derive(Deserialize)]
-struct IrSendReq {
-    pronto: String,
-    #[serde(default = "one")]
-    repeat: u8,
-}
-fn one() -> u8 {
-    1
-}
-#[derive(Deserialize)]
-struct BaudReq {
-    baud: u32,
-}
-#[derive(Deserialize)]
-struct WriteReq {
-    data: String,
-    #[serde(default)]
-    hex: bool,
-    #[serde(default)]
-    b64: bool,
+// ── IO control: MQTT over WebSocket ────────────────────────────────────────
+
+/// The browser's transport to iod's MQTT endpoint.
+///
+/// mqtt.js on the other end; the same packets a plain-TCP client sends, just
+/// carried in binary WebSocket frames. Sub-protocol negotiation is answered
+/// because browsers offer `mqtt` and some clients refuse a server that does not
+/// echo it back.
+async fn ws_mqtt(State(c): Ctx, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.protocols(["mqtt", "mqttv3.1"]).on_upgrade(move |sock| mqtt_ws_loop(c, sock))
 }
 
-async fn relay_set(s: Ctx, Json(r): Json<RelaySetReq>) -> axum::response::Response {
-    run(s, Cmd::RelaySet { index: r.index, on: r.on }).await
-}
-async fn relay_toggle(s: Ctx, Json(r): Json<RelayIdx>) -> axum::response::Response {
-    run(s, Cmd::RelayToggle { index: r.index }).await
-}
-async fn ir_send(s: Ctx, Path(port): Path<u8>, Json(r): Json<IrSendReq>) -> axum::response::Response {
-    run(s, Cmd::IrSend { port, pronto: r.pronto, repeat: r.repeat }).await
-}
-async fn serial_baud(s: Ctx, Path(index): Path<usize>, Json(r): Json<BaudReq>) -> axum::response::Response {
-    run(s, Cmd::SerialBaud { index, baud: r.baud }).await
-}
-async fn serial_write(s: Ctx, Path(index): Path<usize>, Json(r): Json<WriteReq>) -> axum::response::Response {
-    run(s, Cmd::SerialWrite { index, data: r.data, hex: r.hex, b64: r.b64 }).await
-}
-
-// ── the control socket ─────────────────────────────────────────────────────
-
-/// A frame from a client. Either a socket-level instruction or a command.
-#[derive(Deserialize)]
-struct Incoming {
-    /// Echoed back on the reply so a client can have several in flight.
-    #[serde(default)]
-    id: Option<Value>,
-    #[serde(flatten)]
-    body: Value,
-}
-
-async fn ws_control(State(c): Ctx, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |sock| control_loop(c, sock))
-}
-
-async fn control_loop(c: Arc<Config>, mut sock: WebSocket) {
-    let mut rx = c.bus.subscribe();
-    // Event subscriptions, empty by default.
-    //
-    // State is different and always flows: it is small, everyone needs it, and
-    // a client holding a stale mirror is actively wrong. Events are opt-in
-    // because they are not — the byte stream of a chatty projector must not be
-    // pushed at a client that only wanted to know about contacts.
-    let mut filters: Vec<String> = Vec::new();
-
-    // Open with the state document so the client starts from truth rather than
-    // guessing until something changes — which for a quiet contact can be hours.
-    if let Ok(t) = serde_json::to_string(&c.bus.snapshot()) {
-        if sock.send(Message::Text(t.into())).await.is_err() {
-            return;
-        }
+async fn mqtt_ws_loop(c: Arc<Config>, sock: WebSocket) {
+    use futures_util::{SinkExt, StreamExt};
+    let m = c.settings.lock().map(|s| s.mqtt.clone()).unwrap_or_default();
+    if !m.serve {
+        return;
     }
+    let (mut ws_tx, mut ws_rx) = sock.split();
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel::<rumqttc::Packet>(64);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<rumqttc::Packet>(256);
 
-    loop {
-        tokio::select! {
-            ev = rx.recv() => match ev {
-                Ok(env) => {
-                    let deliver = match &env.msg {
-                        // State and snapshots always go.
-                        Msg::State { .. } | Msg::Snapshot { .. } => true,
-                        Msg::Event { topic, .. } => filters.iter().any(|f| matches(f, topic)),
-                    };
-                    if !deliver { continue }
-                    let Ok(t) = serde_json::to_string(&env) else { continue };
-                    if sock.send(Message::Text(t.into())).await.is_err() {
-                        return; // client went away
+    // Packets out to the browser.
+    tokio::spawn(async move {
+        while let Some(p) = out_rx.recv().await {
+            let Some(bytes) = crate::mqtt::server::encode(&p) else { continue };
+            if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                return;
+            }
+        }
+    });
+    // Packets in. A WebSocket frame boundary has nothing to do with a packet
+    // boundary, so the bytes are reassembled before being decoded.
+    tokio::spawn(async move {
+        let mut framer = crate::mqtt::server::Framer::new();
+        while let Some(Ok(msg)) = ws_rx.next().await {
+            let bytes = match msg {
+                Message::Binary(b) => b.to_vec(),
+                Message::Text(t) => t.as_bytes().to_vec(),
+                Message::Close(_) => return,
+                _ => continue,
+            };
+            framer.feed(&bytes);
+            loop {
+                match framer.next() {
+                    Ok(Some(p)) => {
+                        if in_tx.send(p).await.is_err() {
+                            return;
+                        }
                     }
-                }
-                // This client fell behind and the bus dropped the oldest for
-                // it. Say so explicitly and resend the state document: a
-                // control system that silently missed a relay change would act
-                // on a stale mirror, which is worse than a visible gap.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    let _ = sock.send(Message::Text(
-                        json!({ "type": "lagged", "missed": n }).to_string().into())).await;
-                    if let Ok(t) = serde_json::to_string(&c.bus.snapshot()) {
-                        if sock.send(Message::Text(t.into())).await.is_err() { return }
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("iod/mqttd: bad packet from a browser: {e}");
+                        return;
                     }
-                }
-                Err(_) => return,
-            },
-            msg = sock.recv() => {
-                let text = match msg {
-                    Some(Ok(Message::Text(t))) => t.to_string(),
-                    Some(Ok(Message::Binary(b))) => String::from_utf8_lossy(&b).to_string(),
-                    Some(Ok(_)) => continue,
-                    _ => return,
-                };
-                let reply = handle_frame(&c, &text, &mut filters).await;
-                if let Some(r) = reply {
-                    if sock.send(Message::Text(r.to_string().into())).await.is_err() { return }
                 }
             }
         }
-    }
+    });
+
+    crate::mqtt::server::session(c, m, in_rx, out_tx, "browser".into()).await;
 }
 
-/// One client frame. Returns the reply to send, if any.
-async fn handle_frame(c: &Arc<Config>, text: &str, filters: &mut Vec<String>) -> Option<Value> {
-    let inc: Incoming = match serde_json::from_str(text) {
-        Ok(v) => v,
-        Err(e) => return Some(json!({ "ok": false, "error": { "code": "bad_json", "message": e.to_string() } })),
-    };
-    let id = inc.id.clone();
-    let op = inc.body.get("op").and_then(|v| v.as_str()).unwrap_or("");
+// ── configuration ──────────────────────────────────────────────────────────
 
-    // Socket-level operations, handled here because they are about THIS
-    // connection rather than about the hardware.
-    let socket_level = match op {
-        "subscribe" => {
-            let topics = topics_of(&inc.body);
-            for t in topics {
-                if !filters.contains(&t) {
-                    filters.push(t);
-                }
-            }
-            Some(json!({ "subscribed": filters.clone() }))
-        }
-        "unsubscribe" => {
-            let topics = topics_of(&inc.body);
-            filters.retain(|f| !topics.contains(f));
-            Some(json!({ "subscribed": filters.clone() }))
-        }
-        "ping" => Some(json!({ "pong": true })),
-        _ => None,
-    };
-    if let Some(result) = socket_level {
-        return Some(json!({ "id": id, "ok": true, "result": result }));
-    }
-
-    let cmd: Cmd = match serde_json::from_value(inc.body) {
-        Ok(c) => c,
-        Err(e) => {
-            return Some(json!({ "id": id, "ok": false,
-                "error": { "code": "bad_request", "message": e.to_string() } }))
-        }
-    };
-    match ops::dispatch(c, cmd).await {
-        Ok(v) => Some(json!({ "id": id, "ok": true, "result": v })),
-        Err(f) => Some(json!({ "id": id, "ok": false,
-            "error": { "code": f.code(), "status": f.status(), "message": f.to_string() } })),
-    }
+/// Settings, minus anything secret.
+///
+/// The password is never sent back. A GUI does not need it to render a settings
+/// form — it needs to know whether one is SET — and echoing a broker credential
+/// to every page load is a needless way to leak it.
+async fn get_config(State(c): Ctx) -> impl IntoResponse {
+    let s = c.settings.lock().unwrap();
+    let m = &s.mqtt;
+    Json(json!({
+        "mqtt": {
+            "serve": m.serve,
+            "listen_port": m.listen_port,
+            "bridge": m.bridge,
+            "url": m.url,
+            "username": m.username,
+            "password_set": !m.password.is_empty(),
+            "ca_path": m.ca_path,
+            "client_cert_path": m.client_cert_path,
+            "client_key_path": m.client_key_path,
+            "prefix": m.prefix,
+            "client_id": m.client_id,
+            "discovery": m.discovery,
+        },
+        // Set in the environment, so the UI shows them as read-only instead of
+        // accepting an edit that would be silently overridden on restart.
+        "pinned": c.pinned,
+        "topics": {
+            "base": crate::mqtt::topics::base(&m.prefix, &m.client_id),
+        },
+    }))
 }
 
-/// `topics` as a list, or `topic` as a single string. Both spellings appear in
-/// the wild and rejecting one is a pointless way to fail.
-fn topics_of(body: &Value) -> Vec<String> {
-    if let Some(a) = body.get("topics").and_then(|v| v.as_array()) {
-        return a.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+#[derive(Deserialize)]
+struct ConfigReq {
+    mqtt: serde_json::Value,
+}
+
+async fn put_config(State(c): Ctx, Json(req): Json<ConfigReq>) -> axum::response::Response {
+    let mut next = {
+        let s = c.settings.lock().unwrap();
+        s.mqtt.clone()
+    };
+    // Merge field by field rather than deserialising the whole struct, so a
+    // client that omits `password` keeps the stored one instead of blanking it.
+    let o = match req.mqtt.as_object() {
+        Some(o) => o,
+        None => return fault_response(Fault::Bad("mqtt must be an object".into())),
+    };
+    let s_of = |k: &str| o.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    if let Some(v) = o.get("serve").and_then(|v| v.as_bool()) { next.serve = v }
+    if let Some(v) = o.get("bridge").and_then(|v| v.as_bool()) { next.bridge = v }
+    if let Some(v) = o.get("listen_port").and_then(|v| v.as_u64()) {
+        if v > u16::MAX as u64 {
+            return fault_response(Fault::Bad("listen_port out of range".into()));
+        }
+        next.listen_port = v as u16;
     }
-    body.get("topic").and_then(|v| v.as_str()).map(|s| vec![s.to_string()]).unwrap_or_default()
+    if let Some(v) = s_of("url") { next.url = v }
+    if let Some(v) = s_of("username") { next.username = v }
+    if let Some(v) = s_of("password") { next.password = v }
+    if let Some(v) = s_of("ca_path") { next.ca_path = v }
+    if let Some(v) = s_of("client_cert_path") { next.client_cert_path = v }
+    if let Some(v) = s_of("client_key_path") { next.client_key_path = v }
+    if let Some(v) = s_of("discovery") { next.discovery = v }
+    if let Some(v) = s_of("prefix") {
+        if v.trim().is_empty() || v.contains(['+', '#']) {
+            return fault_response(Fault::Bad("prefix must be non-empty and free of + and #".into()));
+        }
+        next.prefix = v;
+    }
+    if let Some(v) = s_of("client_id") {
+        if v.trim().is_empty() || v.contains(['+', '#', '/']) {
+            return fault_response(Fault::Bad("client_id must be non-empty and free of + # and /".into()));
+        }
+        next.client_id = v;
+    }
+    if next.bridge && next.url.trim().is_empty() {
+        return fault_response(Fault::Bad("bridging needs a broker URL".into()));
+    }
+
+    {
+        let mut s = c.settings.lock().unwrap();
+        s.mqtt = next.clone();
+        if let Err(e) = s.save() {
+            // Applied in memory but not persisted: say so rather than
+            // reporting success and losing it at the next reboot.
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("settings applied but not saved: {e}"), "code": "save_failed" })),
+            )
+                .into_response();
+        }
+    }
+    // Restarts whichever roles are affected.
+    let _ = c.settings_tx.send(next);
+    Json(json!({ "ok": true })).into_response()
 }
 
 // ── the terminal socket ────────────────────────────────────────────────────

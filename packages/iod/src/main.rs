@@ -23,6 +23,14 @@ use std::sync::Arc;
 pub struct Config {
     pub board: Board,
     pub bus: events::Bus,
+    /// Current settings, and the channel that tells the MQTT supervisor they
+    /// changed. Held here so the REST handler that saves them does not need to
+    /// know what a supervisor is.
+    pub settings: std::sync::Mutex<mqtt::settings::Settings>,
+    /// Fields the environment has pinned; the UI shows these as read-only
+    /// rather than accepting an edit it cannot honour.
+    pub pinned: Vec<String>,
+    pub settings_tx: tokio::sync::watch::Sender<mqtt::settings::Mqtt>,
     /// One shared session per serial port. Opening a tty per client would give
     /// two people on the same console half the bytes each.
     pub serial: std::sync::Arc<serial::Hub>,
@@ -170,10 +178,22 @@ fn main() {
         eprintln!("iod: this board declares no local IO — serving capabilities only");
     }
 
+    let (settings, pinned) = mqtt::settings::Settings::load(&board.hostname);
+    eprintln!(
+        "iod: mqtt serve={} listen={} bridge={}{}",
+        settings.mqtt.serve,
+        settings.mqtt.listen_port,
+        settings.mqtt.bridge,
+        if settings.mqtt.bridge { format!(" -> {}", settings.mqtt.url) } else { String::new() },
+    );
+    let (settings_tx, settings_rx) = tokio::sync::watch::channel(settings.mqtt.clone());
     let cfg = Arc::new(Config {
         board,
         link,
         bus: events::Bus::new(),
+        settings: std::sync::Mutex::new(settings),
+        pinned,
+        settings_tx,
         serial: std::sync::Arc::new(serial::Hub::default()),
     });
 
@@ -208,16 +228,9 @@ fn main() {
             tokio::task::spawn_local(poller(cfg.clone()));
         }
 
-        // Bridge outward, if a broker is configured. Absent one this is simply
-        // not started — a controller must work standalone.
-        match mqtt::Settings::from_env(&cfg.board.hostname) {
-            Some(s) => {
-                eprintln!("iod: mqtt bridge -> {}:{} (tls={}, auth={})",
-                          s.host, s.port, s.tls, s.user.is_some());
-                tokio::task::spawn_local(mqtt::run(cfg.clone(), s));
-            }
-            None => eprintln!("iod: no mqtt broker configured (set IOD_MQTT_URL)"),
-        }
+        // Serve MQTT, bridge outward, or both — and restart either when the
+        // settings page saves.
+        tokio::task::spawn_local(mqtt::supervise(cfg.clone(), settings_rx));
         if std::env::var("IOD_TOKEN").map(|t| !t.is_empty()).unwrap_or(false) {
             eprintln!("iod: token auth ENABLED");
         }
