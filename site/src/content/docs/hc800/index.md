@@ -352,13 +352,27 @@ is free:
   exports `ths8200_set_720P` / `_powerup` / `_powerdown`, driven by
   `c4_vid_conf.ko` (`Intialized to 720p`). Straightforward to redo from
   `/dev/i2c-6`.
-- **ADV7511 is configured from userspace.** `c4_adi_hdmi.ko` is only an i2c
-  chardev shim — `ioctl` read/write byte and block, major 250, device
-  `c4_adi_7513`. The actual register writes live in
-  **`/control4/lib/libvidcfg.so`**, used by `ioserver`. Mainline's
-  `drm/bridge/adv7511` expects a device-tree bridge attachment and cannot bind
-  to x86 i915, so **HDMI output needs a userspace i2c configurator**, and
-  `libvidcfg.so` is the thing to reverse.
+- **ADV7511 is not configured at all — on OS 3.x nothing drives it.**
+  `c4_adi_hdmi.ko` is only an i2c chardev shim (`ioctl` read/write byte and
+  block, major 250, device `c4_adi_7513`). An earlier version of this page said
+  `/control4/lib/libvidcfg.so` did the register writes. It does not: that
+  library's symbol table contains only **i.MX8MQ** classes
+  (`hdmi_video_imx8mq`, `device_video_output_imx8mq`) and no Intel or ADV7511
+  implementation. `ioserver` asks
+  `vidcfg::hdmi_object_factory::get_hdmi_interface()` for one and carries the
+  string `Caught Exception (%s) while creating hdmi interface.`
+
+  On a live unit the evidence is unambiguous: `/tmp/intel_hdmi`, which
+  `ioserver` creates on success, **does not exist**, and `/dev/c4_adi_7513` and
+  `/dev/c4_vid_conf` are **not created as device nodes at all** — despite both
+  modules registering char majors (250 and 249). Nothing opens the shim.
+
+  **So HDMI output on this board is unproven even under the vendor OS.** The
+  component path through the THS8200 is the one that is actually driven, and it
+  is driven in-kernel. Getting HDMI under openHC means writing the ADV7511 setup
+  from the datasheet, or recovering the OS 2.10 userspace that had it — mainline's
+  `drm/bridge/adv7511` wants a device-tree bridge attachment and cannot bind to
+  x86 i915, so it is a userspace i2c job either way.
 
 openHC now builds `CONFIG_DRM=y`, `CONFIG_DRM_I915=y`,
 `CONFIG_DRM_FBDEV_EMULATION=y`, `CONFIG_FB=y` and `CONFIG_FB_DEVICE=y` so the
