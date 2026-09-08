@@ -4,14 +4,14 @@ Applied to vanilla Linux 7.1.8 for every `ea*` board.
 
 **Only two patches remain, and both exist for the same reason: they CHANGE an
 existing upstream file.** Everything that was merely a *new* driver now lives as
-a plain `.c` in `board/ea-common/drivers/`, copied into the kernel tree and
+a plain `.c` in `board/ea-common/kernel/drivers/`, copied into the kernel tree and
 registered by `OHC_KERNEL_DRIVERS_HOOK` (see `drivers/objs.mk`). That is
 strictly better — the source stays a normal file you can edit, grep and
 compile-check, with no diff context to go stale on a kernel bump.
 
 | Where | What belongs there |
 |---|---|
-| `board/ea-common/drivers/` | new drivers and board glue (a copy) |
+| `board/ea-common/kernel/drivers/` | new drivers and board glue (a copy) |
 | `board/ea-common/patches/linux/` | edits to existing upstream files (a diff) |
 
 ## The short version
@@ -23,7 +23,7 @@ compile-check, with no diff context to go stale on a kernel bump.
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 
-Moved out of patches and into `board/ea-common/drivers/`:
+Moved out of patches and into `board/ea-common/kernel/drivers/`:
 
 | Driver | Lands at | Registered as |
 |---|---|---|
@@ -150,7 +150,7 @@ than no sound card at all. Register map in `https://the1truejoe.github.io/openHC
 
 ---
 
-## Per-driver notes — `board/ea-common/drivers/`
+## Per-driver notes — `board/ea-common/kernel/drivers/`
 
 These are plain `.c` files copied into the kernel tree by
 `OHC_KERNEL_DRIVERS_HOOK` and registered through `drivers/objs.mk`. They were
@@ -249,7 +249,7 @@ where the others use plain `obj-y`.
 
 * **Changing an upstream file → patch.** You cannot express an edit as a copy.
   That is 0001 and 0003, and nothing else currently qualifies.
-* **Adding a new file → `board/ea-common/drivers/` + a line in `objs.mk`.**
+* **Adding a new file → `board/ea-common/kernel/drivers/` + a line in `objs.mk`.**
   No diff context to rot, and the source stays greppable and editable.
 * **Do not invent a CONFIG symbol.** A copied-in driver has no Kconfig hunk, so
   `obj-$(CONFIG_MY_DRIVER)` expands to nothing and the driver silently is not

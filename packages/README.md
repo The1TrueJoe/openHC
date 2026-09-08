@@ -7,13 +7,22 @@ Cross-compiled on the host (rust-lld links ELF with no Docker or
 cross-binutils), then staged into `board/common/rootfs-overlay/opt/ohc/bin/` so
 `make image` bundles it.
 
-**Buildroot packages**, one per subdirectory containing a `<name>.mk` —
-`board/external.mk` globs them in and `board/Config.in` sources each
-`Config.in`. These are built *by* Buildroot rather than staged into the
-overlay, because they need the target toolchain or a kernel tree: `figlet`,
-`ohc-motd`, `ohc-splash`, `sgx545-ce`, `sgx545-um`, `wpebackend-pvr`,
-`ohc-webview`. `build/build.sh` force-rebuilds every one of them on each run,
-since we maintain them and their stamps mean nothing.
+**This directory is for SERVICES** — the daemons with APIs, and the libraries
+they share. Nothing else belongs here.
+
+Everything that is a *base firmware feature* or *board silicon* lives with the
+board instead, under `board/<board>/packages/`, where `board/external.mk` globs
+it in and `board/Config.in` sources its `Config.in`:
+
+| | |
+|---|---|
+| `board/common/packages/ohc-splash`, `figlet` | base firmware features, on every board |
+| `board/hc800/packages/ohc-ths8200` | HC-800 video DAC — that silicon is on one board |
+| `board/ea-common/packages/sgx545-*`, `wpebackend-pvr`, `ohc-webview` | the CE5300 graphics stack |
+
+And things that are just *files* are just files: `/etc/motd` is
+`board/common/rootfs-overlay/etc/motd`, not a package that shells out to figlet
+during the build.
 
 ## ohc-webd
 

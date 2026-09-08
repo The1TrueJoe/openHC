@@ -2,14 +2,16 @@
 #
 # ohc-ths8200 — configure the THS8200 component video DAC over i2c-dev
 #
-# Local-source package: ths8200.c lives next to this file. The register data is
+# Local-source package, and it lives under board/hc800/ rather than packages/
+# because it is HC-800 silicon, not a service: packages/ is for the daemons
+# (ohc-iod, the web UI). ths8200.c lives next to this file. The register data is
 # NOT compiled in — it is read at runtime from a .regs file installed alongside,
 # so re-capturing it from hardware does not mean rebuilding the image.
 #
 ################################################################################
 
 OHC_THS8200_VERSION = 1.0
-OHC_THS8200_SITE = $(BR2_EXTERNAL_OPENHC_PATH)/../packages/ohc-ths8200
+OHC_THS8200_SITE = $(BR2_EXTERNAL_OPENHC_PATH)/hc800/packages/ohc-ths8200
 OHC_THS8200_SITE_METHOD = local
 OHC_THS8200_LICENSE = MIT
 

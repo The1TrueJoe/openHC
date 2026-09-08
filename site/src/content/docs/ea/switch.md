@@ -114,7 +114,7 @@ binding, so this is a *portable* subsystem — unlike the graphics stack.
 
 It needs a device-tree or board description, which is the same de-DT problem
 already solved for `i2c-pxa`. The board glue lives at
-`board/ea-common/drivers/spi/spi-ea-b53-board.c` and **now builds**: its old
+`board/ea-common/kernel/drivers/spi/spi-ea-b53-board.c` and **now builds**: its old
 failure was an include, not a design problem — `dsa_chip_data` moved to
 `<linux/platform_data/dsa.h>`, and only the `dsa_platform_data` wrapper was
 actually removed.
