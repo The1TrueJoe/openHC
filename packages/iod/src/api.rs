@@ -4,9 +4,13 @@
 //! behind it does not appear.** A board with no relays does not get an empty
 //! relay list, it gets no `relays` key at all, so a client can render purely
 //! from the capability document without special-casing each model.
+use crate::events::Event;
 use crate::{board::Backend, Config};
 use axum::{
-    extract::{Path, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, State,
+    },
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -28,6 +32,10 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .route("/api/io/relays", get(relays))
         .route("/api/io/relays/toggle", post(relay_toggle))
         .route("/api/io/ir/{port}/send", post(ir_send))
+        // Live state. Everything above is a question; these two are the answers
+        // that arrive without being asked.
+        .route("/ws/events", get(ws_events))
+        .route("/ws/serial/{index}", get(ws_serial))
         .with_state(cfg)
 }
 
@@ -218,5 +226,106 @@ async fn ir_send(State(c): Ctx, Path(port): Path<u8>, Json(req): Json<IrSend>) -
     match l.request(crate::mcu::OP_IROUT_SEND, &payload, Duration::from_secs(3)) {
         Ok(f) => Json(json!({ "accepted": Accepted { port, words: words.len() }, "status": f.payload })).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ── live streams ───────────────────────────────────────────────────────────
+
+async fn ws_events(State(c): Ctx, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |sock| events_loop(c, sock))
+}
+
+async fn events_loop(c: Arc<Config>, mut sock: WebSocket) {
+    let mut rx = c.bus.subscribe();
+
+    // Open with a snapshot so a client that connects between transitions still
+    // renders the truth. Without this a freshly-loaded page shows every contact
+    // as open until one happens to change, which can be hours.
+    if c.board.io.contacts > 0 {
+        if let Some(l) = &c.link {
+            if let Ok(mask) = l.lock().await.contacts() {
+                let closed = (0..c.board.io.contacts).map(|i| mask >> i & 1 == 1).collect();
+                let snap = Event::ContactSnapshot { mask, closed };
+                if let Ok(t) = serde_json::to_string(&snap) {
+                    let _ = sock.send(Message::Text(t.into())).await;
+                }
+            }
+        }
+    }
+
+    loop {
+        tokio::select! {
+            ev = rx.recv() => match ev {
+                Ok(e) => {
+                    let Ok(t) = serde_json::to_string(&e) else { continue };
+                    if sock.send(Message::Text(t.into())).await.is_err() {
+                        return; // client went away
+                    }
+                }
+                // Lagged: this client did not keep up and the bus dropped the
+                // oldest for it. Keep going rather than dropping the socket —
+                // the next event still gets through, and for a live view a gap
+                // is better than a disconnect.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => return,
+            },
+            // Drain client frames so a close/ping is noticed promptly.
+            msg = sock.recv() => match msg {
+                Some(Ok(_)) => {}
+                _ => return,
+            },
+        }
+    }
+}
+
+async fn ws_serial(State(c): Ctx, Path(index): Path<usize>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    let Some(port) = c.board.io.serials.get(index).cloned() else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "no such serial port" }))).into_response();
+    };
+    // MCU-routed ports have no device node; their bytes travel over the IO
+    // protocol's UART opcodes, which is a different path entirely. Say so
+    // rather than failing to open a device that was never going to exist.
+    let Some(dev) = port.dev.clone() else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({ "error": "this port is MCU-routed; the protocol bridge is not implemented yet",
+                         "transport": port.transport })),
+        )
+            .into_response();
+    };
+    ws.on_upgrade(move |sock| serial_loop(sock, dev, port.baud))
+}
+
+async fn serial_loop(mut sock: WebSocket, dev: String, baud: u32) {
+    let port = match crate::serial::Port::open(&dev, baud) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = sock.send(Message::Text(format!("iod: cannot open {dev}: {e}\r\n").into())).await;
+            return;
+        }
+    };
+    let mut buf = [0u8; 1024];
+    loop {
+        tokio::select! {
+            // UART -> browser. Binary, because a terminal stream is bytes: text
+            // frames would force UTF-8 validation on data that is not text.
+            r = port.read(&mut buf) => match r {
+                Ok(0) => {}
+                Ok(n) => {
+                    if sock.send(Message::Binary(buf[..n].to_vec().into())).await.is_err() {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            },
+            // browser -> UART. xterm sends keystrokes as text; anything binary
+            // is passed through untouched.
+            m = sock.recv() => match m {
+                Some(Ok(Message::Binary(b))) => { if port.write_all(&b).await.is_err() { return } }
+                Some(Ok(Message::Text(t)))   => { if port.write_all(t.as_bytes()).await.is_err() { return } }
+                Some(Ok(_)) => {}
+                _ => return,
+            },
+        }
     }
 }

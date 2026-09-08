@@ -9,18 +9,63 @@
 //! IO Extender and a CA-1 is `/opt/ohc/board.env` and nothing else.
 mod api;
 mod board;
+mod events;
 mod link;
 mod mcu;
+mod serial;
 
 use board::{Backend, Board};
 use std::sync::Arc;
 
 pub struct Config {
     pub board: Board,
+    pub bus: events::Bus,
     /// `None` when the board has no MCU (gpio or none backends), or when the
     /// port could not be opened — the API still serves capabilities so the UI
     /// can say what is wrong instead of failing to load.
     pub link: Option<tokio::sync::Mutex<link::Link>>,
+}
+
+/// Poll the contact mask and publish transitions.
+///
+/// 200 ms is a deliberate compromise: fast enough that a doorbell press is not
+/// missed, slow enough that it does not monopolise a UART that IR transmission
+/// also needs. Each poll takes the same lock an API call would, so a long IR
+/// burst simply delays a sample rather than corrupting one.
+async fn contact_poller(cfg: Arc<Config>) {
+    use std::time::Duration;
+    let n = cfg.board.io.contacts;
+    let mut last: Option<u32> = None;
+    let mut link_up = true;
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let Some(l) = &cfg.link else { return };
+        let r = { l.lock().await.contacts() };
+        match r {
+            Ok(mask) => {
+                if !link_up {
+                    link_up = true;
+                    cfg.bus.publish(events::Event::McuLink { up: true });
+                }
+                if let Some(prev) = last {
+                    for i in 0..n {
+                        let was = prev >> i & 1 == 1;
+                        let now = mask >> i & 1 == 1;
+                        if was != now {
+                            cfg.bus.publish(events::Event::Contact { index: i, closed: now });
+                        }
+                    }
+                }
+                last = Some(mask);
+            }
+            Err(_) => {
+                if link_up {
+                    link_up = false;
+                    cfg.bus.publish(events::Event::McuLink { up: false });
+                }
+            }
+        }
+    }
 }
 
 fn main() {
@@ -72,12 +117,21 @@ fn main() {
         eprintln!("iod: this board declares no local IO — serving capabilities only");
     }
 
-    let cfg = Arc::new(Config { board, link });
+    let cfg = Arc::new(Config { board, link, bus: events::Bus::new() });
 
     // Single-threaded on purpose: this daemon is IO-bound on one UART, and a
     // current-thread runtime keeps the binary small on a controller with 2 GB.
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio");
-    rt.block_on(async move {
+    // A LocalSet, because the contact poller is spawned with spawn_local: the
+    // MCU link is not Send-shared across threads and does not need to be.
+    let local = tokio::task::LocalSet::new();
+    rt.block_on(local.run_until(async move {
+        // Poll the contacts so clients can be told when one CHANGES. The MCU
+        // has no unsolicited notify, so somebody has to poll; doing it once
+        // here beats every client doing it separately over the same UART.
+        if cfg.board.io.contacts > 0 && cfg.link.is_some() {
+            tokio::task::spawn_local(contact_poller(cfg.clone()));
+        }
         let app = api::router(cfg);
         let listener = tokio::net::TcpListener::bind(&bind).await.unwrap_or_else(|e| {
             eprintln!("iod: cannot bind {bind}: {e}");
@@ -91,5 +145,5 @@ fn main() {
         if let Err(e) = axum::serve(listener, app).with_graceful_shutdown(shutdown).await {
             eprintln!("iod: server error: {e}");
         }
-    });
+    }));
 }
