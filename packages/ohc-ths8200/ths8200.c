@@ -29,25 +29,53 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <linux/i2c.h>
 #include <linux/i2c-dev.h>
 
 #define THS8200_VERSION_REG  0x02u
 #define THS8200_VERSION_VAL  0x04u
 #define MAX_REGS             256
 
+/* SMBus transactions, NOT raw read()/write().
+ *
+ * The ICH7's i801 controller is an SMBus master; it does not implement raw I2C,
+ * so it does not advertise I2C_FUNC_I2C and plain read()/write() on the i2c-dev
+ * node fail with ENOTSUP. An earlier version of this tool used those and got
+ * "no answer at 0x21" from a chip that was answering perfectly well.
+ *
+ * Control4's own driver says the same thing in its boot log —
+ * "THS8200-I2C: SMBUS Mode Detected" — and their ADV7511 shim is full of
+ * "i2c smbus read/write" strings. They found this too.
+ *
+ * Going the other way is safe: the kernel EMULATES SMBus byte-data
+ * transactions on adapters that only do raw I2C, so this path works on both
+ * kinds of controller while the raw path works on only one.
+ */
+static int smbus_xfer(int fd, char rw, unsigned char cmd, union i2c_smbus_data *data)
+{
+    struct i2c_smbus_ioctl_data args;
+    args.read_write = rw;
+    args.command    = cmd;
+    args.size       = I2C_SMBUS_BYTE_DATA;
+    args.data       = data;
+    return ioctl(fd, I2C_SMBUS, &args);
+}
+
 static int i2c_write_reg(int fd, unsigned char reg, unsigned char val)
 {
-    unsigned char buf[2] = { reg, val };
-    ssize_t n = write(fd, buf, 2);
-    return (n == 2) ? 0 : -1;
+    union i2c_smbus_data d;
+    d.byte = val;
+    return smbus_xfer(fd, I2C_SMBUS_WRITE, reg, &d) < 0 ? -1 : 0;
 }
 
 static int i2c_read_reg(int fd, unsigned char reg, unsigned char *out)
 {
-    if (write(fd, &reg, 1) != 1) {
+    union i2c_smbus_data d;
+    if (smbus_xfer(fd, I2C_SMBUS_READ, reg, &d) < 0) {
         return -1;
     }
-    return (read(fd, out, 1) == 1) ? 0 : -1;
+    *out = (unsigned char)(d.byte & 0xff);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -120,6 +148,22 @@ int main(int argc, char **argv)
                 dev, strerror(errno));
         return 1;
     }
+    /* Say what the adapter can do — the difference between raw I2C and
+     * SMBus-only is exactly what made this fail the first time. */
+    {
+        unsigned long funcs = 0;
+        if (ioctl(fd, I2C_FUNCS, &funcs) == 0) {
+            printf("ohc-ths8200: %s funcs: raw-I2C=%s SMBUS_BYTE_DATA=%s\n", dev,
+                   (funcs & I2C_FUNC_I2C) ? "yes" : "no",
+                   (funcs & I2C_FUNC_SMBUS_BYTE_DATA) ? "yes" : "no");
+            if (!(funcs & I2C_FUNC_SMBUS_BYTE_DATA)) {
+                fprintf(stderr, "ohc-ths8200: adapter cannot do SMBus byte-data\n");
+                close(fd);
+                return 1;
+            }
+        }
+    }
+
     if (ioctl(fd, I2C_SLAVE, addr) < 0) {
         fprintf(stderr, "ohc-ths8200: address 0x%02x: %s\n", addr, strerror(errno));
         close(fd);
