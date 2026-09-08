@@ -4,6 +4,12 @@
 /br2-external/buildroot/
 *.img
 *.bin
+# ...except the vendor IO-MCU images we deliberately keep. These are the ONLY
+# way back to stock firmware on the microcontroller — the equivalent of the
+# sda2 factory partition for the host — and they are 70 KB, pulled off a live
+# unit's /control4/firmware/io/. Losing them to a blanket *.bin would mean a
+# bricked MCU is unrecoverable without SWD.
+!/board/*/firmware/io-mcu/*/vendor/*.bin
 # scratch
 /tmp/
 *.log
@@ -27,3 +33,4 @@ __pycache__/
 /site/dist/
 /site/.astro/
 /site/node_modules/
+c4-recon/

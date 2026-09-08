@@ -1,0 +1,26 @@
+<firmware>
+	<Device type="hc800">
+		<bootloader>IRBootloaderSerialLM3S1162.bin</bootloader>
+		<application>700-00165_LM3S1162_IoProcMultiConfig1162_03.26.15_2.8.0.507079-fw.bin</application>
+	</Device>
+	<Device type="hc250">
+		<bootloader>IRBootloaderSerialLM3S1162.bin</bootloader>
+		<application>700-00165_LM3S1162_IoProcMultiConfig1162_03.26.15_2.8.0.507079-fw.bin</application>
+	</Device>
+	<Device type="ea1">
+		<bootloader>660-00063_TM4C1231D5_IO_Processor_Bootloader_Release_1.1.9.b6a901f.bin</bootloader>
+		<application>660-00063_TM4C1231D5_IO_Processor_Release_1.0.36.20ebb2d.bin</application>
+	</Device>
+	<Device type="ea3">
+		<bootloader>660-00063_TM4C1231D5_IO_Processor_Bootloader_Release_1.1.9.b6a901f.bin</bootloader>
+		<application>660-00063_TM4C1231D5_IO_Processor_Release_1.0.36.20ebb2d.bin</application>
+	</Device>
+	<Device type="ea5">
+		<bootloader>660-00063_TM4C1231D5_IO_Processor_Bootloader_Release_1.1.9.b6a901f.bin</bootloader>
+		<application>660-00063_TM4C1231D5_IO_Processor_Release_1.0.36.20ebb2d.bin</application>
+	</Device>
+	<Device type="amp1">
+		<bootloader>660-00063_TM4C1231D5_IO_Processor_Bootloader_Release_1.1.9.b6a901f.bin</bootloader>
+		<application>660-00063_TM4C1231D5_IO_Processor_Release_1.0.41.093e513.bin</application>
+	</Device>
+</firmware>

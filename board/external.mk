@@ -50,4 +50,12 @@ define OHC_KERNEL_DRIVERS_HOOK
 		fi; \
 	done < $(OHC_DRIVERS_DIR)/objs.mk
 endef
+# EA FAMILY ONLY. Everything this hook installs is Intel CE5300 silicon, and it
+# is registered obj-y (see the rationale at the top of objs.mk), so on any other
+# board it is at best dead weight compiled into the kernel and at worst a link
+# failure — which is what it was: hc800 died at `LD vmlinux` on the ASoC
+# machine drivers, because it uses SND_HDA_INTEL and defines no CONFIG_SND_SOC.
+# BR2_OHC_EA_KERNEL_DRIVERS is set by ea-common_defconfig and by nothing else.
+ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
 LINUX_POST_PATCH_HOOKS += OHC_KERNEL_DRIVERS_HOOK
+endif

@@ -1,0 +1,52 @@
+#!/bin/sh
+# Stable names for the two UARTs that are not consoles — HC-800 only.
+#
+# The vendor image ships /dev/ttySStellaris and /dev/ttySZigbee as symlinks and
+# everything Control4 writes uses those names, not ttyS3/ttyS4. We keep the same
+# names for the same reason: the NUMBER is an accident of 8250 probe order and
+# CONFIG_SERIAL_8250_RUNTIME_UARTS, while the NAME is what the hardware is.
+#
+# ttyS4 is the one that justifies this. Mainline defaults RUNTIME_UARTS to 4,
+# which registers ttyS0..ttyS3 and silently drops the Zigbee port; the kernel
+# fragment sets both NR_UARTS and RUNTIME_UARTS to 5 to get it back. If
+# /dev/ttySZigbee is missing on a running box, that is the setting to check
+# first — the symlink here is also a cheap canary for it.
+#
+# S02: after the splash, well before anything opens a port.
+#
+#   ttyS0 0x3f8 console            ttyS1 0x2f8 rear RS-232 #1
+#   ttyS2 0x3e8 rear RS-232 #2     ttyS3 0x2e8 LM3S1162 IO-MCU
+#   ttyS4 0x2f0 EM357 Zigbee NCP
+#
+# ttyS1/ttyS2 get no symlink on purpose: they are plain user serial ports with
+# nothing openHC-specific about them, and on this board they are HOST 16550As
+# wired to the rear jacks — not routed through the IO-MCU. (Established from a
+# live unit: the vendor's ioserver holds ttyS1, ttyS2 and ttyS3 simultaneously.)
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+link_one() {   # $1 = target device, $2 = link name
+    [ -n "$1" ] && [ -n "$2" ] || return 0
+    if [ ! -c "$1" ]; then
+        echo "devlinks: $1 absent — cannot create $2"
+        return 0
+    fi
+    ln -sf "$1" "$2"
+}
+
+case "${1:-start}" in
+    start)
+        printf "devlinks: "
+        link_one "${OHC_IOMCU_TTY:-/dev/ttyS3}"  /dev/ttySStellaris
+        link_one "${OHC_ZIGBEE_TTY:-/dev/ttyS4}" /dev/ttySZigbee
+        # Report what actually exists, not what we attempted.
+        for l in /dev/ttySStellaris /dev/ttySZigbee; do
+            [ -L "$l" ] && printf "%s -> %s  " "${l##*/}" "$(readlink $l)"
+        done
+        echo
+        ;;
+    stop)
+        rm -f /dev/ttySStellaris /dev/ttySZigbee
+        ;;
+    restart|reload) "$0" stop; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

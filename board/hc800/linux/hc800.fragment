@@ -155,13 +155,61 @@ CONFIG_SENSORS_CORETEMP=y
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_DRV_CMOS=y
 
-# ── no head ───────────────────────────────────────────────────────────────
-# openHC is headless on every board and the console is ttyS0. The GMA 3150 and
-# the ADV7511/THS8200 chain are left alone: DRM would pull in a large stack for
-# an output nobody uses. VGA_CONSOLE stays at its defconfig value so a monitor
-# on the internal header still shows a panic.
-# CONFIG_DRM is not set
-# CONFIG_FB is not set
+# ── a head, after all: i915 + fbdev emulation for the boot splash ─────────
+# This block used to read "no head" and turn DRM and FB off, on the grounds that
+# openHC is headless everywhere and DRM is a large stack for an output nobody
+# uses. That was true until somebody wanted the EA family's boot splash on this
+# board, and it is cheap to change here for one reason: this is the board with
+# NO image-size ceiling. ea-common has to fight CEFDK bootlinux's ~8.07 MB copy
+# window (which is why it turned MODULES back on just to get DRM out of the
+# bzImage); GRUB 0.97 has no such limit and sda3 has 165 MB free, so a few MB of
+# builtin DRM costs nothing. MODULES=n above means builtin is the only option.
+#
+# The measured cost of USING it is also nothing, which is the other half of the
+# argument: a full 1280x720x32 frame is 3.6 MB and the live unit writes one to
+# /dev/fb0 at 434 MB/s -- about 8 ms. The splash draws one frame, once.
+#
+# Why the display comes up at all with no monitor attached: LVDS-1 reports
+# connected with a ZERO-byte EDID and exactly one mode, 1280x720, because the
+# timings come from the BIOS VBT rather than from a display. That LVDS port is
+# wired to the THS8200 component DAC (i2c-6 @0x21) and the ADV7511 HDMI
+# transmitter (@0x72). Mainline i915 parses the same VBT, so the mode should
+# come up here exactly as it does under the vendor's 3.16.
+#
+# NOTE: getting PIXELS OUT OF THE JACKS is a separate problem this does not
+# solve. The vendor configures the THS8200 in-kernel (ths8200.ko, GPL) and the
+# ADV7511 from USERSPACE (/control4/lib/libvidcfg.so, via ioserver). Mainline's
+# drm/bridge/adv7511 needs a DT bridge attachment and cannot attach to x86 i915,
+# so HDMI will need a userspace i2c configurator. Until then this lights the
+# pipe and draws into it; whether a TV sees it is unproven.
+CONFIG_DRM=y
+CONFIG_DRM_I915=y
+# UNVERIFIED on 7.1.8: i915 has carried gen2/gen3 (Pineview is gen3) for the
+# whole mainline era, but upstream has periodically discussed dropping the old
+# gens. If this kernel's i915 no longer probes 8086:a001 the symptom is a boot
+# with no /dev/fb0 and no "i915" line in dmesg -- check that first rather than
+# suspecting the fragment. There is no fallback driver; gma500 is Poulsbo, not
+# Pineview.
+
+# /dev/fb0 from a DRM driver needs the fbdev emulation layer, and the legacy
+# device node is its own symbol since 6.6: DRM_FBDEV_EMULATION selects FB_CORE,
+# NOT FB, and FB_DEVICE (which creates /dev/fbX) defaults to the value of FB.
+# Set all three rather than rely on that chain -- the failure mode is a working
+# framebuffer console with no node for ohc-splash to open, which looks like a
+# broken splash rather than a missing kconfig symbol.
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_FB=y
+CONFIG_FB_DEVICE=y
+
+# No fbcon, for the reason ea-common/linux/video.fragment records: the text
+# console clears the framebuffer when it takes the surface over, and that is
+# what ate the EA's first splash. The console is ttyS0 on this board and always
+# was. Flip this to =y temporarily if you want the kernel log on the TV while
+# debugging -- it and the splash cannot both have the screen.
+# CONFIG_FRAMEBUFFER_CONSOLE is not set
+
+# VGA_CONSOLE stays at its defconfig value so a monitor on the internal header
+# still shows a panic before i915 takes over ("Replacing VGA console driver").
 
 # ── note on the stack protector ───────────────────────────────────────────
 # ea-common has to disable STACKPROTECTOR: musl + i386 + 7.1.8 disagree about

@@ -1,0 +1,69 @@
+#!/bin/sh
+# ALC888-VD bring-up — HC-800 only.
+#
+# An HDA codec comes out of reset with its outputs MUTED and its volumes at
+# zero, so a board with perfectly working audio is silent until something
+# touches the mixer. This is that something. It is not a policy daemon: it puts
+# the panel into a known, audible state once at boot and gets out of the way.
+#
+# Every control named here was read off the live codec dump, not guessed —
+# /proc/asound/card0/codec#2 (note: the codec answers at HDA address 2, NOT 0,
+# so a bare `amixer` with no -c will still find card 0 but anything addressing
+# the codec directly needs 2). Connected pins are:
+#
+#   0x11  Digital Out at Int HDMI   -> the ADV7511. Internal wiring, no jack,
+#                                      marked NO_PRESENCE, association 3.
+#   0x14  Line Out,  Ext Rear       RCA green
+#   0x1a  Line In,   Ext Rear       RCA blue
+#   0x1b  HP Out,    Ext Front      RCA green
+#   0x1e  SPDIF Out, Ext Rear       RCA black (coax)
+#
+# Everything else — 0x12, 0x15..0x19, 0x1c, 0x1f — reads the canonical
+# not-connected default 0x411111f0. There is no microphone pin, which is why
+# there is no Mic control to unmute.
+#
+# S46: after the network (S40/S41) so a failure here cannot cost reachability,
+# and before the services in S50.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+CARD="${OHC_AUDIO_CARD:-0}"
+LEVEL="${OHC_AUDIO_BOOT_LEVEL:-70%}"
+
+# amixer returns non-zero for a control this codec does not have, which is not
+# an error worth failing a boot over — the point is to set what exists.
+set_one() {
+    amixer -c "$CARD" -q sset "$1" "$2" unmute >/dev/null 2>&1 \
+        && printf "%s " "$1"
+}
+
+case "${1:-start}" in
+    start)
+        [ -d "/proc/asound/card$CARD" ] || {
+            echo "audio: no card $CARD (snd_hda_intel bound? check dmesg)"
+            exit 0
+        }
+        command -v amixer >/dev/null 2>&1 || {
+            echo "audio: amixer missing (BR2_PACKAGE_ALSA_UTILS_AMIXER)"
+            exit 0
+        }
+
+        printf "audio: unmuted "
+        set_one Master     "$LEVEL"
+        set_one Front      "$LEVEL"
+        set_one Headphone  "$LEVEL"
+        set_one Line       "$LEVEL"        # 0x1a capture path
+        # IEC958 is the S/PDIF switch, not a volume — it takes on/off only, and
+        # there are TWO digital outs behind it on this board (coax 0x1e and the
+        # internal HDMI 0x11), which is why the codec exposes four PCMs.
+        amixer -c "$CARD" -q sset IEC958 on >/dev/null 2>&1 && printf "IEC958 "
+        echo
+
+        # Persist so alsactl restores this on the next boot if state is ever
+        # made writable. Harmless on a RAM rootfs; useful the day it is not.
+        alsactl store -f /var/lib/alsa/asound.state >/dev/null 2>&1 || true
+        ;;
+    stop)
+        amixer -c "$CARD" -q sset Master mute >/dev/null 2>&1 || true
+        ;;
+    restart|reload) "$0" stop; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

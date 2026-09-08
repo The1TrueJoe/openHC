@@ -54,6 +54,14 @@ BR2_x86_bonnell=y
 # through that image.
 BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
 
+# Inject this family's kernel drivers (board/ea-common/{drivers,sound}) via
+# OHC_KERNEL_DRIVERS_HOOK. Previously the hook was unconditional in
+# external.mk, so EVERY board got these CE5300 drivers; now it is opt-in and
+# this is the only file that opts in. EA behaviour is unchanged — if an EA
+# kernel ever comes out missing gpio-intelce, pwm-ce5300 or the ADAU1451 ASoC
+# stack, this line is the first thing to check.
+BR2_OHC_EA_KERNEL_DRIVERS=y
+
 
 # --- init / login ---
 # Password login for the serial console AND ssh. Change after first boot.

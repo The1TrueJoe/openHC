@@ -173,6 +173,22 @@ BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
 # iecset drives the IEC958 status bits — i.e. the coax S/PDIF jack specifically.
 BR2_PACKAGE_ALSA_UTILS_IECSET=y
 
+# --- framebuffer boot splash ---
+# The same openHC banner the EA boards draw, on the same binary. ohc-splash
+# opens /dev/fb0, reads the geometry back with FBIOGET_[VF]SCREENINFO and mmaps
+# it, so it does not care that the EA's node comes from ce5300-fb and this one
+# comes from i915's fbdev emulation -- 1280x720x32 either way. figlet is pulled
+# in by the package and generates the banner ON the device at boot, so nothing
+# is baked into the image.
+#
+# The init script that runs it is board/common/rootfs-overlay/etc/init.d/S01splash,
+# shared now rather than copied -- it moved out of ea-common when this board
+# became the second user. It no-ops on a board that has no /dev/fb0.
+#
+# Needs the DRM/fbdev block in hc800.fragment; without it there is no /dev/fb0
+# and S01splash says so on the console instead of drawing.
+BR2_PACKAGE_OHC_SPLASH=y
+
 # --- rootfs overlay + image publishing ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and
 # kconfig takes the last assignment of a symbol, not the union — naming only the

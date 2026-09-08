@@ -77,7 +77,20 @@ BR2_PACKAGE_AVAHI=y
 BR2_PACKAGE_AVAHI_DAEMON=y
 
 # --- rootfs overlay, image wrap, kernel patches ---
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/rootfs-overlay"
+# BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and
+# kconfig takes the last assignment of a symbol, not the union, so naming only
+# the board overlay silently dropped board/common/rootfs-overlay -- and with it
+# S40net, which is what brings eth0 (dm9000) up. Also lost were S09hostname (the
+# per-unit MAC suffix), S45netmon, S41wifi-ap and the avahi service file, so the
+# board advertised nothing on mDNS either. ca1 and hc800 list both; this board
+# and hc800 had the same bug.
+#
+# The shared scripts are board.env-driven and no-op on what this board does not
+# have: OHC_WIFI_IFACE is unset in ioxv1's board.env (dm9000, wired only), so
+# S41wifi-ap and S45netmon exit immediately, and S90ohcweb skips itself when
+# ohc-webd was not built in. Order matters -- later overlays overwrite earlier
+# ones, which is how ioxv1/rootfs-overlay/init replaces the EA pivot.
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/rootfs-overlay"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ioxv1"
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/patches"
