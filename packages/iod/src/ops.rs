@@ -241,7 +241,7 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         if held.is_none() {
             let chip = crate::gpio::find_chip(&chip_label).map_err(|e| Fault::Io(e.to_string()))?;
             *held = Some(
-                crate::gpio::request_output(&chip, line_no, true)
+                crate::gpio::Line::request_output(&chip, line_no, true)
                     .map_err(|e| Fault::Io(format!("cannot claim the reset line: {e}")))?,
             );
         }
