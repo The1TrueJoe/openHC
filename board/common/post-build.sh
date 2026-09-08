@@ -38,7 +38,24 @@ fi
 # openHC rootfs (and not the stock Control4 rootfs a factory-restore leaves).
 # Stamped with the board, version and build date so `cat /etc/openhc-release` is
 # useful and the flasher can read the version back over SSH.
-b="${BR2_DEFCONFIG:-openhc}"; b="${b##*/}"
+# The board name comes from BR2_ROOTFS_POST_SCRIPT_ARGS, which Buildroot passes
+# to a post-BUILD script as well as a post-image one (Makefile: `$(s)
+# $(TARGET_DIR) $(BR2_ROOTFS_POST_SCRIPT_ARGS)`), and which every board sets to
+# its own name.
+#
+# It used to derive the name from BR2_DEFCONFIG, which is not exported into this
+# script's environment — so the fallback always fired and EVERY image, on every
+# board, was stamped `board=openhc`. The flasher reads this field to work out
+# what a unit is running, so it was answering "openhc" for all eight.
+#
+# Not OHC_MODEL from board.env, which looks like the obvious source and is not:
+# the EA boards set it to a family NUMBER (`OHC_MODEL=1`, `OHC_MODEL=3`), so it
+# would stamp `board=1` and be worse than the bug it replaced.
+b="${2:-}"
+if [ -z "$b" ]; then
+    b="${BR2_DEFCONFIG:-openhc}"; b="${b##*/}"
+    b="${b%_defconfig}"; b="${b%.defconfig}"; b="${b#openhc-}"
+fi
 {
     echo "openHC"
     echo "board=${b}"
