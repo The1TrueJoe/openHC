@@ -36,7 +36,33 @@ pub fn router(cfg: Arc<Config>) -> Router {
         // that arrive without being asked.
         .route("/ws/events", get(ws_events))
         .route("/ws/serial/{index}", get(ws_serial))
+        .layer(axum::middleware::from_fn(cors))
         .with_state(cfg)
+}
+
+/// Permissive CORS, deliberately.
+///
+/// The config GUI is served by webd on :80 and talks to iod on :7070, so every
+/// request from it is cross-origin. This is a LAN appliance on a private
+/// network with no credentials in play — the alternative is proxying every REST
+/// call AND both WebSockets through webd, which buys no security (anything that
+/// can reach :80 can reach :7070) and adds a hop to a serial terminal where
+/// latency is felt directly.
+async fn cors(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::header::{
+        ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
+    };
+    let preflight = req.method() == axum::http::Method::OPTIONS;
+    let mut res = if preflight {
+        axum::response::Response::new(axum::body::Body::empty())
+    } else {
+        next.run(req).await
+    };
+    let h = res.headers_mut();
+    h.insert(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
+    h.insert(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS".parse().unwrap());
+    h.insert(ACCESS_CONTROL_ALLOW_HEADERS, "content-type".parse().unwrap());
+    res
 }
 
 async fn health() -> impl IntoResponse {
