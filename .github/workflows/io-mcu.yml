@@ -72,9 +72,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-none-eabi libnewlib-arm-none-eabi
           arm-none-eabi-gcc --version | head -1
-          echo "string.h: $(arm-none-eabi-gcc -print-file-name=include)/string.h"
-          test -f "$(arm-none-eabi-gcc -print-file-name=include)/string.h" \
-            || { echo 'no bare-metal string.h — libnewlib missing'; exit 1; }
+          # Ask the COMPILER whether it can find the header, rather than
+          # guessing where the header lives. -print-file-name=include returns
+          # GCC's own include dir (stddef.h, stdint.h), which never contains
+          # string.h — newlib's is elsewhere, and hardcoding that path is how
+          # this check failed the first time while the toolchain was fine.
+          echo '#include <string.h>' \
+            | arm-none-eabi-gcc -ffreestanding -E -xc - > /dev/null \
+            || { echo 'bare-metal string.h not found — is libnewlib installed?'; exit 1; }
+          echo "string.h resolves OK" 
 
       - name: Build ${{ matrix.name }}
         run: make -C ${{ matrix.dir }} ${{ matrix.target }} ${{ matrix.args }}
