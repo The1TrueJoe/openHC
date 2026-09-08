@@ -145,6 +145,24 @@ CONFIG_LPC_ICH=y
 CONFIG_GPIOLIB=y
 CONFIG_GPIO_ICH=y
 CONFIG_GPIO_CDEV=y
+# The V1 chardev uAPI, and it is NOT optional for us.
+#
+# Buildroot 2024.02.9 pins libgpiod 1.6.4, and libgpiod 1.x speaks the V1 line
+# ioctls (GPIO_GET_LINEHANDLE_IOCTL / GPIOHANDLE_GET_LINE_VALUES_IOCTL).
+# Mainline now defaults CONFIG_GPIO_CDEV_V1 to off, so on the first boot every
+# tool failed with a misleading error:
+#
+#     gpioget: error reading GPIO values: Invalid argument
+#     gpioinfo: error creating line iterator: Invalid argument
+#
+# That reads like broken hardware or a driver that has not claimed its lines,
+# and it is neither — gpio_ich reserved both of its I/O regions fine
+# (0480-04af and 04b0-04bf in /proc/ioports) and gpiodetect worked, because
+# gpiodetect uses GPIO_GET_CHIPINFO_IOCTL which exists in both uAPI versions.
+# Only the V1 LINE ioctls were missing.
+#
+# Turn this off again the day the tools move to libgpiod 2.x.
+CONFIG_GPIO_CDEV_V1=y
 
 # SMBus. The ADV7511 HDMI transmitter (0x72) and THS8200 video DAC (0x21) live
 # here; the vendor instantiates them from its board file. We instantiate
