@@ -109,6 +109,19 @@ CONFIG_USB_STORAGE=y
 # this is a software gap, not a missing part. See hc800_defconfig for what to
 # turn back on the day a driver exists.
 # CONFIG_WLAN is not set
+#
+# WLAN=n only removes the DRIVER menu — it took out all 96 wireless driver
+# symbols (ATH*, B43, BRCM*, IPW*, RTL*) and left the 802.11 STACK behind,
+# because cfg80211/mac80211/rfkill live under NET/Wireless rather than under
+# WLAN. Verified by extracting the config back out of the built bzImage.
+#
+# A board with no radio has no use for a soft-MAC stack, a rate-control
+# algorithm and an rfkill subsystem, so they go too. If RFKILL turns out to be
+# selected by something we do want, merge_config will warn and it stays on —
+# harmless, just re-check this note.
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
+# CONFIG_RFKILL is not set
 
 # ── audio: ICH7 HD Audio + ALC888-VD ──────────────────────────────────────
 # 2 line out (pins 0x14 rear, 0x1b front), 1 line in (0x1a), coax S/PDIF out
