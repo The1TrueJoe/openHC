@@ -161,6 +161,16 @@ it is tracking rather than guessing an encoding.
 `CONTACT_GET` in the same capture returned `00 00 00 00` — a u32 bitmask with
 every contact open, exactly as documented above and confirming that half.
 
+#### The HC-800 has the same empty query surface
+
+The four documented-but-unimplemented queries were re-tested against the
+LM3S1162, and all four are unimplemented there too — `0x12` IR_PIN_STATE_GET,
+`0x42` IR_MODE_GET, `0x68` IROUT_STATUS and `0x94` CAPABILITIES_GET each
+returned **nothing at all**. So the conclusion above holds for both families: a
+host must treat a capabilities timeout as normal rather than as an error, and a
+replacement firmware is free to drop unknown opcodes in silence, because that is
+exactly what the stock ones do.
+
 **`CAPABILITIES_GET` (0x94) isn't implemented**, nor are `IR_PIN_STATE_GET`
 (0x12), `IR_MODE_GET` (0x42) or `IROUT_STATUS` (0x68) as queries, tried with both
 an empty payload and a port index 0–5. The product string `c4-ir02` fits: a
