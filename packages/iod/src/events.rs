@@ -1,47 +1,232 @@
-//! The event stream: things that change on their own.
+//! The control plane: state that is mirrored, events that merely happen.
 //!
-//! A contact closing is not a request/response — nobody asked. The MCU protocol
-//! has no unsolicited push for it either (the host POLLS, and the firmware's
-//! own opcode sweep shows no notify path), so iod polls on the client's behalf
-//! and publishes only TRANSITIONS. Clients then get "contact 2 closed" instead
-//! of four states four times a second.
+//! These are genuinely different things and conflating them makes a bad API.
 //!
-//! This is what makes "use a contact to detect state" work: a door sensor is
-//! interesting at the moment it changes, and a UI that has to poll to notice is
-//! a UI that misses a doorbell between frames.
+//! **State** is what the box currently IS — relay 2 is closed, contact 1 is
+//! made, the MCU link is up. It has a value at every instant, a new client must
+//! be told it on connect, and a client that misses a change is WRONG until the
+//! next one. So state is mirrored in [`State`], sent as a snapshot to every new
+//! subscriber, and published as a delta whenever it changes — no matter who
+//! changed it. Two people on the config GUI see the same relay, and an external
+//! control system can hold an accurate mirror without polling.
+//!
+//! **Events** are things that HAPPENED — a byte arrived on a serial port, a
+//! remote was pressed at the IR receiver. They have no value between
+//! occurrences, snapshotting them is meaningless, and a client that connects
+//! late has simply missed them. These stream, and are never retained.
+//!
+//! The split is not academic: it is exactly MQTT's retained-vs-not, exactly
+//! what decides whether a reconnecting automation is correct or stale, and
+//! exactly the difference between "the door is open" and "the door opened".
 use serde::Serialize;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
+
+/// Every message carries a sequence number and a timestamp.
+///
+/// `seq` is monotonic across the whole stream so a consumer can prove it missed
+/// nothing — a control system acting on stale IO is worse than one that knows
+/// it fell behind and resynchronises.
+#[derive(Serialize, Clone, Debug)]
+pub struct Envelope {
+    pub seq: u64,
+    /// Unix seconds, fractional. Wall clock rather than uptime because the
+    /// consumer correlating this with its own logs is on another machine.
+    pub ts: f64,
+    #[serde(flatten)]
+    pub msg: Msg,
+}
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    /// A contact input changed. `closed` is true when the circuit is made —
-    /// bit N of the MCU's u32 mask, where 1 = CLOSED.
-    Contact { index: u8, closed: bool },
-    /// The whole contact mask, sent once when a client connects so it starts
-    /// with the truth rather than waiting for the first change.
-    ContactSnapshot { mask: u32, closed: Vec<bool> },
-    /// The MCU stopped answering, or started again. Worth surfacing: every
-    /// other reading becomes meaningless while this is false.
-    McuLink { up: bool },
+pub enum Msg {
+    /// The whole state document. Sent on connect, and on request.
+    Snapshot { state: Value },
+    /// One piece of state changed. `path` is the same key used in the snapshot.
+    State { path: String, value: Value },
+    /// Something happened. No value, no retention.
+    Event { topic: String, data: Value },
+}
+
+impl Msg {
+    /// The routing key, for subscription filters and MQTT topic mapping.
+    /// Prefix matching on this is how a client says "contacts and IR, but not
+    /// the byte stream of a chatty projector".
+    pub fn topic(&self) -> &str {
+        match self {
+            Msg::Snapshot { .. } => "snapshot",
+            Msg::State { path, .. } => path,
+            Msg::Event { topic, .. } => topic,
+        }
+    }
+}
+
+fn now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// The authoritative mirror of everything that HAS a current value.
+///
+/// Held here rather than read from the MCU on demand because the MCU is one
+/// UART: five clients asking "what are the relays" must not become five
+/// round-trips behind a mutex. Writers update this, readers read it for free.
+#[derive(Default)]
+pub struct State {
+    inner: Mutex<BTreeMap<String, Value>>,
+}
+
+impl State {
+    pub fn get(&self, path: &str) -> Option<Value> {
+        self.inner.lock().ok()?.get(path).cloned()
+    }
+
+    /// The whole document, as nested JSON: `relay/1` becomes `{"relay":{"1":…}}`
+    /// so a client can hold it as one object.
+    pub fn doc(&self) -> Value {
+        let map = match self.inner.lock() {
+            Ok(m) => m,
+            Err(_) => return json!({}),
+        };
+        let mut root = serde_json::Map::new();
+        for (k, v) in map.iter() {
+            let mut cur = &mut root;
+            let parts: Vec<&str> = k.split('/').collect();
+            for p in &parts[..parts.len() - 1] {
+                cur = cur
+                    .entry(*p)
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                    .as_object_mut()
+                    .expect("state paths do not collide with leaf values");
+            }
+            cur.insert(parts[parts.len() - 1].to_string(), v.clone());
+        }
+        Value::Object(root)
+    }
 }
 
 #[derive(Clone)]
-pub struct Bus(broadcast::Sender<Event>);
+pub struct Bus {
+    tx: broadcast::Sender<Envelope>,
+    seq: Arc<AtomicU64>,
+    pub state: Arc<State>,
+}
 
 impl Bus {
     pub fn new() -> Bus {
         // Bounded on purpose. A client that stops reading must not grow this
         // without limit; broadcast drops the oldest for that receiver and tells
         // it how many it missed, which is the right failure for a live view.
-        let (tx, _) = broadcast::channel(64);
-        Bus(tx)
+        // 512 is generous enough to absorb a burst of serial traffic without
+        // lagging a slow browser off the bus.
+        let (tx, _) = broadcast::channel(512);
+        Bus { tx, seq: Arc::new(AtomicU64::new(0)), state: Arc::new(State::default()) }
     }
-    pub fn publish(&self, e: Event) {
+
+    fn send(&self, msg: Msg) {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         // Err just means nobody is listening.
-        let _ = self.0.send(e);
+        let _ = self.tx.send(Envelope { seq, ts: now(), msg });
     }
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.0.subscribe()
+
+    /// Record a state value and publish a delta — but ONLY if it actually
+    /// changed. The contact poller runs five times a second; without this
+    /// check every subscriber would receive four identical "contact 0 is open"
+    /// messages a second and a delta would stop meaning anything.
+    pub fn set(&self, path: &str, value: Value) {
+        {
+            let Ok(mut m) = self.state.inner.lock() else { return };
+            if m.get(path) == Some(&value) {
+                return;
+            }
+            m.insert(path.to_string(), value.clone());
+        }
+        self.send(Msg::State { path: path.to_string(), value });
+    }
+
+    /// Publish something that happened. Never retained, never deduplicated —
+    /// two identical remote presses are two events.
+    pub fn event(&self, topic: &str, data: Value) {
+        self.send(Msg::Event { topic: topic.to_string(), data });
+    }
+
+    /// The current state document as a message, for a client that just arrived.
+    pub fn snapshot(&self) -> Envelope {
+        Envelope { seq: self.seq.load(Ordering::Relaxed), ts: now(), msg: Msg::Snapshot { state: self.state.doc() } }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Envelope> {
+        self.tx.subscribe()
+    }
+}
+
+/// Does `topic` match subscription `filter`?
+///
+/// `#` matches everything, a trailing `/#` matches a subtree, and a bare
+/// prefix matches its own subtree — MQTT's rules, because half the consumers
+/// of this will be MQTT-shaped anyway and inventing a second syntax helps
+/// nobody.
+pub fn matches(filter: &str, topic: &str) -> bool {
+    if filter == "#" {
+        return true;
+    }
+    if let Some(base) = filter.strip_suffix("/#").or_else(|| filter.strip_suffix('#')) {
+        let base = base.trim_end_matches('/');
+        return topic == base || topic.starts_with(&format!("{base}/"));
+    }
+    topic == filter || topic.starts_with(&format!("{filter}/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_match_subtrees_not_prefixes() {
+        assert!(matches("#", "anything/at/all"));
+        assert!(matches("serial/0/rx", "serial/0/rx"));
+        assert!(matches("serial", "serial/0/rx"));
+        assert!(matches("serial/#", "serial/0/rx"));
+        assert!(matches("ir", "ir/rx"));
+        // A filter must not match a topic that merely starts with the same
+        // letters: subscribing to port 1 should not deliver port 10.
+        assert!(!matches("serial/1", "serial/10/rx"));
+        assert!(!matches("ir", "irrelevant/thing"));
+    }
+
+    #[test]
+    fn state_deltas_only_fire_on_change() {
+        let bus = Bus::new();
+        let mut rx = bus.subscribe();
+        bus.set("contact/0", serde_json::json!(false));
+        // The poller writes this five times a second; only a real transition
+        // should reach a subscriber.
+        bus.set("contact/0", serde_json::json!(false));
+        bus.set("contact/0", serde_json::json!(true));
+        drop(bus);
+
+        let mut seen = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if let Msg::State { path, value } = e.msg {
+                seen.push((path, value));
+            }
+        }
+        assert_eq!(seen.len(), 2, "duplicate writes must not publish: {seen:?}");
+    }
+
+    #[test]
+    fn doc_nests_paths() {
+        let bus = Bus::new();
+        bus.set("relay/0", serde_json::json!(true));
+        bus.set("serial/1/baud", serde_json::json!(9600));
+        assert_eq!(bus.state.doc(), serde_json::json!({
+            "relay": { "0": true },
+            "serial": { "1": { "baud": 9600 } },
+        }));
     }
 }

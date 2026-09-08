@@ -35,18 +35,39 @@ jobs:
         include:
           - board: hc800
             target: x86_64-unknown-linux-musl
+            # ring (iod's TLS, for the MQTT bridge) compiles a few C shims, so
+            # each target needs a C compiler even though rust-lld does the
+            # linking. Nothing else in the workspace needs one.
+            cc: musl-gcc
+            apt: musl-tools
           - board: ea1
             target: i686-unknown-linux-musl
+            cc: i686-linux-gnu-gcc
+            apt: gcc-i686-linux-gnu
           - board: ca1
             target: armv7-unknown-linux-musleabihf
+            cc: arm-linux-gnueabihf-gcc
+            apt: gcc-arm-linux-gnueabihf
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the target's std
+      - name: Install the target's std and a C compiler for it
         run: |
           rustup target add ${{ matrix.target }}
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
           rustc --version && cargo --version
+          ${{ matrix.cc }} --version | head -1
+
+      # ring's build.rs reads CC_<target>. Setting it here rather than in
+      # .cargo/config.toml keeps the local Mac build (host-only, no cross C)
+      # working unchanged.
+      - name: Point ring at that compiler
+        run: |
+          # Only the TARGET is underscored — piping the whole line through tr
+          # would rewrite the compiler name too (musl-gcc -> musl_gcc).
+          echo "CC_$(echo '${{ matrix.target }}' | tr '-' '_')=${{ matrix.cc }}" >> "$GITHUB_ENV"
 
       # Rust first, WITHOUT webd. webd's build.rs embeds ui/dist, so building it
       # before the UI exists would produce a binary that silently serves the
@@ -55,6 +76,14 @@ jobs:
       - name: cargo check — every crate but webd, for ${{ matrix.board }}
         working-directory: packages
         run: cargo check --workspace --target ${{ matrix.target }} --exclude webd
+
+      # Host-target, once. The unit tests cover pure logic — base64 framing for
+      # serial payloads, event-topic filtering, state-delta suppression — none
+      # of which is target-specific, so running them three times proves nothing.
+      - name: cargo test
+        if: matrix.board == 'hc800'
+        working-directory: packages
+        run: cargo test -p iod
 
       # portal too — it is in the artifact, and `cargo check` would not have
       # produced a binary for it.

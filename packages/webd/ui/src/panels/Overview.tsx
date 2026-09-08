@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { iod, type Capabilities, type McuInfo } from '../api';
+import { control, type Capabilities, type McuInfo } from '../api';
 
 export function OverviewPanel({ caps }: { caps: Capabilities }) {
   const [mcu, setMcu] = useState<McuInfo | null>(null);
   useEffect(() => {
-    if (caps.backend === 'mcu' && caps.mcu_linked) iod.mcu().then(setMcu).catch(() => {});
+    if (caps.backend === 'mcu' && caps.mcu_linked) control.mcu().then(setMcu).catch(() => {});
   }, [caps]);
 
   return (
@@ -22,7 +22,7 @@ export function OverviewPanel({ caps }: { caps: Capabilities }) {
       </section>
 
       {mcu && (
-        <section className="rounded-xl border border-white/6 bg-white/2 p-4">
+        <section className="hair rounded-xl border bg-panel p-4">
           <h2 className="mb-3 text-sm font-medium">IO microcontroller</h2>
           <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <Row k="Part" v={mcu.part} />
@@ -52,7 +52,7 @@ function irSub(c: Capabilities) {
 
 function Stat({ label, value, sub }: { label: string; value: number; sub?: string }) {
   return (
-    <div className="rounded-xl border border-white/6 bg-white/2 p-4">
+    <div className="hair rounded-xl border bg-panel p-4">
       <div className="text-2xl font-semibold tabular-nums">{value}</div>
       <div className="text-sm text-ink/80">{label}</div>
       {sub && <div className="mt-1 text-xs text-muted">{sub}</div>}
@@ -62,7 +62,7 @@ function Stat({ label, value, sub }: { label: string; value: number; sub?: strin
 
 function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   return (
-    <div className="flex justify-between gap-4 border-b border-white/5 pb-1">
+    <div className="hair flex justify-between gap-4 border-b pb-1">
       <dt className="text-muted">{k}</dt>
       <dd className={`truncate text-right ${mono ? 'font-mono text-xs' : ''}`} title={v}>{v}</dd>
     </div>

@@ -1,13 +1,23 @@
-// Clients for the two daemons behind this UI.
+// The client for iod's control socket.
 //
-// iod owns every IO on the controller and answers on :7070; webd serves this
-// page and answers system/network questions on :80. They are separate processes
-// on purpose — one owner for a UART that can only answer one question at a time
-// — so the UI simply talks to both rather than pretending it is one service.
+// One socket carries three things: a mirror of everything the box currently IS,
+// a stream of things that HAPPEN, and commands with correlation ids. That is
+// deliberately not three connections — a UI that polls `/api/io/relays` shows a
+// relay somebody else just closed as still open until the next poll, and two
+// installers on the same page then disagree about the hardware.
+//
+// webd serves this page on :80 and answers system/network questions; iod owns
+// every IO on the controller and answers on :7070. Separate processes on
+// purpose — one owner for a UART that can only answer one question at a time.
 
-/** iod's base URL: same host as this page, its own port. */
 export const IOD = `${location.protocol}//${location.hostname}:7070`;
-const wsBase = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:7070`;
+const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:7070`;
+
+/** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
+ *  protected controller can be opened with ?token=… without a login screen the
+ *  firmware has nowhere to store an account for. */
+const token = new URLSearchParams(location.search).get('token') ?? '';
+const auth = (u: string) => (token ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : u);
 
 export type Backend = 'mcu' | 'gpio' | 'none';
 
@@ -31,6 +41,7 @@ export interface Capabilities {
   relays?: { count: number };
   contacts?: { count: number };
   serials?: SerialPort[];
+  bauds?: number[];
 }
 
 export interface McuInfo {
@@ -38,45 +49,164 @@ export interface McuInfo {
   baud: number;
   product: string;
   version: string;
+  /** What the MCU says it measured, which is a useful link check: an HC-800
+   *  reports ~115207 against a nominal 115200. */
   measured_baud: number | null;
 }
 
-export type IodEvent =
-  | { type: 'contact'; index: number; closed: boolean }
-  | { type: 'contact_snapshot'; mask: number; closed: boolean[] }
-  | { type: 'mcu_link'; up: boolean };
-
-async function j<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, init);
-  if (!r.ok) {
-    // iod answers errors as {"error": "..."} — surface that, not "500".
-    let detail = `${r.status}`;
-    try {
-      const b = await r.json();
-      if (b?.error) detail = b.error;
-    } catch { /* body was not json */ }
-    throw new Error(detail);
-  }
-  return r.json() as Promise<T>;
+/** The mirrored state tree, exactly as iod publishes it. */
+export interface IoState {
+  relay?: Record<string, boolean>;
+  contact?: Record<string, boolean>;
+  mcu?: { link?: boolean };
+  serial?: Record<string, { baud?: number; viewers?: number }>;
 }
 
-export const iod = {
-  capabilities: () => j<Capabilities>(`${IOD}/api/io`),
-  mcu: () => j<McuInfo>(`${IOD}/api/io/mcu`),
-  contacts: () => j<{ mask: number; closed: boolean[] }>(`${IOD}/api/io/contacts`),
-  relays: () => j<{ count: number; raw: number[]; decoded: boolean }>(`${IOD}/api/io/relays`),
-  toggleRelays: (mask: number) =>
-    j<{ raw: number[] }>(`${IOD}/api/io/relays/toggle`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mask }),
-    }),
-  sendIr: (port: number, pronto: string, repeat = 1) =>
-    j<unknown>(`${IOD}/api/io/ir/${port}/send`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pronto, repeat }),
-    }),
-  events: () => new WebSocket(`${wsBase()}/ws/events`),
-  serial: (index: number) => new WebSocket(`${wsBase()}/ws/serial/${index}`),
-};
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
+
+export class Control {
+  state: IoState = {};
+  connected = false;
+
+  #ws: WebSocket | null = null;
+  #id = 0;
+  #pending = new Map<number, Pending>();
+  #topics = new Set<string>();
+  #onChange = new Set<() => void>();
+  #onEvent = new Set<(topic: string, data: any) => void>();
+  #retry: number | null = null;
+
+  /** Re-render hook. Every state delta calls these. */
+  watch(fn: () => void) {
+    this.#onChange.add(fn);
+    return () => this.#onChange.delete(fn);
+  }
+  /** Events, which are not state: serial bytes, IR received. */
+  onEvent(fn: (topic: string, data: any) => void) {
+    this.#onEvent.add(fn);
+    return () => this.#onEvent.delete(fn);
+  }
+
+  open() {
+    if (this.#ws) return;
+    const ws = new WebSocket(auth(`${WS}/ws/control`));
+    this.#ws = ws;
+
+    ws.onopen = () => {
+      this.connected = true;
+      // Re-subscribe: a reconnected socket is a NEW subscription state on the
+      // server, and silently losing the serial feed after a blip is the kind of
+      // bug that looks like broken hardware.
+      if (this.#topics.size) ws.send(JSON.stringify({ op: 'subscribe', topics: [...this.#topics] }));
+      this.#changed();
+    };
+
+    ws.onmessage = (m) => {
+      let msg: any;
+      try { msg = JSON.parse(m.data); } catch { return; }
+
+      // A command reply, matched by the id we sent.
+      if (msg.id != null && this.#pending.has(msg.id)) {
+        const p = this.#pending.get(msg.id)!;
+        this.#pending.delete(msg.id);
+        msg.ok ? p.resolve(msg.result) : p.reject(new Error(msg.error?.message ?? 'command failed'));
+        return;
+      }
+
+      switch (msg.type) {
+        case 'snapshot':
+          this.state = msg.state ?? {};
+          this.#changed();
+          break;
+        case 'state':
+          this.#apply(msg.path, msg.value);
+          this.#changed();
+          break;
+        case 'event':
+          this.#onEvent.forEach((f) => f(msg.topic, msg.data));
+          break;
+        // We fell behind and the bus dropped messages for us. iod resends the
+        // snapshot straight after, so there is nothing to do but not pretend
+        // the mirror was continuous.
+        case 'lagged':
+          break;
+      }
+    };
+
+    const down = () => {
+      this.connected = false;
+      this.#ws = null;
+      this.#pending.forEach((p) => p.reject(new Error('socket closed')));
+      this.#pending.clear();
+      this.#changed();
+      // Reconnect: a controller reboot, or webd restarting, should not require
+      // the installer to reload the page from a ladder.
+      if (this.#retry == null) this.#retry = window.setTimeout(() => { this.#retry = null; this.open(); }, 1500);
+    };
+    ws.onclose = down;
+    ws.onerror = () => ws.close();
+  }
+
+  /** Nested-set `relay/1` → state.relay['1']. */
+  #apply(path: string, value: unknown) {
+    const parts = path.split('/');
+    let cur: any = this.state;
+    for (const p of parts.slice(0, -1)) cur = cur[p] ??= {};
+    cur[parts[parts.length - 1]] = value;
+  }
+
+  #changed() {
+    // Replace the object so React sees a new reference.
+    this.state = { ...this.state };
+    this.#onChange.forEach((f) => f());
+  }
+
+  /** Issue a command and wait for its reply. */
+  send<T = any>(body: Record<string, unknown>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const ws = this.#ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error('not connected'));
+      const id = ++this.#id;
+      this.#pending.set(id, { resolve, reject });
+      ws.send(JSON.stringify({ id, ...body }));
+    });
+  }
+
+  /** Events are opt-in; state always flows. Subscribing to a chatty serial
+   *  port should be a decision, not the default for every open page. */
+  subscribe(...topics: string[]) {
+    topics.forEach((t) => this.#topics.add(t));
+    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ op: 'subscribe', topics }));
+    return () => this.unsubscribe(...topics);
+  }
+  unsubscribe(...topics: string[]) {
+    topics.forEach((t) => this.#topics.delete(t));
+    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ op: 'unsubscribe', topics }));
+  }
+
+  // Typed shorthands for what the panels actually do.
+  capabilities = () => this.send<Capabilities>({ op: 'capabilities' });
+  mcu = () => this.send<McuInfo>({ op: 'mcu.info' });
+  relaySet = (index: number, on: boolean) => this.send({ op: 'relay.set', index, on });
+  relayToggle = (index: number) => this.send({ op: 'relay.toggle', index });
+  sendIr = (port: number, pronto: string, repeat = 1) => this.send({ op: 'ir.send', port, pronto, repeat });
+  setBaud = (index: number, baud: number) => this.send({ op: 'serial.baud', index, baud });
+}
+
+export const control = new Control();
+
+/** The terminal socket: raw bytes, because a console stream is not JSON.
+ *  It attaches to the same shared session the control socket reports on, so
+ *  every viewer of a port sees the same stream. */
+export const serialSocket = (index: number) => new WebSocket(auth(`${WS}/ws/serial/${index}`));
+
+/** REST, for the one thing that happens before the socket is up. */
+export async function fetchCapabilities(): Promise<Capabilities> {
+  const r = await fetch(auth(`${IOD}/api/io`));
+  if (!r.ok) {
+    let detail = `${r.status}`;
+    try { const b = await r.json(); if (b?.error) detail = b.error; } catch { /* not json */ }
+    throw new Error(detail);
+  }
+  return r.json();
+}

@@ -8,10 +8,13 @@
 //! One binary runs the whole fleet. What differs between a HC-800, an EA3, an
 //! IO Extender and a CA-1 is `/opt/ohc/board.env` and nothing else.
 mod api;
+mod b64;
 mod board;
 mod events;
 mod link;
 mod mcu;
+mod mqtt;
+mod ops;
 mod serial;
 
 use board::{Backend, Board};
@@ -20,49 +23,76 @@ use std::sync::Arc;
 pub struct Config {
     pub board: Board,
     pub bus: events::Bus,
+    /// One shared session per serial port. Opening a tty per client would give
+    /// two people on the same console half the bytes each.
+    pub serial: std::sync::Arc<serial::Hub>,
     /// `None` when the board has no MCU (gpio or none backends), or when the
     /// port could not be opened — the API still serves capabilities so the UI
     /// can say what is wrong instead of failing to load.
     pub link: Option<tokio::sync::Mutex<link::Link>>,
 }
 
-/// Poll the contact mask and publish transitions.
+/// The one thing that talks to the MCU on its own.
+///
+/// Two jobs, both of which have to happen here rather than per-client:
+///
+/// 1. **Poll the contacts.** The MCU has no unsolicited notify for them, so
+///    somebody has to ask. Doing it once here beats every client polling the
+///    same single-question UART.
+/// 2. **Collect what the MCU says unprompted.** An IR capture arrives because
+///    a human pressed a remote, with no request to correlate it against.
+///    `Link::request` matches on sequence number and sets those aside; this is
+///    what turns them into events.
 ///
 /// 200 ms is a deliberate compromise: fast enough that a doorbell press is not
 /// missed, slow enough that it does not monopolise a UART that IR transmission
 /// also needs. Each poll takes the same lock an API call would, so a long IR
-/// burst simply delays a sample rather than corrupting one.
-async fn contact_poller(cfg: Arc<Config>) {
+/// burst delays a sample rather than corrupting one.
+async fn poller(cfg: Arc<Config>) {
     use std::time::Duration;
     let n = cfg.board.io.contacts;
-    let mut last: Option<u32> = None;
-    let mut link_up = true;
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let Some(l) = &cfg.link else { return };
-        let r = { l.lock().await.contacts() };
-        match r {
+
+        let (contacts, strays) = {
+            let mut l = l.lock().await;
+            let c = l.contacts();
+            // A short read with nothing pending costs nothing and is what lets
+            // a remote press surface between polls.
+            let s = l.poll(Duration::from_millis(5));
+            (c, s)
+        };
+
+        match contacts {
             Ok(mask) => {
-                if !link_up {
-                    link_up = true;
-                    cfg.bus.publish(events::Event::McuLink { up: true });
+                cfg.bus.set("mcu/link", serde_json::json!(true));
+                // Contact position is state: `set` publishes only on a real
+                // change, so five polls a second do not become five messages.
+                for i in 0..n {
+                    cfg.bus.set(&format!("contact/{i}"), serde_json::json!(mask >> i & 1 == 1));
                 }
-                if let Some(prev) = last {
-                    for i in 0..n {
-                        let was = prev >> i & 1 == 1;
-                        let now = mask >> i & 1 == 1;
-                        if was != now {
-                            cfg.bus.publish(events::Event::Contact { index: i, closed: now });
-                        }
-                    }
-                }
-                last = Some(mask);
             }
-            Err(_) => {
-                if link_up {
-                    link_up = false;
-                    cfg.bus.publish(events::Event::McuLink { up: false });
-                }
+            // Every other reading is meaningless while this is false, which is
+            // exactly why it is worth its own piece of state.
+            Err(_) => cfg.bus.set("mcu/link", serde_json::json!(false)),
+        }
+
+        for f in strays {
+            if f.opcode == mcu::OP_IRIN_CAPTURED {
+                // A remote was pressed at the receiver. This is the event an
+                // external control system most wants: it is how a physical
+                // button on a handset triggers something that has nothing to do
+                // with this box.
+                cfg.bus.event(
+                    "ir/rx",
+                    serde_json::json!({
+                        "pronto": f.payload.chunks(2)
+                            .map(|c| format!("{:04x}", u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])))
+                            .collect::<Vec<_>>().join(" "),
+                        "bytes": f.payload.len(),
+                    }),
+                );
             }
         }
     }
@@ -117,7 +147,12 @@ fn main() {
         eprintln!("iod: this board declares no local IO — serving capabilities only");
     }
 
-    let cfg = Arc::new(Config { board, link, bus: events::Bus::new() });
+    let cfg = Arc::new(Config {
+        board,
+        link,
+        bus: events::Bus::new(),
+        serial: std::sync::Arc::new(serial::Hub::default()),
+    });
 
     // Single-threaded on purpose: this daemon is IO-bound on one UART, and a
     // current-thread runtime keeps the binary small on a controller with 2 GB.
@@ -129,8 +164,32 @@ fn main() {
         // Poll the contacts so clients can be told when one CHANGES. The MCU
         // has no unsolicited notify, so somebody has to poll; doing it once
         // here beats every client doing it separately over the same UART.
-        if cfg.board.io.contacts > 0 && cfg.link.is_some() {
-            tokio::task::spawn_local(contact_poller(cfg.clone()));
+        if cfg.link.is_some() {
+            // Ask the MCU to report IR it receives. Without this the receiver
+            // is deaf and no ir/rx event can ever fire.
+            if cfg.board.io.ir_in > 0 {
+                if let Some(l) = &cfg.link {
+                    match l.lock().await.ir_capture(true) {
+                        Ok(()) => eprintln!("iod: IR receive capture enabled"),
+                        Err(e) => eprintln!("iod: could not enable IR capture: {e}"),
+                    }
+                }
+            }
+            tokio::task::spawn_local(poller(cfg.clone()));
+        }
+
+        // Bridge outward, if a broker is configured. Absent one this is simply
+        // not started — a controller must work standalone.
+        match mqtt::Settings::from_env(&cfg.board.hostname) {
+            Some(s) => {
+                eprintln!("iod: mqtt bridge -> {}:{} (tls={}, auth={})",
+                          s.host, s.port, s.tls, s.user.is_some());
+                tokio::task::spawn_local(mqtt::run(cfg.clone(), s));
+            }
+            None => eprintln!("iod: no mqtt broker configured (set IOD_MQTT_URL)"),
+        }
+        if std::env::var("IOD_TOKEN").map(|t| !t.is_empty()).unwrap_or(false) {
+            eprintln!("iod: token auth ENABLED");
         }
         let app = api::router(cfg);
         let listener = tokio::net::TcpListener::bind(&bind).await.unwrap_or_else(|e| {
