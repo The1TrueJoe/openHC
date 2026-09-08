@@ -76,3 +76,38 @@ endef
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
 LINUX_POST_PATCH_HOOKS += OHC_KERNEL_DRIVERS_HOOK
 endif
+
+# --- shared drivers, every board ------------------------------------------
+# Same mirror idea, different scope: board/common/kernel/ holds drivers that are
+# not tied to one SoC. The IO microcontroller is the first — an HC-800 and an
+# EA3 reach different parts over different UARTs at different bauds, but the
+# wire protocol and therefore the driver are the same, so it belongs here rather
+# than being copied into two board directories.
+#
+# Unconditional. Unlike the EA hook there is nothing SoC-specific to strip, and
+# it registers obj-m, so a board that never loads the module pays nothing but a
+# .ko it does not insert.
+OHC_COMMON_KERNEL_SRC_DIR = $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
+OHC_COMMON_OBJS_MK = $(OHC_COMMON_KERNEL_SRC_DIR)/objs.mk
+define OHC_COMMON_KERNEL_HOOK
+	for t in $(OHC_KERNEL_SUBTREES); do \
+		[ -d "$(OHC_COMMON_KERNEL_SRC_DIR)/$$t" ] || continue; \
+		( cd "$(OHC_COMMON_KERNEL_SRC_DIR)/$$t" && \
+		  find . \( -name '*.c' -o -name '*.h' -o -name 'Makefile' \) | sed 's|^\./||' ) | while read -r f; do \
+			install -D -m644 "$(OHC_COMMON_KERNEL_SRC_DIR)/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
+			echo "openHC: installed $$t/$$f (shared)"; \
+		done; \
+	done
+	while IFS='|' read -r mk line; do \
+		case "$$mk" in ''|\#*) continue;; esac; \
+		obj=$${line##*+= }; \
+		if ! grep -q "$$obj" "$(LINUX_DIR)/$$mk"; then \
+			echo '' >> "$(LINUX_DIR)/$$mk"; \
+			echo '# openHC shared driver, registered by OHC_COMMON_KERNEL_HOOK.' \
+				>> "$(LINUX_DIR)/$$mk"; \
+			echo "$$line" >> "$(LINUX_DIR)/$$mk"; \
+			echo "openHC: appended $$obj to $$mk (shared)"; \
+		fi; \
+	done < $(OHC_COMMON_OBJS_MK)
+endef
+LINUX_POST_PATCH_HOOKS += OHC_COMMON_KERNEL_HOOK
