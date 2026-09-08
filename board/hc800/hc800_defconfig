@@ -117,29 +117,43 @@ BR2_TARGET_ROOTFS_CPIO_GZIP=y
 BR2_PACKAGE_DROPBEAR=y
 # busybox udhcpc handles DHCP; no separate client needed.
 
-# --- Wi-Fi: mainline staging r8712u + its firmware ---
-# The radio is USB (0bda:8172, RTL8192SU) on an internal port, not PCIe.
-# Firmware is the part worth checking rather than assuming: the driver does
-# request_firmware("rtlwifi/rtl8712u.bin"), and that exact file IS in
-# BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX's file list (checked against Buildroot
-# 2024.02.9). So no vendored blob and no post-build lift — contrast the CA-1,
-# where rtl8723bs_nic.bin is missing from that same list.
-BR2_PACKAGE_LINUX_FIRMWARE=y
-BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
+# --- Wi-Fi: NOT SUPPORTED on this kernel, and that is now a measured fact ---
 #
-# r8712u is a WIRELESS EXTENSIONS driver — it sets netdev->wireless_handlers
-# and registers no wiphy (checked in drivers/staging/rtl8712/os_intfs.c), so
-# `wpa_supplicant -Dwext` is the backend that will actually drive it. nl80211 is
-# built too because it costs nothing and is the right one the day this radio is
-# replaced or the driver grows a cfg80211 front end.
-BR2_PACKAGE_WPA_SUPPLICANT=y
-BR2_PACKAGE_WPA_SUPPLICANT_WEXT=y
-BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
-BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
-BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
-# `iw` speaks nl80211 only and will show nothing for this radio; `iwconfig`
-# (busybox) or wpa_cli is what works. Kept for the same forward-looking reason.
-BR2_PACKAGE_IW=y
+# The radio is a USB RTL8192SU (0bda:8172, internal port 1-7; its descriptor
+# says "RTL8191S WLAN Adapter"). The ONLY mainline driver it ever had was
+# drivers/staging/rtl8712, and **that directory no longer exists** — it has been
+# deleted from mainline, so CONFIG_R8712U is not merely off in our build, the
+# symbol is absent from the kernel's Kconfig entirely. Confirmed twice: the
+# extracted config from our own bzImage has no R8712U/RTL87xx symbol at all, and
+# drivers/staging/rtl8712/Kconfig is a 404 upstream.
+#
+# rtl8xxxu does NOT cover this part (its core.c claims no 0x8172), and neither
+# does rtw88/rtw89 or the rtlwifi USB drivers (8192CU/8192DU are different
+# silicon). CONFIG_WIRELESS_EXT does not even appear in our config, because no
+# remaining driver selects it — so `wpa_supplicant -Dwext` would have nothing to
+# talk to even if the userspace were here.
+#
+# This was PREDICTED by the note that used to live here ("if
+# drivers/staging/rtl8712 has been dropped by 7.1.8 then Wi-Fi is what breaks");
+# it has now happened, so the packages go rather than pretending otherwise.
+#
+# WHY REMOVE RATHER THAN LEAVE THEM: 1.45 MB of a 12 MB rootfs — 352 KB of
+# rtlwifi firmware nothing can request, plus wpa_supplicant (734 KB), iw
+# (253 KB) and wpa_cli (110 KB) — and this rootfs is unpacked into RAM. The
+# bigger cost is human: a box that ships a Wi-Fi stack and a board.env naming
+# wlan0, but never produces a wlan0, is an hour of someone's evening.
+#
+# board.env sets OHC_WIFI_IFACE empty to match, so the shared S41wifi-ap and
+# S45netmon report "no radio on this board" instead of "wlan0 never appeared".
+#
+# TO BRING IT BACK the day a driver exists (an out-of-tree rtl8712 revival, or
+# swapping the radio for one rtw88 supports), re-enable these four lines and set
+# OHC_WIFI_IFACE=wlan0 / OHC_WIFI_MODULE / OHC_WIFI_AP_CAPABLE in board.env:
+#   BR2_PACKAGE_LINUX_FIRMWARE=y
+#   BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
+#   BR2_PACKAGE_WPA_SUPPLICANT=y  (+_WEXT/_NL80211/_CLI/_PASSPHRASE)
+#   BR2_PACKAGE_IW=y
+# Wired eth0 (r8169) is unaffected and is the reachability path either way.
 
 # --- mDNS identity: avahi (built without D-Bus to stay light) ---
 BR2_PACKAGE_AVAHI=y

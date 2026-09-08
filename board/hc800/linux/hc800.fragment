@@ -88,27 +88,27 @@ CONFIG_USB_EHCI_PCI=y
 CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_STORAGE=y
 
-# ── Wi-Fi: RTL8192SU (0bda:8172) on staging r8712u ────────────────────────
-# The only driver for this part. Mainline's rtl8xxxu does NOT cover RTL8192SU,
-# so if drivers/staging/rtl8712 has been dropped by 7.1.8 then Wi-Fi is what
-# breaks — wired reachability is unaffected and bring-up continues.
+# ── Wi-Fi: no driver exists on this kernel ────────────────────────────────
+# This block used to set CONFIG_R8712U=y for the board's USB RTL8192SU
+# (0bda:8172), with a note saying "if drivers/staging/rtl8712 has been dropped
+# by 7.1.8 then Wi-Fi is what breaks". It has been dropped: the directory is
+# gone from mainline and the symbol does not exist in this kernel's Kconfig.
 #
-# It is a WIRELESS EXTENSIONS driver, not a cfg80211 one: it sets
-# netdev->wireless_handlers directly and registers no wiphy. The CFG80211
-# dependency in its Kconfig only exists because WIRELESS_EXT now lives behind
-# cfg80211. The practical consequence is in userspace — wpa_supplicant has to
-# drive it with -Dwext, not -Dnl80211.
+# That failed SILENTLY, which is the part worth remembering — Buildroot merges
+# fragments with merge_config.sh, and an unknown symbol is dropped with a
+# warning rather than an error. The build stayed green while the driver it named
+# was never built, and the only way to see it was to extract the config back out
+# of the finished bzImage (which is why CONFIG_IKCONFIG is on below).
 #
-# Firmware is rtlwifi/rtl8712u.bin, which comes from Buildroot's linux-firmware
-# (RTL_87XX). A builtin driver can still get it: the initramfs is unpacked in
-# populate_rootfs() (a rootfs_initcall), which runs before device probing, so
-# /lib/firmware is populated by the time request_firmware() is called.
-CONFIG_WLAN=y
-CONFIG_CFG80211=y
-CONFIG_WIRELESS_EXT=y
-CONFIG_STAGING=y
-CONFIG_R8712U=y
-CONFIG_FW_LOADER=y
+# Nothing else claims 0x8172: not rtl8xxxu, not rtw88/rtw89, not the rtlwifi USB
+# drivers. So WLAN/CFG80211/WIRELESS_EXT/STAGING are all off — there is no radio
+# to support, WIRELESS_EXT has nothing to select it, and leaving them on only
+# grows the kernel. The userspace was removed from hc800_defconfig to match.
+#
+# The hardware is still in the box and the vendor's 3.16 still drives it, so
+# this is a software gap, not a missing part. See hc800_defconfig for what to
+# turn back on the day a driver exists.
+# CONFIG_WLAN is not set
 
 # ── audio: ICH7 HD Audio + ALC888-VD ──────────────────────────────────────
 # 2 line out (pins 0x14 rear, 0x1b front), 1 line in (0x1a), coax S/PDIF out
