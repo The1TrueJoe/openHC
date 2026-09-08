@@ -16,6 +16,10 @@ use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use gpiocdev::{line::Value, Request};
 
+// NOTE: everything below is compiled out on the maintainer's macOS host, so a
+// mistake in the Linux path shows up only in CI. That is the cost of keeping a
+// fast host check; it is worth knowing rather than being surprised by.
+
 #[cfg(target_os = "linux")]
 /// Find a chip by its driver LABEL rather than its number.
 ///
@@ -23,7 +27,7 @@ use gpiocdev::{line::Value, Request};
 /// probe order, and the vendor's own notes record the base moving between
 /// kernels. The label does not move.
 pub fn find_chip(label: &str) -> io::Result<PathBuf> {
-    let chips = gpiocdev::chips().map_err(|e| io::Error::other(e.to_string()))?;
+    let chips = gpiocdev::chip::chips().map_err(|e| io::Error::other(e.to_string()))?;
     for path in chips {
         let Ok(chip) = gpiocdev::Chip::from_path(&path) else { continue };
         if chip.info().map(|i| i.label == label).unwrap_or(false) {
