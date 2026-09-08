@@ -42,9 +42,9 @@ start() {
     [ -n "$OHC_RELAYS" ]   && echo "$OHC_RELAYS"   > "$PARAMS/relays"
     [ -n "$OHC_CONTACTS" ] && echo "$OHC_CONTACTS" > "$PARAMS/contacts"
 
-    start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec /usr/bin/ldattach -- \
-        -s "${OHC_IO_MCU_BAUD:-115200}" -8 -n -1 "$LDISC" "$OHC_IO_MCU_TTY" \
-        || { echo "iomcu: ldattach failed"; return 1; }
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec /usr/bin/iomcu-attach -- \
+        "$OHC_IO_MCU_TTY" "${OHC_IO_MCU_BAUD:-115200}" "$LDISC" \
+        || { echo "iomcu: attach failed"; return 1; }
 
     # Give the driver a moment to identify the part and register the chip; it
     # refuses to create a gpiochip for a microcontroller that is not answering,

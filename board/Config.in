@@ -29,6 +29,7 @@ config BR2_OHC_EA_KERNEL_DRIVERS
 source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/figlet/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/splash/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/iomcu-attach/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-ce/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-um/Config.in"
