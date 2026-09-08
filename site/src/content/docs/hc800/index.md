@@ -311,7 +311,7 @@ needed — mainline `snd_hda_codec_realtek` will produce the right jacks:
 That's the owner's "2 line out, 1 line in, 1 coax out", one for one. Every other
 pin complex reads `0x411111f0` (not connected).
 
-## Video: present in silicon, absent from the panel
+## Video: a real GPU, a fixed 720p pipe, and one missing piece
 
 Two video chips are instantiated on the **SMBus** by the vendor's board code:
 
@@ -323,16 +323,115 @@ ths8200 6-0021: THS8200 Chip Detect SUCCESS!
   ##-- c4_vid_conf --##  Intialized to 720p
 ```
 
-So a TI THS8200 video DAC and an ADI HDMI transmitter are **fitted and
-responding**, and the vendor stack configures them to 720p at every boot. The
-hardware matrix previously called this board "none (headless)"; **that's wrong at
-the silicon level.**
+A TI THS8200 video DAC and an ADI ADV7511 HDMI transmitter are fitted and
+responding, and the vendor stack drives them to 720p at every boot. The hardware
+matrix once called this board "none (headless)"; that is wrong at the silicon
+level. (`i2c-0..i2c-5` are `i915 gmbus` buses; only `i2c-6` is the SMBus.)
 
-It is still right at the panel level for our purposes — the unit's rear panel has
-no video connector its owner uses, and openHC is headless on every board. Recorded
-as an open question, not built.
+### How the pipe is fed
 
-Note `i2c-0..i2c-5` are `i915 gmbus` buses; only `i2c-6` is the SMBus.
+`i915` is builtin in the vendor kernel and brings up `inteldrmfb` at
+1280x720x32. The connector topology is the interesting part:
+
+```
+card0-LVDS-1   connected     edid: 0 bytes    modes: 1280x720
+card0-VGA-1    disconnected
+```
+
+**Connected, with a zero-byte EDID and exactly one mode.** There is no display
+negotiating anything — the timings come from the **BIOS VBT**, and the LVDS port
+is wired to the THS8200/ADV7511 pair. Mainline i915 parses the same VBT, so a
+modern kernel should light this pipe identically with no board code at all.
+
+### The split that matters for a port
+
+The two external chips are configured in different places, and only one of them
+is free:
+
+- **THS8200 is configured in-kernel, and it is GPL.** `ths8200.ko` is 11 KB and
+  exports `ths8200_set_720P` / `_powerup` / `_powerdown`, driven by
+  `c4_vid_conf.ko` (`Intialized to 720p`). Straightforward to redo from
+  `/dev/i2c-6`.
+- **ADV7511 is configured from userspace.** `c4_adi_hdmi.ko` is only an i2c
+  chardev shim — `ioctl` read/write byte and block, major 250, device
+  `c4_adi_7513`. The actual register writes live in
+  **`/control4/lib/libvidcfg.so`**, used by `ioserver`. Mainline's
+  `drm/bridge/adv7511` expects a device-tree bridge attachment and cannot bind
+  to x86 i915, so **HDMI output needs a userspace i2c configurator**, and
+  `libvidcfg.so` is the thing to reverse.
+
+openHC now builds `CONFIG_DRM=y`, `CONFIG_DRM_I915=y`,
+`CONFIG_DRM_FBDEV_EMULATION=y`, `CONFIG_FB=y` and `CONFIG_FB_DEVICE=y` so the
+boot splash has a `/dev/fb0`. That lights the pipe and draws into it; **whether
+a TV sees it is unproven** until the ADV7511 side is written.
+
+:::caution[Two kconfig traps]
+`DRM_FBDEV_EMULATION` selects `FB_CORE`, **not** `FB`, and `FB_DEVICE` — which
+creates `/dev/fbX` — defaults to the value of `FB`. Set only the emulation
+symbol and you get a working framebuffer console with no node for userspace to
+open. And leave `FRAMEBUFFER_CONSOLE` **off**: fbcon clears the framebuffer when
+it takes the surface, which is what ate the EA's first splash.
+:::
+
+### It costs almost nothing to use
+
+Measured on the live unit, writing a full 1280x720x32 frame to `/dev/fb0`:
+
+```
+3686400 bytes (3.5MB) copied, 0.008101 seconds, 434.0 MB/s
+```
+
+**~8 ms of CPU to repaint the entire screen**, and ~13 ms/frame end to end from
+a RAM source — a ceiling around 77 fps for pure blit. So a splash is free, a
+status screen that repaints on change is unmeasurable, and only something
+*animating* costs real CPU (~24% of one core at 30 fps, for the blit alone).
+Getting pixels onto the panel is not the expensive part; rasterising them is.
+
+### Can it run WPE WebKit?
+
+Yes, and more easily than the EA family — with one large caveat.
+
+Mesa 24.0.9's **`i915` gallium driver explicitly claims `0xa001 "Intel(R)
+Pineview"`**, this exact chip. Because Mesa provides real EGL + GBM + Wayland,
+this board needs **no custom libwpe backend**: the EA's `wpebackend-pvr` exists
+only because the PowerVR DDK 1.7 predates Wayland. Stock `wpebackend-fdo` plus
+**`cog` with `BR2_PACKAGE_COG_PLATFORM_DRM`** drives KMS directly through
+GBM/EGL with no compositor.
+
+Two prerequisites are config, not code:
+
+- `BR2_PACKAGE_COG_PLATFORM_DRM` depends on `BR2_PACKAGE_HAS_UDEV` (libinput).
+  Every openHC board uses busybox mdev, so this means switching to eudev.
+- wpewebkit needs `BR2_TOOLCHAIN_BUILDROOT_CXX`, `BR2_INSTALL_LIBSTDCPP` and
+  `BR2_USE_WCHAR`. Without them kconfig drops wpewebkit **silently** — the build
+  succeeds and the engine is simply absent.
+
+**The caveat is the fragment shader.** From `i915_screen.c` and `i915_reg.h`,
+i915g offers GLSL **1.20** (GL 2.1 / GLES 2.0), **64 ALU + 32 TEX
+instructions**, 4 texture indirections, **`MAX_CONTROL_FLOW_DEPTH = 0`** (every
+`if` is flattened), **32 vec4 uniforms**, 10 varyings, one render target — and
+**vertex shaders run on the CPU** via draw/gallivm. That is Shader-Model-2.0
+class. Simple TextureMapper blits will compile; rounded-rect clips, blurs and
+filters will not.
+
+So build Mesa with **both** `GALLIUM_DRIVER_I915` and `GALLIUM_DRIVER_SWRAST`
+and choose at runtime (`GALLIUM_DRIVER=i915` vs `llvmpipe`). llvmpipe is the
+correctness fallback, but it wants `BR2_PACKAGE_MESA3D_LLVM` — a very long build
+— and the D525 is **SSSE3-only, no SSE4.1/AVX**, 2c/4t at 1.8 GHz. Expect
+single-digit to low-teens fps at 720p.
+
+### What Control4 actually shipped
+
+Worth knowing before assuming the GPU was ever exercised: **OS 3.x has no
+graphics stack on this box at all** — no GL, no EGL, no Mesa, no X, no navigator
+process. On-screen was an OS 2.10-and-earlier feature. The 2.10 GPL index
+(`src-2.10.0.540110-res.xml`, 301 entries, and it covers `linux-3.16.38` — this
+board's kernel) shows the UI stack was **DirectFB 1.4.2 / 1.6 plus GStreamer
+1.10.3**. No Mesa, no X, no EGL anywhere in it. Control4 never used this GPU's
+3D engine; the on-screen navigator was a 2D framebuffer UI.
+
+(Mesa is MIT-licensed and so would not be *obliged* to appear in a GPL drop —
+but DirectFB's presence is the positive evidence, not Mesa's absence.)
 
 ## Everything else that showed up
 

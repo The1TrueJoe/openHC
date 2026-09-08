@@ -1,0 +1,197 @@
+#!/bin/sh
+# ohc-hc800-boot — stage, arm, disarm and inspect an openHC boot on an HC-800.
+#
+# Runs ON the unit (busybox sh). Copy it over and run it there:
+#
+#     cat board/hc800/tools/ohc-hc800-boot | ssh root@<ip> 'cat > /tmp/ohcboot; sh /tmp/ohcboot status'
+#
+#   status    what is installed and what will boot next    (read-only, always safe)
+#   stage     copy kernel+initrd onto sda3                 (writes sda3 only)
+#   arm       add the menu entry and boot openHC ONCE      (writes sda1)
+#   disarm    restore the stock menu.lst                   (writes sda1)
+#   unstage   remove our kernel+initrd from sda3           (writes sda3)
+#
+# ── READ THIS BEFORE `arm` ────────────────────────────────────────────────
+#
+# ARM WITH A HAND ON THE POWER. Not because it is expected to fail, but because
+# the one failure this box cannot recover from by itself is a SILENT HANG: a
+# kernel that stops without panicking leaves no console, no network and no
+# watchdog, and the only cure is a power cycle. Everything below is built to
+# make every OTHER failure self-healing; none of it helps with that one.
+#
+# What IS handled:
+#
+#   * kernel or initrd missing/corrupt  -> GRUB's `fallback` takes the vendor entry
+#   * kernel panics                     -> panic=10 reboots, and by then the
+#                                          default has already reverted
+#   * openHC boots but is unreachable   -> the NEXT boot is the vendor image
+#                                          anyway, because `savedefault` ran
+#                                          before openHC did
+#
+# The mechanism is GRUB Legacy's `savedefault`, which is present in this unit's
+# installed stage2 (verified by string-dumping it). `default saved` makes GRUB
+# read /boot/grub/default; our entry's `savedefault 1` rewrites that file to the
+# vendor entry AT BOOT TIME, before the kernel is even handed control. So openHC
+# gets exactly one attempt per `arm`, whatever happens next.
+#
+# ── The one risk that is not designed away ────────────────────────────────
+#
+# `arm` and `disarm` write to sda1, the partition holding GRUB's stage2 and
+# menu.lst. That filesystem is the only thing on this disk whose corruption is
+# unrecoverable without physical access — a damaged sda1 means GRUB cannot load
+# stage2 and NOTHING boots, including the factory-restore entry. The writes here
+# are tiny appends to a 463-byte text file on a quiescent ext3, which is about
+# as safe as writing to sda1 gets, but it is not zero. Both commands take a
+# backup first and `disarm` restores it verbatim.
+#
+# sda2 (factory restore) and sda4 (the vendor root) are never touched by any
+# command in this script.
+set -u
+
+P1=/mnt/ohc-p1          # sda1: GRUB, menu.lst
+P3=/mnt/ohc-p3          # sda3: kernels
+GRUBDIR="$P1/boot/grub"
+MENU="$GRUBDIR/menu.lst"
+BACKUP="$GRUBDIR/menu.lst.pre-openhc"
+KERNEL=openhc-bzImage
+INITRD=openhc-initrd.gz
+ENTRY_TITLE="openHC hc800 (one shot)"
+
+die() { echo "ohc-hc800-boot: $*" >&2; exit 1; }
+
+# busybox on the stock image has NO `mountpoint` applet — checked on a live
+# unit. Using it would make every "is it already mounted?" test fail open, and
+# each run would stack another mount on the same directory. /proc/mounts is
+# always there and needs no applet at all.
+is_mounted() { grep -q " $1 " /proc/mounts 2>/dev/null; }
+
+mount_at() {   # $1 = device, $2 = dir, $3 = ro|rw
+    mkdir -p "$2"
+    is_mounted "$2" && return 0
+    mount -o "$3" "$1" "$2"
+}
+mount_rw() {
+    mount_at /dev/sda1 "$P1" rw || die "cannot mount sda1 rw"
+    mount_at /dev/sda3 "$P3" rw || die "cannot mount sda3 rw"
+}
+mount_ro() {
+    mount_at /dev/sda1 "$P1" ro || die "cannot mount sda1 ro"
+    mount_at /dev/sda3 "$P3" ro || die "cannot mount sda3 ro"
+}
+# Unmount only what we mounted, and only if nothing else holds it. Leaving a
+# stray rw mount on sda1 across a power cut is exactly the corruption we are
+# trying not to cause.
+unmount_all() {
+    sync
+    is_mounted "$P1" && umount "$P1" 2>/dev/null
+    is_mounted "$P3" && umount "$P3" 2>/dev/null
+    return 0
+}
+
+# Every write to sda1 ends with an explicit sync + unmount. On a box that may
+# lose power at any moment, an unflushed menu.lst is the corruption case we are
+# actually trying to avoid.
+finish_write() { sync; sleep 1; unmount_all; }
+
+cmd_status() {
+    mount_ro
+    echo "== sda3 (kernels) =="
+    ls -l "$P3/boot/" 2>/dev/null | sed 's/^/  /'
+    df -h "$P3" 2>/dev/null | tail -1 | sed 's/^/  /'
+    echo "== sda1 menu.lst =="
+    sed 's/^/  /' "$MENU" 2>/dev/null || echo "  (unreadable)"
+    echo "== saved default =="
+    if [ -f "$GRUBDIR/default" ]; then
+        echo "  /boot/grub/default present, first line: $(head -1 "$GRUBDIR/default")"
+    else
+        echo "  /boot/grub/default ABSENT (needed by 'default saved')"
+    fi
+    echo "== backup =="
+    [ -f "$BACKUP" ] && echo "  $BACKUP present" || echo "  no backup yet (nothing armed)"
+    unmount_all
+}
+
+cmd_stage() {
+    [ -f "/tmp/$KERNEL" ] || die "put the kernel at /tmp/$KERNEL first"
+    [ -f "/tmp/$INITRD" ] || die "put the initrd at /tmp/$INITRD first"
+    mount_rw
+    need=$(( $(wc -c < "/tmp/$KERNEL") + $(wc -c < "/tmp/$INITRD") ))
+    free=$(( $(df -k "$P3" | tail -1 | awk '{print $4}') * 1024 ))
+    [ "$free" -gt "$need" ] || { unmount_all; die "sda3 has $free bytes free, need $need"; }
+    cp "/tmp/$KERNEL" "$P3/boot/$KERNEL" || { unmount_all; die "copy failed"; }
+    cp "/tmp/$INITRD" "$P3/boot/$INITRD" || { unmount_all; die "copy failed"; }
+    finish_write
+    echo "staged. Nothing boots differently yet — menu.lst is untouched."
+}
+
+cmd_arm() {
+    [ "${1:-}" = "--yes-i-am-watching-the-power" ] || die \
+"refusing. 'arm' changes what this box boots and the one failure mode it cannot
+   self-heal is a silent hang, which needs a physical power cycle. Re-run as:
+       $0 arm --yes-i-am-watching-the-power"
+    mount_rw
+    [ -f "$P3/boot/$KERNEL" ] || { unmount_all; die "not staged — run 'stage' first"; }
+    [ -f "$P3/boot/$INITRD" ] || { unmount_all; die "not staged — run 'stage' first"; }
+    grep -q "$ENTRY_TITLE" "$MENU" && { unmount_all; die "already armed (disarm first)"; }
+
+    cp "$MENU" "$BACKUP" || { unmount_all; die "could not back up menu.lst"; }
+
+    # GRUB Legacy's saved-default file is a fixed-size record, not a bare
+    # number: stage2 rewrites it in place and will not grow it, so it has to be
+    # created at the size GRUB expects or savedefault silently does nothing.
+    printf '2\n#\n# WARNING: this file is used by GRUB and must not be edited\n' > "$GRUBDIR/default"
+    # pad to 512 bytes, which is what grub-set-default writes
+    while [ "$(wc -c < "$GRUBDIR/default")" -lt 512 ]; do printf '#\n' >> "$GRUBDIR/default"; done
+
+    {
+        echo ""
+        echo "title		$ENTRY_TITLE"
+        echo "root		(hd0,2)"
+        echo "kernel		/boot/$KERNEL console=ttyS0,115200 panic=10"
+        echo "initrd		/boot/$INITRD"
+        echo "savedefault	1"
+        echo "boot"
+    } >> "$MENU"
+
+    # `default saved` is what makes savedefault mean anything. fallback 1 covers
+    # the case where our kernel or initrd cannot be READ at all.
+    sed -i 's/^default[ \t].*/default		saved/' "$MENU"
+    sed -i 's/^fallback[ \t].*/fallback		1/' "$MENU"
+
+    echo "== menu.lst is now =="; sed 's/^/  /' "$MENU"
+    finish_write
+    echo ""
+    echo "ARMED. Next boot: openHC, ONCE. The boot after that: the vendor image,"
+    echo "whatever happens — savedefault rewrites the default before the kernel runs."
+    echo "Watch ttyS0 @115200. Reboot when ready:  reboot"
+}
+
+cmd_disarm() {
+    mount_rw
+    if [ -f "$BACKUP" ]; then
+        cp "$BACKUP" "$MENU" || { unmount_all; die "restore failed — DO NOT REBOOT, fix menu.lst by hand"; }
+        rm -f "$BACKUP"
+        echo "menu.lst restored from backup."
+    else
+        echo "no backup found; leaving menu.lst alone." >&2
+    fi
+    rm -f "$GRUBDIR/default"
+    echo "== menu.lst is now =="; sed 's/^/  /' "$MENU"
+    finish_write
+}
+
+cmd_unstage() {
+    mount_rw
+    rm -f "$P3/boot/$KERNEL" "$P3/boot/$INITRD"
+    finish_write
+    echo "unstaged."
+}
+
+case "${1:-status}" in
+    status)  cmd_status ;;
+    stage)   cmd_stage ;;
+    arm)     shift; cmd_arm "$@" ;;
+    disarm)  cmd_disarm ;;
+    unstage) cmd_unstage ;;
+    *) echo "usage: $0 {status|stage|arm|disarm|unstage}"; exit 1 ;;
+esac

@@ -108,14 +108,19 @@ webd:
 mcu:
 	@case "$(BOARD)" in \
 	  ea*) : ;; \
-	  hc800) echo "mcu: hc800's IO-MCU is a Stellaris LM3S1162, not a TM4C1231D5."; \
-	         echo "  Same DLE/STX framing and the same TI serial flash-loader, but a"; \
-	         echo "  different part and a different image — there is no openHC firmware"; \
-	         echo "  for it yet. See https://the1truejoe.github.io/openHC/shared/io-mcu/ and https://the1truejoe.github.io/openHC/hc800/."; \
-	         exit 1 ;; \
+	  hc800) : ;; \
 	  *) echo "mcu: $(BOARD) has native on-board IO — no companion MCU to build"; exit 1 ;; \
 	esac
+# hc800's IO-MCU is a Stellaris LM3S1162 (Cortex-M3), not the EA family's TM4C
+# (M4F) — a different part, a different image, and its own source tree. It also
+# builds a FLASHABLE image rather than a bare .bin, because Control4's
+# bootloader wants the 256-byte header + CRC-16/ARC container; `image` does that
+# wrapping, `fw` alone would leave a file the bootloader rejects.
+ifeq ($(BOARD),hc800)
+	$(MAKE) -C board/hc800/firmware/io-mcu/lm3s1162 image BOARD=hc800
+else
 	$(MAKE) -C board/ea-common/firmware/io-mcu/tm4c1231d5 fw BOARD=$(BOARD)
+endif
 
 # Serve the built kernel over BOOTP+TFTP. Needs root (binds :67/:69); run the
 # printed command yourself if make cannot get privileges. EA/CEFDK only — the

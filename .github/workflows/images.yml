@@ -203,7 +203,21 @@ jobs:
         id: bundle
         run: |
           bundle="openhc-${{ matrix.board }}-${{ steps.ver.outputs.version }}.zip"
-          ( cd output/images && zip -r -X "../../$bundle" . )
+          # build.sh writes to output/build/$BOARD/images, NOT output/images —
+          # it keeps a per-board output tree so switching boards does not force
+          # a full rebuild. This step looked in output/images and so had never
+          # produced an artifact for ANY board; every green build still ended
+          # here with "cd: output/images: No such file or directory".
+          imgdir="output/build/${{ matrix.board }}/images"
+          if [ ! -d "$imgdir" ]; then
+            echo "no images at $imgdir — build.sh layout changed?"
+            find output -maxdepth 4 -name images -type d 2>/dev/null
+            exit 1
+          fi
+          ls -l "$imgdir"
+          # Absolute destination: a relative one is interpreted from inside
+          # $imgdir, which is four levels down, not two.
+          ( cd "$imgdir" && zip -r -X "$GITHUB_WORKSPACE/$bundle" . )
           echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
           ls -l "$bundle"
 

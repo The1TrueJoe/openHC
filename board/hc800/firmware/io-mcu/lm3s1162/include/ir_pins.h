@@ -21,11 +21,53 @@
  *   * Generator n drives outputs PWM(2n) and PWM(2n+1), so the channel -> 
  *     generator mapping below is fixed by the silicon and needs no decoding.
  *   * The vendor's per-processor config blocks (flash 0x10B8, stride 0x3D4)
- *     carry the pin descriptors. Block 0 holds 41 GPIO entries across ports
- *     A-G. DECODING ONE BLOCK'S DESCRIPTOR FORMAT IS THE REMAINING WORK — the
- *     TM4C equivalent turned out to be {gpio_base, pin_mask|populated_bit,
- *     timer_base, irq_a, irq_b} at 0x1c stride, and this table is likely the
- *     same shape with the timer fields replaced by PWM ones.
+ *     carry the pin descriptors, and THE RECORD FORMAT IS NOW DECODED:
+ *
+ *         GPIO pin record   8 bytes   { u32 gpio_base; u32 pin }
+ *                                     pin bits 0..7 = the mask,
+ *                                     BIT 8 = POPULATED (same convention the
+ *                                     TM4C table uses)
+ *         timer record     12 bytes   { u32 timer_base; u32 mask; u32 mask2 }
+ *                                     four per block, always in the order
+ *                                     TIMER2, TIMER0, TIMER3, TIMER1
+ *
+ *     Populated pins per block, in file order:
+ *
+ *       block 0  32  PD4 PC7 PC6 PF4 PC5 PC4 PF5 PB4 PB5 PA7 PB6 PF2 PA6 ...
+ *       block 1  28  PD4 PC7 PC6 PF4 PC5 PC4 PF5 PB4 PB5 PA7 PB6 PF2 PA6 ...
+ *       block 2  38  PD4 PC7 PC6 PF4 PC5 PC4 PF5 PB4 PB5 PA7 PB6 PF2 PA6 ...
+ *       block 3   6  PA0 PA1 PD2 PD3 PG0 PG1
+ *
+ *     TWO THINGS ARE NOW SOLID:
+ *
+ *       - The LAST SIX pins of every block are the three UARTs, and they are
+ *         the textbook Stellaris pinouts: UART0 = PA0/PA1, UART1 = PD2/PD3,
+ *         UART2 = PG0/PG1. Block 3 — the "Undefined" processor — contains
+ *         ONLY those six, which is exactly what an unknown part should get:
+ *         a host link and nothing else. That agreement is what confirms the
+ *         record format rather than merely fitting it.
+ *       - Blocks 0, 1 and 2 share the same FIRST THIRTEEN pins, so a profile
+ *         is a prefix length here too, not a remapping.
+ *
+ *     AND ONE THING IS NOT, WHICH IS WHY THE TABLE BELOW IS STILL EMPTY:
+ *
+ *     The obvious reading of that prefix is PD4 = IR receiver (it is the first
+ *     descriptor and it sits among the timer records, mirroring the TM4C
+ *     layout where the receiver comes first and owns a capture timer), then
+ *     PC7 PC6 PF4 PC5 PC4 PF5 = the six IR outputs. Six is the right number
+ *     and the position is right.
+ *
+ *     But PC4..PC7 are classically the CCP (timer capture/compare) pins on
+ *     Stellaris, not PWM pins — while the stock vector table says the carrier
+ *     runs on PWM generators 0/1/2 and takes NO timer interrupt at all. Those
+ *     two facts do not sit together, and until they do, assigning those pins
+ *     is a guess dressed as a decode. Resolving it needs the LM3S1162 pin
+ *     table (datasheet Table "Signals by Function", or StellarisWare's
+ *     pin_map.h under PART_LM3S1162) — neither was reachable from here.
+ *
+ *     Which block is the LM3S1162 is also unsettled: the image's strings run
+ *     LM3S615, LM3S815, LM3S811, LM3S1162, but block 3 is the minimal one, so
+ *     the block order is NOT the string order and the mapping is unproven.
  *
  * Until then ir_carrier_configure() refuses to touch a pin (see hal_lm3s.c):
  * the carrier is set up on the PWM generator, which is safe, and the GPIO

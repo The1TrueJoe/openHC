@@ -518,23 +518,130 @@ Two things this settles:
 **Which physical jack is which channel is still unknown.** It's a PCB fact,
 resolvable by driving one channel at a time and watching which emitter lights.
 
-## The HC-800 conflict, unresolved
+## The HC-800: mostly resolved
 
-For reference, the HC-800's LM3S1162 image uses only TIMER0–3 and all three UARTs
-— UART0 host, UART1/UART2 the two user ports.
+An earlier version of this page said the HC-800's LM3S1162 image "uses only
+TIMER0–3 and all three UARTs — UART0 host, UART1/UART2 the two user ports", and
+flagged both halves as contradicted by a live unit. Both are now settled, and
+neither by the reading that produced them.
 
-**Both halves of that sentence are contradicted by a live HC-800**, and neither
-conflict is resolved:
+### The two user serial ports are HOST UARTs
 
-- **IR count.** The owner counts **six IR jacks**, not four. A timer count is a
-  *lower bound* on channel count, not the count: every Stellaris GPTM has two
-  capture/compare outputs, so TIMER0–3 can drive up to eight IR carriers. The EA
-  decoding above reads channels off the pin/exception table, which is why it's
-  trustworthy; the HC800 figure was inferred from timer numbers alone. **Redo it
-  against the pin table before believing either number.**
-- **The two user serial ports.** On the live unit `ioserver` holds `/dev/ttyS1`
-  and `/dev/ttyS2` — **host 8250 UARTs**, not MCU-routed, at the same time as it
-  holds `/dev/ttyS3` for the MCU itself. If the LM3S image really does configure
-  UART1/UART2, then either they land somewhere other than the rear jacks, or the
-  host UARTs are bridged through the MCU. Nothing visible from a running system
-  distinguishes those.
+`ioserver` on a running HC-800 holds **three** ports at once:
+
+```
+ioserver(2791) -> /dev/ttyS3     the LM3S1162
+ioserver(2791) -> /dev/ttyS1     0x2f8, RTS|DTR
+ioserver(2791) -> /dev/ttyS2     0x3e8, RTS|DTR
+```
+
+`ttyS1` and `ttyS2` are real 16550As on the LPC bus, opened and configured
+directly by the daemon — note the asserted modem lines, where the never-opened
+Zigbee port at `ttyS4` shows no flags at all. The rear RS-232 jacks are wired to
+the host, not routed through the MCU.
+
+So why does the image configure three UARTs? Because **it is the same binary as
+the HC-250**: `.flash.config` maps `hc800` and `hc250` to one pair of files.
+"MultiConfig" in the filename means multi-**processor**, not multi-board — the
+image carries `Processor: LM3S1162 / LM3S615 / LM3S811 / LM3S815 / Undefined`
+and four config blocks to match. A feature present in the image is not
+necessarily a feature of this board.
+
+**Consequence for a replacement firmware:** the HC-800's MCU does IR, 4 relays
+and 4 contacts, and no user serial at all.
+
+### Six IR outputs, on PWM — not four, on timers
+
+The old figure came from counting timer base addresses, which is a lower bound
+rather than a count. The vector table settles it. The stock image's table is 46
+entries (16 system + 30 IRQs) and only six handlers differ from the common
+default at `0x7783`:
+
+| IRQ | Peripheral |
+|---|---|
+| 5, 6 | UART0, UART1 |
+| 9 | PWM **Fault** |
+| 10, 11, 12 | PWM generators **0, 1, 2** |
+
+**This part has a PWM module and the firmware uses it** — the module's base
+`0x40028000` sits at flash `0x4BA0`, immediately beside those handlers. Three
+generators drive two outputs each, which is six, matching the owner's six rear
+jacks. That is also the sharpest difference from the EA's TM4C1231D5, which has
+no PWM module at all and must synthesise the carrier from a timer CCP.
+
+Note what is *absent*: no timer, GPIO or SysTick interrupt is claimed anywhere.
+Contacts are polled, and burst timing runs off the PWM generator interrupts.
+
+### The pin map: format decoded, assignment still open
+
+The per-processor config blocks live at flash `0x10B8`, stride `0x3D4`, and the
+record formats are now known:
+
+```
+GPIO pin record    8 bytes   { u32 gpio_base; u32 pin }
+                             bits 0..7 = mask, BIT 8 = POPULATED
+timer record      12 bytes   { u32 timer_base; u32 mask; u32 mask2 }
+                             four per block, always TIMER2, TIMER0, TIMER3, TIMER1
+```
+
+Two things confirm the decoding rather than merely fitting it. First, the **last
+six pins of every block are the three UARTs at their textbook Stellaris
+pinouts** — UART0 `PA0`/`PA1`, UART1 `PD2`/`PD3`, UART2 `PG0`/`PG1`. Second,
+block 3 — the `Undefined` processor — contains *only* those six, which is
+exactly what an unknown part should be given: a host link and nothing else.
+
+Blocks 0, 1 and 2 share the same first thirteen pins, so a profile is a prefix
+length here too:
+
+```
+PD4 PC7 PC6 PF4 PC5 PC4 PF5 PB4 PB5 PA7 PB6 PF2 PA6 ...
+```
+
+The tempting reading is `PD4` = IR receiver (first descriptor, sitting among the
+timer records, mirroring the EA layout) and then `PC7 PC6 PF4 PC5 PC4 PF5` = the
+six IR outputs. Six is the right number in the right place.
+
+**It is not safe to act on yet.** `PC4`–`PC7` are classically the CCP
+(capture/compare) pins on Stellaris, not PWM pins — while the vector table says
+the carrier is on PWM and no timer interrupt is taken. Those two facts do not
+sit together. Resolving it needs the LM3S1162 pin table (the datasheet's
+"Signals by Function", or StellarisWare's `pin_map.h` under `PART_LM3S1162`).
+Which block corresponds to the LM3S1162 is also unproven: the strings run
+LM3S615, LM3S815, LM3S811, LM3S1162, but block 3 is the minimal one, so block
+order is not string order.
+
+Until that is closed, openHC's LM3S firmware keeps `OHC_IR_PINS_KNOWN` and
+`OHC_RELAY_PINS_KNOWN` at `0`: it runs, answers the host and builds correct
+carriers inside the PWM peripheral, but enables no output pin and drives no
+relay. A relay here may be switching a real load.
+
+### The protocol is confirmed on this part
+
+Asked directly, on `/dev/ttyS3` of a live unit with `ioserver` suspended:
+
+```
+--> 10 02 34 01 00 00 00 cb                     FIRMWARE_VERSION_GET
+<-- 10 02 35 01 02 00 08 "03.26.15"         33
+--> 10 02 24 02 00 00 00 da                     PRODUCT_NAME
+<-- 10 02 25 02 02 00 1b "c4:ir_processor:c4-ir01-i2c" 6c
+```
+
+Reply opcode = request + 1, flags bit 1 = response, checksum = negated 8-bit
+sum — the same protocol this page documents for the EA, decoded by the same
+`ohc_proto.c` without modification. **The host link is 115200 on this board**,
+not the EA's 460800. The reported version matches the extracted image exactly,
+so the running firmware is the file in `/control4/firmware/io/`.
+
+### Image container
+
+The LM3S application file is wrapped, where the TM4C ones are raw:
+
+```
+[0x000 .. 0x0FF]      256-byte Control4 text header, 0xFF padded
+[0x100 .. 0x100FF]    64 KB flash image (low 4 KB left erased — the bootloader)
+[0x10100 .. 0x10101]  CRC-16/ARC of the whole 64 KB, little-endian
+```
+
+CRC-16/ARC: poly `0x8005`, init 0, reflected in and out, no final xor. openHC's
+`tools/mkimage.py` reproduces the stock image's stored `0xa578` exactly, which
+is what makes the format trustworthy enough to flash against.
