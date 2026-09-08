@@ -179,3 +179,30 @@ a credential.
   one-byte payload is inferred from the name and the firmware sends no reply, so
   a wrong value fails silently. If a remote press produces no `ir/rx` event, that
   is the first suspect.
+
+## A real hazard: IR send can wedge the microcontroller
+
+Sending a 78-word Pronto code to the vendor firmware stopped the MCU answering
+**anything** — relays, contacts, identify — and it did not recover on its own,
+through a `iod` restart, or after minutes of idling. Only pulsing the reset line
+brought it back.
+
+The IROUT_SEND payload layout here (`port, repeat`, then Pronto words
+big-endian) was inferred from the vendor firmware, not observed on the wire. The
+most likely explanation is that the firmware reads a count or a length from a
+position this code puts something else in, and then waits forever for bytes that
+never come. Length alone is the other candidate. Which one is not yet settled.
+
+Until it is:
+
+* `ir.send` refuses codes over **64 words**, chosen low deliberately. A refused
+  send is an error message; a wedged MCU is every other piece of IO down.
+* `mcu.reset` (`<base>/cmd/mcu/reset`, or `POST /api/io/mcu/reset`) pulses
+  `OHC_GPIO_IO_RESET` and re-identifies the part. That is the recovery, and it
+  is why the reset line is worth wiring into the daemon rather than leaving to
+  a power cycle.
+
+Note that recovery needs the GPIO character device. A kernel built without
+`CONFIG_GPIO_CDEV_V1` also breaks every libgpiod-1.x tool on the rootfs, so on
+such an image `mcu.reset` is the ONLY software route to a stuck MCU — iod talks
+to the v2 ABI directly for exactly that reason.
