@@ -43,11 +43,15 @@ jobs:
           - board: ea1
             target: i686-unknown-linux-musl
             cc: i686-linux-gnu-gcc
-            apt: gcc-i686-linux-gnu
+            # libc6-dev-*-cross carries the target's headers. Without it the
+            # cross gcc falls back to /usr/include and dies on a missing
+            # bits/libc-header-start.h — and --no-install-recommends below is
+            # exactly what stops apt pulling it in on its own.
+            apt: gcc-i686-linux-gnu libc6-dev-i386-cross
           - board: ca1
             target: armv7-unknown-linux-musleabihf
             cc: arm-linux-gnueabihf-gcc
-            apt: gcc-arm-linux-gnueabihf
+            apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
 
     steps:
       - uses: actions/checkout@v4
