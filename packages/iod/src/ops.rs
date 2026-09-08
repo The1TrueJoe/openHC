@@ -217,14 +217,22 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         .io_reset_gpio
         .ok_or_else(|| Fault::NoSuch("this board declares no IO reset line".into()))?;
 
-    let chip = gpio_find(&chip_label)?;
-    // Blocking ioctls and a sleep: off the async thread.
-    tokio::task::spawn_blocking(move || {
-        crate::gpio::pulse_low(&chip, line, Duration::from_millis(100))
-    })
-    .await
-    .map_err(|e| Fault::Io(e.to_string()))?
-    .map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
+    // Claim the line once and keep it. A released line reverts to the kernel's
+    // default, which for an undocumented reset pin could mean leaving the part
+    // held in reset by the very call meant to revive it.
+    {
+        let mut held = c.io_reset.lock().unwrap();
+        if held.is_none() {
+            let chip = crate::gpio::find_chip(&chip_label).map_err(|e| Fault::Io(e.to_string()))?;
+            *held = Some(
+                crate::gpio::request_output(&chip, line, true)
+                    .map_err(|e| Fault::Io(format!("cannot claim the reset line: {e}")))?,
+            );
+        }
+        // board.env: 1 = released, so low is the assert.
+        crate::gpio::pulse_low(held.as_ref().unwrap(), Duration::from_millis(200))
+            .map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
+    }
 
     // The part needs a moment to boot before it will answer.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -232,7 +240,7 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
     let mut back = None;
     if let Some(l) = &c.link {
         let mut l = l.lock().await;
-        for _ in 0..5 {
+        for _ in 0..8 {
             if let Ok((name, ver)) = l.identify() {
                 back = Some(json!({ "product": name, "version": ver }));
                 break;
@@ -242,10 +250,6 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
     }
     c.bus.set("mcu/link", json!(back.is_some()));
     Ok(json!({ "reset": true, "chip": chip_label, "line": line, "answering": back }))
-}
-
-fn gpio_find(label: &str) -> Result<String, Fault> {
-    crate::gpio::find_chip(label).map_err(|e| Fault::Io(e.to_string()))
 }
 
 async fn contacts(c: &Arc<Config>) -> Out {

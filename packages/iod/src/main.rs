@@ -32,6 +32,9 @@ pub struct Config {
     /// rather than accepting an edit it cannot honour.
     pub pinned: Vec<String>,
     pub settings_tx: tokio::sync::watch::Sender<mqtt::settings::Mqtt>,
+    /// The IO microcontroller's reset line, claimed on first use and then held.
+    /// See gpio::Line — letting go of it could leave the part in reset.
+    pub io_reset: std::sync::Mutex<Option<gpio::Line>>,
     /// One shared session per serial port. Opening a tty per client would give
     /// two people on the same console half the bytes each.
     pub serial: std::sync::Arc<serial::Hub>,
@@ -195,6 +198,7 @@ fn main() {
         settings: std::sync::Mutex::new(settings),
         pinned,
         settings_tx,
+        io_reset: std::sync::Mutex::new(None),
         serial: std::sync::Arc::new(serial::Hub::default()),
     });
 
