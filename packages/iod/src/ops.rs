@@ -160,7 +160,16 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
         "board":    c.board.model,
         "hostname": c.board.hostname,
         "backend":  io.backend,
-        "mcu_linked": c.link.is_some(),
+        // Whether the MCU is ANSWERING, not merely whether its port opened.
+        // Those differ exactly when it matters most: a wedged microcontroller
+        // still has an openable tty, and reporting that as "linked" is a
+        // valid-looking lie that sends people looking in the wrong place.
+        "mcu_linked": c.bus.state.get("mcu/link")
+            .and_then(|v| v.as_bool())
+            .unwrap_or_else(|| c.link.is_some()),
+        // Kept separate so a client can tell "no MCU on this board" from
+        // "there is one and it is not talking".
+        "mcu_present": c.link.is_some(),
     });
     let m = v.as_object_mut().unwrap();
     if io.ir_total() > 0 {
