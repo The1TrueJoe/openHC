@@ -68,6 +68,12 @@ pub struct Io {
     pub relays: u8,
     pub contacts: u8,
 
+    /// The GPIO chip by DRIVER LABEL, not number — the number depends on probe
+    /// order and has moved between kernels on this hardware.
+    pub gpio_chip: Option<String>,
+    /// Line that holds the IO microcontroller in reset. Having this is what
+    /// makes a wedged MCU recoverable without a power cycle.
+    pub io_reset_gpio: Option<u32>,
     /// Native GPIO line numbers, `gpio` backend only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub relay_gpios: Vec<u32>,
@@ -192,6 +198,8 @@ impl Board {
                 ir_in: num(&e, "OHC_IR_IN"),
                 relays: num(&e, "OHC_RELAYS"),
                 contacts: num(&e, "OHC_CONTACTS"),
+                gpio_chip: e.get("OHC_GPIO_CHIP_LABEL").filter(|s| !s.is_empty()).cloned(),
+                io_reset_gpio: e.get("OHC_GPIO_IO_RESET").and_then(|v| v.parse().ok()),
                 relay_gpios: lines(&e, "OHC_RELAY_GPIOS"),
                 contact_gpios: lines(&e, "OHC_CONTACT_GPIOS"),
                 serials,

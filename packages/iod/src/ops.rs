@@ -79,6 +79,14 @@ pub enum Cmd {
     Capabilities,
     #[serde(rename = "mcu.info")]
     McuInfo,
+    /// Pulse the microcontroller's reset line.
+    ///
+    /// Needed because the MCU CAN be wedged by a malformed request — it was,
+    /// by an IR payload — and when it is, every relay, contact and IR call
+    /// fails until it is reset. Without this the only cure is a power cycle,
+    /// which on a controller in a rack is a site visit.
+    #[serde(rename = "mcu.reset")]
+    McuReset,
     #[serde(rename = "contact.get")]
     ContactGet,
     #[serde(rename = "relay.get")]
@@ -128,6 +136,7 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
     match cmd {
         Cmd::Capabilities => Ok(capabilities(c)),
         Cmd::McuInfo => mcu_info(c).await,
+        Cmd::McuReset => mcu_reset(c).await,
         Cmd::ContactGet => contacts(c).await,
         Cmd::RelayGet => relays(c).await,
         Cmd::RelaySet { index, on } => relay_write(c, index, Some(on)).await,
@@ -187,6 +196,56 @@ async fn mcu_info(c: &Arc<Config>) -> Out {
     let measured = l.measured_baud().ok();
     Ok(json!({ "part": l.part, "baud": l.baud, "product": product,
                "version": version, "measured_baud": measured }))
+}
+
+/// Hold the MCU in reset briefly, then let it run.
+///
+/// 100 ms is far longer than the part needs and short enough that a relay
+/// holding a real load is not left in an undefined state for any length of
+/// time. Afterwards the link is re-identified so the caller learns whether it
+/// actually came back rather than being told "reset" and left to guess.
+async fn mcu_reset(c: &Arc<Config>) -> Out {
+    let chip_label = c
+        .board
+        .io
+        .gpio_chip
+        .clone()
+        .ok_or_else(|| Fault::NoSuch("this board declares no GPIO chip".into()))?;
+    let line = c
+        .board
+        .io
+        .io_reset_gpio
+        .ok_or_else(|| Fault::NoSuch("this board declares no IO reset line".into()))?;
+
+    let chip = gpio_find(&chip_label)?;
+    // Blocking ioctls and a sleep: off the async thread.
+    tokio::task::spawn_blocking(move || {
+        crate::gpio::pulse_low(&chip, line, Duration::from_millis(100))
+    })
+    .await
+    .map_err(|e| Fault::Io(e.to_string()))?
+    .map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
+
+    // The part needs a moment to boot before it will answer.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut back = None;
+    if let Some(l) = &c.link {
+        let mut l = l.lock().await;
+        for _ in 0..5 {
+            if let Ok((name, ver)) = l.identify() {
+                back = Some(json!({ "product": name, "version": ver }));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    }
+    c.bus.set("mcu/link", json!(back.is_some()));
+    Ok(json!({ "reset": true, "chip": chip_label, "line": line, "answering": back }))
+}
+
+fn gpio_find(label: &str) -> Result<String, Fault> {
+    crate::gpio::find_chip(label).map_err(|e| Fault::Io(e.to_string()))
 }
 
 async fn contacts(c: &Arc<Config>) -> Out {
@@ -259,6 +318,19 @@ async fn ir_send(c: &Arc<Config>, port: u8, pronto: &str, repeat: u8) -> Out {
     let words = words.map_err(|_| Fault::Bad("pronto must be space-separated hex words".into()))?;
     if words.first() != Some(&0) {
         return Err(Fault::Bad("only Pronto code type 0000 (raw, learned) is supported".into()));
+    }
+    // A hard bound, learned the hard way: a 78-word code sent to the vendor
+    // firmware wedged the microcontroller outright — no reply to anything,
+    // through a daemon restart, until the reset line was pulsed. Whether the
+    // real limit is length or a payload layout this code has wrong is not yet
+    // established (see the note in the README), so this errs low: a refused
+    // send is recoverable, a dead MCU needs `mcu.reset` at best.
+    const MAX_WORDS: usize = 64;
+    if words.len() > MAX_WORDS {
+        return Err(Fault::Bad(format!(
+            "code is {} words; this firmware is only known safe up to {MAX_WORDS}",
+            words.len()
+        )));
     }
     let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
 

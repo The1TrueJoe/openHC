@@ -42,6 +42,9 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .route("/api/health", get(health))
         .route("/api/io", get(|s: Ctx| run(s, Cmd::Capabilities)))
         .route("/api/io/mcu", get(|s: Ctx| run(s, Cmd::McuInfo)))
+        // Recovery, over REST as well as MQTT: a wedged MCU is exactly when
+        // you cannot rely on the IO transport to carry the fix.
+        .route("/api/io/mcu/reset", axum::routing::post(|s: Ctx| run(s, Cmd::McuReset)))
         .route("/api/config", get(get_config).post(put_config))
         .layer(axum::middleware::from_fn(cors))
         .layer(axum::middleware::from_fn(auth))

@@ -11,6 +11,7 @@ mod api;
 mod b64;
 mod board;
 mod events;
+mod gpio;
 mod link;
 mod mcu;
 mod mqtt;

@@ -89,6 +89,7 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
                 _ => None,
             }
         }
+        ["mcu", "reset"] => Some(Cmd::McuReset),
         ["ir", n, "send"] => Some(Cmd::IrSend { port: n.parse().ok()?, pronto: b.to_string(), repeat: 1 }),
         ["serial", n, "write"] => {
             Some(Cmd::SerialWrite { index: n.parse().ok()?, data: body.to_string(), hex: false, b64: false })
