@@ -4,12 +4,12 @@
 /br2-external/buildroot/
 *.img
 *.bin
-# ...except the vendor IO-MCU images we deliberately keep. These are the ONLY
-# way back to stock firmware on the microcontroller — the equivalent of the
-# sda2 factory partition for the host — and they are 70 KB, pulled off a live
-# unit's /control4/firmware/io/. Losing them to a blanket *.bin would mean a
-# bricked MCU is unrecoverable without SWD.
-!/board/*/firmware/io-mcu/*/vendor/*.bin
+# NO EXCEPTION for the vendor IO-MCU images. They are Control4/Snap One
+# proprietary firmware, and "the owner of the hardware already has them" is a
+# reason someone may keep a copy — not a licence to redistribute one from a
+# public repository. Pull them off your own unit; see
+# board/hc800/firmware/io-mcu/lm3s1162/vendor/README.md for where they live and
+# the checksums to confirm you have the right ones.
 # scratch
 /tmp/
 *.log

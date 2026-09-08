@@ -93,14 +93,23 @@ jobs:
         if: matrix.target == 'image'
         run: make -C ${{ matrix.dir }} verify
 
-      # Prove the packer against Control4's OWN image, not just our own output.
-      # If mkimage.py's CRC ever stops reproducing the stock image's 0xa578, the
-      # container format has drifted and anything we flash is suspect.
+      # Prove the packer against Control4's OWN image, not just our own output:
+      # if mkimage.py stops reproducing the stock image's CRC, the container
+      # format has drifted and anything we flash is suspect.
+      #
+      # The stock image is NOT in this repository — it is proprietary firmware
+      # and redistributing it is not ours to do. So this check runs only for
+      # somebody who has pulled it off their own unit, and is skipped in CI
+      # rather than pretending to have verified something it could not see.
       - name: Check the packer still reproduces the STOCK image's CRC
         if: matrix.name == 'lm3s1162-hc800'
         run: |
-          python3 board/hc800/firmware/io-mcu/lm3s1162/tools/mkimage.py --verify \
-            board/hc800/firmware/io-mcu/lm3s1162/vendor/700-00165_LM3S1162_IoProcMultiConfig1162_03.26.15_2.8.0.507079-fw.bin
+          stock=board/hc800/firmware/io-mcu/lm3s1162/vendor/700-00165_LM3S1162_IoProcMultiConfig1162_03.26.15_2.8.0.507079-fw.bin
+          if [ -f "$stock" ]; then
+            python3 board/hc800/firmware/io-mcu/lm3s1162/tools/mkimage.py --verify "$stock"
+          else
+            echo "stock image not present (it is not redistributable) — skipping"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: success()

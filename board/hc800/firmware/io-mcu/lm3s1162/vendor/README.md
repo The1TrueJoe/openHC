@@ -1,7 +1,24 @@
 # Stock LM3S1162 IO-MCU firmware — the way back
 
-These are Control4's own images, byte-for-byte as pulled from a live HC-800's
-`/control4/firmware/io/` (OS 3.x, unit `Main-HC800-000FFF57B978`, 2026-09-07).
+**The images are not in this repository, and must not be.** They are
+Control4/Snap One proprietary firmware. That the owner of an HC-800 already has
+a copy on their own unit is a reason they may keep one; it is not a licence for
+this project to hand one to everybody who clones the repo. `.gitignore` has no
+exception for them.
+
+Get your own, off your own unit, before flashing anything:
+
+```sh
+scp root@<your-hc800>:/control4/firmware/io/*.bin \
+    board/hc800/firmware/io-mcu/lm3s1162/vendor/
+```
+
+They land here, git ignores them, and every tool in this directory finds them.
+
+## What you should have
+
+Checksums, so you can confirm you pulled the right images. These are facts about
+the files, not the files — recording them is fine, shipping them is not.
 
 | File | Size | sha256 |
 |---|---|---|
@@ -9,13 +26,17 @@ These are Control4's own images, byte-for-byte as pulled from a live HC-800's
 | `IRBootloaderSerialLM3S1162.bin` | 4,068 | `1f3bf874…155e58c5` |
 | `flash.config.xml` | 1,286 | the vendor's `.flash.config`, verbatim |
 
-**They are here to be a restore path, not a reference to copy from.** This is the
-MCU's equivalent of the sda2 factory partition: if our own firmware turns out to
-be wrong, these put the unit back exactly as it shipped. The blanket `*.bin` in
-`.gitignore` has an explicit exception for this directory for that reason —
-losing them would make a bad flash unrecoverable without SWD.
+Observed on OS 3.x, unit `Main-HC800-000FFF57B978`, 2026-09-07. `flash.config.xml`
+is kept here: it is a short XML manifest, not a program, and it is what documents
+the board-to-image mapping described below.
 
-The running MCU confirms this is the image it is executing: asked
+**They are a restore path, not a reference to copy from.** This is the MCU's
+equivalent of the sda2 factory partition: if our own firmware turns out to be
+wrong, these put the unit back exactly as it shipped. Without them a bad flash is
+unrecoverable without SWD — which is why you should fetch them BEFORE you flash,
+not after.
+
+The running MCU confirms which image it is executing: asked
 `FIRMWARE_VERSION_GET` on `/dev/ttyS3`, it answers `03.26.15`, matching both the
 filename and the `FWVERS:` field inside the header.
 
@@ -47,7 +68,11 @@ python3 ../tools/mkimage.py --verify <image>
 
 ## Licence
 
-These are Control4/Snap One proprietary binaries, redistributed here only as the
-recovery artefact for hardware their owner already possesses. They are not part
-of openHC, carry no openHC licence, and nothing in `../src` is derived from
-their code — see the clean-room note in `../README.md`.
+Control4/Snap One proprietary. Not part of openHC, carrying no openHC licence,
+and not redistributed by this project. Nothing in `../src` is derived from their
+code — see the clean-room note in `../README.md`.
+
+An earlier revision of this file argued they could be committed because they are
+"the recovery artefact for hardware their owner already possesses". That was
+wrong: a public repository redistributes to everyone, not to owners, and no
+amount of purpose makes that a licence.
