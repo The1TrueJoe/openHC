@@ -208,6 +208,21 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 # and S01splash says so on the console instead of drawing.
 BR2_PACKAGE_OHC_SPLASH=y
 
+# --- component video output (the only one that actually works) ---
+# The THS8200 DAC on i2c-6 @0x21 is the sole video output anything drives on
+# this board: the ADV7511 next to it is fitted and answers but is never
+# configured, not even by Control4's own OS 3.x (see the HC-800 docs page).
+#
+# ohc-ths8200 replays a register set CAPTURED OFF THIS HARDWARE while the vendor
+# had it running at 720p — board/hc800/video/ths8200-720p60.regs, whose timings
+# cross-check against CEA-861 720p60 exactly (htotal 1650, vtotal 750, hsync 40,
+# hfront 110). It reads the chip's VERSION register first and refuses to write
+# unless it reads 0x04, so pointing it at the wrong bus or address is a no-op
+# rather than 138 stray writes.
+#
+# Needs CONFIG_I2C_CHARDEV and CONFIG_I2C_I801, both already in the fragment.
+BR2_PACKAGE_OHC_THS8200=y
+
 # --- rootfs overlay + image publishing ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and
 # kconfig takes the last assignment of a symbol, not the union — naming only the
