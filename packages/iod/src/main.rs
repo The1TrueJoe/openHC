@@ -12,6 +12,7 @@ mod b64;
 mod board;
 mod events;
 mod gpio;
+mod gpio_io;
 mod link;
 mod mcu;
 mod mqtt;
@@ -32,6 +33,9 @@ pub struct Config {
     /// rather than accepting an edit it cannot honour.
     pub pinned: Vec<String>,
     pub settings_tx: tokio::sync::watch::Sender<mqtt::settings::Mqtt>,
+    /// True when the kernel's ohc-iomcu gpiochip is present, so relays and
+    /// contacts go through GPIO rather than iod speaking the wire protocol.
+    pub gpio_io: bool,
     /// The IO microcontroller's reset line, claimed on first use and then held.
     /// See gpio::Line — letting go of it could leave the part in reset.
     pub io_reset: std::sync::Mutex<Option<gpio::Line>>,
@@ -182,6 +186,18 @@ fn main() {
         eprintln!("iod: this board declares no local IO — serving capabilities only");
     }
 
+    // Prefer the kernel. When gpio-ohc-iomcu has registered a chip, the
+    // protocol lives there and iod is a client of it like anything else; the
+    // direct serial path below is what a board running an older kernel falls
+    // back to, and it is on its way out.
+    let gpio_io = gpio_io::present();
+    if gpio_io {
+        eprintln!("iod: relays and contacts via the kernel {} gpiochip", gpio_io::CHIP_LABEL);
+    } else if board.io.backend == Backend::Mcu {
+        eprintln!("iod: no {} gpiochip — talking to the MCU directly (deprecated path)",
+                  gpio_io::CHIP_LABEL);
+    }
+
     let (settings, pinned) = mqtt::settings::Settings::load(&board.hostname);
     eprintln!(
         "iod: mqtt serve={} listen={} bridge={}{}",
@@ -198,6 +214,7 @@ fn main() {
         settings: std::sync::Mutex::new(settings),
         pinned,
         settings_tx,
+        gpio_io,
         io_reset: std::sync::Mutex::new(None),
         serial: std::sync::Arc::new(serial::Hub::default()),
     });

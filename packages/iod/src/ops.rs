@@ -164,6 +164,11 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
         // Those differ exactly when it matters most: a wedged microcontroller
         // still has an openable tty, and reporting that as "linked" is a
         // valid-looking lie that sends people looking in the wrong place.
+        // How the relays and contacts are actually reached. `gpio` means the
+        // kernel driver owns the protocol and iod is a client of the chip;
+        // anything else on the box can drive the same lines.
+        "io_via": if c.gpio_io { "gpio" } else { "mcu" },
+        "gpio_chip": crate::gpio_io::CHIP_LABEL,
         "mcu_linked": c.bus.state.get("mcu/link")
             .and_then(|v| v.as_bool())
             .unwrap_or_else(|| c.link.is_some()),
@@ -297,6 +302,14 @@ async fn contacts(c: &Arc<Config>) -> Out {
     if n == 0 {
         return Err(Fault::NoSuch("this board has no contacts".into()));
     }
+    if c.gpio_io {
+        let mask = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(n))
+            .await
+            .map_err(|e| Fault::Io(e.to_string()))?
+            .map_err(|e| Fault::Io(e.to_string()))?;
+        let closed: Vec<bool> = (0..n).map(|i| mask >> i & 1 == 1).collect();
+        return Ok(json!({ "mask": mask, "closed": closed, "via": "gpio" }));
+    }
     match c.board.io.backend {
         Backend::Mcu => {
             let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
@@ -317,9 +330,18 @@ async fn relays(c: &Arc<Config>) -> Out {
     if n == 0 {
         return Err(Fault::NoSuch("this board has no relays".into()));
     }
+    // Through the kernel gpiochip when the driver has registered one. iod is a
+    // client of that chip, the same as gpioget is.
+    if c.gpio_io {
+        let on: Result<Vec<bool>, _> = (0..n)
+            .map(crate::gpio_io::relay_get)
+            .collect::<Result<Vec<bool>, _>>();
+        let on = on.map_err(|e| Fault::Io(e.to_string()))?;
+        return Ok(json!({ "count": n, "on": on, "via": "gpio" }));
+    }
     let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
     let on = l.lock().await.relays(n).map_err(|e| Fault::Mcu(e.to_string()))?;
-    Ok(json!({ "count": n, "on": on }))
+    Ok(json!({ "count": n, "on": on, "via": "mcu" }))
 }
 
 /// Set (`Some`) or toggle (`None`). One function because the only difference is
@@ -332,15 +354,27 @@ async fn relay_write(c: &Arc<Config>, index: u8, on: Option<bool>) -> Out {
     if index >= n {
         return Err(Fault::Bad(format!("relay {index} does not exist (0..{})", n - 1)));
     }
-    let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
-    let r = {
-        let mut l = l.lock().await;
-        match on {
-            Some(want) => l.relay_set(index, want),
-            None => l.relay_toggle(index),
-        }
+    let now = if c.gpio_io {
+        // The kernel driver reads before it toggles, so a set is idempotent
+        // here for the same reason it is for any other GPIO line.
+        tokio::task::spawn_blocking(move || match on {
+            Some(want) => crate::gpio_io::relay_set(index, want),
+            None => crate::gpio_io::relay_toggle(index),
+        })
+        .await
+        .map_err(|e| Fault::Io(e.to_string()))?
+        .map_err(|e| Fault::Io(e.to_string()))?
+    } else {
+        let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
+        let r = {
+            let mut l = l.lock().await;
+            match on {
+                Some(want) => l.relay_set(index, want),
+                None => l.relay_toggle(index),
+            }
+        };
+        r.map_err(|e| Fault::Mcu(e.to_string()))?
     };
-    let now = r.map_err(|e| Fault::Mcu(e.to_string()))?;
     // Relay position is STATE, not an event: it has a value at every instant
     // and a client that missed the change is wrong until the next one. Record
     // it so a new client is told on connect, and so the one that did not press
