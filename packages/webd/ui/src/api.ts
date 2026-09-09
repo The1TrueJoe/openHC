@@ -53,12 +53,6 @@ export interface Capabilities {
          /** One entry per kernel IR node, named so a port can be matched to the
           *  device an operator would open with ir-ctl. */
          devices?: { name: string; device: string }[] };
-  /** Sensors the kernel found — hwmon, not board.env geometry. */
-  health?: {
-    temps: { slug: string; label: string; chip: string; value: number }[];
-    fans:  { slug: string; label: string; chip: string; value: number }[];
-    pwm:   { slug: string; label: string; chip: string; value: number }[];
-  };
   /** Front-panel LEDs, as the kernel registered them — not board.env geometry,
    *  so a board with no panel simply has no key here. */
   leds?: { slug: string; name: string; colour: string; function: string;
@@ -120,16 +114,6 @@ export interface IoState {
   relay?: Record<string, boolean>;
   contact?: Record<string, boolean>;
   led?: Record<string, number>;
-  /** Live board health, refreshed every 5 s by iod. */
-  health?: {
-    temp?: Record<string, number>;
-    fan?: Record<string, number>;
-    pwm?: Record<string, number>;
-    cpu?: number;
-    load1?: number;
-    uptime_s?: number;
-    mem?: { total_kb?: number; used_pct?: number };
-  };
   mcu?: { link?: boolean };
   serial?: Record<string, { baud?: number; viewers?: number }>;
 }
@@ -144,7 +128,23 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
+/** One telemetry sample from sysmond. `values` is positional against `series`,
+ *  which is why the series list comes with it rather than being repeated per
+ *  reading. */
+export interface Telemetry {
+  at: number | null;
+  series: { slug: string; label: string; chip: string; kind: 'temp' | 'fan' | 'pwm' }[];
+  values: (number | null)[] | null;
+  cpu: number | null;
+  load1: number | null;
+  mem_used_pct: number | null;
+  mem_total_kb: number | null;
+  uptime_s: number | null;
+}
+
 export const rest = {
+  /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
+  telemetry: () => j<Telemetry>(`${HTTP}/sys/api/now`),
   capabilities: () => j<Capabilities>(`${HTTP}/api/io`),
   mcu: () => j<McuInfo>(`${HTTP}/api/io/mcu`),
   config: () => j<ConfigDoc>(`${HTTP}/api/config`),

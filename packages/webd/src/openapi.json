@@ -3,7 +3,7 @@
   "info": {
     "title": "openHC control API",
     "version": "0.1.0",
-    "description": "Board-agnostic control + transport API for openHC controllers. Radio endpoints move raw UART frames; device pairing/control is a separate driver's job."
+    "description": "REST across the three openHC daemons, as the browser sees them \u2014 webd serves the page on :80 and reverse-proxies the other two, so everything here is one origin.\n\n  * `/api/*`  \u2014 webd: board identity, radios, serial, Wi-Fi\n  * `/iod/*`  \u2014 iod: IO capabilities and configuration\n  * `/sys/*`  \u2014 sysmond: telemetry, with history\n\nIO **control** is not here: it is MQTT, because a relay closing is state an automation subscribes to rather than a request/response. See the AsyncAPI document."
   },
   "servers": [
     {
@@ -209,6 +209,150 @@
           },
           "400": {
             "description": "missing ssid or no wifi radio"
+          }
+        }
+      }
+    },
+    "/iod/api/io": {
+      "get": {
+        "summary": "Everything a client needs to draw the UI",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "description": "A thing with nothing behind it does not appear: a board with no relays has no `relays` key, so a client renders straight from this without special-casing each model. Includes the IR device list with the stable /dev/ohc paths, and the front-panel LEDs the kernel registered."
+      }
+    },
+    "/iod/api/io/mcu": {
+      "get": {
+        "summary": "What is carrying this board's IO",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "description": "iod cannot ask the microcontroller who it is \u2014 the kernel driver owns the link, which is the point \u2014 so this reports the chip and what board.env declares."
+      }
+    },
+    "/iod/api/config": {
+      "get": {
+        "summary": "MQTT settings",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Save MQTT settings",
+        "description": "Fields the environment has pinned are reported read-only rather than silently ignored.",
+        "responses": {
+          "200": {
+            "description": "saved",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/iod/api/health": {
+      "get": {
+        "summary": "iod liveness",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/sys/api/now": {
+      "get": {
+        "summary": "The latest telemetry sample",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "description": "`series` describes each sensor once; `values` is positional against it. Labels are the chip's own \u2014 CPUTIN, SYSTIN \u2014 because renaming them to 'cpu' and 'board' would claim knowledge of where the thermistors physically sit."
+      }
+    },
+    "/sys/api/history": {
+      "get": {
+        "summary": "Telemetry history",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "description": "A bounded ring in RAM \u2014 the daemon's memory is the same after a month as after a minute. `series` is sent once and samples are positional, so a six-hour window does not repeat every label four thousand times.",
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "How far back to return. Absent or 0 means everything held."
+          }
+        ]
+      }
+    },
+    "/sys/api/health": {
+      "get": {
+        "summary": "sysmond liveness",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/asyncapi.json": {
+      "get": {
+        "summary": "The MQTT surface, as AsyncAPI 3",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {}
+            }
           }
         }
       }

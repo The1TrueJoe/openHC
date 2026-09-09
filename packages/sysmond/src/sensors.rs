@@ -1,12 +1,7 @@
-//! Board health: temperatures, fans, CPU, memory, uptime.
+//! Reading the sensors: temperatures, fans, CPU, memory, uptime.
 //!
 //! All of it comes from files the kernel already publishes — `/sys/class/hwmon`
 //! and `/proc` — so there is no polling of hardware here and nothing to own.
-//!
-//! The point of putting it on the MQTT surface rather than leaving it to
-//! whoever SSHes in: a controller in a rack with a fan is a thing that gets
-//! hot, and "how hot, and is the fan still turning" is exactly the question an
-//! external system should be able to ask without a shell.
 use serde::Serialize;
 
 const HWMON: &str = "/sys/class/hwmon";
@@ -151,4 +146,26 @@ pub fn load1() -> Option<f32> {
         .next()?
         .parse()
         .ok()
+}
+
+/// Every reading, flattened for the history store.
+pub fn readings() -> Vec<(crate::history::Series, i64)> {
+    let s = sensors();
+    let mk = |r: &Reading, kind: &'static str| {
+        (
+            crate::history::Series {
+                slug: r.slug.clone(),
+                label: r.label.clone(),
+                chip: r.chip.clone(),
+                kind,
+            },
+            r.value,
+        )
+    };
+    s.temps
+        .iter()
+        .map(|r| mk(r, "temp"))
+        .chain(s.fans.iter().map(|r| mk(r, "fan")))
+        .chain(s.pwm.iter().map(|r| mk(r, "pwm")))
+        .collect()
 }

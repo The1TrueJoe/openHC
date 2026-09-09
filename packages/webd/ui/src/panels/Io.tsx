@@ -103,7 +103,7 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
         </section>
       )}
 
-      <HealthSection caps={caps} state={state} />
+      <HealthSection />
       {caps.leds?.length ? <LedSection caps={caps} state={state} /> : null}
       {caps.ir && <IrSection caps={caps} />}
 

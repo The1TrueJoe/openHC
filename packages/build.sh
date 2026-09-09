@@ -40,12 +40,12 @@ export RUSTC="$(dirname "$CARGO")/rustc"
 echo ">> UI (must build before cargo — build.rs embeds ui/dist)"
 ( cd "$HERE/webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )
 
-echo ">> iod + webd + portal for $BOARD ($TARGET)"
-( cd "$HERE" && "$CARGO" build --release -p iod -p webd -p portal --target "$TARGET" )
+echo ">> iod + webd + portal + sysmond for $BOARD ($TARGET)"
+( cd "$HERE" && "$CARGO" build --release -p iod -p webd -p portal -p sysmond --target "$TARGET" )
 
 DEST="$REPO/board/common/rootfs-overlay/opt/ohc/bin"
 mkdir -p "$DEST"
-for bin in iod webd portal; do
+for bin in iod webd portal sysmond; do
     install -m 0755 "$HERE/target/$TARGET/release/$bin" "$DEST/$bin"
     echo ">> staged $DEST/$bin ($(du -h "$DEST/$bin" | cut -f1))"
 done

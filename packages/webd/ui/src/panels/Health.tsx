@@ -1,61 +1,75 @@
-import { type Capabilities, type IoState } from '../api';
+import { useEffect, useState } from 'react';
+import { rest, type Telemetry } from '../api';
 
-/* Board health. Everything here is retained MQTT state that iod refreshes every
-   5 s, so this panel is a view — it polls nothing itself and holds no timers. */
-export function HealthSection({ caps, state }: { caps: Capabilities; state: IoState }) {
-  const h = state.health ?? {};
-  const temps = caps.health?.temps ?? [];
-  const fans = caps.health?.fans ?? [];
-  if (!temps.length && !fans.length && h.cpu === undefined) return null;
+/* Board health, polled from sysmond over REST.
+   Not MQTT: a temperature every five seconds is telemetry, not state an
+   automation subscribes to, and a retained topic cannot answer "what did it do
+   over the last hour" — which is the question this data exists for. */
+export function HealthSection() {
+  const [t, setT] = useState<Telemetry | null>(null);
+  const [absent, setAbsent] = useState(false);
 
-  /* CPUTIN and SYSTIN are the chip's own names and they are kept, because
-     renaming them to "cpu" and "board" would claim to know where the
-     thermistors sit. The tooltip carries the chip so two sources of the same
-     quantity are distinguishable. */
+  useEffect(() => {
+    let live = true;
+    const tick = () =>
+      rest
+        .telemetry()
+        .then((d) => live && setT(d))
+        .catch(() => live && setAbsent(true));
+    tick();
+    /* 5 s matches sysmond's own sampling period; asking faster returns the same
+       sample twice. */
+    const id = setInterval(tick, 5000);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  /* A board with no hwmon and no sysmond simply has no panel, the same way a
+     board with no relays has no relay panel. */
+  if (absent || !t || !t.series.length) return null;
+
+  const val = (i: number) => t.values?.[i] ?? null;
   const warm = (c: number) => (c >= 70 ? 'text-alarm' : c >= 55 ? 'text-warm' : 'text-live');
 
   return (
     <section>
       <h2 className="mb-3 text-sm font-medium">Health</h2>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {temps.map((t) => {
-          const v = h.temp?.[t.slug];
+        {t.series.map((s, i) => {
+          const v = val(i);
+          if (s.kind === 'pwm') return null;
+          const isTemp = s.kind === 'temp';
           return (
             <Stat
-              key={t.slug}
-              label={t.label}
-              sub={t.chip}
-              value={v === undefined ? '—' : `${v}°C`}
-              tone={v === undefined ? '' : warm(v)}
+              key={`${s.kind}-${s.slug}`}
+              label={s.label}
+              sub={s.chip}
+              value={
+                v === null ? '—'
+                  : isTemp ? `${v}°C`
+                  /* A fan header with nothing plugged into it reads 0. Saying
+                     "no fan" stops that looking like a stalled one. */
+                  : v === 0 ? 'no fan'
+                  : `${v} rpm`
+              }
+              tone={v === null ? 'text-muted' : isTemp ? warm(v) : v ? 'text-live' : 'text-muted'}
             />
           );
         })}
-        {fans.map((f) => {
-          const v = h.fan?.[f.slug];
-          /* A fan header with nothing plugged into it reads 0. Saying "idle"
-             rather than "0 rpm" stops that looking like a stalled fan. */
-          return (
-            <Stat
-              key={f.slug}
-              label={f.label}
-              sub={f.chip}
-              value={v === undefined ? '—' : v === 0 ? 'no fan' : `${v} rpm`}
-              tone={v ? 'text-live' : 'text-muted'}
-            />
-          );
-        })}
-        {h.cpu !== undefined && (
-          <Stat label="CPU" sub={h.load1 !== undefined ? `load ${h.load1}` : ''} value={`${h.cpu}%`} tone="text-ink" />
+        {t.cpu !== null && (
+          <Stat label="CPU" sub={t.load1 !== null ? `load ${t.load1}` : ''} value={`${t.cpu}%`} tone="text-ink" />
         )}
-        {h.mem?.used_pct !== undefined && (
+        {t.mem_used_pct !== null && (
           <Stat
             label="Memory"
-            sub={h.mem.total_kb ? `${Math.round(h.mem.total_kb / 1024)} MB` : ''}
-            value={`${h.mem.used_pct}%`}
+            sub={t.mem_total_kb ? `${Math.round(t.mem_total_kb / 1024)} MB` : ''}
+            value={`${t.mem_used_pct}%`}
             tone="text-ink"
           />
         )}
-        {h.uptime_s !== undefined && <Stat label="Uptime" sub="" value={fmtUptime(h.uptime_s)} tone="text-ink" />}
+        {t.uptime_s !== null && <Stat label="Uptime" sub="" value={fmtUptime(t.uptime_s)} tone="text-ink" />}
       </div>
     </section>
   );

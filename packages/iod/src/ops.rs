@@ -264,12 +264,8 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
                 .collect::<Vec<_>>(),
         }));
     }
-    // Sensors are whatever the kernel found, not board.env geometry — a board
-    // with no hwmon simply has no key here.
-    let sensors = crate::health::sensors();
-    if !sensors.temps.is_empty() || !sensors.fans.is_empty() {
-        m.insert("health".into(), json!(sensors));
-    }
+    // NO health/sensor data here: telemetry is sysmond's, over REST, with
+    // history. iod's surface is IO control. See sysmond/src/main.rs.
     let leds = crate::led::list();
     if !leds.is_empty() {
         // Panel LEDs are not board.env geometry — they are whatever the kernel

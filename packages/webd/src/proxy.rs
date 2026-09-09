@@ -1,4 +1,4 @@
-//! `/iod/*` — a reverse proxy onto the IO server.
+//! `/iod/*` and `/sys/*` — reverse proxies onto the other daemons.
 //!
 //! iod listens on its own port because it is a separate process with a
 //! different owner: it holds the UARTs, webd holds the filesystem. That is the
@@ -32,15 +32,25 @@ fn upstream() -> String {
     std::env::var("WEBD_IOD_ADDR").unwrap_or_else(|_| "127.0.0.1:7070".into())
 }
 
+/// Where sysmond listens — telemetry, separate daemon, separate port.
+fn upstream_sys() -> String {
+    std::env::var("WEBD_SYSMOND_ADDR").unwrap_or_else(|_| "127.0.0.1:7071".into())
+}
+
+/// One proxy, two mounts. Which daemon a request goes to is decided by the
+/// prefix alone, so adding a third is a line here and a route in main.
 pub async fn handler(mut req: Request) -> Response {
-    let addr = upstream();
+    let is_sys = req.uri().path().starts_with("/sys/");
+    let addr = if is_sys { upstream_sys() } else { upstream() };
+    let mount = if is_sys { "/sys" } else { "/iod" };
+    let who = if is_sys { "sysmond" } else { "iod" };
 
     // Strip the mount point: /iod/api/io upstream is /api/io. `/mqtt` is
     // mounted at the same path upstream, so it passes through untouched — the
     // browser's MQTT client connects to ws://<this host>/mqtt and never learns
     // that iod is a separate process on another port.
     let path = req.uri().path();
-    let rest = path.strip_prefix("/iod").unwrap_or(path);
+    let rest = path.strip_prefix(mount).unwrap_or(path);
     let rest = if rest.is_empty() { "/" } else { rest };
     let q = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
     *req.uri_mut() = match format!("{rest}{q}").parse::<Uri>() {
@@ -59,8 +69,8 @@ pub async fn handler(mut req: Request) -> Response {
             return (
                 StatusCode::BAD_GATEWAY,
                 axum::Json(serde_json::json!({
-                    "error": format!("cannot reach the IO server at {addr}: {e}"),
-                    "code": "iod_unreachable",
+                    "error": format!("cannot reach {who} at {addr}: {e}"),
+                    "code": format!("{who}_unreachable"),
                 })),
             )
                 .into_response()

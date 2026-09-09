@@ -36,9 +36,12 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .route("/api/wifi/scan", get(wifi_scan))
         .route("/api/wifi/connect", post(wifi_connect))
         .route("/api/openapi.json", get(openapi))
+        .route("/api/asyncapi.json", get(asyncapi))
         // Everything the IO server owns, on this origin. See proxy.rs for why
         // the GUI must not be asked to reach a second port itself.
         .route("/iod/{*rest}", any(crate::proxy::handler))
+        // Telemetry: sysmond, its own daemon and its own port.
+        .route("/sys/{*rest}", any(crate::proxy::handler))
         // IO control is MQTT, and the browser speaks it here. Same origin as
         // the page, so one open port is enough for the whole GUI.
         .route("/mqtt", any(crate::proxy::handler))
@@ -134,6 +137,17 @@ async fn static_asset(headers: HeaderMap, uri: axum::http::Uri) -> Response {
             .unwrap(),
         _ => b.body(Body::from(a.raw)).unwrap(),
     }
+}
+
+/// The MQTT surface. Served next to the OpenAPI document because a reader
+/// wanting "what can this box do" should not have to know which of the two
+/// protocols a given capability lives on.
+async fn asyncapi() -> Response {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        include_str!("asyncapi.json"),
+    )
+        .into_response()
 }
 
 async fn openapi() -> Response {

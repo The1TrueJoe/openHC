@@ -1,9 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
 import { SettingsPanel } from './panels/Settings';
+import { DocsPanel } from './panels/Docs';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -31,6 +32,7 @@ function destinations(c: Capabilities): Dest[] {
   }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
+  d.push({ id: 'docs', label: 'API', icon: BookOpen, render: () => <DocsPanel /> });
   d.push({ id: 'settings', label: 'Settings', icon: Settings, render: () => <SettingsPanel /> });
   return d;
 }
