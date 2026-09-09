@@ -438,7 +438,7 @@ async fn relay_write(c: &Arc<Config>, index: u8, on: Option<bool>) -> Out {
     Ok(json!({ "index": index, "on": now }))
 }
 
-async fn ir_send(c: &Arc<Config>, port: u8, pronto: &str, repeat: u8) -> Out {
+async fn ir_send(c: &Arc<Config>, port: u8, pronto: &str, _repeat: u8) -> Out {
     let total = c.board.io.ir_total();
     if total == 0 {
         return Err(Fault::NoSuch("this board has no IR outputs".into()));
@@ -449,37 +449,61 @@ async fn ir_send(c: &Arc<Config>, port: u8, pronto: &str, repeat: u8) -> Out {
     let words: Result<Vec<u16>, _> =
         pronto.split_whitespace().map(|w| u16::from_str_radix(w, 16)).collect();
     let words = words.map_err(|_| Fault::Bad("pronto must be space-separated hex words".into()))?;
-    if words.first() != Some(&0) {
+    if words.len() < 5 || words[0] != 0 {
         return Err(Fault::Bad("only Pronto code type 0000 (raw, learned) is supported".into()));
     }
-    // A hard bound, learned the hard way: a 78-word code sent to the vendor
-    // firmware wedged the microcontroller outright — no reply to anything,
-    // through a daemon restart, until the reset line was pulsed. Whether the
-    // real limit is length or a payload layout this code has wrong is not yet
-    // established (see the note in the README), so this errs low: a refused
-    // send is recoverable, a dead MCU needs `mcu.reset` at best.
-    const MAX_WORDS: usize = 64;
-    if words.len() > MAX_WORDS {
-        return Err(Fault::Bad(format!(
-            "code is {} words; this firmware is only known safe up to {MAX_WORDS}",
-            words.len()
-        )));
+    // Pronto: [0000][carrier][once len][repeat len][durations…]
+    let carrier = words[1];
+    if carrier == 0 {
+        // The firmware divides by this. A zero here is a UsageFault on the
+        // Cortex-M3 and the part stops answering ANYTHING until it is power
+        // cycled — which is exactly how this was discovered.
+        return Err(Fault::Bad("pronto carrier word cannot be 0000".into()));
     }
+    let durations = &words[4..];
+    if durations.is_empty() {
+        return Err(Fault::Bad("pronto code carries no burst pairs".into()));
+    }
+
     let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
 
-    // Payload layout is the vendor's IROUT_SEND: port, repeat, then the Pronto
-    // words big-endian. Burst durations are CARRIER PERIODS, not microseconds.
-    let mut payload = Vec::with_capacity(2 + words.len() * 2);
-    payload.push(port);
-    payload.push(repeat);
-    for w in &words {
-        payload.extend_from_slice(&w.to_be_bytes());
+    // IROUT_SEND's payload, as the vendor firmware actually parses it: 14 fixed
+    // bytes then (len-14)/2 duration words. Decoded from the firmware image, and
+    // verified against a Global Caché learner — carrier and every burst duration
+    // came back matching what went in.
+    //
+    // The output selector is a 24-BIT BITMASK, not a port index: bit 0 is the
+    // jack labelled 1. Two fields are read and unused on this path, and the
+    // firmware sets bit 15 of alternate durations itself to mark them, so the
+    // durations go out plain.
+    let mut payload = Vec::with_capacity(14 + durations.len() * 2);
+    payload.push(1u8); // mode: <2 skips the repeat block entirely
+    let mask: u32 = 1 << port;
+    payload.extend_from_slice(&[(mask >> 16) as u8, (mask >> 8) as u8, mask as u8]);
+    payload.extend_from_slice(&0u16.to_be_bytes()); // unread on this path
+    payload.extend_from_slice(&0u16.to_be_bytes()); // unread on this path
+    payload.extend_from_slice(&carrier.to_be_bytes());
+    payload.extend_from_slice(&0u16.to_be_bytes()); // repeat count
+    payload.extend_from_slice(&0u16.to_be_bytes()); // repeat offset
+    for d in durations {
+        payload.extend_from_slice(&(d & 0x7fff).to_be_bytes());
     }
+
     let mut l = l.lock().await;
     let f = l
-        .request(crate::mcu::OP_IROUT_SEND, &payload, Duration::from_secs(3))
+        .request(crate::mcu::OP_IROUT_SEND, &payload, Duration::from_secs(4))
         .map_err(|e| Fault::Mcu(e.to_string()))?;
-    Ok(json!({ "port": port, "words": words.len(), "status": f.payload }))
+    // The firmware answers 0x68 with a one-byte status; 0 is success.
+    let status = f.payload.first().copied().unwrap_or(0xff);
+    if status != 0 {
+        return Err(Fault::Mcu(format!("the IO microcontroller refused the code (status {status:#04x})")));
+    }
+    Ok(json!({
+        "port": port,
+        "mask": format!("{mask:#08x}"),
+        "carrier_hz": 4_145_146u32 / carrier as u32,
+        "durations": durations.len(),
+    }))
 }
 
 /// Resolve a serial index to a live shared session, or explain why not.
