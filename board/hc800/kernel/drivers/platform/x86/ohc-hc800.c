@@ -23,6 +23,7 @@
 #define pr_fmt(fmt) "ohc-hc800: " fmt
 
 #include <linux/dmi.h>
+#include <linux/gpio/driver.h>
 #include <linux/gpio/machine.h>
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
@@ -84,6 +85,16 @@ static struct gpiod_lookup_table hc800_led_gpios = {
  * KEY_F5 is what the vendor emits (code 63, confirmed against its running
  * /proc/bus/input/devices). Odd, but keeping it means anything written for a
  * stock unit still works.
+ *
+ * .gpio IS FILLED IN AT RUNTIME, and it has to be. gpio_keys_polled does NOT
+ * consult a gpiod lookup table when it is given platform data — it goes
+ * straight to this legacy integer and calls gpio_to_desc() on it. leds-gpio is
+ * the opposite: it tries the lookup table first and only falls back to the
+ * integer. So the LEDs get a table and the button gets a number, because that
+ * is what each driver actually reads.
+ *
+ * A number means resolving gpio-ich's base, which is dynamic on a modern
+ * kernel — hence the lookup by LABEL in init.
  */
 static struct gpio_keys_button hc800_buttons[] = {
 	{
@@ -102,13 +113,7 @@ static const struct gpio_keys_platform_data hc800_keys_pdata = {
 	.name          = "hc800-id-button",
 };
 
-static struct gpiod_lookup_table hc800_key_gpios = {
-	.dev_id = "gpio-keys-polled",
-	.table = {
-		GPIO_LOOKUP_IDX(ICH_CHIP, 2, NULL, 0, GPIO_ACTIVE_LOW),
-		{ },
-	},
-};
+#define ID_BUTTON_OFFSET 2
 
 static struct platform_device *hc800_leds_dev;
 static struct platform_device *hc800_keys_dev;
@@ -134,6 +139,9 @@ MODULE_DEVICE_TABLE(dmi, hc800_dmi);
 
 static int __init ohc_hc800_init(void)
 {
+	struct gpio_device *gdev;
+	int base;
+
 	if (!dmi_check_system(hc800_dmi))
 		return -ENODEV;
 
@@ -148,15 +156,31 @@ static int __init ohc_hc800_init(void)
 		hc800_leds_dev = NULL;
 	}
 
-	gpiod_add_lookup_table(&hc800_key_gpios);
-	hc800_keys_dev = platform_device_register_data(NULL, "gpio-keys-polled",
-						       PLATFORM_DEVID_NONE,
-						       &hc800_keys_pdata,
-						       sizeof(hc800_keys_pdata));
-	if (IS_ERR(hc800_keys_dev)) {
-		gpiod_remove_lookup_table(&hc800_key_gpios);
-		pr_warn("no ID button: %ld\n", PTR_ERR(hc800_keys_dev));
-		hc800_keys_dev = NULL;
+	/*
+	 * The button's global number = this chip's base + the offset. Skip the
+	 * button rather than guess if the chip is not there: registering it with
+	 * a wrong number would claim somebody else's line.
+	 */
+	gdev = gpio_device_find_by_label(ICH_CHIP);
+	if (gdev) {
+		base = gpio_device_get_base(gdev);
+		gpio_device_put(gdev);
+	} else {
+		base = -1;
+		pr_warn("no %s gpiochip; skipping the ID button\n", ICH_CHIP);
+	}
+
+	if (base >= 0) {
+		hc800_buttons[0].gpio = base + ID_BUTTON_OFFSET;
+		hc800_keys_dev = platform_device_register_data(NULL,
+						"gpio-keys-polled",
+						PLATFORM_DEVID_NONE,
+						&hc800_keys_pdata,
+						sizeof(hc800_keys_pdata));
+		if (IS_ERR(hc800_keys_dev)) {
+			pr_warn("no ID button: %ld\n", PTR_ERR(hc800_keys_dev));
+			hc800_keys_dev = NULL;
+		}
 	}
 
 	/* Either half failing is survivable; both failing means say nothing. */
@@ -169,10 +193,8 @@ static int __init ohc_hc800_init(void)
 
 static void __exit ohc_hc800_exit(void)
 {
-	if (hc800_keys_dev) {
+	if (hc800_keys_dev)
 		platform_device_unregister(hc800_keys_dev);
-		gpiod_remove_lookup_table(&hc800_key_gpios);
-	}
 	if (hc800_leds_dev) {
 		platform_device_unregister(hc800_leds_dev);
 		gpiod_remove_lookup_table(&hc800_led_gpios);
