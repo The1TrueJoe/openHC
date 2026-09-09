@@ -111,7 +111,8 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
 
 function IrSection({ caps }: { caps: Capabilities }) {
   const [pronto, setPronto] = useState('0000 006D 0022 0002 0157 00AC 0016 0016');
-  const [port, setPort] = useState(0);
+  // null = the front blaster; a number = a rear jack, as labelled on the case.
+  const [port, setPort] = useState<number | null>(0);
   const [note, setNote] = useState<string | null>(null);
   const [heard, setHeard] = useState<{ pronto: string; at: string }[]>([]);
 
@@ -120,9 +121,9 @@ function IrSection({ caps }: { caps: Capabilities }) {
   // system would trigger automations from.
   useEffect(() => {
     if (!caps.ir?.receiver) return;
-    const off = io.subscribeEvents('ir/rx');
+    const off = io.subscribeEvents('ir/front/rx');
     const un = io.onEvent((topic: string, data: any) => {
-      if (topic !== 'ir/rx') return;
+      if (topic !== 'ir/front/rx') return;
       setHeard((p) => [{ pronto: data.pronto, at: new Date().toLocaleTimeString() }, ...p].slice(0, 6));
     });
     return () => { off(); un(); };
@@ -143,22 +144,30 @@ function IrSection({ caps }: { caps: Capabilities }) {
       <h2 className="mb-3 text-sm font-medium">Infrared</h2>
       <div className="hair rounded-xl border bg-panel p-4">
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          {Array.from({ length: caps.ir!.total }, (_, i) => {
-            // The blaster is an internal emitter, not a rear jack — label it so
-            // nobody plugs an emitter into a socket that does not exist.
-            const isBlaster = i >= caps.ir!.out;
-            return (
-              <button
-                key={i}
-                onClick={() => setPort(i)}
-                className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                  port === i ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
-                }`}
-              >
-                {isBlaster ? 'Blaster' : `Out ${i + 1}`}
-              </button>
-            );
-          })}
+          {Array.from({ length: caps.ir!.out }, (_, i) => (
+            <button
+              key={i}
+              onClick={() => setPort(i)}
+              className={`rounded-lg px-3 py-1.5 text-sm transition ${
+                port === i ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
+              }`}
+            >
+              Out {i + 1}
+            </button>
+          ))}
+          {/* The blaster is an internal emitter behind the front panel, not a
+              seventh socket. Naming it stops anyone hunting for the jack. */}
+          {caps.ir!.blaster > 0 && (
+            <button
+              onClick={() => setPort(null)}
+              className={`rounded-lg px-3 py-1.5 text-sm transition ${
+                port === null ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
+              }`}
+              title="Internal emitter on the front panel — same place as the receiver"
+            >
+              Front
+            </button>
+          )}
         </div>
         <textarea
           value={pronto}

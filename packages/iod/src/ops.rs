@@ -68,6 +68,55 @@ impl std::fmt::Display for Fault {
 
 pub type Out = Result<Value, Fault>;
 
+/// Which emitter to fire.
+///
+/// The front blaster is NOT "jack 7". It is a different piece of hardware that
+/// happens to sit behind the same opcode — an internal emitter pointed out of
+/// the case, with no socket on the back to plug anything into. Numbering it
+/// after the jacks would invite somebody to go looking for a seventh connector.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IrTarget {
+    /// Rear jack, as labelled: 1..=ir_out.
+    Jack(u8),
+    Front,
+}
+
+impl<'de> serde::Deserialize<'de> for IrTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let v = Value::deserialize(d)?;
+        if let Some(n) = v.as_u64() {
+            return u8::try_from(n).map(IrTarget::Jack).map_err(|_| D::Error::custom("jack out of range"));
+        }
+        match v.as_str() {
+            Some(s) if s.eq_ignore_ascii_case("front") => Ok(IrTarget::Front),
+            Some(s) => s.parse::<u8>().map(IrTarget::Jack)
+                .map_err(|_| D::Error::custom(format!("unknown IR target {s:?}; expected a jack number or \"front\""))),
+            None => Err(D::Error::custom("IR target must be a jack number or \"front\"")),
+        }
+    }
+}
+
+impl IrTarget {
+    /// Resolve to the 0-based index the output bitmask uses.
+    fn index(self, io: &crate::board::Io) -> Result<u8, Fault> {
+        match self {
+            IrTarget::Front => {
+                if io.ir_blaster == 0 {
+                    return Err(Fault::NoSuch("this board has no front blaster".into()));
+                }
+                Ok(io.ir_out)
+            }
+            IrTarget::Jack(n) => {
+                if n == 0 || n > io.ir_out {
+                    return Err(Fault::Bad(format!("no IR jack {n} (1..{})", io.ir_out)));
+                }
+                Ok(n - 1)
+            }
+        }
+    }
+}
+
 /// Everything iod can be asked to do.
 ///
 /// `#[serde(tag = "op")]` makes the control socket's wire format simply this
@@ -113,7 +162,7 @@ pub enum Cmd {
     RelayToggle { index: u8 },
     #[serde(rename = "ir.send")]
     IrSend {
-        port: u8,
+        port: IrTarget,
         pronto: String,
         #[serde(default = "one")]
         repeat: u8,
@@ -206,6 +255,12 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
             // serial, never both. A client must not offer the same index twice.
             "combo": io.ir_combo,
             "receiver": io.ir_in,
+            // The front panel carries both, and they share a topic prefix.
+            "front": {
+                "send": io.ir_blaster > 0,
+                "receive": io.ir_in > 0,
+                "topics": { "send": "ir/front/send", "rx": "ir/front/rx" },
+            },
         }));
     }
     if io.relays > 0 {
@@ -438,14 +493,11 @@ async fn relay_write(c: &Arc<Config>, index: u8, on: Option<bool>) -> Out {
     Ok(json!({ "index": index, "on": now }))
 }
 
-async fn ir_send(c: &Arc<Config>, port: u8, pronto: &str, _repeat: u8) -> Out {
-    let total = c.board.io.ir_total();
-    if total == 0 {
+async fn ir_send(c: &Arc<Config>, target: IrTarget, pronto: &str, _repeat: u8) -> Out {
+    if c.board.io.ir_total() == 0 {
         return Err(Fault::NoSuch("this board has no IR outputs".into()));
     }
-    if port >= total {
-        return Err(Fault::Bad(format!("port {port} out of range (0..{})", total - 1)));
-    }
+    let port = target.index(&c.board.io)?;
     let words: Result<Vec<u16>, _> =
         pronto.split_whitespace().map(|w| u16::from_str_radix(w, 16)).collect();
     let words = words.map_err(|_| Fault::Bad("pronto must be space-separated hex words".into()))?;
@@ -499,7 +551,7 @@ async fn ir_send(c: &Arc<Config>, port: u8, pronto: &str, _repeat: u8) -> Out {
         return Err(Fault::Mcu(format!("the IO microcontroller refused the code (status {status:#04x})")));
     }
     Ok(json!({
-        "port": port,
+        "target": match target { IrTarget::Front => "front".to_string(), IrTarget::Jack(n) => n.to_string() },
         "mask": format!("{mask:#08x}"),
         "carrier_hz": 4_145_146u32 / carrier as u32,
         "durations": durations.len(),

@@ -155,7 +155,7 @@ export function SettingsPanel() {
         <div className="mt-3 rounded-lg shade p-3 font-mono text-xs text-muted">
           <div className="text-ink">{base}/state/relay/1</div>
           <div>{base}/cmd/relay/1/set &nbsp;←&nbsp; ON | OFF | TOGGLE</div>
-          <div>{base}/event/ir/rx</div>
+          <div>{base}/event/ir/front/rx</div>
         </div>
         <Field
           label={<>Home Assistant discovery {pinned('discovery') && <Pinned />}</>}

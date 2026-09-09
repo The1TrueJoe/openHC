@@ -46,7 +46,8 @@ export interface Capabilities {
   hostname: string;
   backend: Backend;
   mcu_linked: boolean;
-  ir?: { out: number; blaster: number; total: number; combo: number; receiver: number };
+  ir?: { out: number; blaster: number; total: number; combo: number; receiver: number;
+         front?: { send: boolean; receive: boolean } };
   relays?: { count: number };
   contacts?: { count: number };
   serials?: SerialPort[];
@@ -225,7 +226,10 @@ export class Io {
   // is the retained state topic changing — which every other open page sees too.
   relaySet = (i: number, on: boolean) => this.#publish(`relay/${panel(i)}/set`, on ? 'ON' : 'OFF');
   relayToggle = (i: number) => this.#publish(`relay/${panel(i)}/set`, 'TOGGLE');
-  sendIr = (port: number, pronto: string) => this.#publish(`ir/${panel(port)}/send`, pronto);
+  /** `null` targets the front blaster, which is not a jack and has no number.
+   *  A rear jack is addressed by the number printed on the case. */
+  sendIr = (port: number | null, pronto: string) =>
+    this.#publish(`ir/${port === null ? 'front' : panel(port)}/send`, pronto);
   setBaud = (i: number, baud: number) => this.#publish(`serial/${panel(i)}/baud`, String(baud));
   serialWrite = (i: number, data: string) => this.#publish(`serial/${panel(i)}/write`, data);
 

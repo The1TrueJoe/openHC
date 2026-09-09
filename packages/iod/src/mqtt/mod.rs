@@ -90,9 +90,16 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
             }
         }
         ["mcu", "reset"] => Some(Cmd::McuReset),
-        ["ir", n, "send"] => {
-            Some(Cmd::IrSend { port: topics::index(n)?, pronto: b.to_string(), repeat: 1 })
+        // `ir/front/send` for the internal blaster; `ir/<n>/send` for a rear
+        // jack, numbered as the case is.
+        ["ir", "front", "send"] => {
+            Some(Cmd::IrSend { port: crate::ops::IrTarget::Front, pronto: b.to_string(), repeat: 1 })
         }
+        ["ir", n, "send"] => Some(Cmd::IrSend {
+            port: crate::ops::IrTarget::Jack(n.parse().ok().filter(|&x| x > 0)?),
+            pronto: b.to_string(),
+            repeat: 1,
+        }),
         ["serial", n, "write"] => Some(Cmd::SerialWrite {
             index: topics::index(n)? as usize,
             data: body.to_string(),
@@ -122,6 +129,17 @@ mod tests {
         // relay that silently never moves.
         assert!(parse_cmd("relay/1/set", "maybe").is_none());
         assert!(parse_cmd("nonsense/thing", "1").is_none());
+    }
+
+    #[test]
+    fn the_front_emitter_is_named_not_numbered() {
+        use crate::ops::IrTarget;
+        assert!(matches!(parse_cmd("ir/front/send", "0000 006d 0001 0000 0016 0016"),
+                         Some(Cmd::IrSend { port: IrTarget::Front, .. })));
+        assert!(matches!(parse_cmd("ir/1/send", "0000 006d 0001 0000 0016 0016"),
+                         Some(Cmd::IrSend { port: IrTarget::Jack(1), .. })));
+        assert!(matches!(parse_cmd("ir/6/send", "0000 006d 0001 0000 0016 0016"),
+                         Some(Cmd::IrSend { port: IrTarget::Jack(6), .. })));
     }
 
     #[test]

@@ -322,6 +322,14 @@ carrier kills it just as dead, and a 150-byte code with a valid carrier is fine.
 The output selector being a bitmask rather than an index matters: `1 << port`,
 not `port`. Sending an index addresses the wrong jack, or none.
 
+On an HC-800 the mask is **bit 0..5 = the six rear jacks, bit 6 = the internal
+front blaster**, and nothing else in the 24 bits does anything. So the front
+emitter is not "jack 7" — it is a different piece of hardware with no socket
+behind it, which is why openHC addresses it by name (`ir/front/send`) rather
+than by a number that would send somebody hunting for a seventh connector. The
+front receiver sits on the same panel, so its captures come back on
+`ir/front/rx`.
+
 Verified on an HC-800 — bit 0 out of jack 1 and bit 5 out of jack 6, both
 returning the carrier and every duration we sent, to within rounding:
 
@@ -330,6 +338,25 @@ GC-IRL,38000,343,171,23,22B,22,64BBBBBCCBCCCCCBBBCBBBBCCCBCCCC,22,3806
 ```
 
 The learner speaks at **9600 baud**, not 115200.
+
+### The contact mask is LITTLE-endian
+
+`CONTACT_GET` answers a u32 in which **byte 0 carries contacts 1-8**, bit 0 being
+the first contact and 1 meaning CLOSED.
+
+This was read as big-endian for a long time and nothing caught it, because a
+board with every contact open answers `00 00 00 00` — identical either way.
+Closing contact 4 on an HC-800 answers:
+
+```
+08 00 00 00
+```
+
+Little-endian that is bit 3, the fourth contact. Big-endian it would be bit 27,
+which is not a contact any of this hardware has.
+
+Note the AUTO_BAUD response really is big-endian, so the two genuinely differ;
+do not "fix" one to match the other.
 
 ### Relays and contacts fall out of the same table
 

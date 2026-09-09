@@ -172,8 +172,11 @@ async fn poll_via_mcu(cfg: Arc<Config>) {
 
         for f in strays {
             if f.opcode == mcu::OP_IRIN_CAPTURED {
+                // The receiver is the FRONT one — same panel as the blaster,
+                // so it lives under the same prefix: ir/front/send goes out,
+                // ir/front/rx comes back.
                 cfg.bus.event(
-                    "ir/rx",
+                    "ir/front/rx",
                     serde_json::json!({
                         "pronto": f.payload.chunks(2)
                             .map(|c| format!("{:04x}", u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])))
@@ -291,7 +294,7 @@ fn main() {
         }
 
         // Ask the MCU to report IR it receives. Without this the receiver is
-        // deaf and no ir/rx event can ever fire. Only possible on the direct
+        // deaf and no ir/front/rx event can ever fire. Only possible on the direct
         // path: once the driver owns the port, enabling capture is its job.
         if cfg.board.io.ir_in > 0 {
             if let Some(l) = &cfg.link {

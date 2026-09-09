@@ -126,7 +126,7 @@ impl Link {
     /// UNVERIFIED: the opcode is the vendor's (0x77 IRIN_SET_CAPTURE) but the
     /// one-byte on/off payload is inferred from the name, not observed. The
     /// firmware sends no reply, so a wrong payload fails silently — if pressing
-    /// a remote produces no `ir/rx` event, this argument is the first suspect.
+    /// a remote produces no `ir/front/rx` event, this argument is the first suspect.
     pub fn ir_capture(&mut self, on: bool) -> io::Result<()> {
         self.send(mcu::OP_IRIN_SET_CAPTURE, &[if on { 1 } else { 0 }])
     }
@@ -148,16 +148,21 @@ impl Link {
         ))
     }
 
-    /// u32 big-endian bitmask, bit N = contact N. A CLOSED contact reads 1 —
-    /// established on a live EA3 by shorting the input, and confirmed on an
-    /// HC-800 which answers all-zero with nothing connected.
+    /// u32 LITTLE-endian bitmask, bit N = contact N, 1 = CLOSED.
+    ///
+    /// Byte 0 carries contacts 1-8, byte 1 the next eight, and so on. This was
+    /// read as big-endian for a long time and nothing caught it, because a board
+    /// with every contact open answers `00 00 00 00`, which is the same either
+    /// way. Closing contact 4 on an HC-800 answers `08 00 00 00`: little-endian
+    /// that is bit 3, the fourth contact; big-endian it would be bit 27, which
+    /// is not a contact this hardware has.
     pub fn contacts(&mut self) -> io::Result<u32> {
         let f = self.request(mcu::OP_CONTACT_GET, &[], Duration::from_millis(400))?;
         let p = &f.payload;
         if p.len() < 4 {
             return Err(io::Error::other("short CONTACT_STATE"));
         }
-        Ok(u32::from_be_bytes([p[0], p[1], p[2], p[3]]))
+        Ok(u32::from_le_bytes([p[0], p[1], p[2], p[3]]))
     }
 
     /// State of ONE relay, addressed by 0-BASED INDEX.
@@ -233,7 +238,9 @@ impl Link {
         Ok(p[1] != 0)
     }
 
-    /// Measured baud the MCU reports (BE32). Useful as a link sanity check.
+    /// Measured baud the MCU reports. BIG-endian, unlike the contact mask —
+    /// they really do differ, and an HC-800 answering ~115207 against a nominal
+    /// 115200 is what confirms it.
     pub fn measured_baud(&mut self) -> io::Result<u32> {
         let f = self.request(mcu::OP_AUTO_BAUD, &[], Duration::from_millis(400))?;
         let p = &f.payload;

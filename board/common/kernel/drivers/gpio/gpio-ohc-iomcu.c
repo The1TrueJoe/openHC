@@ -306,7 +306,14 @@ static int ohc_relay_toggle(struct ohc_iomcu *mcu, int index, bool *now)
 	return 0;
 }
 
-/* u32 big-endian mask, bit N = contact N; 1 = CLOSED. */
+/*
+ * u32 LITTLE-endian mask, bit N = contact N; 1 = CLOSED.
+ *
+ * Byte 0 carries contacts 1-8. Read as big-endian for a long time with nothing
+ * catching it: an all-open board answers 00 00 00 00, identical either way.
+ * Closing contact 4 answers 08 00 00 00 — bit 3 little-endian, which is the
+ * fourth contact; big-endian that would be bit 27.
+ */
 static int ohc_contacts_get(struct ohc_iomcu *mcu, u32 *mask)
 {
 	struct ohc_frame f;
@@ -317,8 +324,8 @@ static int ohc_contacts_get(struct ohc_iomcu *mcu, u32 *mask)
 		return ret;
 	if (f.len < 4)
 		return -EPROTO;
-	*mask = ((u32)f.payload[0] << 24) | ((u32)f.payload[1] << 16) |
-		((u32)f.payload[2] << 8) | f.payload[3];
+	*mask = ((u32)f.payload[3] << 24) | ((u32)f.payload[2] << 16) |
+		((u32)f.payload[1] << 8) | f.payload[0];
 	return 0;
 }
 
