@@ -55,6 +55,36 @@ gpioget $(gpiofind contact4)
 
 `board.env` declares **how many**, never **which offset**.
 
+## Front-panel LEDs
+
+Named by the kernel's own LED class convention, `<device>:<colour>:<function>`,
+which is what `leds-gpio` registers:
+
+```console
+# ls /sys/class/leds
+hc800:red:wifi   hc800:yellow:wifi  hc800:blue:wifi
+hc800:green:data hc800:green:network hc800:green:power
+```
+
+MQTT and the GUI use a **slug** derived from that, dropping the device and
+keeping the colour only where the function alone would collide — so `wifi-red`,
+`wifi-yellow`, `wifi-blue`, `data`, `network`, `power` rather than six names
+that all begin with the same word:
+
+```
+openhc/<host>/state/led/power        1
+openhc/<host>/cmd/led/data/set       ON
+```
+
+Addressed by NAME, not index, because LEDs are not a numbered row on the panel
+the way relays are — and on this board `{red,yellow,blue}` are three dies of one
+tri-colour indicator, so a number would imply an ordering that does not exist.
+
+A LED under a kernel trigger (`default-on`, `timer`) ignores a plain brightness
+write, so writing through iod drops the trigger first: asking for a level is
+asking for software control. The GUI says which are trigger-driven rather than
+letting a click look like it did nothing.
+
 ## Device nodes
 
 udev turns what the kernel reports into `/dev/ohc`, one directory per class:
