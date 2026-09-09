@@ -4,7 +4,7 @@ import { rest, type Capabilities, type McuInfo } from '../api';
 export function OverviewPanel({ caps }: { caps: Capabilities }) {
   const [mcu, setMcu] = useState<McuInfo | null>(null);
   useEffect(() => {
-    if (caps.backend === 'mcu' && caps.mcu_linked) rest.mcu().then(setMcu).catch(() => {});
+    if (caps.backend === 'mcu') rest.mcu().then(setMcu).catch(() => {});
   }, [caps]);
 
   return (
@@ -25,12 +25,9 @@ export function OverviewPanel({ caps }: { caps: Capabilities }) {
         <section className="hair rounded-xl border bg-panel p-4">
           <h2 className="mb-3 text-sm font-medium">IO microcontroller</h2>
           <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-            <Row k="Part" v={mcu.part} />
-            <Row k="Firmware" v={mcu.version} />
-            <Row
-              k="Link"
-              v={`${mcu.baud} baud${mcu.measured_baud ? ` · reports ${mcu.measured_baud}` : ''}`}
-            />
+            <Row k="Part" v={mcu.part ?? 'unknown'} />
+            <Row k="Port" v={mcu.tty ? `${mcu.tty} @ ${mcu.baud}` : 'unknown'} />
+            <Row k="Driver" v={mcu.present ? mcu.chip : `${mcu.chip} not attached`} />
           </dl>
         </section>
       )}

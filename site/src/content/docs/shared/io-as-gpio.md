@@ -43,6 +43,13 @@ gpiochip1 - 8 lines:
 provides the MQTT surface, the retained state, the settings and the config GUI —
 but it reaches the hardware through `/dev/gpiochipN` like anything else would.
 
+**There is no longer a fallback.** iod used to carry its own DLE/STX
+implementation for boards whose kernel had no driver, and that path is gone: two
+implementations of one wire format drift apart, and the second one is always the
+one nobody tests. If the discipline is not attached, iod says so and serves
+capabilities, and no relay or contact works — which is the truth, and better than
+a daemon quietly fighting the kernel for the same UART.
+
 ## The whole chain
 
 ```

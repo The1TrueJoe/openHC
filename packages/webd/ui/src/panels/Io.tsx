@@ -116,6 +116,12 @@ function IrSection({ caps }: { caps: Capabilities }) {
   const [note, setNote] = useState<string | null>(null);
   const [heard, setHeard] = useState<{ pronto: string; at: string }[]>([]);
 
+  // The kernel gives every emitter its own lirc node, named. Showing which one
+  // a button drives is the difference between a UI that is the only way in and
+  // one that tells you how to do the same thing without it.
+  const node = (name: string) =>
+    caps.ir?.devices?.find((d) => d.name === name)?.device;
+
   // What the RECEIVER hears. This is an event, not state — a remote press has
   // no value between presses — and it is the same event an external control
   // system would trigger automations from.
@@ -148,6 +154,7 @@ function IrSection({ caps }: { caps: Capabilities }) {
             <button
               key={i}
               onClick={() => setPort(i)}
+              title={node(`openHC IR out ${i + 1}`) ?? undefined}
               className={`rounded-lg px-3 py-1.5 text-sm transition ${
                 port === i ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
               }`}
@@ -163,7 +170,10 @@ function IrSection({ caps }: { caps: Capabilities }) {
               className={`rounded-lg px-3 py-1.5 text-sm transition ${
                 port === null ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
               }`}
-              title="Internal emitter on the front panel — same place as the receiver"
+              title={
+                'Internal emitter on the front panel — same place as the receiver' +
+                (node('openHC IR front blaster') ? ` (${node('openHC IR front blaster')})` : '')
+              }
             >
               Front
             </button>
@@ -183,6 +193,13 @@ function IrSection({ caps }: { caps: Capabilities }) {
           <span className="text-xs text-muted">
             Pronto hex, type <code>0000</code> only. Durations are carrier periods.
           </span>
+          {/* Say where this actually goes. Each emitter is a separate device,
+              so the same code can be sent without this page. */}
+          {caps.ir?.via === 'lirc' && (
+            <span className="text-xs text-muted">
+              via <code>{node(port === null ? 'openHC IR front blaster' : `openHC IR out ${port + 1}`) ?? 'lirc'}</code>
+            </span>
+          )}
           {note && <span className={`text-xs ${note === 'sent' ? 'text-live' : 'text-alarm'}`}>{note}</span>}
         </div>
       </div>
@@ -194,7 +211,10 @@ function IrSection({ caps }: { caps: Capabilities }) {
             Receiver
           </div>
           {heard.length === 0 ? (
-            <p className="text-xs text-muted">Listening. Point a remote at the front of the controller.</p>
+            <p className="text-xs text-muted">
+              Listening on <code>{node('openHC IR front receiver') ?? 'the front receiver'}</code>.
+              Point a remote at the front of the controller.
+            </p>
           ) : (
             <ul className="space-y-1">
               {heard.map((h, i) => (

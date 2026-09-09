@@ -12,8 +12,8 @@ use serde_json::Value;
 /// Relays, contacts, IR ports and serial ports are all labelled from 1 on the
 /// hardware, so that is what the topics carry: `relay/1` is the terminal marked
 /// 1. Internally everything counts from zero — a gpiochip offset and the MCU's
-/// wire selector both must — and the two edges that convert are this module and
-/// [`crate::gpio_io`].
+///    wire selector both must — and the two edges that convert are this module
+///    and [`crate::gpio_io`].
 pub fn label(index: usize) -> usize {
     index + 1
 }

@@ -45,9 +45,6 @@ pub fn router(cfg: Arc<Config>) -> Router {
         // Recovery, over REST as well as MQTT: a wedged MCU is exactly when
         // you cannot rely on the IO transport to carry the fix.
         .route("/api/io/mcu/reset", axum::routing::post(|s: Ctx| run(s, Cmd::McuReset)))
-        // Bring-up only. MQTT's cmd/raw dispatches but discards the reply, and
-        // a probe whose answer you cannot read is not a probe.
-        .route("/api/io/mcu/raw", axum::routing::post(mcu_raw))
         .route("/api/config", get(get_config).post(put_config))
         .layer(axum::middleware::from_fn(cors))
         .layer(axum::middleware::from_fn(auth))
@@ -243,22 +240,6 @@ async fn get_config(State(c): Ctx) -> impl IntoResponse {
             "base": crate::mqtt::topics::base(&m.prefix, &m.client_id),
         },
     }))
-}
-
-#[derive(Deserialize)]
-struct RawReq {
-    opcode: u8,
-    #[serde(default)]
-    payload: String,
-    #[serde(default = "six_hundred")]
-    timeout_ms: u64,
-}
-fn six_hundred() -> u64 {
-    600
-}
-
-async fn mcu_raw(s: Ctx, Json(r): Json<RawReq>) -> axum::response::Response {
-    run(s, Cmd::McuRaw { opcode: r.opcode, payload: r.payload, timeout_ms: r.timeout_ms }).await
 }
 
 #[derive(Deserialize)]

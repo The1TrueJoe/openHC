@@ -21,13 +21,13 @@ pub enum Fault {
     NoSuch(String),
     /// The board has one, but not that index / not those arguments.
     Bad(String),
-    /// This board's IO needs an MCU that is absent or unreachable.
-    NoMcu,
+    /// The kernel's ohc-iomcu chip is not there: the discipline was never
+    /// attached, or the driver refused to register because the part did not
+    /// answer. iod has no other way to reach the IO.
+    NoChip,
     /// A real path that is not built yet. Distinct from NoSuch so a UI can say
     /// "not yet" instead of "you do not have this".
     Todo(String),
-    /// The MCU answered wrongly, or not at all.
-    Mcu(String),
     /// A local device would not open or would not talk.
     Io(String),
 }
@@ -37,9 +37,8 @@ impl Fault {
         match self {
             Fault::NoSuch(_) => "no_such",
             Fault::Bad(_) => "bad_request",
-            Fault::NoMcu => "no_mcu",
+            Fault::NoChip => "no_chip",
             Fault::Todo(_) => "not_implemented",
-            Fault::Mcu(_) => "mcu_error",
             Fault::Io(_) => "io_error",
         }
     }
@@ -47,9 +46,8 @@ impl Fault {
         match self {
             Fault::NoSuch(_) => 404,
             Fault::Bad(_) => 400,
-            Fault::NoMcu => 503,
+            Fault::NoChip => 503,
             Fault::Todo(_) => 501,
-            Fault::Mcu(_) => 502,
             Fault::Io(_) => 502,
         }
     }
@@ -58,22 +56,23 @@ impl Fault {
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Fault::NoSuch(s) | Fault::Bad(s) | Fault::Todo(s) | Fault::Mcu(s) | Fault::Io(s) => {
+            Fault::NoSuch(s) | Fault::Bad(s) | Fault::Todo(s) | Fault::Io(s) => {
                 write!(f, "{s}")
             }
-            Fault::NoMcu => write!(f, "no IO microcontroller on this board, or its port could not be opened"),
+            Fault::NoChip => write!(
+                f,
+                "no {} gpiochip — the kernel driver is not attached, or the IO microcontroller did not answer it",
+                crate::gpio_io::CHIP_LABEL
+            ),
         }
     }
 }
 
 pub type Out = Result<Value, Fault>;
 
-/// Which emitter to fire.
-///
-/// The front blaster is NOT "jack 7". It is a different piece of hardware that
-/// happens to sit behind the same opcode — an internal emitter pointed out of
-/// the case, with no socket on the back to plug anything into. Numbering it
-/// after the jacks would invite somebody to go looking for a seventh connector.
+/// Which emitter to fire. The front blaster is NOT "jack 7" — it is an internal
+/// emitter with no socket on the back, and numbering it after the jacks would
+/// send somebody looking for a seventh connector.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IrTarget {
     /// Rear jack, as labelled: 1..=ir_out.
@@ -106,7 +105,7 @@ impl IrTarget {
         }
     }
 
-    /// Resolve to the 0-based index the output bitmask uses.
+    /// Validate against this board's geometry.
     fn index(self, io: &crate::board::Io) -> Result<u8, Fault> {
         match self {
             IrTarget::Front => {
@@ -136,22 +135,6 @@ pub enum Cmd {
     Capabilities,
     #[serde(rename = "mcu.info")]
     McuInfo,
-    /// Send an arbitrary opcode to the microcontroller and return its reply.
-    ///
-    /// A BRING-UP TOOL. The protocol is reverse-engineered and several fields
-    /// are still inferred — the relay selector's meaning among them — and the
-    /// only way to settle those is to ask the part directly. Available only
-    /// while iod owns the port: once the kernel driver has it, this would be a
-    /// second writer on a link that answers one question at a time.
-    #[serde(rename = "mcu.raw")]
-    McuRaw {
-        opcode: u8,
-        /// Space-separated hex bytes.
-        #[serde(default)]
-        payload: String,
-        #[serde(default = "six_hundred")]
-        timeout_ms: u64,
-    },
     /// Pulse the microcontroller's reset line.
     ///
     /// Needed because the MCU CAN be wedged by a malformed request — it was,
@@ -204,16 +187,11 @@ pub enum Cmd {
 fn one() -> u8 {
     1
 }
-fn six_hundred() -> u64 {
-    600
-}
-
 pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
     match cmd {
         Cmd::Capabilities => Ok(capabilities(c)),
         Cmd::McuInfo => mcu_info(c).await,
         Cmd::McuReset => mcu_reset(c).await,
-        Cmd::McuRaw { opcode, payload, timeout_ms } => mcu_raw(c, opcode, &payload, timeout_ms).await,
         Cmd::ContactGet => contacts(c).await,
         Cmd::RelayGet => relays(c).await,
         Cmd::RelaySet { index, on } => relay_write(c, index, Some(on)).await,
@@ -237,21 +215,15 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
         "board":    c.board.model,
         "hostname": c.board.hostname,
         "backend":  io.backend,
-        // Whether the MCU is ANSWERING, not merely whether its port opened.
-        // Those differ exactly when it matters most: a wedged microcontroller
-        // still has an openable tty, and reporting that as "linked" is a
-        // valid-looking lie that sends people looking in the wrong place.
-        // How the relays and contacts are actually reached. `gpio` means the
-        // kernel driver owns the protocol and iod is a client of the chip;
-        // anything else on the box can drive the same lines.
-        "io_via": if c.gpio_io { "gpio" } else { "mcu" },
+        "io_via": "gpio",
         "gpio_chip": crate::gpio_io::CHIP_LABEL,
+        // ANSWERING, not merely present: a wedged part leaves the chip
+        // registered, and reporting that as linked sends people to the wrong
+        // place. `mcu_present` is the other half of the distinction.
         "mcu_linked": c.bus.state.get("mcu/link")
             .and_then(|v| v.as_bool())
-            .unwrap_or_else(|| c.link.is_some()),
-        // Kept separate so a client can tell "no MCU on this board" from
-        // "there is one and it is not talking".
-        "mcu_present": c.link.is_some(),
+            .unwrap_or(false),
+        "mcu_present": c.gpio_io,
     });
     let m = v.as_object_mut().unwrap();
     if io.ir_total() > 0 {
@@ -269,11 +241,9 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
                 "receive": io.ir_in > 0,
                 "topics": { "send": "ir/front/send", "rx": "ir/front/rx" },
             },
-            // Where a transmission actually goes. Each emitter is its own lirc
-            // node under the kernel driver, so this is also the answer to "can
-            // I drive that jack with ir-ctl myself" — and the node is found by
-            // name, because the number depends on probe order.
-            "via": if c.ir_lirc { "lirc" } else { "mcu" },
+            // Which node drives each port, so a client can say how to do the
+            // same thing with ir-ctl.
+            "via": if c.ir_lirc { "lirc" } else { "none" },
             "devices": crate::lirc::devices()
                 .iter()
                 .filter(|d| d.name.starts_with("openHC IR"))
@@ -294,65 +264,62 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
     v
 }
 
+/// What is carrying this board's IO. iod cannot ask the part who it is — the
+/// driver owns the link — so this reports the chip and what board.env declares.
 async fn mcu_info(c: &Arc<Config>) -> Out {
-    // With the driver in charge, iod does not hold the port and cannot ask the
-    // part who it is. Report what is actually true — which chip is carrying the
-    // IO — rather than failing as though there were no microcontroller.
-    if c.gpio_io {
-        return Ok(json!({
-            "via": "gpio",
-            "chip": crate::gpio_io::CHIP_LABEL,
-            "part": c.board.io.mcu_part,
-            "note": "the kernel driver owns the link; identify is not reachable from here",
-        }));
-    }
-    let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
-    let mut l = l.lock().await;
-    let (product, version) = l.identify().map_err(|e| Fault::Mcu(e.to_string()))?;
-    // What the MCU says it measured, BE32. Handy as a link check: an HC-800
-    // reports ~115207 against a nominal 115200.
-    let measured = l.measured_baud().ok();
-    Ok(json!({ "part": l.part, "baud": l.baud, "product": product,
-               "version": version, "measured_baud": measured }))
+    Ok(json!({
+        "via": "gpio",
+        "chip": crate::gpio_io::CHIP_LABEL,
+        "present": c.gpio_io,
+        "part": c.board.io.mcu_part,
+        "tty": c.board.io.mcu_tty,
+        "baud": c.board.io.mcu_baud,
+        "note": "the kernel driver owns the link; identify is not reachable from here",
+    }))
 }
 
-async fn mcu_raw(c: &Arc<Config>, opcode: u8, payload: &str, timeout_ms: u64) -> Out {
-    if c.gpio_io {
-        return Err(Fault::Bad(
-            "the kernel driver owns the link; detach the line discipline to use mcu.raw".into(),
-        ));
+/// Can this board's relays and contacts actually be reached?
+///
+/// The IO Extender drives its lines from the SoC directly, so `NoChip` would
+/// blame a microcontroller it does not have.
+fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
+    match c.board.io.backend {
+        _ if c.gpio_io => Ok(()),
+        Backend::Gpio => Err(Fault::Todo("native SoC GPIO IO is not implemented".into())),
+        Backend::None => Err(Fault::NoSuch("no IO on this board".into())),
+        Backend::Mcu => Err(Fault::NoChip),
     }
-    let bytes = payload
-        .split_whitespace()
-        .map(|w| u8::from_str_radix(w, 16))
-        .collect::<Result<Vec<u8>, _>>()
-        .map_err(|_| Fault::Bad("payload must be space-separated hex bytes".into()))?;
-    let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
-    let f = {
-        let mut l = l.lock().await;
-        l.request(opcode, &bytes, Duration::from_millis(timeout_ms.clamp(50, 5000)))
+}
+
+/// Does the part behind the chip answer? A read on this chip is a round trip to
+/// the microcontroller, and a wedged part leaves the chip registered with every
+/// read failing.
+async fn alive(c: &Arc<Config>) -> bool {
+    if !c.gpio_io {
+        return false;
     }
-    .map_err(|e| Fault::Mcu(e.to_string()))?;
-    Ok(json!({
-        "opcode": format!("{:02x}", f.opcode),
-        "payload": f.payload.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "),
-        "len": f.payload.len(),
-    }))
+    let has_contact = c.board.io.contacts > 0;
+    let has_relay = c.board.io.relays > 0;
+    tokio::task::spawn_blocking(move || {
+        if has_contact {
+            crate::gpio_io::contact_get(0).is_ok()
+        } else if has_relay {
+            crate::gpio_io::relay_get(0).is_ok()
+        } else {
+            false
+        }
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Hold the MCU in reset briefly, then let it run.
 ///
-/// Tries the polarity board.env documents first, and if the part stays silent,
-/// tries the opposite before giving up. That second attempt is not superstition:
-/// the HC-800's GPIO offsets were derived by translating the vendor's sysfs
-/// numbers through a chip base, and the ACTIVE SENSE of the line was never
-/// verified against hardware — it is a comment, not a measurement. Reporting
-/// which polarity actually revived the part turns this from a guess into the
-/// answer, and board.env can then be corrected.
-///
-/// The line is left in whichever state produced a live MCU. If neither did, it
-/// is left at the documented "released" level, because a controller with a dead
-/// MCU should not also be one holding it in reset.
+/// Tries both polarities: the HC-800's active sense was translated from the
+/// vendor's sysfs numbers and never verified against hardware, so reporting
+/// which one revived the part is how board.env gets corrected. The line is left
+/// where the part came back, or at the documented "released" level if it did
+/// not — a controller with a dead MCU should not also be holding it in reset.
 async fn mcu_reset(c: &Arc<Config>) -> Out {
     let chip_label = c
         .board
@@ -392,21 +359,20 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         // The part needs a moment to boot before it will answer.
         tokio::time::sleep(Duration::from_millis(600)).await;
 
-        if let Some(l) = &c.link {
-            let mut l = l.lock().await;
-            for _ in 0..6 {
-                if let Ok((name, ver)) = l.identify() {
-                    c.bus.set("mcu/link", json!(true));
-                    return Ok(json!({
-                        "reset": true, "chip": chip_label, "line": line_no,
-                        // The useful part: which sense actually worked.
-                        "released_level": if released { 1 } else { 0 },
-                        "matched_board_env": released,
-                        "answering": { "product": name, "version": ver },
-                    }));
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
+        // Through the gpiochip: the same path every relay and contact read
+        // takes, so a pass means the thing callers use is working.
+        for _ in 0..6 {
+            if alive(c).await {
+                c.bus.set("mcu/link", json!(true));
+                return Ok(json!({
+                    "reset": true, "chip": chip_label, "line": line_no,
+                    // The useful part: which sense actually worked.
+                    "released_level": if released { 1 } else { 0 },
+                    "matched_board_env": released,
+                    "answering": true,
+                }));
             }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
 
@@ -418,7 +384,7 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
     }
     c.bus.set("mcu/link", json!(false));
     Ok(json!({
-        "reset": true, "chip": chip_label, "line": line_no, "answering": null,
+        "reset": true, "chip": chip_label, "line": line_no, "answering": false,
         "tried": ["released=1", "released=0"],
         "note": "the part did not answer at either polarity; it may need a power cycle, \
                  or this may not be its reset line",
@@ -430,27 +396,14 @@ async fn contacts(c: &Arc<Config>) -> Out {
     if n == 0 {
         return Err(Fault::NoSuch("this board has no contacts".into()));
     }
-    if c.gpio_io {
-        let mask = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(n))
-            .await
-            .map_err(|e| Fault::Io(e.to_string()))?
-            .map_err(|e| Fault::Io(e.to_string()))?;
-        let closed: Vec<bool> = (0..n).map(|i| mask >> i & 1 == 1).collect();
-        return Ok(json!({ "mask": mask, "closed": closed, "via": "gpio" }));
-    }
-    match c.board.io.backend {
-        Backend::Mcu => {
-            let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
-            let mask = l.lock().await.contacts().map_err(|e| Fault::Mcu(e.to_string()))?;
-            // Bit N = contact N; 1 = CLOSED.
-            let closed: Vec<bool> = (0..n).map(|i| mask >> i & 1 == 1).collect();
-            Ok(json!({ "mask": mask, "closed": closed }))
-        }
-        // The IO Extender reads its contacts as plain GPIO lines. Not wired up
-        // yet; saying so beats reporting all-open, which is a valid-looking lie.
-        Backend::Gpio => Err(Fault::Todo("gpio contact backend not implemented".into())),
-        Backend::None => Err(Fault::NoSuch("no IO on this board".into())),
-    }
+    io_ready(c)?;
+    let mask = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(n))
+        .await
+        .map_err(|e| Fault::Io(e.to_string()))?
+        .map_err(|e| Fault::Io(e.to_string()))?;
+    // Bit N = contact N; 1 = CLOSED.
+    let closed: Vec<bool> = (0..n).map(|i| mask >> i & 1 == 1).collect();
+    Ok(json!({ "mask": mask, "closed": closed, "via": "gpio" }))
 }
 
 async fn relays(c: &Arc<Config>) -> Out {
@@ -458,18 +411,15 @@ async fn relays(c: &Arc<Config>) -> Out {
     if n == 0 {
         return Err(Fault::NoSuch("this board has no relays".into()));
     }
-    // Through the kernel gpiochip when the driver has registered one. iod is a
-    // client of that chip, the same as gpioget is.
-    if c.gpio_io {
-        let on: Result<Vec<bool>, _> = (0..n)
-            .map(crate::gpio_io::relay_get)
-            .collect::<Result<Vec<bool>, _>>();
-        let on = on.map_err(|e| Fault::Io(e.to_string()))?;
-        return Ok(json!({ "count": n, "on": on, "via": "gpio" }));
-    }
-    let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
-    let on = l.lock().await.relays(n).map_err(|e| Fault::Mcu(e.to_string()))?;
-    Ok(json!({ "count": n, "on": on, "via": "mcu" }))
+    io_ready(c)?;
+    // iod is a client of the chip, exactly as gpioget is.
+    let on = tokio::task::spawn_blocking(move || {
+        (0..n).map(crate::gpio_io::relay_get).collect::<Result<Vec<bool>, _>>()
+    })
+    .await
+    .map_err(|e| Fault::Io(e.to_string()))?
+    .map_err(|e| Fault::Io(e.to_string()))?;
+    Ok(json!({ "count": n, "on": on, "via": "gpio" }))
 }
 
 /// Set (`Some`) or toggle (`None`). One function because the only difference is
@@ -482,27 +432,16 @@ async fn relay_write(c: &Arc<Config>, index: u8, on: Option<bool>) -> Out {
     if index >= n {
         return Err(Fault::Bad(format!("relay {index} does not exist (0..{})", n - 1)));
     }
-    let now = if c.gpio_io {
-        // The kernel driver reads before it toggles, so a set is idempotent
-        // here for the same reason it is for any other GPIO line.
-        tokio::task::spawn_blocking(move || match on {
-            Some(want) => crate::gpio_io::relay_set(index, want),
-            None => crate::gpio_io::relay_toggle(index),
-        })
-        .await
-        .map_err(|e| Fault::Io(e.to_string()))?
-        .map_err(|e| Fault::Io(e.to_string()))?
-    } else {
-        let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
-        let r = {
-            let mut l = l.lock().await;
-            match on {
-                Some(want) => l.relay_set(index, want),
-                None => l.relay_toggle(index),
-            }
-        };
-        r.map_err(|e| Fault::Mcu(e.to_string()))?
-    };
+    io_ready(c)?;
+    // The kernel driver reads before it toggles, so a set is idempotent here
+    // for the same reason it is for any other GPIO line.
+    let now = tokio::task::spawn_blocking(move || match on {
+        Some(want) => crate::gpio_io::relay_set(index, want),
+        None => crate::gpio_io::relay_toggle(index),
+    })
+    .await
+    .map_err(|e| Fault::Io(e.to_string()))?
+    .map_err(|e| Fault::Io(e.to_string()))?;
     // Relay position is STATE, not an event: it has a value at every instant
     // and a client that missed the change is wrong until the next one. Record
     // it so a new client is told on connect, and so the one that did not press
@@ -515,92 +454,23 @@ async fn ir_send(c: &Arc<Config>, target: IrTarget, pronto: &str, _repeat: u8) -
     if c.board.io.ir_total() == 0 {
         return Err(Fault::NoSuch("this board has no IR outputs".into()));
     }
-    let port = target.index(&c.board.io)?;
-    let words: Result<Vec<u16>, _> =
-        pronto.split_whitespace().map(|w| u16::from_str_radix(w, 16)).collect();
-    let words = words.map_err(|_| Fault::Bad("pronto must be space-separated hex words".into()))?;
-    if words.len() < 5 || words[0] != 0 {
-        return Err(Fault::Bad("only Pronto code type 0000 (raw, learned) is supported".into()));
-    }
-    // Pronto: [0000][carrier][once len][repeat len][durations…]
-    let carrier = words[1];
-    if carrier == 0 {
-        // The firmware divides by this. A zero here is a UsageFault on the
-        // Cortex-M3 and the part stops answering ANYTHING until it is power
-        // cycled — which is exactly how this was discovered.
-        return Err(Fault::Bad("pronto carrier word cannot be 0000".into()));
-    }
-    let durations = &words[4..];
-    if durations.is_empty() {
-        return Err(Fault::Bad("pronto code carries no burst pairs".into()));
-    }
-    let carrier_hz = 4_145_146u32 / carrier as u32;
-
-    // The kernel path. Each emitter is its own lirc node, so the port is chosen
-    // by which device is opened — there is no selector to set and nothing for a
-    // second transmission to redirect.
-    if c.ir_lirc {
-        let name = crate::lirc::emitter_name(target);
-        let dev = crate::lirc::find(&name)
-            .ok_or_else(|| Fault::NoSuch(format!("no lirc device named {name:?}")))?;
-        // Pronto counts in carrier periods; lirc wants microseconds.
-        let us: Vec<u32> = durations
-            .iter()
-            .map(|d| ((*d & 0x7fff) as u64 * 1_000_000 / carrier_hz.max(1) as u64) as u32)
-            .collect();
-        let path = dev.path.clone();
-        let n = us.len();
-        tokio::task::spawn_blocking(move || crate::lirc::send(&path, carrier_hz, &us))
-            .await
-            .map_err(|e| Fault::Mcu(e.to_string()))?
-            .map_err(|e| Fault::Mcu(e.to_string()))?;
-        return Ok(json!({
-            "target": target.label(),
-            "device": dev.path.display().to_string(),
-            "name": dev.name,
-            "carrier_hz": carrier_hz,
-            "durations": n,
-        }));
-    }
-
-    let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
-
-    // IROUT_SEND's payload, as the vendor firmware actually parses it: 14 fixed
-    // bytes then (len-14)/2 duration words. Decoded from the firmware image, and
-    // verified against a Global Caché learner — carrier and every burst duration
-    // came back matching what went in.
-    //
-    // The output selector is a 24-BIT BITMASK, not a port index: bit 0 is the
-    // jack labelled 1. Two fields are read and unused on this path, and the
-    // firmware sets bit 15 of alternate durations itself to mark them, so the
-    // durations go out plain.
-    let mut payload = Vec::with_capacity(14 + durations.len() * 2);
-    payload.push(1u8); // mode: <2 skips the repeat block entirely
-    let mask: u32 = 1 << port;
-    payload.extend_from_slice(&[(mask >> 16) as u8, (mask >> 8) as u8, mask as u8]);
-    payload.extend_from_slice(&0u16.to_be_bytes()); // unread on this path
-    payload.extend_from_slice(&0u16.to_be_bytes()); // unread on this path
-    payload.extend_from_slice(&carrier.to_be_bytes());
-    payload.extend_from_slice(&0u16.to_be_bytes()); // repeat count
-    payload.extend_from_slice(&0u16.to_be_bytes()); // repeat offset
-    for d in durations {
-        payload.extend_from_slice(&(d & 0x7fff).to_be_bytes());
-    }
-
-    let mut l = l.lock().await;
-    let f = l
-        .request(crate::mcu::OP_IROUT_SEND, &payload, Duration::from_secs(4))
-        .map_err(|e| Fault::Mcu(e.to_string()))?;
-    // The firmware answers 0x68 with a one-byte status; 0 is success.
-    let status = f.payload.first().copied().unwrap_or(0xff);
-    if status != 0 {
-        return Err(Fault::Mcu(format!("the IO microcontroller refused the code (status {status:#04x})")));
-    }
+    // Validate the target against the board before looking for a device, so a
+    // bad jack number says "no IR jack 9" rather than "no lirc device named…".
+    target.index(&c.board.io)?;
+    let (carrier_hz, durations) = crate::ir::parse_pronto(pronto)?;
+    let n = durations.len();
+    let dev = crate::ir::emitter(target)?;
+    let path = dev.path.clone();
+    tokio::task::spawn_blocking(move || crate::lirc::send(&path, carrier_hz, &durations))
+        .await
+        .map_err(|e| Fault::Io(e.to_string()))?
+        .map_err(|e| Fault::Io(e.to_string()))?;
     Ok(json!({
         "target": target.label(),
-        "mask": format!("{mask:#08x}"),
+        "device": dev.path.display().to_string(),
+        "name": dev.name,
         "carrier_hz": carrier_hz,
-        "durations": durations.len(),
+        "durations": n,
     }))
 }
 

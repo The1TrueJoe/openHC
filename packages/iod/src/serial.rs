@@ -13,10 +13,9 @@
 //! New arrivals get the recent scrollback replayed, so joining a session mid-way
 //! does not mean staring at a blank screen until the far end says something.
 use crate::events::Bus;
-use crate::mcu::open_serial;
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::unix::AsyncFd;
@@ -138,7 +137,7 @@ async fn pump(
             // the port in a state nobody asked for.
             Some(b) = reopen.recv() => {
                 drop(afd);
-                match open_serial(&sess.dev, b).and_then(|f| AsyncFd::new(unsafe { OwnedFd::from_raw_fd(f) }).map_err(Into::into)) {
+                match open_serial(&sess.dev, b).and_then(|f| AsyncFd::new(unsafe { OwnedFd::from_raw_fd(f) })) {
                     Ok(a) => {
                         afd = a;
                         let note = format!("\r\n[iod] {} reopened at {} baud\r\n", sess.dev, b);
@@ -184,4 +183,67 @@ async fn pump(
             }
         }
     }
+}
+
+/// Open a UART in raw 8N1 at `baud` and return the fd.
+///
+/// Written against libc termios rather than a serialport crate: the crate pulls
+/// a dependency tree for what is one tcsetattr, and this has to cross-compile
+/// to three targets.
+pub fn open_serial(dev: &str, baud: u32) -> io::Result<RawFd> {
+    use std::ffi::CString;
+    let path = CString::new(dev).map_err(|_| io::Error::other("bad device path"))?;
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_NONBLOCK) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // The high rates are Linux-only constants. This daemon only ever runs on
+    // Linux, but keeping the host build compiling is worth a cfg: without it
+    // `cargo check` on a Mac fails on B460800 and there is no local way to
+    // syntax-check the file at all (Homebrew's cargo has no cross std).
+    //
+    // The high rates are not academic: 460800 is the EA family's IO
+    // microcontroller rate, which the init script hands to the line discipline.
+    #[cfg(target_os = "linux")]
+    let speed = match baud {
+        9600 => libc::B9600,
+        19200 => libc::B19200,
+        38400 => libc::B38400,
+        57600 => libc::B57600,
+        115200 => libc::B115200,
+        230400 => libc::B230400,
+        460800 => libc::B460800,
+        921600 => libc::B921600,
+        _ => libc::B115200,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let speed = match baud {
+        9600 => libc::B9600,
+        19200 => libc::B19200,
+        38400 => libc::B38400,
+        57600 => libc::B57600,
+        _ => libc::B115200,
+    };
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut t) != 0 {
+            let e = io::Error::last_os_error();
+            libc::close(fd);
+            return Err(e);
+        }
+        libc::cfmakeraw(&mut t);
+        libc::cfsetispeed(&mut t, speed);
+        libc::cfsetospeed(&mut t, speed);
+        t.c_cflag |= libc::CLOCAL | libc::CREAD;
+        t.c_cflag &= !libc::CRTSCTS;
+        t.c_cc[libc::VMIN] = 0;
+        t.c_cc[libc::VTIME] = 0;
+        if libc::tcsetattr(fd, libc::TCSANOW, &t) != 0 {
+            let e = io::Error::last_os_error();
+            libc::close(fd);
+            return Err(e);
+        }
+        libc::tcflush(fd, libc::TCIOFLUSH);
+    }
+    Ok(fd)
 }

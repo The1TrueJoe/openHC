@@ -1,28 +1,9 @@
-//! IR through the kernel's lirc devices.
+//! The kernel's lirc devices. One node per emitter, so the node IS the port.
 //!
-//! The `gpio-ohc-iomcu` driver registers ONE lirc device per emitter and one
-//! more for the receiver, so choosing which jack fires is choosing which
-//! `/dev/lircN` to open. There is no port argument on the wire from here down:
-//! the node *is* the port.
-//!
-//! Devices are found by NAME, never by number. `/dev/lirc3` is whatever probe
-//! order made it, and on a box with a USB IR dongle plugged in it may not be
-//! ours at all; the driver publishes a label in `DEV_NAME` precisely so this
-//! does not have to guess.
+//! Found by NAME, never by number: `/dev/lirc3` is whatever probe order made
+//! it, and with a USB IR dongle plugged in it may not be ours at all.
 use std::io;
 use std::path::{Path, PathBuf};
-
-/// Names the kernel driver gives its nodes. Changing either side alone silently
-/// loses the device, so they are written out here in full rather than built up
-/// from pieces.
-pub fn emitter_name(target: crate::ops::IrTarget) -> String {
-    match target {
-        crate::ops::IrTarget::Front => "openHC IR front blaster".into(),
-        crate::ops::IrTarget::Jack(n) => format!("openHC IR out {n}"),
-    }
-}
-
-pub const RECEIVER_NAME: &str = "openHC IR front receiver";
 
 /// One lirc node and the label the driver gave it.
 #[derive(Clone, Debug)]
@@ -31,11 +12,8 @@ pub struct Dev {
     pub name: String,
 }
 
-/// Every lirc device on the system, with its `DEV_NAME`.
-///
-/// `/sys/class/lirc/lircN/device` is the rc device that owns it, and reading
-/// that device's `uevent` runs rc-core's uevent hook, which is where `DEV_NAME`
-/// comes from. It is the only place the label is exposed.
+/// Every lirc device, with its `DEV_NAME`. Reading the owning rc device's
+/// `uevent` runs rc-core's hook, which is the only place the label is exposed.
 #[cfg(target_os = "linux")]
 pub fn devices() -> Vec<Dev> {
     let mut out = Vec::new();
@@ -71,14 +49,11 @@ pub fn find(name: &str) -> Option<Dev> {
     devices().into_iter().find(|d| d.name == name)
 }
 
-/// Is any openHC IR node present? Distinguishes "the kernel owns the IR" from
-/// "iod should talk to the microcontroller itself".
 pub fn present() -> bool {
     devices().iter().any(|d| d.name.starts_with("openHC IR"))
 }
 
-// linux/lirc.h. _IOW('i', n, __u32) — the direction and size fields are the
-// same shape on every architecture this runs on.
+// linux/lirc.h: _IOW('i', n, __u32).
 #[cfg(target_os = "linux")]
 const LIRC_SET_SEND_CARRIER: libc::c_ulong = 0x4004_6913;
 #[cfg(target_os = "linux")]
@@ -87,6 +62,7 @@ const LIRC_SET_REC_MODE: libc::c_ulong = 0x4004_6912;
 const LIRC_MODE_MODE2: u32 = 0x0000_0004;
 
 pub const MODE2_PULSE: u32 = 0x0100_0000;
+pub const MODE2_FREQUENCY: u32 = 0x0200_0000;
 pub const MODE2_TIMEOUT: u32 = 0x0300_0000;
 pub const MODE2_MASK: u32 = 0xFF00_0000;
 pub const VALUE_MASK: u32 = 0x00FF_FFFF;
@@ -106,11 +82,10 @@ fn ioctl_u32(fd: libc::c_int, req: libc::c_ulong, val: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Transmit on one emitter.
+/// Transmit on one emitter. `durations` alternate mark and space in
+/// MICROSECONDS, starting with a mark.
 ///
-/// `durations` alternate mark and space in MICROSECONDS, starting with a mark.
-/// The kernel rejects an even count — a code must end on a mark, because a
-/// trailing space transmits nothing — so the last space is dropped here rather
+/// The kernel rejects an even count, so the trailing space is dropped rather
 /// than surfacing as a bare EINVAL from `write`.
 #[cfg(target_os = "linux")]
 pub fn send(dev: &Path, carrier_hz: u32, durations: &[u32]) -> io::Result<()> {
@@ -145,8 +120,7 @@ pub fn open_rx(dev: &Path) -> io::Result<std::fs::File> {
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(dev)?;
-    // Not fatal if it fails: a raw-IR device is already in mode2 and answers
-    // this only for form's sake.
+    // Not fatal: a raw-IR device is already in mode2.
     let _ = ioctl_u32(f.as_raw_fd(), LIRC_SET_REC_MODE, LIRC_MODE_MODE2);
     Ok(f)
 }

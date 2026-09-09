@@ -47,20 +47,25 @@ export interface Capabilities {
   backend: Backend;
   mcu_linked: boolean;
   ir?: { out: number; blaster: number; total: number; combo: number; receiver: number;
-         front?: { send: boolean; receive: boolean } };
+         front?: { send: boolean; receive: boolean };
+         /** Always `lirc`: each emitter is its own kernel device. */
+         via?: 'lirc';
+         /** One entry per kernel IR node, named so a port can be matched to the
+          *  device an operator would open with ir-ctl. */
+         devices?: { name: string; device: string }[] };
   relays?: { count: number };
   contacts?: { count: number };
   serials?: SerialPort[];
 }
 
+/** What is carrying the IO. The kernel driver owns the link, so iod cannot ask
+ *  the part who it is — these come from board.env and from the chip's presence. */
 export interface McuInfo {
-  part: string;
-  baud: number;
-  product: string;
-  version: string;
-  /** What the MCU says it measured, a useful link check: an HC-800 reports
-   *  ~115207 against a nominal 115200. */
-  measured_baud: number | null;
+  chip: string;
+  present: boolean;
+  part: string | null;
+  tty: string | null;
+  baud: number | null;
 }
 
 export interface MqttConfig {

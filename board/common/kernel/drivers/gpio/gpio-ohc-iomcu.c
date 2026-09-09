@@ -12,16 +12,11 @@
  * knows Linux works without knowing anything about Control4. Userspace daemons
  * become clients of the kernel rather than owners of a UART.
  *
- * WHY A LINE DISCIPLINE
- *
- * The obvious attachment is serdev, and it is the wrong one here. serdev binds
- * through device tree or ACPI, and these are x86 PCs whose BIOS has no node
- * describing a Control4 co-processor — so no serdev device is ever enumerated
- * and nothing can bind. A line discipline is the mechanism that works without
- * firmware enumeration: userspace opens the port and hands it to the kernel
- * with TIOCSETD, exactly as PPP, SLIP and n_gsm are attached. It also puts the
- * choice of WHICH port in userspace, where the board description already lives,
- * instead of hardcoding a tty in a driver.
+ * A LINE DISCIPLINE, not serdev: serdev binds through device tree or ACPI, and
+ * these are x86 PCs whose BIOS has no node describing a Control4 co-processor,
+ * so nothing is ever enumerated to bind to. TIOCSETD needs no enumeration — the
+ * way PPP, SLIP and n_gsm attach — and it leaves the choice of WHICH port in
+ * userspace, where the board description already lives.
  *
  * Copyright (C) 2026 openHC
  */
@@ -57,11 +52,10 @@ module_param(ldisc_num, int, 0444);
 MODULE_PARM_DESC(ldisc_num, "line discipline number to register (default N_DEVELOPMENT)");
 
 /*
- * Writable, because this is built in (the images are all-builtin by design) and
- * a built-in's parameters can otherwise only come from the kernel command line.
- * The init script writes these from board.env and then attaches the line
- * discipline; the geometry is latched per-instance at attach, so changing them
- * afterwards affects the next attach and never the chip already registered.
+ * Writable, because this is built in and a built-in's parameters can otherwise
+ * only come from the kernel command line. The init script writes these from
+ * board.env then attaches the discipline; geometry is latched at attach, so a
+ * later write affects the next attach and never a registered chip.
  */
 static int relays = 4;
 module_param(relays, int, 0644);
@@ -72,15 +66,8 @@ module_param(contacts, int, 0644);
 MODULE_PARM_DESC(contacts, "number of contact inputs the board fits");
 
 /*
- * Contacts have no unsolicited notification in this protocol — the host polls.
- * Doing it once here, in one place, is the point of putting this in the kernel:
- * five clients asking "is the door open" become five cached reads instead of
- * five round trips down a UART that answers one question at a time.
- */
-/*
- * IR emitters, as the case is labelled: the rear jacks, then whether there is
- * an internal front blaster. Zero of both means this board has no IR and no
- * rc device is registered.
+ * IR emitters as the case is labelled: rear jacks, then an internal front
+ * blaster. Zero of both means no IR and no rc device.
  */
 static int ir_out;
 module_param(ir_out, int, 0644);
@@ -122,12 +109,10 @@ MODULE_PARM_DESC(poll_ms, "contact poll interval in milliseconds (0 disables)");
  * selector is a 24-bit BITMASK — on an HC-800, bits 0..5 are the rear jacks and
  * bit 6 is the internal front blaster.
  *
- * That mask is carried in the same frame as the durations, so nothing about the
- * hardware is stateful: choosing an output is per-transmission, not a mode the
- * part sits in. That is why each output is registered as its own lirc device
- * with its bit fixed, rather than as one device plus s_tx_mask. Routing then
- * means opening /dev/lircN, which survives two processes transmitting at once —
- * a shared mask does not, since the second setter silently redirects the first.
+ * The mask travels in the same frame as the durations, so choosing an output is
+ * per-transmission and not a mode the part sits in. Hence one lirc device per
+ * output with its bit fixed, rather than one device plus s_tx_mask: with a mask
+ * the second process to set it silently redirects the first.
  *
  * The carrier field is a Pronto word, and the firmware DIVIDES BY IT. Zero
  * there is a divide-by-zero: UsageFault, HardFault, and a part that answers
@@ -136,11 +121,7 @@ MODULE_PARM_DESC(poll_ms, "contact poll interval in milliseconds (0 disables)");
 #define IR_PRONTO_HZ    4145146u  /* 1e6 / 0.241246 */
 #define IR_SYS_HZ       50000000u /* LM3S system clock, for capture periods */
 #define IR_FIXED_BYTES  14
-/*
- * Derived, not chosen: one frame carries at most OHC_MAX_PAYLOAD bytes, and a
- * durations array that overruns it is rejected by ohc_write_frame with a bare
- * -EINVAL that says nothing about why.
- */
+/* Derived: a longer durations array overruns one frame. */
 #define IR_MAX_DURATIONS ((OHC_MAX_PAYLOAD - IR_FIXED_BYTES) / 2)
 
 enum rx_state {
@@ -214,12 +195,8 @@ struct ohc_iomcu {
 	int n_relays;
 	int n_contacts;
 
-	/*
-	 * IR. Each emitter is its OWN lirc device, so a jack is addressed by
-	 * opening it rather than by setting a mask first — the same reasoning
-	 * that makes each relay its own GPIO line. The receiver is separate
-	 * again, because it is the only one that should present an input device.
-	 */
+	/* One lirc device per emitter; the receiver is separate, because it is
+	 * the only one that should present an input device. */
 	struct ohc_emitter *emitters;
 	int n_emitters;
 	struct rc_dev *rx;
@@ -351,15 +328,11 @@ out:
 /*
  * RELAY_GET/RELAY_TOGGLE take a 0-BASED INDEX and answer [index, state].
  *
- * Not a bitmask, which is what an earlier reading assumed. The firmware echoes
- * whatever selector it is given — 0x00 through 0x09 all come back verbatim —
- * so a GET alone cannot tell the two apart. A TOGGLE can: sweeping the
- * selectors on a live HC-800, 0x00..0x03 each flip exactly one relay and
- * 0x04 and above do nothing at all.
- *
- * Under the bitmask reading, index 2 and 3 became 0x04 and 0x08 and addressed
- * nothing, which is precisely why this board looked like it had two working
- * relays and two dead ones. It has four.
+ * Not a bitmask: the firmware echoes any selector verbatim, so a GET cannot
+ * tell the two apart, but a TOGGLE sweep on a live HC-800 shows 0x00..0x03
+ * each flipping one relay and 0x04 up doing nothing. Read as a bitmask, relays
+ * 2 and 3 became 0x04 and 0x08 and addressed nothing — which is why the board
+ * looked like it had two dead relays.
  */
 static int ohc_relay_get(struct ohc_iomcu *mcu, int index, bool *on)
 {
@@ -437,11 +410,7 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 	if (!word)
 		return -EINVAL;		/* would be a divide-by-zero in the firmware */
 
-	/*
-	 * Truncating would transmit a code the target does not recognise and
-	 * report success. Refuse instead: a caller can split a long code, but it
-	 * cannot notice a short one.
-	 */
+	/* Truncating would transmit an unrecognisable code and report success. */
 	if (count > IR_MAX_DURATIONS)
 		return -EMSGSIZE;
 	n = count;
@@ -501,10 +470,9 @@ static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
 		return;
 
 	/*
-	 * Lead with the measured carrier. rc-core's decoders ignore it, but it
-	 * reaches lirc as LIRC_MODE2_FREQUENCY, and it is the only place the
-	 * frequency survives: the durations that follow are microseconds, and a
-	 * code replayed at the wrong carrier is a code the target ignores.
+	 * Lead with the measured carrier: it reaches lirc as
+	 * LIRC_MODE2_FREQUENCY, and is the only place the frequency survives —
+	 * the durations that follow are microseconds.
 	 */
 	ev.carrier_report = 1;
 	ev.carrier = carrier;
@@ -521,11 +489,8 @@ static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
 		ev.duration = ((u64)(w & 0x7fff) * 1000000u) / carrier;
 		ir_raw_event_store(mcu->rx, &ev);
 	}
-	/*
-	 * The firmware has already decided where the code ends — it sent a
-	 * complete capture. Say so, instead of leaving a reader to guess from a
-	 * trailing gap that this protocol never sends.
-	 */
+	/* The capture is complete; say so rather than leaving a reader to infer
+	 * it from a trailing gap this protocol never sends. */
 	memset(&ev, 0, sizeof(ev));
 	ev.timeout = 1;
 	ir_raw_event_store(mcu->rx, &ev);
@@ -553,17 +518,10 @@ static int ohc_gpio_get_direction(struct gpio_chip *gc, unsigned int off)
 }
 
 /*
- * Accepted for relays too, and that is deliberate.
- *
- * A relay is an output in hardware and cannot be tristated, so "make this an
- * input" is not something the chip can honour literally. But it is how every
- * libgpiod-1.x tool asks to READ a line: `gpioget` issues
- * GPIOHANDLE_REQUEST_INPUT. Refusing it means `gpioget $(gpiofind relay0)`
- * returns "Invalid argument" and there is no way to read a relay's state with
- * the tools on the rootfs — for a line the driver can read perfectly well.
- *
- * So this succeeds without touching the hardware: the request is honoured as
- * read-only access, and get_direction still reports OUT, which is the truth.
+ * Accepted for relays too, deliberately: GPIOHANDLE_REQUEST_INPUT is how every
+ * libgpiod-1.x tool asks to READ a line, so refusing it makes
+ * `gpioget $(gpiofind relay1)` fail with EINVAL on a line the driver can read
+ * perfectly well. Honoured as read-only access; get_direction still says OUT.
  */
 static int ohc_gpio_direction_input(struct gpio_chip *gc, unsigned int off)
 {
@@ -646,6 +604,11 @@ static int ohc_gpio_set(struct gpio_chip *gc, unsigned int off, int value)
 	return (now == !!value) ? 0 : -EIO;
 }
 
+/*
+ * Contacts have no unsolicited notification — the host polls. Doing it once
+ * here is the point of putting this in the kernel: five clients asking "is the
+ * door open" become five cached reads, not five UART round trips.
+ */
 static void ohc_poll(struct work_struct *work)
 {
 	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
@@ -806,20 +769,13 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
 
 /*
  * Register the IR side: one lirc device per emitter, plus one for the receiver.
+ * Reasoning at IR_PRONTO_HZ.
  *
- * One node each rather than one node with s_tx_mask, for the reason given at
- * IR_PRONTO_HZ: with a mask the port is a mode, and the second process to set
- * it silently redirects the first. It also let a receiver advertise that it
- * could transmit, which is now impossible — only the emitters have tx_ir.
- *
- * Each node is named, because the numbering alone does not say which physical
- * connector it is: DEV_NAME in /sys/class/rc/rcN/uevent carries the label, so
- * userspace can open "openHC IR front blaster" rather than guessing that it is
- * the seventh one. Failure here is not fatal — a board with working relays and
- * no IR is worth having, and saying so beats refusing to bring up the gpiochip.
+ * Each node is NAMED — the number depends on probe order, so DEV_NAME in
+ * /sys/class/rc/rcN/uevent is the stable handle. Failure is not fatal: a board
+ * with working relays and no IR is worth having.
  */
-/* Takes ownership of @name, which must outlive the device: rc-core keeps the
- * pointer rather than copying it. */
+/* Takes ownership of @name; rc-core keeps the pointer rather than copying. */
 static int ohc_register_emitter(struct ohc_iomcu *mcu, struct ohc_emitter *em,
 				u32 bit, char *name)
 {
@@ -937,15 +893,10 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 /*
  * Identify the microcontroller, then register the chip.
  *
- * THIS CANNOT HAPPEN IN open(). tty_set_ldisc() holds tty->ldisc_sem for
- * writing across the ldisc's open(), and the receive path takes that same
- * semaphore to hand bytes to receive_buf(). A request issued from open() is
- * therefore a request whose reply cannot be delivered until open() has
- * returned — it times out every time, and the symptom is a microcontroller
- * that answers a userspace daemon perfectly and appears dead to this driver.
- *
- * So open() only arms this, and the conversation happens once the lock is
- * gone.
+ * THIS CANNOT HAPPEN IN open(). tty_set_ldisc() holds tty->ldisc_sem across the
+ * ldisc's open(), and the receive path needs that same semaphore to deliver the
+ * reply — so a request from open() times out every time, and the part looks
+ * dead to this driver while answering userspace perfectly.
  */
 static void ohc_probe(struct work_struct *work)
 {
@@ -984,14 +935,9 @@ static void ohc_probe(struct work_struct *work)
 	if (!mcu->names)
 		return;
 	/*
-	 * Named lines, so `gpiofind relay1` works and a script does not have to
-	 * know that relays happen to come first.
-	 *
-	 * The names are ONE-BASED because that is what is printed on the back of
-	 * the box. The line offset stays zero-based, as a gpiochip offset must,
-	 * and so does the selector on the wire — but neither of those is what an
-	 * installer is reading when they wire a relay. `relay1` is the terminal
-	 * labelled 1.
+	 * Named lines, so `gpiofind relay1` works. ONE-BASED, because that is
+	 * what is printed on the back of the box; the line offset and the wire
+	 * selector stay zero-based, as they must.
 	 */
 	for (i = 0; i < lines; i++) {
 		mcu->names[i] = kasprintf(GFP_KERNEL, "%s%d",
@@ -1106,18 +1052,11 @@ static void ohc_ldisc_close(struct tty_struct *tty)
 }
 
 /*
- * receive_buf2, not receive_buf, and this is the difference between a driver
- * that works and one that silently never sees a byte.
- *
- * The tty layer delivers through receive_buf2 when it exists. When it does not,
- * it falls back to receive_buf — but first clamps the count to
- * tty->receive_room, which is zero unless the line discipline sets it. A
- * discipline that implements only receive_buf and never sets receive_room is
- * therefore handed nothing, forever, with no error anywhere: writes succeed,
- * the far end answers, and every request times out.
- *
- * receive_buf2 returns how much it consumed and is not clamped, so it sidesteps
- * that entirely. receive_room is set as well, for the fallback path.
+ * receive_buf2, NOT receive_buf. The fallback path clamps to
+ * tty->receive_room, which is zero unless the discipline sets it — so a
+ * discipline with only receive_buf is handed nothing, forever, with no error
+ * anywhere: writes succeed, the far end answers, every request times out.
+ * receive_buf2 is not clamped. receive_room is set as well, for the fallback.
  */
 static size_t ohc_ldisc_receive_buf2(struct tty_struct *tty, const u8 *cp,
 				     const u8 *fp, size_t count)
