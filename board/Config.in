@@ -25,6 +25,18 @@ config BR2_OHC_EA_KERNEL_DRIVERS
 	  registers them per board/ea-common/kernel/objs.mk. EA family only —
 	  every driver behind it is Intel CE5300 specific.
 
+# The HC-800's front panel: six LEDs and the ID button, on ICH GPIO lines that
+# nothing on an x86 PC enumerates. Same gating reason as above — the driver
+# drives Lite-On HC800 wiring and has no business in any other board's kernel,
+# even though a DMI match makes it inert there.
+config BR2_OHC_HC800_KERNEL_DRIVERS
+	# A PROMPT IS LOAD BEARING — see the note above.
+	bool "HC-800: inject the front-panel board driver"
+	help
+	  Injects board/hc800/kernel/drivers into the kernel tree. Registers
+	  leds-gpio and gpio-keys-polled for the panel, behind a DMI match on
+	  Lite-On HC800.
+
 # Buildroot packages live in <repo>/packages/ (BR2_EXTERNAL_OPENHC_PATH is board/).
 source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/figlet/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
