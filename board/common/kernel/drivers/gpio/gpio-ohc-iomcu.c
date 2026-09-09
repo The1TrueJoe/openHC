@@ -335,13 +335,24 @@ static int ohc_gpio_get_direction(struct gpio_chip *gc, unsigned int off)
 				      : GPIO_LINE_DIRECTION_IN;
 }
 
+/*
+ * Accepted for relays too, and that is deliberate.
+ *
+ * A relay is an output in hardware and cannot be tristated, so "make this an
+ * input" is not something the chip can honour literally. But it is how every
+ * libgpiod-1.x tool asks to READ a line: `gpioget` issues
+ * GPIOHANDLE_REQUEST_INPUT. Refusing it means `gpioget $(gpiofind relay0)`
+ * returns "Invalid argument" and there is no way to read a relay's state with
+ * the tools on the rootfs — for a line the driver can read perfectly well.
+ *
+ * So this succeeds without touching the hardware: the request is honoured as
+ * read-only access, and get_direction still reports OUT, which is the truth.
+ */
 static int ohc_gpio_direction_input(struct gpio_chip *gc, unsigned int off)
 {
-	struct ohc_iomcu *mcu = gpiochip_get_data(gc);
-
-	/* A relay is an output in hardware; refuse rather than pretend. */
-	return ohc_is_relay(mcu, off) ? -EINVAL : 0;
+	return 0;
 }
+
 
 static int ohc_gpio_set(struct gpio_chip *gc, unsigned int off, int value);
 
@@ -546,7 +557,16 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
 		int want = 5 + (((int)mcu->body[3] << 8) | mcu->body[4]) + 1;
 		int saved;
 
-		if (want < 6 || mcu->body_len < want)
+		/*
+		 * A corrupt length would otherwise stall the decoder until the
+		 * next DLE/STX happened to resynchronise it. Resync now.
+		 */
+		if (want < 6 || want > (int)sizeof(mcu->body)) {
+			mcu->state = RX_IDLE;
+			mcu->body_len = 0;
+			break;
+		}
+		if (mcu->body_len < want)
 			break;
 
 		saved = mcu->body_len;
