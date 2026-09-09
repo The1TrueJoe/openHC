@@ -137,6 +137,11 @@ struct ohc_iomcu {
 	bool contacts_valid;
 
 	struct delayed_work poll_work;
+	/*
+	 * Identify and register the chip AFTER open() returns. See ohc_probe.
+	 */
+	struct delayed_work probe_work;
+	bool chip_added;
 	const char **names;
 
 	/*
@@ -532,11 +537,89 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
 
 /* ---- line discipline ---------------------------------------------------- */
 
+/*
+ * Identify the microcontroller, then register the chip.
+ *
+ * THIS CANNOT HAPPEN IN open(). tty_set_ldisc() holds tty->ldisc_sem for
+ * writing across the ldisc's open(), and the receive path takes that same
+ * semaphore to hand bytes to receive_buf(). A request issued from open() is
+ * therefore a request whose reply cannot be delivered until open() has
+ * returned — it times out every time, and the symptom is a microcontroller
+ * that answers a userspace daemon perfectly and appears dead to this driver.
+ *
+ * So open() only arms this, and the conversation happens once the lock is
+ * gone.
+ */
+static void ohc_probe(struct work_struct *work)
+{
+	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
+					     struct ohc_iomcu, probe_work);
+	struct ohc_frame f;
+	int i, lines, ret;
+
+	ret = ohc_request(mcu, OP_FIRMWARE_VERSION, NULL, 0, &f);
+	if (ret) {
+		/*
+		 * No chip. A gpiochip standing in for a part that is not
+		 * answering is one whose every read is a lie, and it would be
+		 * indistinguishable from working hardware until somebody
+		 * trusted a contact.
+		 */
+		pr_warn("no reply from the IO microcontroller on %s; no gpiochip registered\n",
+			mcu->tty->name);
+		return;
+	}
+
+	lines = mcu->n_relays + mcu->n_contacts;
+	mcu->names = kcalloc(lines, sizeof(char *), GFP_KERNEL);
+	if (!mcu->names)
+		return;
+	/*
+	 * Named lines, so `gpiofind relay0` works and a script does not have to
+	 * know that relays happen to come first.
+	 */
+	for (i = 0; i < lines; i++) {
+		mcu->names[i] = kasprintf(GFP_KERNEL, "%s%d",
+					  i < mcu->n_relays ? "relay" : "contact",
+					  i < mcu->n_relays ? i : i - mcu->n_relays);
+		if (!mcu->names[i])
+			goto err_names;
+	}
+
+	mcu->gc.label = "ohc-iomcu";
+	mcu->gc.owner = THIS_MODULE;
+	mcu->gc.base = -1;
+	mcu->gc.ngpio = lines;
+	mcu->gc.names = mcu->names;
+	mcu->gc.get_direction = ohc_gpio_get_direction;
+	mcu->gc.direction_input = ohc_gpio_direction_input;
+	mcu->gc.direction_output = ohc_gpio_direction_output;
+	mcu->gc.get = ohc_gpio_get;
+	mcu->gc.set = ohc_gpio_set;
+	/* Every access is a UART round trip. */
+	mcu->gc.can_sleep = true;
+
+	if (gpiochip_add_data(&mcu->gc, mcu))
+		goto err_names;
+	mcu->chip_added = true;
+
+	if (poll_ms > 0)
+		schedule_delayed_work(&mcu->poll_work, msecs_to_jiffies(poll_ms));
+
+	pr_info("%s: %d relays, %d contacts as GPIO lines\n",
+		mcu->tty->name, mcu->n_relays, mcu->n_contacts);
+	return;
+
+err_names:
+	for (i = 0; i < lines; i++)
+		kfree(mcu->names[i]);
+	kfree(mcu->names);
+	mcu->names = NULL;
+}
+
 static int ohc_ldisc_open(struct tty_struct *tty)
 {
 	struct ohc_iomcu *mcu;
-	int i, ret, lines;
-	struct ohc_frame f;
 
 	if (!tty->ops->write)
 		return -EOPNOTSUPP;
@@ -555,72 +638,12 @@ static int ohc_ldisc_open(struct tty_struct *tty)
 	spin_lock_init(&mcu->rx_lock);
 	init_completion(&mcu->reply);
 	INIT_DELAYED_WORK(&mcu->poll_work, ohc_poll);
+	INIT_DELAYED_WORK(&mcu->probe_work, ohc_probe);
 	tty->disc_data = mcu;
 
-	/*
-	 * Identify before claiming any lines. A gpiochip that appears for a
-	 * microcontroller that is not answering is a gpiochip whose every read
-	 * is a lie, and it would be indistinguishable from working hardware
-	 * until somebody trusted a contact.
-	 */
-	ret = ohc_request(mcu, OP_FIRMWARE_VERSION, NULL, 0, &f);
-	if (ret) {
-		pr_warn("no reply from the IO microcontroller on %s\n", tty->name);
-		goto err;
-	}
-
-	lines = mcu->n_relays + mcu->n_contacts;
-	mcu->names = kcalloc(lines, sizeof(char *), GFP_KERNEL);
-	if (!mcu->names) {
-		ret = -ENOMEM;
-		goto err;
-	}
-	/*
-	 * Named lines, so `gpiofind relay0` works and a script does not have to
-	 * know that relays happen to come first.
-	 */
-	for (i = 0; i < lines; i++) {
-		mcu->names[i] = kasprintf(GFP_KERNEL, "%s%d",
-					  i < mcu->n_relays ? "relay" : "contact",
-					  i < mcu->n_relays ? i : i - mcu->n_relays);
-		if (!mcu->names[i]) {
-			ret = -ENOMEM;
-			goto err_names;
-		}
-	}
-
-	mcu->gc.label = "ohc-iomcu";
-	mcu->gc.owner = THIS_MODULE;
-	mcu->gc.base = -1;
-	mcu->gc.ngpio = lines;
-	mcu->gc.names = mcu->names;
-	mcu->gc.get_direction = ohc_gpio_get_direction;
-	mcu->gc.direction_input = ohc_gpio_direction_input;
-	mcu->gc.direction_output = ohc_gpio_direction_output;
-	mcu->gc.get = ohc_gpio_get;
-	mcu->gc.set = ohc_gpio_set;
-	/* Every access is a UART round trip. */
-	mcu->gc.can_sleep = true;
-
-	ret = gpiochip_add_data(&mcu->gc, mcu);
-	if (ret)
-		goto err_names;
-
-	if (poll_ms > 0)
-		schedule_delayed_work(&mcu->poll_work, msecs_to_jiffies(poll_ms));
-
-	pr_info("attached to %s: %d relays, %d contacts\n",
-		tty->name, mcu->n_relays, mcu->n_contacts);
+	/* Talk to the part once this returns and the ldisc lock is released. */
+	schedule_delayed_work(&mcu->probe_work, msecs_to_jiffies(50));
 	return 0;
-
-err_names:
-	for (i = 0; i < lines; i++)
-		kfree(mcu->names[i]);
-	kfree(mcu->names);
-err:
-	tty->disc_data = NULL;
-	kfree(mcu);
-	return ret;
 }
 
 static void ohc_ldisc_close(struct tty_struct *tty)
@@ -631,13 +654,18 @@ static void ohc_ldisc_close(struct tty_struct *tty)
 	if (!mcu)
 		return;
 
+	cancel_delayed_work_sync(&mcu->probe_work);
 	cancel_delayed_work_sync(&mcu->poll_work);
-	gpiochip_remove(&mcu->gc);
+	/* The probe may have decided not to register one. */
+	if (mcu->chip_added)
+		gpiochip_remove(&mcu->gc);
 
 	lines = mcu->n_relays + mcu->n_contacts;
-	for (i = 0; i < lines; i++)
-		kfree(mcu->names[i]);
-	kfree(mcu->names);
+	if (mcu->names) {
+		for (i = 0; i < lines; i++)
+			kfree(mcu->names[i]);
+		kfree(mcu->names);
+	}
 
 	tty->disc_data = NULL;
 	kfree(mcu);
