@@ -1,9 +1,10 @@
 # Kernel side of the `iomcu` feature.
 #
 # The IO microcontroller's relays and contacts need only GPIOLIB, which every
-# board has. Its IR needs the remote-control core: gpio-ohc-iomcu registers an
-# rc_dev so the six rear jacks and the front blaster appear as /dev/lirc0 and
-# work with ir-ctl and ir-keytable, rather than behind an openHC-only API.
+# board has. Its IR needs the remote-control core: gpio-ohc-iomcu registers one
+# rc_dev PER EMITTER plus one for the receiver, so each rear jack, the front
+# blaster and the front receiver are separate lirc devices that work with ir-ctl
+# and ir-keytable, rather than sitting behind an openHC-only API.
 #
 # RC_CORE and LIRC are the whole requirement. The protocol decoders are optional
 # — raw capture works without them — but they are what turns a keypress into an

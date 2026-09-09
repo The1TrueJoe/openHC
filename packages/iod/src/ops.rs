@@ -98,6 +98,14 @@ impl<'de> serde::Deserialize<'de> for IrTarget {
 }
 
 impl IrTarget {
+    /// How this target is written on the wire and in a topic.
+    pub fn label(self) -> String {
+        match self {
+            IrTarget::Front => "front".into(),
+            IrTarget::Jack(n) => n.to_string(),
+        }
+    }
+
     /// Resolve to the 0-based index the output bitmask uses.
     fn index(self, io: &crate::board::Io) -> Result<u8, Fault> {
         match self {
@@ -261,6 +269,16 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
                 "receive": io.ir_in > 0,
                 "topics": { "send": "ir/front/send", "rx": "ir/front/rx" },
             },
+            // Where a transmission actually goes. Each emitter is its own lirc
+            // node under the kernel driver, so this is also the answer to "can
+            // I drive that jack with ir-ctl myself" — and the node is found by
+            // name, because the number depends on probe order.
+            "via": if c.ir_lirc { "lirc" } else { "mcu" },
+            "devices": crate::lirc::devices()
+                .iter()
+                .filter(|d| d.name.starts_with("openHC IR"))
+                .map(|d| json!({ "name": d.name, "device": d.path.display().to_string() }))
+                .collect::<Vec<_>>(),
         }));
     }
     if io.relays > 0 {
@@ -516,6 +534,34 @@ async fn ir_send(c: &Arc<Config>, target: IrTarget, pronto: &str, _repeat: u8) -
     if durations.is_empty() {
         return Err(Fault::Bad("pronto code carries no burst pairs".into()));
     }
+    let carrier_hz = 4_145_146u32 / carrier as u32;
+
+    // The kernel path. Each emitter is its own lirc node, so the port is chosen
+    // by which device is opened — there is no selector to set and nothing for a
+    // second transmission to redirect.
+    if c.ir_lirc {
+        let name = crate::lirc::emitter_name(target);
+        let dev = crate::lirc::find(&name)
+            .ok_or_else(|| Fault::NoSuch(format!("no lirc device named {name:?}")))?;
+        // Pronto counts in carrier periods; lirc wants microseconds.
+        let us: Vec<u32> = durations
+            .iter()
+            .map(|d| ((*d & 0x7fff) as u64 * 1_000_000 / carrier_hz.max(1) as u64) as u32)
+            .collect();
+        let path = dev.path.clone();
+        let n = us.len();
+        tokio::task::spawn_blocking(move || crate::lirc::send(&path, carrier_hz, &us))
+            .await
+            .map_err(|e| Fault::Mcu(e.to_string()))?
+            .map_err(|e| Fault::Mcu(e.to_string()))?;
+        return Ok(json!({
+            "target": target.label(),
+            "device": dev.path.display().to_string(),
+            "name": dev.name,
+            "carrier_hz": carrier_hz,
+            "durations": n,
+        }));
+    }
 
     let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
 
@@ -551,9 +597,9 @@ async fn ir_send(c: &Arc<Config>, target: IrTarget, pronto: &str, _repeat: u8) -
         return Err(Fault::Mcu(format!("the IO microcontroller refused the code (status {status:#04x})")));
     }
     Ok(json!({
-        "target": match target { IrTarget::Front => "front".to_string(), IrTarget::Jack(n) => n.to_string() },
+        "target": target.label(),
         "mask": format!("{mask:#08x}"),
-        "carrier_hz": 4_145_146u32 / carrier as u32,
+        "carrier_hz": carrier_hz,
         "durations": durations.len(),
     }))
 }

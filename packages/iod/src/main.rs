@@ -14,6 +14,7 @@ mod events;
 mod gpio;
 mod gpio_io;
 mod link;
+mod lirc;
 mod mcu;
 mod mqtt;
 mod ops;
@@ -36,6 +37,10 @@ pub struct Config {
     /// True when the kernel's ohc-iomcu gpiochip is present, so relays and
     /// contacts go through GPIO rather than iod speaking the wire protocol.
     pub gpio_io: bool,
+    /// The kernel's lirc nodes for this board's emitters, keyed by the driver's
+    /// label. Empty when the driver is not loaded, in which case IR goes down
+    /// the direct MCU path.
+    pub ir_lirc: bool,
     /// The IO microcontroller's reset line, claimed on first use and then held.
     /// See gpio::Line — letting go of it could leave the part in reset.
     pub io_reset: std::sync::Mutex<Option<gpio::Line>>,
@@ -206,6 +211,92 @@ async fn poll_via_mcu(cfg: Arc<Config>) {
     }
 }
 
+/// Read the receiver's lirc node and publish each code as `ir/front/rx`.
+///
+/// mode2 is a stream of tagged 32-bit words: alternating marks and spaces in
+/// microseconds, a FREQUENCY word carrying the carrier the driver measured, and
+/// a TIMEOUT marking the end of a code. Accumulate until the end, then publish
+/// a Pronto string — the same format `ir/front/send` accepts, so a learned code
+/// can be sent straight back without any conversion in between.
+///
+/// Polled rather than woken: the fd is non-blocking and the kernel buffers a
+/// whole burst, so a 20 ms tick costs one failed read per tick and keeps this
+/// on the single runtime thread with everything else.
+async fn ir_receiver(cfg: Arc<Config>, dev: std::path::PathBuf) {
+    use std::io::Read;
+    use std::time::Duration;
+
+    let mut f = match lirc::open_rx(&dev) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("iod: cannot open {} for IR receive: {e}", dev.display());
+            return;
+        }
+    };
+    eprintln!("iod: IR receive on {}", dev.display());
+
+    let mut durs: Vec<u32> = Vec::new();
+    let mut carrier: u32 = 0;
+    let mut buf = [0u8; 4096];
+    loop {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let n = match f.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) => {
+                eprintln!("iod: IR receive stopped: {e}");
+                return;
+            }
+        };
+        let (words, _) = buf[..n].as_chunks::<4>();
+        for c in words {
+            let v = u32::from_ne_bytes(*c);
+            let val = v & lirc::VALUE_MASK;
+            match v & lirc::MODE2_MASK {
+                lirc::MODE2_PULSE => durs.push(val),
+                // A space before any mark is the gap since the last code, not
+                // part of this one.
+                0 if !durs.is_empty() => durs.push(val),
+                lirc::MODE2_TIMEOUT => {
+                    if !durs.is_empty() {
+                        let hz = if carrier > 0 { carrier } else { 38_000 };
+                        cfg.bus.event(
+                            "ir/front/rx",
+                            serde_json::json!({
+                                "pronto": pronto_from_us(&durs, hz),
+                                "carrier_hz": hz,
+                                "durations": durs.len(),
+                            }),
+                        );
+                    }
+                    durs.clear();
+                }
+                // FREQUENCY: what the receiver measured, which the driver sends
+                // ahead of every capture.
+                0x0200_0000 => carrier = val,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Microsecond marks and spaces to a Pronto "0000" (learned) code.
+///
+/// Pronto counts in CARRIER PERIODS, not microseconds, so every duration is
+/// scaled by the carrier — the one conversion that makes a learned code
+/// replayable rather than merely well-formed.
+fn pronto_from_us(durs: &[u32], carrier_hz: u32) -> String {
+    const PRONTO_HZ: u32 = 4_145_146; // 1e6 / 0.241246
+    let word = (PRONTO_HZ / carrier_hz.max(1)) as u16;
+    let pairs = (durs.len() / 2) as u16;
+    let mut out = format!("0000 {word:04X} {pairs:04X} 0000");
+    for d in durs {
+        let periods = ((*d as u64 * carrier_hz as u64) / 1_000_000).min(0x7fff) as u16;
+        out.push_str(&format!(" {periods:04X}"));
+    }
+    out
+}
+
 /// Turn a raw IRIN capture into a Pronto code that `ir.send` will accept.
 ///
 /// The capture is `[timer period][durations…]`, the period being the 50 MHz
@@ -270,6 +361,16 @@ fn main() {
                   gpio_io::CHIP_LABEL);
     }
 
+    // IR is a separate question from the gpiochip: the driver registers lirc
+    // nodes even for a board with no relays, and refuses to register a gpiochip
+    // for a part that is not answering.
+    let ir_lirc = lirc::present();
+    if ir_lirc {
+        for d in lirc::devices().iter().filter(|d| d.name.starts_with("openHC IR")) {
+            eprintln!("iod: IR {} -> {}", d.name, d.path.display());
+        }
+    }
+
     // When the driver owns the port, iod must NOT also open it. The line
     // discipline makes ordinary reads return -EIO by design, so a second owner
     // would get a useless handle and log a misleading "did not answer identify"
@@ -324,6 +425,7 @@ fn main() {
         pinned,
         settings_tx,
         gpio_io,
+        ir_lirc,
         io_reset: std::sync::Mutex::new(None),
         serial: std::sync::Arc::new(serial::Hub::default()),
     });
@@ -350,13 +452,20 @@ fn main() {
         // deaf and no ir/front/rx event can ever fire. Only possible on the direct
         // path: once the driver owns the port, enabling capture is its job.
         if cfg.board.io.ir_in > 0 {
-            if let Some(l) = &cfg.link {
+            if cfg.ir_lirc {
+                // The driver turns capture on when it registers the receiver;
+                // all that is left here is to read what it decodes.
+                match lirc::find(lirc::RECEIVER_NAME) {
+                    Some(d) => {
+                        tokio::task::spawn_local(ir_receiver(cfg.clone(), d.path));
+                    }
+                    None => eprintln!("iod: no {} lirc node", lirc::RECEIVER_NAME),
+                }
+            } else if let Some(l) = &cfg.link {
                 match l.lock().await.ir_capture(true) {
                     Ok(()) => eprintln!("iod: IR receive capture enabled"),
                     Err(e) => eprintln!("iod: could not enable IR capture: {e}"),
                 }
-            } else if cfg.gpio_io {
-                eprintln!("iod: IR receive is not enabled — the kernel driver does not do it yet");
             }
         }
 
@@ -395,6 +504,7 @@ fn main() {
 mod ir_tests {
     use super::ir_capture_to_pronto;
 
+
     #[test]
     fn a_real_capture_decodes_to_a_replayable_code() {
         // Straight off the front receiver with a remote pointed at it. The
@@ -408,6 +518,32 @@ mod ir_tests {
         assert!(code.starts_with("0000 006C "), "got {code}");
         assert!(code.contains(" 0062 "), "mark should lose bit 15: {code}");
         assert!(!code.contains("8062"), "bit 15 must not survive: {code}");
+    }
+
+    /// A code learned on the front receiver must go back out unchanged.
+    ///
+    /// Two conversions sit between: the driver turns carrier periods into
+    /// microseconds for rc-core, and `pronto_from_us` turns them back. Getting
+    /// either scale wrong yields a code that is well-formed and radiates the
+    /// wrong thing, which no amount of type checking catches.
+    #[test]
+    fn a_learned_code_survives_the_round_trip() {
+        let hz = 38_000u32;
+        let periods = [0x0062u32, 0x0017, 0x0018, 0x0017];
+        // What the driver hands rc-core.
+        let us: Vec<u32> = periods.iter().map(|p| p * 1_000_000 / hz).collect();
+        let code = super::pronto_from_us(&us, hz);
+        let words: Vec<u16> = code
+            .split_whitespace()
+            .map(|w| u16::from_str_radix(w, 16).unwrap())
+            .collect();
+        assert_eq!(words[0], 0);
+        assert_eq!(words[1], (4_145_146u32 / hz) as u16);
+        assert_eq!(words[2], 2, "four durations are two pairs");
+        for (got, want) in words[4..].iter().zip(periods.iter()) {
+            // Integer microseconds lose a fraction of a period each way.
+            assert!((*got as i32 - *want as i32).abs() <= 1, "{got:#06x} vs {want:#06x}");
+        }
     }
 
     #[test]

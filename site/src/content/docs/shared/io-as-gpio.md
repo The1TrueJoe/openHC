@@ -189,11 +189,75 @@ not revive it either, at either polarity. The recovery is a power cycle. See the
 [IO microcontroller page](/shared/io-mcu/) for what triggered it.
 :::
 
+## IR: one lirc device per emitter
+
+The same driver registers the IR side through `rc-core`, so the jacks and the
+front blaster are ordinary lirc devices and `ir-ctl` works without going through
+iod at all.
+
+**Every emitter gets its own node**, and each one is named:
+
+```console
+# for d in /sys/class/rc/rc*; do
+>   printf '%s\t%s\n' "$(basename $d)" "$(sed -n 's/^DEV_NAME=//p' $d/uevent)"
+> done
+rc0	openHC IR out 1
+rc1	openHC IR out 2
+rc2	openHC IR out 3
+rc3	openHC IR out 4
+rc4	openHC IR out 5
+rc5	openHC IR out 6
+rc6	openHC IR front blaster
+rc7	openHC IR front receiver
+
+# ir-ctl -d /dev/lirc6 --send=power.txt      # out of the front blaster
+# ir-ctl -d /dev/lirc7 --receive             # what the front receiver hears
+```
+
+:::note[`ir-ctl` is not in the image]
+The nodes are standard, so the standard tools work — but `v4l-utils` needs a C++
+toolchain the HC-800 image does not build, and forcing one on for a debug
+utility is a poor trade. iod drives lirc directly with the same ioctls. Install
+`v4l-utils` on any board whose toolchain has it, or use `ir/N/send` over MQTT.
+:::
+
+The alternative was one device plus `LIRC_SET_TRANSMITTER_MASK`, and it is worth
+saying why that was rejected. The mask makes the output port a **mode** rather
+than an address: a caller sets it, then transmits, and a second process that
+sets the mask in between silently redirects the first one's code to the wrong
+jack. Choosing the port by choosing the device removes the window entirely —
+which the hardware allows, because the firmware carries the output mask in the
+same frame as the durations. There is no port state on the part to preserve.
+
+It also stops the receiver from advertising that it can transmit. Only the
+emitters get `tx_ir`, so a client that opens the receiver and tries to send gets
+an honest `ENOTTY` instead of radiating out of jack 1.
+
+Names matter for the same reason line names do: `/dev/lirc3` is whatever probe
+order made it, and on a box with a USB IR dongle plugged in it may not be ours
+at all. The label in `DEV_NAME` is the stable handle, and it is how iod finds
+each port — never by number.
+
+:::note[The front panel is not "jack 7"]
+The blaster is a different piece of hardware that happens to sit behind the same
+opcode: an emitter pointed out of the case, with no socket to plug anything
+into. Numbering it after the jacks would send somebody looking for a seventh
+connector. It is named, and its MQTT topic is `ir/front/send` — sharing a prefix
+with `ir/front/rx`, which is the receiver on the same panel.
+:::
+
+### The carrier survives a capture
+
+A learned code is only replayable if you know what carrier it was learned at.
+rc-core's raw events are durations in microseconds and carry no frequency, so
+the driver emits a `LIRC_MODE2_FREQUENCY` event ahead of every capture with what
+the firmware measured, then a `LIRC_MODE2_TIMEOUT` to mark the end of the code.
+iod turns that back into a Pronto string — the same format `ir/front/send`
+accepts, so a code learned on the front receiver can be sent straight back out
+without any conversion in between.
+
 ## Still to come
 
-- **IR through `rc-core`**, giving `/dev/lirc0` and making `ir-ctl` and
-  `ir-keytable` work. Bigger than it sounds: rc-core speaks raw timing and the
-  MCU speaks Pronto-style bursts, so there is a real conversion layer.
 - **MCU-routed serial as real ttys** on the EA family, the way `n_gsm` creates
   `/dev/gsmtty*`. Irrelevant on the HC-800, whose two RS-232 ports are host
   16550As, and genuinely valuable on EA, where those ports currently have no
