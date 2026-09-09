@@ -240,10 +240,34 @@ It also stops the receiver from advertising that it can transmit. Only the
 emitters get `tx_ir`, so a client that opens the receiver and tries to send gets
 an honest `ENOTTY` instead of radiating out of jack 1.
 
-Names matter for the same reason line names do: `/dev/lirc3` is whatever probe
-order made it, and on a box with a USB IR dongle plugged in it may not be ours
-at all. The label in `DEV_NAME` is the stable handle, and it is how iod finds
-each port — never by number.
+### The numbers are stable in practice, not by construction
+
+Worth being precise, because "use the name" can sound like hand-waving. The
+driver registers its devices from a single work item in a fixed order — out 1
+through out N, the blaster, then the receiver — so their order relative to each
+other never changes. What is not ours to fix is the **base**: rc-core allocates
+the first free minor from one IDA shared by every rc driver in the kernel, and a
+driver cannot ask for a particular number. Plug in a USB IR receiver that probes
+first and every one of ours shifts by one.
+
+So the fix is a stable *path*, not a stable number — the same answer udev gives
+with `SYMLINK+=`, and the same reason `gpiodetect` is matched on `ohc-iomcu`
+rather than `gpiochip1`. `S12iomcu` reads `DEV_NAME` back out of sysfs after the
+attach and lays down:
+
+```console
+# ls -l /dev/ohc/ir
+front-blaster  -> /dev/lirc6
+front-receiver -> /dev/lirc7
+out1 -> /dev/lirc0    out2 -> /dev/lirc1    out3 -> /dev/lirc2
+out4 -> /dev/lirc3    out5 -> /dev/lirc4    out6 -> /dev/lirc5
+
+# ir-ctl -d /dev/ohc/ir/front-blaster --send=power.txt
+```
+
+iod does not use those symlinks to *find* anything — it reads `DEV_NAME` from
+sysfs, which is true whether or not the script ran. It reads them only to report
+the friendlier path, so the naming rule lives in exactly one place.
 
 :::note[The front panel is not "jack 7"]
 The blaster is a different piece of hardware that happens to sit behind the same

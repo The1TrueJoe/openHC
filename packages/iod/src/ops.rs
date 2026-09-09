@@ -247,7 +247,11 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
             "devices": crate::lirc::devices()
                 .iter()
                 .filter(|d| d.name.starts_with("openHC IR"))
-                .map(|d| json!({ "name": d.name, "device": d.path.display().to_string() }))
+                .map(|d| json!({
+                    "name": d.name,
+                    "device": d.stable().display().to_string(),
+                    "node": d.path.display().to_string(),
+                }))
                 .collect::<Vec<_>>(),
         }));
     }
@@ -467,7 +471,7 @@ async fn ir_send(c: &Arc<Config>, target: IrTarget, pronto: &str, _repeat: u8) -
         .map_err(|e| Fault::Io(e.to_string()))?;
     Ok(json!({
         "target": target.label(),
-        "device": dev.path.display().to_string(),
+        "device": dev.stable().display().to_string(),
         "name": dev.name,
         "carrier_hz": carrier_hz,
         "durations": n,

@@ -1,7 +1,11 @@
 //! The kernel's lirc devices. One node per emitter, so the node IS the port.
 //!
-//! Found by NAME, never by number: `/dev/lirc3` is whatever probe order made
-//! it, and with a USB IR dongle plugged in it may not be ours at all.
+//! Found by NAME, never by number. Our own order IS deterministic — the driver
+//! registers out1..N, the blaster, then the receiver from one work item — but
+//! rc-core hands out the first free minor from a counter shared with every rc
+//! driver in the kernel, so the BASE is not ours to fix. Plug in a USB IR
+//! dongle and everything shifts. `DEV_NAME` is the handle that does not move;
+//! S12iomcu turns it into a path under /dev/ohc/ir.
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -10,6 +14,10 @@ use std::path::{Path, PathBuf};
 pub struct Dev {
     pub path: PathBuf,
     pub name: String,
+    /// Stable path under `/dev/ohc/ir`, when S12iomcu has made one. DISCOVERED,
+    /// not computed: the script owns the naming, so there is no second copy of
+    /// the rule here to drift out of step with it.
+    pub link: Option<PathBuf>,
 }
 
 /// Every lirc device, with its `DEV_NAME`. Reading the owning rc device's
@@ -20,6 +28,7 @@ pub fn devices() -> Vec<Dev> {
     let Ok(dir) = std::fs::read_dir("/sys/class/lirc") else {
         return out;
     };
+    let links = stable_links();
     for e in dir.flatten() {
         let node = e.file_name();
         let node = node.to_string_lossy();
@@ -34,15 +43,38 @@ pub fn devices() -> Vec<Dev> {
                     .find_map(|l| l.strip_prefix("DEV_NAME=").map(str::to_string))
             })
             .unwrap_or_default();
-        out.push(Dev { path: PathBuf::from("/dev").join(&*node), name });
+        let path = PathBuf::from("/dev").join(&*node);
+        let link = links.iter().find(|(_, t)| *t == path).map(|(l, _)| l.clone());
+        out.push(Dev { path, name, link });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }
 
+/// `(symlink, target)` for everything under /dev/ohc/ir.
+#[cfg(target_os = "linux")]
+fn stable_links() -> Vec<(PathBuf, PathBuf)> {
+    let Ok(dir) = std::fs::read_dir("/dev/ohc/ir") else {
+        return Vec::new();
+    };
+    dir.flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            std::fs::read_link(&p).ok().map(|t| (p, t))
+        })
+        .collect()
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn devices() -> Vec<Dev> {
     Vec::new()
+}
+
+impl Dev {
+    /// The path to show a human: the stable one when it exists.
+    pub fn stable(&self) -> &Path {
+        self.link.as_deref().unwrap_or(&self.path)
+    }
 }
 
 pub fn find(name: &str) -> Option<Dev> {

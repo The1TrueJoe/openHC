@@ -28,10 +28,6 @@ start() {
     [ -n "$OHC_IO_MCU_TTY" ] || { echo "iomcu: OHC_IO_MCU_TTY is unset in board.env"; return 1; }
     [ -d "$PARAMS" ] || { echo "iomcu: gpio-ohc-iomcu is not in this kernel"; return 1; }
 
-    # A board can have an IO microcontroller and still have no GPIO-able lines
-    # behind it: the EA1's IO is two MCU-routed UARTs and IR, with zero relays
-    # and zero contacts. The driver refuses a chip with no lines, so skip here
-    # and say why rather than letting that look like a failure.
     # A board can have an IO microcontroller and nothing this driver exposes:
     # the EA1's IO is two MCU-routed UARTs, with no relays, no contacts and no
     # IR of its own. Skip and say why rather than looking broken.
@@ -45,8 +41,8 @@ start() {
     # Geometry first: the driver latches it when the discipline attaches.
     [ -n "$OHC_RELAYS" ]     && echo "$OHC_RELAYS"     > "$PARAMS/relays"
     [ -n "$OHC_CONTACTS" ]   && echo "$OHC_CONTACTS"   > "$PARAMS/contacts"
-    # IR too: the emitters become /dev/lirc0, so ir-ctl and ir-keytable work
-    # without knowing anything about Control4.
+    # IR too: each emitter becomes its own lirc device, so ir-ctl and
+    # ir-keytable work without knowing anything about Control4.
     [ -n "$OHC_IR_OUT" ]     && echo "$OHC_IR_OUT"     > "$PARAMS/ir_out"
     [ -n "$OHC_IR_BLASTER" ] && echo "$OHC_IR_BLASTER" > "$PARAMS/ir_blaster"
     [ -n "$OHC_IR_IN" ]      && echo "$OHC_IR_IN"      > "$PARAMS/ir_in"
@@ -62,12 +58,45 @@ start() {
     chip=$(grep -l ohc-iomcu /sys/class/gpio/gpiochip*/label 2>/dev/null | head -1)
     if [ -n "$chip" ] || gpiodetect 2>/dev/null | grep -q ohc-iomcu; then
         echo "iomcu: $OHC_IO_MCU_TTY attached — relays and contacts are GPIO lines"
-    else
+    elif [ "$lines" -gt 0 ]; then
         echo "iomcu: attached to $OHC_IO_MCU_TTY but no gpiochip appeared (MCU not answering?)"
     fi
+
+    ir_links
+}
+
+# Stable paths for the IR devices.
+#
+# /dev/lircN is a first-free minor from one counter shared by every rc driver in
+# the kernel, so plugging in a USB IR dongle renumbers ours. The driver labels
+# each node in DEV_NAME for exactly this reason; this turns those labels into
+# paths, the same job udev's SYMLINK+= does on a bigger system.
+#
+#   /dev/ohc/ir/out1 … out6      the rear jacks, as the case is labelled
+#   /dev/ohc/ir/front-blaster    internal emitter behind the front panel
+#   /dev/ohc/ir/front-receiver   the learner, same panel
+ir_links() {
+    rm -rf /dev/ohc/ir
+    [ -d /sys/class/lirc ] || return 0
+    for d in /sys/class/lirc/lirc*; do
+        [ -e "$d" ] || continue
+        node=${d##*/}
+        name=$(sed -n 's/^DEV_NAME=//p' "$d/device/uevent" 2>/dev/null)
+        case "$name" in
+            "openHC IR "*) ;;
+            *) continue ;;                       # somebody else's rc device
+        esac
+        # "openHC IR out 3" -> out3;  "openHC IR front blaster" -> front-blaster
+        slug=$(echo "${name#openHC IR }" | tr "[:upper:] " "[:lower:]-")
+        case "$slug" in out-*) slug="out${slug#out-}" ;; esac
+        mkdir -p /dev/ohc/ir
+        ln -sf "/dev/$node" "/dev/ohc/ir/$slug"
+    done
+    [ -d /dev/ohc/ir ] && echo "iomcu: IR $(ls /dev/ohc/ir | tr "\n" " ")"
 }
 
 stop() {
+    rm -rf /dev/ohc/ir
     [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE"
 }
 
