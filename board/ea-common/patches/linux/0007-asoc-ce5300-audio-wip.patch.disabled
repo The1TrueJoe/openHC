@@ -29,7 +29,7 @@ Not wired into the build yet either — there is no Makefile hook for it, so it
 compiles only when someone adds one. It is checked in to keep the reverse
 engineering and the code that consumes it together.
 
-Signed-off-by: openHC <openhc@localhost>
+Author: Joseph Telaak <joseph@telaak.dev>
 ---
 --- /dev/null
 +++ b/sound/soc/intel/ce5300/snd-soc-ce5300.c
