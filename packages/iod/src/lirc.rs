@@ -52,6 +52,11 @@ pub fn devices() -> Vec<Dev> {
 }
 
 /// `(symlink, target)` for everything under /dev/ohc/ir.
+///
+/// CANONICALIZED, because udev writes these relative: `readlink` on
+/// /dev/ohc/ir/out1 gives `../../lirc0`, which never compares equal to the
+/// /dev/lirc0 we are matching against. That mismatch silently reported the raw
+/// node instead of the friendly path.
 #[cfg(target_os = "linux")]
 fn stable_links() -> Vec<(PathBuf, PathBuf)> {
     let Ok(dir) = std::fs::read_dir("/dev/ohc/ir") else {
@@ -60,7 +65,7 @@ fn stable_links() -> Vec<(PathBuf, PathBuf)> {
     dir.flatten()
         .filter_map(|e| {
             let p = e.path();
-            std::fs::read_link(&p).ok().map(|t| (p, t))
+            std::fs::canonicalize(&p).ok().map(|t| (p, t))
         })
         .collect()
 }

@@ -68,10 +68,15 @@ CONFIG_VFAT_FS=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
 
-# ── wired: Realtek RTL8111/8168 (10ec:8168 at 02:00.0) ────────────────────
+# ── wired: Realtek RTL8111DL (10ec:8168 at 02:00.0) ───────────────────────
 # The vendor ships Realtek's out-of-tree r8168 8.043.02. Mainline's r8169 has
 # covered this device for years and is what we use — this is the reachability
 # path for bring-up, so it is builtin and not negotiable.
+#
+# r8169 asks for rtl_nic/rtl8168d-2.fw and we do not ship it, so the boot log
+# carries "Unable to load firmware ... (-2)". Measured on hardware: the link
+# still comes up at 1 Gbps full duplex without it. Add
+# BR2_PACKAGE_LINUX_FIRMWARE + _RTL_8168 if that ever proves to matter.
 CONFIG_ETHERNET=y
 CONFIG_NET_VENDOR_REALTEK=y
 CONFIG_R8169=y
@@ -89,7 +94,7 @@ CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_STORAGE=y
 
 # ── Wi-Fi: no driver exists on this kernel ────────────────────────────────
-# This block used to set CONFIG_R8712U=y for the board's USB RTL8192SU
+# This block used to set CONFIG_R8712U=y for the board's USB RTL8191SU
 # (0bda:8172), with a note saying "if drivers/staging/rtl8712 has been dropped
 # by 7.1.8 then Wi-Fi is what breaks". It has been dropped: the directory is
 # gone from mainline and the symbol does not exist in this kernel's Kconfig.

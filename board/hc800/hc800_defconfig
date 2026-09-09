@@ -41,7 +41,7 @@ BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
 
 # --- Wi-Fi: not supported, and that is measured rather than assumed ---
-# The radio is a USB RTL8192SU (0bda:8172). Its only ever mainline driver was
+# The radio is a USB RTL8191SU (0bda:8172). Its only ever mainline driver was
 # drivers/staging/rtl8712, which has been DELETED — the symbol is not merely off
 # in our build, it is absent from the kernel's Kconfig. rtl8xxxu, rtw88/rtw89
 # and the rtlwifi USB drivers all cover different silicon.
