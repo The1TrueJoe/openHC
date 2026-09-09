@@ -202,6 +202,17 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
 }
 
 async fn mcu_info(c: &Arc<Config>) -> Out {
+    // With the driver in charge, iod does not hold the port and cannot ask the
+    // part who it is. Report what is actually true — which chip is carrying the
+    // IO — rather than failing as though there were no microcontroller.
+    if c.gpio_io {
+        return Ok(json!({
+            "via": "gpio",
+            "chip": crate::gpio_io::CHIP_LABEL,
+            "part": c.board.io.mcu_part,
+            "note": "the kernel driver owns the link; identify is not reachable from here",
+        }));
+    }
     let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
     let mut l = l.lock().await;
     let (product, version) = l.identify().map_err(|e| Fault::Mcu(e.to_string()))?;

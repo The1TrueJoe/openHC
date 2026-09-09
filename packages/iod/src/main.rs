@@ -65,12 +65,77 @@ pub struct Config {
 /// also needs. Each poll takes the same lock an API call would, so a long IR
 /// burst delays a sample rather than corrupting one.
 async fn poller(cfg: Arc<Config>) {
+    if cfg.gpio_io {
+        poll_via_gpio(cfg).await;
+    } else {
+        poll_via_mcu(cfg).await;
+    }
+}
+
+/// Poll through the kernel's gpiochip.
+///
+/// Contacts are read every cycle and cost nothing: the driver polls the
+/// microcontroller once on its own work queue and serves these from its cache.
+/// Relays are not cached there — a stale relay reading is worse than a slow one
+/// — so they are read on a slower cadence, often enough to notice somebody
+/// driving a line with `gpioset` and rarely enough not to flood a UART that
+/// answers one question at a time.
+async fn poll_via_gpio(cfg: Arc<Config>) {
+    use std::time::Duration;
+    const RELAY_EVERY: u32 = 10; // × 200 ms
+    let contacts = cfg.board.io.contacts;
+    let relays = cfg.board.io.relays;
+    let mut tick: u32 = 0;
+
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tick = tick.wrapping_add(1);
+
+        if contacts > 0 {
+            let r = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(contacts)).await;
+            match r {
+                Ok(Ok(mask)) => {
+                    cfg.bus.set("mcu/link", serde_json::json!(true));
+                    for i in 0..contacts {
+                        cfg.bus.set(&format!("contact/{i}"), serde_json::json!(mask >> i & 1 == 1));
+                    }
+                }
+                // The chip went away, or the part behind it stopped answering.
+                _ => cfg.bus.set("mcu/link", serde_json::json!(false)),
+            }
+        }
+
+        if relays > 0 && (tick % RELAY_EVERY == 1) {
+            let r = tokio::task::spawn_blocking(move || {
+                (0..relays).map(crate::gpio_io::relay_get).collect::<Result<Vec<bool>, _>>()
+            })
+            .await;
+            if let Ok(Ok(on)) = r {
+                for (i, v) in on.iter().enumerate() {
+                    cfg.bus.set(&format!("relay/{i}"), serde_json::json!(v));
+                }
+            }
+        }
+    }
+}
+
+/// The pre-driver path: iod speaks the wire protocol itself.
+///
+/// Only reached on a board whose kernel has no ohc-iomcu gpiochip. Two jobs,
+/// both of which have to happen here rather than per-client:
+///
+/// 1. **Poll the contacts.** The MCU has no unsolicited notify for them, so
+///    somebody has to ask. Doing it once here beats every client polling the
+///    same single-question UART.
+/// 2. **Collect what the MCU says unprompted.** An IR capture arrives because
+///    a human pressed a remote, with no request to correlate it against.
+///
+/// 200 ms is a deliberate compromise: fast enough that a doorbell press is not
+/// missed, slow enough that it does not monopolise a UART that IR transmission
+/// also needs.
+async fn poll_via_mcu(cfg: Arc<Config>) {
     use std::time::Duration;
     let n = cfg.board.io.contacts;
-    // Relays are read ONCE here rather than every cycle. iod is the only thing
-    // that can change one, so the mirror stays true without four extra MCU
-    // round-trips five times a second — but it has to be seeded, or a client
-    // that connects before anybody touches a relay is shown nothing at all.
     let mut relays_known = false;
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -79,8 +144,6 @@ async fn poller(cfg: Arc<Config>) {
         let (contacts, strays) = {
             let mut l = l.lock().await;
             let c = l.contacts();
-            // A short read with nothing pending costs nothing and is what lets
-            // a remote press surface between polls.
             let s = l.poll(Duration::from_millis(5));
             (c, s)
         };
@@ -88,29 +151,19 @@ async fn poller(cfg: Arc<Config>) {
         match contacts {
             Ok(mask) => {
                 cfg.bus.set("mcu/link", serde_json::json!(true));
-                // Seed on the first successful poll, and again after the link
-                // comes back: while it was down a relay could have been changed
-                // by something we could not see, so the mirror is a guess until
-                // it is re-read.
                 if !relays_known && cfg.board.io.relays > 0 {
-                    if let Some(l) = &cfg.link {
-                        let r = { l.lock().await.relays(cfg.board.io.relays) };
-                        if let Ok(on) = r {
-                            for (i, v) in on.iter().enumerate() {
-                                cfg.bus.set(&format!("relay/{i}"), serde_json::json!(v));
-                            }
-                            relays_known = true;
+                    let r = { l.lock().await.relays(cfg.board.io.relays) };
+                    if let Ok(on) = r {
+                        for (i, v) in on.iter().enumerate() {
+                            cfg.bus.set(&format!("relay/{i}"), serde_json::json!(v));
                         }
+                        relays_known = true;
                     }
                 }
-                // Contact position is state: `set` publishes only on a real
-                // change, so five polls a second do not become five messages.
                 for i in 0..n {
                     cfg.bus.set(&format!("contact/{i}"), serde_json::json!(mask >> i & 1 == 1));
                 }
             }
-            // Every other reading is meaningless while this is false, which is
-            // exactly why it is worth its own piece of state.
             Err(_) => {
                 cfg.bus.set("mcu/link", serde_json::json!(false));
                 relays_known = false;
@@ -119,10 +172,6 @@ async fn poller(cfg: Arc<Config>) {
 
         for f in strays {
             if f.opcode == mcu::OP_IRIN_CAPTURED {
-                // A remote was pressed at the receiver. This is the event an
-                // external control system most wants: it is how a physical
-                // button on a handset triggers something that has nothing to do
-                // with this box.
                 cfg.bus.event(
                     "ir/rx",
                     serde_json::json!({
@@ -153,7 +202,23 @@ fn main() {
         board.io.serials.len()
     );
 
-    let link = if board.io.backend == Backend::Mcu {
+    // Prefer the kernel. When gpio-ohc-iomcu has registered a chip, the
+    // protocol lives there and iod is a client of it like anything else; the
+    // direct serial path below is what a board running an older kernel falls
+    // back to, and it is on its way out.
+    let gpio_io = gpio_io::present();
+    if gpio_io {
+        eprintln!("iod: relays and contacts via the kernel {} gpiochip", gpio_io::CHIP_LABEL);
+    } else if board.io.backend == Backend::Mcu {
+        eprintln!("iod: no {} gpiochip — talking to the MCU directly (deprecated path)",
+                  gpio_io::CHIP_LABEL);
+    }
+
+    // When the driver owns the port, iod must NOT also open it. The line
+    // discipline makes ordinary reads return -EIO by design, so a second owner
+    // would get a useless handle and log a misleading "did not answer identify"
+    // on every start.
+    let link = if board.io.backend == Backend::Mcu && !gpio_io {
         match (&board.io.mcu_tty, board.io.mcu_baud) {
             (Some(tty), baud) => {
                 let part = board.io.mcu_part.clone().unwrap_or_else(|| "unknown".into());
@@ -184,18 +249,6 @@ fn main() {
 
     if !board.io.has_any() {
         eprintln!("iod: this board declares no local IO — serving capabilities only");
-    }
-
-    // Prefer the kernel. When gpio-ohc-iomcu has registered a chip, the
-    // protocol lives there and iod is a client of it like anything else; the
-    // direct serial path below is what a board running an older kernel falls
-    // back to, and it is on its way out.
-    let gpio_io = gpio_io::present();
-    if gpio_io {
-        eprintln!("iod: relays and contacts via the kernel {} gpiochip", gpio_io::CHIP_LABEL);
-    } else if board.io.backend == Backend::Mcu {
-        eprintln!("iod: no {} gpiochip — talking to the MCU directly (deprecated path)",
-                  gpio_io::CHIP_LABEL);
     }
 
     let (settings, pinned) = mqtt::settings::Settings::load(&board.hostname);
