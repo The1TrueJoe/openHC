@@ -43,71 +43,51 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 # registers entries in both subtrees — it always had a
 # `sound/soc/codecs/Makefile|...` line while sitting in drivers/, which was the
 # giveaway that it belonged one level up.
-OHC_KERNEL_SRC_DIR = $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/kernel
+# A mirror is a directory holding kernel-source subtrees plus the objs.mk that
+# registers them. There are two, and ONE hook walks both — the difference
+# between them is which list they are in, not a second copy of the loop. (This
+# file already collapsed three near-identical per-driver hooks into one once;
+# a fourth pasted copy is how that happens again.)
+#
+#   common/kernel     every board. Not tied to any SoC.
+#   ea-common/kernel  EA FAMILY ONLY. Everything in it is Intel CE5300 silicon
+#                     and is registered obj-y, so on another board it is at best
+#                     dead weight in the kernel and at worst a link failure —
+#                     which is what it was: hc800 died at `LD vmlinux` on the
+#                     ASoC machine drivers, because it uses SND_HDA_INTEL and
+#                     defines no CONFIG_SND_SOC. Gating by list membership keeps
+#                     that explicit and greppable.
+#                     BR2_OHC_EA_KERNEL_DRIVERS is set by ea-common_defconfig
+#                     and by nothing else.
 OHC_KERNEL_SUBTREES = drivers sound
-OHC_OBJS_MK = $(OHC_KERNEL_SRC_DIR)/objs.mk
-define OHC_KERNEL_DRIVERS_HOOK
-	for t in $(OHC_KERNEL_SUBTREES); do \
-		[ -d "$(OHC_KERNEL_SRC_DIR)/$$t" ] || continue; \
-		( cd "$(OHC_KERNEL_SRC_DIR)/$$t" && \
-		  find . \( -name '*.c' -o -name '*.h' -o -name 'Makefile' \) | sed 's|^\./||' ) | while read -r f; do \
-			install -D -m644 "$(OHC_KERNEL_SRC_DIR)/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
-			echo "openHC: installed $$t/$$f"; \
-		done; \
-	done
-	while IFS='|' read -r mk line; do \
-		case "$$mk" in ''|\#*) continue;; esac; \
-		obj=$${line##*+= }; \
-		if ! grep -q "$$obj" "$(LINUX_DIR)/$$mk"; then \
-			echo '' >> "$(LINUX_DIR)/$$mk"; \
-			echo '# openHC driver, registered by OHC_KERNEL_DRIVERS_HOOK.' \
-				>> "$(LINUX_DIR)/$$mk"; \
-			echo "$$line" >> "$(LINUX_DIR)/$$mk"; \
-			echo "openHC: appended $$obj to $$mk"; \
-		fi; \
-	done < $(OHC_OBJS_MK)
-endef
-# EA FAMILY ONLY. Everything this hook installs is Intel CE5300 silicon, and it
-# is registered obj-y (see the rationale at the top of objs.mk), so on any other
-# board it is at best dead weight compiled into the kernel and at worst a link
-# failure — which is what it was: hc800 died at `LD vmlinux` on the ASoC
-# machine drivers, because it uses SND_HDA_INTEL and defines no CONFIG_SND_SOC.
-# BR2_OHC_EA_KERNEL_DRIVERS is set by ea-common_defconfig and by nothing else.
+OHC_KERNEL_MIRRORS = $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
-LINUX_POST_PATCH_HOOKS += OHC_KERNEL_DRIVERS_HOOK
+OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/kernel
 endif
 
-# --- shared drivers, every board ------------------------------------------
-# Same mirror idea, different scope: board/common/kernel/ holds drivers that are
-# not tied to one SoC. The IO microcontroller is the first — an HC-800 and an
-# EA3 reach different parts over different UARTs at different bauds, but the
-# wire protocol and therefore the driver are the same, so it belongs here rather
-# than being copied into two board directories.
-#
-# Unconditional. Unlike the EA hook there is nothing SoC-specific to strip, and
-# it registers obj-m, so a board that never loads the module pays nothing but a
-# .ko it does not insert.
-OHC_COMMON_KERNEL_SRC_DIR = $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
-OHC_COMMON_OBJS_MK = $(OHC_COMMON_KERNEL_SRC_DIR)/objs.mk
-define OHC_COMMON_KERNEL_HOOK
-	for t in $(OHC_KERNEL_SUBTREES); do \
-		[ -d "$(OHC_COMMON_KERNEL_SRC_DIR)/$$t" ] || continue; \
-		( cd "$(OHC_COMMON_KERNEL_SRC_DIR)/$$t" && \
-		  find . \( -name '*.c' -o -name '*.h' -o -name 'Makefile' \) | sed 's|^\./||' ) | while read -r f; do \
-			install -D -m644 "$(OHC_COMMON_KERNEL_SRC_DIR)/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
-			echo "openHC: installed $$t/$$f (shared)"; \
+define OHC_KERNEL_MIRROR_HOOK
+	for m in $(OHC_KERNEL_MIRRORS); do \
+		who=$${m##*/board/}; \
+		for t in $(OHC_KERNEL_SUBTREES); do \
+			[ -d "$$m/$$t" ] || continue; \
+			( cd "$$m/$$t" && \
+			  find . \( -name '*.c' -o -name '*.h' -o -name 'Makefile' \) | sed 's|^\./||' ) | while read -r f; do \
+				install -D -m644 "$$m/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
+				echo "openHC: installed $$t/$$f ($$who)"; \
+			done; \
 		done; \
+		[ -f "$$m/objs.mk" ] || continue; \
+		while IFS='|' read -r mk line; do \
+			case "$$mk" in ''|\#*) continue;; esac; \
+			obj=$${line##*+= }; \
+			if ! grep -q "$$obj" "$(LINUX_DIR)/$$mk"; then \
+				echo '' >> "$(LINUX_DIR)/$$mk"; \
+				echo '# openHC driver, registered by OHC_KERNEL_MIRROR_HOOK.' \
+					>> "$(LINUX_DIR)/$$mk"; \
+				echo "$$line" >> "$(LINUX_DIR)/$$mk"; \
+				echo "openHC: appended $$obj to $$mk ($$who)"; \
+			fi; \
+		done < "$$m/objs.mk"; \
 	done
-	while IFS='|' read -r mk line; do \
-		case "$$mk" in ''|\#*) continue;; esac; \
-		obj=$${line##*+= }; \
-		if ! grep -q "$$obj" "$(LINUX_DIR)/$$mk"; then \
-			echo '' >> "$(LINUX_DIR)/$$mk"; \
-			echo '# openHC shared driver, registered by OHC_COMMON_KERNEL_HOOK.' \
-				>> "$(LINUX_DIR)/$$mk"; \
-			echo "$$line" >> "$(LINUX_DIR)/$$mk"; \
-			echo "openHC: appended $$obj to $$mk (shared)"; \
-		fi; \
-	done < $(OHC_COMMON_OBJS_MK)
 endef
-LINUX_POST_PATCH_HOOKS += OHC_COMMON_KERNEL_HOOK
+LINUX_POST_PATCH_HOOKS += OHC_KERNEL_MIRROR_HOOK

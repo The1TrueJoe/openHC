@@ -5,7 +5,7 @@ Applied to vanilla Linux 7.1.8 for every `ea*` board.
 **Only two patches remain, and both exist for the same reason: they CHANGE an
 existing upstream file.** Everything that was merely a *new* driver now lives as
 a plain `.c` in `board/ea-common/kernel/drivers/`, copied into the kernel tree and
-registered by `OHC_KERNEL_DRIVERS_HOOK` (see `drivers/objs.mk`). That is
+registered by `OHC_KERNEL_MIRROR_HOOK` (see `drivers/objs.mk`). That is
 strictly better — the source stays a normal file you can edit, grep and
 compile-check, with no diff context to go stale on a kernel bump.
 
@@ -153,7 +153,7 @@ than no sound card at all. Register map in `https://the1truejoe.github.io/openHC
 ## Per-driver notes — `board/ea-common/kernel/drivers/`
 
 These are plain `.c` files copied into the kernel tree by
-`OHC_KERNEL_DRIVERS_HOOK` and registered through `drivers/objs.mk`. They were
+`OHC_KERNEL_MIRROR_HOOK` and registered through `drivers/objs.mk`. They were
 patches until they didn't need to be; nothing about the code changed in the
 move. They are built **in**, not as modules, which matters: `gpio-intelce` has
 to exist before `leds-ea-board` claims GPIOs, and `spi-ea-b53-board` registers

@@ -1,6 +1,6 @@
 # Kernel Makefiles that openHC's own drivers must be registered in.
 #   <Makefile path relative to the kernel tree>|<obj line to append>
-# Consumed by OHC_KERNEL_DRIVERS_HOOK in board/external.mk. Append-only and
+# Consumed by OHC_KERNEL_MIRROR_HOOK in board/external.mk. Append-only and
 # idempotent: the hook skips any line whose object is already present.
 #
 # These are plain `obj-y`, not `obj-$(CONFIG_FOO)`, on purpose. A CONFIG symbol

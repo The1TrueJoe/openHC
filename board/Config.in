@@ -2,7 +2,7 @@ comment "openHC board options"
 
 # The EA family's kernel drivers (CE5300 GPIO/PWM/LED/SPI/framebuffer and the
 # ADAU1451 ASoC stack) are COPIED into the kernel tree by
-# OHC_KERNEL_DRIVERS_HOOK in board/external.mk. That hook used to run for every
+# OHC_KERNEL_MIRROR_HOOK in board/external.mk. That hook used to run for every
 # board, which meant an HC-800 or a CA-1 kernel silently got Intel CE5300
 # drivers registered obj-y. It is not theoretical: it broke the hc800 build at
 # the vmlinux link, because the ASoC machine drivers reference

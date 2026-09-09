@@ -1,6 +1,6 @@
 # Kernel Makefiles that openHC's SHARED drivers must be registered in.
 #   <Makefile path relative to the kernel tree>|<obj line to append>
-# Consumed by OHC_COMMON_KERNEL_HOOK in board/external.mk. Append-only and
+# Consumed by OHC_KERNEL_MIRROR_HOOK in board/external.mk. Append-only and
 # idempotent: the hook skips any line whose object is already present.
 #
 # obj-y, because these images are deliberately all-builtin (CONFIG_MODULES=n —

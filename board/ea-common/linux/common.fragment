@@ -223,7 +223,7 @@ CONFIG_MODULE_UNLOAD=y
 # it but with the CE4100 layout (12 lines) — WRONG for the CE5300, which has 4
 # banks x 32 = 128 lines carrying the board's reset/LED pins. So sodaville is
 # OFF and our own gpio-intelce driver (drivers/gpio/gpio-intelce.c, wired in by
-# board/external.mk's OHC_KERNEL_DRIVERS_HOOK) binds 8086:2e67 instead and exposes
+# board/external.mk's OHC_KERNEL_MIRROR_HOOK) binds 8086:2e67 instead and exposes
 # all 128. Both it and i2c-pxa depend on OF, so OF must be a plain bool — NOT
 # flattree, NOT the CE4100 platform (bootlinux passes no DTB; devices enumerate
 # via PCI/ACPI as usual).
