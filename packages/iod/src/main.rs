@@ -13,6 +13,7 @@ mod events;
 mod gpio;
 mod gpio_io;
 mod ir;
+mod led;
 mod lirc;
 mod mqtt;
 mod ops;
@@ -75,6 +76,16 @@ async fn poller(cfg: Arc<Config>) {
                 }
                 // The chip went away, or the part behind it stopped answering.
                 _ => cfg.bus.set("mcu/link", serde_json::json!(false)),
+            }
+        }
+
+        // LEDs change rarely and a sysfs read is nearly free, but there is no
+        // reason to do it at contact cadence. Same slow tick as the relays.
+        if tick % RELAY_EVERY == 1 {
+            for l in led::list() {
+                if let Ok(v) = led::get(&l.slug) {
+                    cfg.bus.set(&format!("led/{}", l.slug), serde_json::json!(v));
+                }
             }
         }
 

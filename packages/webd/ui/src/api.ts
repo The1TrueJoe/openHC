@@ -53,6 +53,10 @@ export interface Capabilities {
          /** One entry per kernel IR node, named so a port can be matched to the
           *  device an operator would open with ir-ctl. */
          devices?: { name: string; device: string }[] };
+  /** Front-panel LEDs, as the kernel registered them — not board.env geometry,
+   *  so a board with no panel simply has no key here. */
+  leds?: { slug: string; name: string; colour: string; function: string;
+           max: number; trigger: string }[];
   relays?: { count: number };
   contacts?: { count: number };
   serials?: SerialPort[];
@@ -109,6 +113,7 @@ export const panel = (i: number) => i + 1;
 export interface IoState {
   relay?: Record<string, boolean>;
   contact?: Record<string, boolean>;
+  led?: Record<string, number>;
   mcu?: { link?: boolean };
   serial?: Record<string, { baud?: number; viewers?: number }>;
 }
@@ -235,6 +240,10 @@ export class Io {
    *  A rear jack is addressed by the number printed on the case. */
   sendIr = (port: number | null, pronto: string) =>
     this.#publish(`ir/${port === null ? 'front' : panel(port)}/send`, pronto);
+  /** LEDs are addressed by NAME, not index — they are not a numbered row on
+   *  the panel, and their names come from the kernel. */
+  setLed = (slug: string, on: boolean) =>
+    this.#publish(`led/${slug}/set`, on ? 'ON' : 'OFF');
   setBaud = (i: number, baud: number) => this.#publish(`serial/${panel(i)}/baud`, String(baud));
   serialWrite = (i: number, data: string) => this.#publish(`serial/${panel(i)}/write`, data);
 

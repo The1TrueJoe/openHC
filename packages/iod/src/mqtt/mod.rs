@@ -89,6 +89,18 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
                 _ => None,
             }
         }
+        // led/<slug>/set — ON/OFF, or a number for brightness on a LED that has
+        // more than two levels. The slug is the kernel's function name, not an
+        // index, because LEDs are not a numbered row on the panel.
+        ["led", name, "set"] => match b.to_ascii_uppercase().as_str() {
+            "ON" | "TRUE" => Some(Cmd::LedSet { name: name.to_string(), on: Some(true), level: None }),
+            "OFF" | "FALSE" => Some(Cmd::LedSet { name: name.to_string(), on: Some(false), level: None }),
+            _ => b.parse::<u32>().ok().map(|l| Cmd::LedSet {
+                name: name.to_string(),
+                on: None,
+                level: Some(l),
+            }),
+        },
         ["mcu", "reset"] => Some(Cmd::McuReset),
         // `ir/front/send` for the internal blaster; `ir/<n>/send` for a rear
         // jack, numbered as the case is.
@@ -128,6 +140,12 @@ mod tests {
         // A Home Assistant switch sends exactly these, so a typo here is a
         // relay that silently never moves.
         assert!(parse_cmd("relay/1/set", "maybe").is_none());
+        // LEDs are addressed by name, and take a level as well as on/off.
+        assert!(matches!(parse_cmd("led/power/set", "ON"),
+                         Some(Cmd::LedSet { on: Some(true), .. })));
+        assert!(matches!(parse_cmd("led/wifi-blue/set", "0"),
+                         Some(Cmd::LedSet { level: Some(0), .. })));
+        assert!(parse_cmd("led/power/set", "sideways").is_none());
         assert!(parse_cmd("nonsense/thing", "1").is_none());
     }
 

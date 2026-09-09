@@ -130,6 +130,18 @@ pub enum Cmd {
     Capabilities,
     #[serde(rename = "mcu.info")]
     McuInfo,
+    /// Drive a front-panel LED. `level` omitted means full brightness, which
+    /// is what an on/off caller wants without knowing max_brightness.
+    #[serde(rename = "led.set")]
+    LedSet {
+        name: String,
+        #[serde(default)]
+        on: Option<bool>,
+        #[serde(default)]
+        level: Option<u32>,
+    },
+    #[serde(rename = "led.list")]
+    LedList,
     /// Pulse the microcontroller's reset line.
     ///
     /// Needed because the MCU CAN be wedged by a malformed request — it was,
@@ -187,6 +199,8 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::Capabilities => Ok(capabilities(c)),
         Cmd::McuInfo => mcu_info(c).await,
         Cmd::McuReset => mcu_reset(c).await,
+        Cmd::LedList => Ok(json!({ "leds": crate::led::list() })),
+        Cmd::LedSet { name, on, level } => led_set(c, &name, on, level).await,
         Cmd::ContactGet => contacts(c).await,
         Cmd::RelayGet => relays(c).await,
         Cmd::RelaySet { index, on } => relay_write(c, index, Some(on)).await,
@@ -250,6 +264,12 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
                 .collect::<Vec<_>>(),
         }));
     }
+    let leds = crate::led::list();
+    if !leds.is_empty() {
+        // Panel LEDs are not board.env geometry — they are whatever the kernel
+        // registered, so this reports what is actually there.
+        m.insert("leds".into(), json!(leds));
+    }
     if io.relays > 0 {
         m.insert("relays".into(), json!({ "count": io.relays }));
     }
@@ -294,6 +314,23 @@ fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
             "this board names them in its device tree — check gpio-line-names, and that the pin-mux ran".into(),
         )),
     }
+}
+
+/// Set an LED and mirror the result, the same way a relay does.
+async fn led_set(c: &Arc<Config>, name: &str, on: Option<bool>, level: Option<u32>) -> Out {
+    let want = match (on, level) {
+        (_, Some(l)) => Some(l),
+        (Some(true), None) => None,     // None = full, resolved against max
+        (Some(false), None) => Some(0),
+        (None, None) => return Err(Fault::Bad("led.set needs `on` or `level`".into())),
+    };
+    let slug = name.to_string();
+    let now = tokio::task::spawn_blocking(move || crate::led::set(&slug, want))
+        .await
+        .map_err(|e| Fault::Io(e.to_string()))?
+        .map_err(|e| Fault::Io(e.to_string()))?;
+    c.bus.set(&format!("led/{name}"), json!(now));
+    Ok(json!({ "name": name, "brightness": now }))
 }
 
 /// Does the part behind the chip answer? A read on this chip is a round trip to
