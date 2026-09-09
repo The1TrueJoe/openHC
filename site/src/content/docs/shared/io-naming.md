@@ -149,16 +149,67 @@ script laying down symlinks cannot do.
 ⏳ is hardware that exists and has no driver yet. When those land they inherit
 the names above with no client change — that is what the convention buys.
 
-## The one place it is not met
+## Where it is not met yet: the two x86 boards' own lines
 
-The HC-800's eight ICH lines — `zigbee_reset`, `io_reset`, `wlan_disable`,
-`lan_disable`, `setup_button` and three board-revision straps — are still
-offsets in `board.env`. Mainline's `gpio-ich` sets no line names, and being an
-x86 PC there is no device-tree node to hang `gpio-line-names` on, so this is the
-one board where neither mechanism above is available.
+The relays, contacts and IR above are done. The boards' **other** GPIO — resets,
+enables, straps, the setup button — is not, on either x86 family:
 
-The honest fix is a small kernel patch attaching `gpio-line-names` as software
-node properties to the `gpio_ich` platform device on a DMI match, in the same
-spirit as the DaVinci patches the IO Extender already carries. Until that lands
-it is the last number table in the tree, and it is called out here rather than
-quietly tolerated.
+| board | lines | state |
+|---|---|---|
+| HC-800 | `zigbee_reset`, `io_reset`, `wlan_disable`, `lan_disable`, `setup_button`, 3 straps | unnamed; offsets in `board.env` |
+| EA1 / EA3 | `dsp_reset`, `codec_reset`, `io_reset`, `zigbee_reset`, `usb_2_serial_reset`, … | named as **consumer labels**, not line names |
+
+The EA case is the subtler of the two and worth being exact about, because it
+looks done and is not. `gpio-ea-board.c` calls
+`gpio_request_one(101, flags, "dsp_reset")`, and a request sets the line's
+**consumer**, not its **name**. Those are different fields in
+`GPIO_V2_GET_LINEINFO_IOCTL`:
+
+```console
+# gpioinfo | grep 101
+	line 101:  unnamed  "dsp_reset"  output
+	           ^^^^^^^  ^^^^^^^^^^^
+	           name     consumer
+
+# gpiofind dsp_reset      # finds nothing — gpiofind matches on NAME
+```
+
+So they show up in `/sys/kernel/debug/gpio` and are invisible to every tool that
+resolves by name. Different fields, and only one of them is the handle.
+
+### The fix, and why it is one fix and not two
+
+Neither board has a device tree, so neither can carry `gpio-line-names` the way
+the CA-1 and the IO Extender do. But gpiolib does not actually require a device
+tree — it reads that property off the **parent device** of the gpiochip, through
+the generic `device_property_*` API. Device tree is only one of the things that
+can back it. On x86 the equivalent is a **software node**, which is precisely
+what it exists for.
+
+So both boards get the same property, attached to the parent before the GPIO
+driver binds:
+
+| board | parent of the gpiochip | where to attach |
+|---|---|---|
+| EA1 / EA3 | PCI `8086:2e67` | `DECLARE_PCI_FIXUP_EARLY` in `gpio-ea-board.c` |
+| HC-800 | the `gpio_ich` platform device from `lpc_ich` | a platform-bus notifier on `BUS_NOTIFY_ADD_DEVICE` |
+
+After which `gpiofind dsp_reset` and `gpiofind setup_button` work on every board
+in the fleet, and `OHC_GPIO_*` leaves `board.env` the way `OHC_RELAY_GPIOS` did.
+
+### Why not the vendor's `/dev/gpio/dsp_reset`
+
+Control4's own OS exposes exactly the per-line nodes this page says Linux does
+not have — `echo 1 > /dev/gpio/dsp_reset` works on a stock EA3. It is worth
+saying why openHC does not copy that.
+
+Their kernel is 3.16 and predates the GPIO character device, which landed in
+4.8. With no chardev ABI to use, a bespoke driver exporting a node per line was
+a reasonable thing to write. It is not reasonable now: it would mean shipping a
+parallel implementation of gpiolib that no standard tool speaks — not libgpiod,
+not Home Assistant's GPIO integration, not anything a user already has. The
+whole argument for putting this IO in the kernel was that stock tools should
+work on it, and a private `/dev/gpio` would undo that.
+
+The name survives; only the mechanism changes. `dsp_reset` is still `dsp_reset`
+— it is just a line name now, reachable with the tools everyone has.
