@@ -30,6 +30,7 @@
 
 #include <linux/completion.h>
 #include <linux/gpio/driver.h>
+#include <media/rc-core.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
@@ -75,6 +76,23 @@ MODULE_PARM_DESC(contacts, "number of contact inputs the board fits");
  * five clients asking "is the door open" become five cached reads instead of
  * five round trips down a UART that answers one question at a time.
  */
+/*
+ * IR emitters, as the case is labelled: the rear jacks, then whether there is
+ * an internal front blaster. Zero of both means this board has no IR and no
+ * rc device is registered.
+ */
+static int ir_out;
+module_param(ir_out, int, 0644);
+MODULE_PARM_DESC(ir_out, "number of rear IR output jacks");
+
+static int ir_blaster;
+module_param(ir_blaster, int, 0644);
+MODULE_PARM_DESC(ir_blaster, "1 if the board has an internal front blaster");
+
+static int ir_in;
+module_param(ir_in, int, 0644);
+MODULE_PARM_DESC(ir_in, "1 if the board has an IR receiver");
+
 static int poll_ms = 200;
 module_param(poll_ms, int, 0644);
 MODULE_PARM_DESC(poll_ms, "contact poll interval in milliseconds (0 disables)");
@@ -89,6 +107,26 @@ MODULE_PARM_DESC(poll_ms, "contact poll interval in milliseconds (0 disables)");
 #define OP_RELAY_GET        0x54
 #define OP_RELAY_TOGGLE     0x56
 #define OP_CONTACT_GET      0x74
+#define OP_IROUT_SEND       0x66
+#define OP_IRIN_SET_CAPTURE 0x77
+#define OP_IRIN_CAPTURED    0x97
+
+/*
+ * The IR side, decoded from the vendor firmware.
+ *
+ * IROUT_SEND takes 14 fixed bytes then one u16 per burst duration. The output
+ * selector is a 24-bit BITMASK — on an HC-800, bits 0..5 are the rear jacks and
+ * bit 6 is the internal front blaster — which is exactly what rc-core calls a
+ * transmitter mask, so it is wired straight to s_tx_mask.
+ *
+ * The carrier field is a Pronto word, and the firmware DIVIDES BY IT. Zero
+ * there is a divide-by-zero: UsageFault, HardFault, and a part that answers
+ * nothing until it is power cycled. Never send 0.
+ */
+#define IR_PRONTO_HZ    4145146u  /* 1e6 / 0.241246 */
+#define IR_SYS_HZ       50000000u /* LM3S system clock, for capture periods */
+#define IR_FIXED_BYTES  14
+#define IR_MAX_DURATIONS 256
 
 #define OHC_MAX_PAYLOAD 512
 #define OHC_TIMEOUT_MS  600
@@ -152,6 +190,11 @@ struct ohc_iomcu {
 	 */
 	int n_relays;
 	int n_contacts;
+
+	/* IR, when the board has any. NULL when it does not. */
+	struct rc_dev *rc;
+	u32 tx_mask;
+	u32 tx_carrier;
 
 	/*
 	 * Diagnostics. "No reply" has three very different causes — nothing was
@@ -221,6 +264,22 @@ static int ohc_write_frame(struct ohc_iomcu *mcu, u8 opcode, u8 seq,
 		pr_warn("short write: %d of %d bytes\n", ret, n);
 	kfree(out);
 	return ret < 0 ? ret : 0;
+}
+
+/*
+ * Fire and forget, for the opcodes the firmware does not answer.
+ *
+ * IRIN_SET_CAPTURE is one: there is no reply to correlate, so a wrong argument
+ * is silent and the only symptom is a receiver that never reports anything.
+ */
+static int ohc_send(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload, int len)
+{
+	int ret;
+
+	mutex_lock(&mcu->io_lock);
+	ret = ohc_write_frame(mcu, opcode, ++mcu->seq, payload, len);
+	mutex_unlock(&mcu->io_lock);
+	return ret;
 }
 
 /* Ask, and wait for the answer with the matching sequence number. */
@@ -327,6 +386,111 @@ static int ohc_contacts_get(struct ohc_iomcu *mcu, u32 *mask)
 	*mask = ((u32)f.payload[3] << 24) | ((u32)f.payload[2] << 16) |
 		((u32)f.payload[1] << 8) | f.payload[0];
 	return 0;
+}
+
+/* ---- infrared ------------------------------------------------------------ */
+
+/*
+ * rc-core hands us durations in MICROSECONDS; the firmware wants them in
+ * carrier periods, which is also what Pronto uses. Convert with the carrier we
+ * were told, and refuse rather than guess if we were told nothing.
+ */
+static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int count)
+{
+	struct ohc_iomcu *mcu = rcdev->priv;
+	unsigned int i, n;
+	u32 carrier, word;
+	u8 *payload;
+	int ret;
+
+	carrier = mcu->tx_carrier ? mcu->tx_carrier : 38000;
+	word = IR_PRONTO_HZ / carrier;
+	if (!word)
+		return -EINVAL;		/* would be a divide-by-zero in the firmware */
+	if (!mcu->tx_mask)
+		return -EINVAL;		/* no emitter selected; nothing would radiate */
+
+	n = min(count, (unsigned int)IR_MAX_DURATIONS);
+	payload = kzalloc(IR_FIXED_BYTES + n * 2, GFP_KERNEL);
+	if (!payload)
+		return -ENOMEM;
+
+	payload[0] = 1;			/* mode: < 2 skips the repeat block */
+	payload[1] = (mcu->tx_mask >> 16) & 0xff;
+	payload[2] = (mcu->tx_mask >> 8) & 0xff;
+	payload[3] = mcu->tx_mask & 0xff;
+	/* payload[4..7] are read and unused on this path */
+	payload[8] = word >> 8;		/* carrier, big-endian */
+	payload[9] = word & 0xff;
+	/* payload[10..13]: repeat count and offset, both zero */
+	for (i = 0; i < n; i++) {
+		u32 periods = ((u64)txbuf[i] * carrier) / 1000000u;
+
+		if (periods > 0x7fff)
+			periods = 0x7fff;
+		payload[IR_FIXED_BYTES + i * 2] = periods >> 8;
+		payload[IR_FIXED_BYTES + i * 2 + 1] = periods & 0xff;
+	}
+
+	ret = ohc_request(mcu, OP_IROUT_SEND, payload, IR_FIXED_BYTES + n * 2, NULL);
+	kfree(payload);
+	return ret ? ret : (int)n;
+}
+
+static int ohc_tx_carrier(struct rc_dev *rcdev, u32 carrier)
+{
+	struct ohc_iomcu *mcu = rcdev->priv;
+
+	/* The firmware divides by the derived word; a carrier this low would
+	 * round it to zero and take the part down with it. */
+	if (carrier < 1000 || IR_PRONTO_HZ / carrier == 0)
+		return -EINVAL;
+	mcu->tx_carrier = carrier;
+	return 0;
+}
+
+/*
+ * The emitter selector really is a mask, so LIRC_SET_TRANSMITTER_MASK means
+ * exactly what it says here: bit 0 is the jack labelled 1, and several may be
+ * driven at once.
+ */
+static int ohc_tx_mask(struct rc_dev *rcdev, u32 mask)
+{
+	struct ohc_iomcu *mcu = rcdev->priv;
+
+	if (!mask || (mask & ~0xffffffu))
+		return -EINVAL;
+	mcu->tx_mask = mask;
+	return 0;
+}
+
+/* A capture from the front receiver: [timer period][durations, bit 15 = mark] */
+static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
+{
+	u32 period, carrier;
+	int i;
+
+	if (!mcu->rc || len < 4)
+		return;
+	period = ((u32)p[0] << 8) | p[1];
+	if (!period)
+		return;
+	carrier = IR_SYS_HZ / period;
+	if (!carrier)
+		return;
+
+	for (i = 2; i + 1 < len; i += 2) {
+		u16 w = ((u16)p[i] << 8) | p[i + 1];
+		struct ir_raw_event ev = {};
+
+		if (!(w & 0x7fff))
+			break;			/* padding, not a zero-length burst */
+		ev.pulse = !!(w & 0x8000);
+		/* periods -> microseconds, the unit rc-core wants */
+		ev.duration = ((u64)(w & 0x7fff) * 1000000u) / carrier;
+		ir_raw_event_store(mcu->rc, &ev);
+	}
+	ir_raw_event_handle(mcu->rc);
 }
 
 /* ---- gpio_chip ---------------------------------------------------------- */
@@ -498,10 +662,11 @@ static void ohc_frame_complete(struct ohc_iomcu *mcu)
 	spin_unlock_irqrestore(&mcu->rx_lock, flags);
 
 	/*
-	 * Unsolicited. IR captures arrive this way when somebody presses a
-	 * remote; nothing consumes them yet, and dropping them silently beats
-	 * pretending they were a reply to a question nobody asked.
+	 * Unsolicited: a remote was pressed at the front receiver. This is the
+	 * whole reason the decoder keeps frames it did not ask for.
 	 */
+	if (opcode == OP_IRIN_CAPTURED)
+		ohc_ir_capture(mcu, mcu->body + 5, len);
 }
 
 static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
@@ -613,6 +778,64 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
  * So open() only arms this, and the conversation happens once the lock is
  * gone.
  */
+/*
+ * Register the IR side as an rc_dev, so the jacks and the blaster are
+ * /dev/lirc0 and work with ir-ctl and ir-keytable. Failure here is not fatal:
+ * a board with working relays and no IR is worth having, and saying so beats
+ * refusing to bring up the gpiochip.
+ */
+static void ohc_register_rc(struct ohc_iomcu *mcu)
+{
+	int emitters = ir_out + (ir_blaster ? 1 : 0);
+	struct rc_dev *rc;
+	int ret;
+
+	if (!emitters && !ir_in)
+		return;
+
+	rc = rc_allocate_device(RC_DRIVER_IR_RAW);
+	if (!rc)
+		return;
+
+	rc->priv = mcu;
+	rc->driver_name = "ohc-iomcu";
+	rc->device_name = "openHC IO microcontroller";
+	rc->input_phys = "ohc-iomcu/input0";
+	rc->map_name = RC_MAP_EMPTY;
+	rc->allowed_protocols = RC_PROTO_BIT_ALL_IR_DECODER;
+	if (emitters) {
+		rc->tx_ir = ohc_tx_ir;
+		rc->s_tx_carrier = ohc_tx_carrier;
+		/* Only worth exposing when there is more than one to choose. */
+		if (emitters > 1)
+			rc->s_tx_mask = ohc_tx_mask;
+	}
+
+	ret = rc_register_device(rc);
+	if (ret) {
+		pr_warn("cannot register the IR device: %d\n", ret);
+		rc_free_device(rc);
+		return;
+	}
+	mcu->rc = rc;
+	/* Default to the first jack, so a bare `ir-ctl -S` does something. */
+	mcu->tx_mask = 1;
+	mcu->tx_carrier = 38000;
+
+	/*
+	 * Ask the firmware to report what the receiver hears. Fire and forget —
+	 * it sends no reply — so a wrong argument here fails silently, and the
+	 * symptom is a receiver that never produces an event.
+	 */
+	if (ir_in) {
+		u8 on = 1;
+
+		ohc_send(mcu, OP_IRIN_SET_CAPTURE, &on, 1);
+	}
+	pr_info("%s: %d IR emitter(s)%s as %s\n", mcu->tty->name, emitters,
+		ir_in ? " and a receiver" : "", dev_name(&rc->dev));
+}
+
 static void ohc_probe(struct work_struct *work)
 {
 	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
@@ -640,6 +863,12 @@ static void ohc_probe(struct work_struct *work)
 	}
 
 	lines = mcu->n_relays + mcu->n_contacts;
+	if (!lines) {
+		/* IR-only board: no gpiochip to register, but the rc device below
+		 * is still worth having. */
+		ohc_register_rc(mcu);
+		return;
+	}
 	mcu->names = kcalloc(lines, sizeof(char *), GFP_KERNEL);
 	if (!mcu->names)
 		return;
@@ -683,6 +912,8 @@ static void ohc_probe(struct work_struct *work)
 
 	pr_info("%s: %d relays, %d contacts as GPIO lines\n",
 		mcu->tty->name, mcu->n_relays, mcu->n_contacts);
+
+	ohc_register_rc(mcu);
 	return;
 
 err_names:
@@ -698,8 +929,14 @@ static int ohc_ldisc_open(struct tty_struct *tty)
 
 	if (!tty->ops->write)
 		return -EOPNOTSUPP;
-	if (relays < 0 || contacts < 0 || relays + contacts == 0 ||
-	    relays > 32 || contacts > 32)
+	if (relays < 0 || contacts < 0 || relays > 32 || contacts > 32)
+		return -EINVAL;
+	/*
+	 * A board may have IR and no GPIO lines at all, so "no relays and no
+	 * contacts" is not a reason to refuse the port — only "nothing at all
+	 * behind it" is.
+	 */
+	if (relays + contacts == 0 && ir_out + ir_blaster + ir_in == 0)
 		return -EINVAL;
 
 	mcu = kzalloc(sizeof(*mcu), GFP_KERNEL);
@@ -733,6 +970,8 @@ static void ohc_ldisc_close(struct tty_struct *tty)
 
 	cancel_delayed_work_sync(&mcu->probe_work);
 	cancel_delayed_work_sync(&mcu->poll_work);
+	if (mcu->rc)
+		rc_unregister_device(mcu->rc);
 	/* The probe may have decided not to register one. */
 	if (mcu->chip_added)
 		gpiochip_remove(&mcu->gc);
