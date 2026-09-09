@@ -21,10 +21,9 @@ pub enum Fault {
     NoSuch(String),
     /// The board has one, but not that index / not those arguments.
     Bad(String),
-    /// The kernel's ohc-iomcu chip is not there: the discipline was never
-    /// attached, or the driver refused to register because the part did not
-    /// answer. iod has no other way to reach the IO.
-    NoChip,
+    /// The kernel is not offering this board's IO lines. iod has no other way
+    /// to reach them; the payload says what to go and look at.
+    NoChip(String),
     /// A real path that is not built yet. Distinct from NoSuch so a UI can say
     /// "not yet" instead of "you do not have this".
     Todo(String),
@@ -37,7 +36,7 @@ impl Fault {
         match self {
             Fault::NoSuch(_) => "no_such",
             Fault::Bad(_) => "bad_request",
-            Fault::NoChip => "no_chip",
+            Fault::NoChip(_) => "no_chip",
             Fault::Todo(_) => "not_implemented",
             Fault::Io(_) => "io_error",
         }
@@ -46,7 +45,7 @@ impl Fault {
         match self {
             Fault::NoSuch(_) => 404,
             Fault::Bad(_) => 400,
-            Fault::NoChip => 503,
+            Fault::NoChip(_) => 503,
             Fault::Todo(_) => 501,
             Fault::Io(_) => 502,
         }
@@ -59,11 +58,7 @@ impl std::fmt::Display for Fault {
             Fault::NoSuch(s) | Fault::Bad(s) | Fault::Todo(s) | Fault::Io(s) => {
                 write!(f, "{s}")
             }
-            Fault::NoChip => write!(
-                f,
-                "no {} gpiochip — the kernel driver is not attached, or the IO microcontroller did not answer it",
-                crate::gpio_io::CHIP_LABEL
-            ),
+            Fault::NoChip(s) => write!(f, "no GPIO lines named relay1/contact1 — {s}"),
         }
     }
 }
@@ -284,14 +279,20 @@ async fn mcu_info(c: &Arc<Config>) -> Out {
 
 /// Can this board's relays and contacts actually be reached?
 ///
-/// The IO Extender drives its lines from the SoC directly, so `NoChip` would
-/// blame a microcontroller it does not have.
+/// Where the lines COME from differs per board and nothing below this cares;
+/// only the diagnosis does, because "attach the line discipline" and "the pins
+/// are still muxed to the video port" send you to very different places.
 fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
     match c.board.io.backend {
         _ if c.gpio_io => Ok(()),
-        Backend::Gpio => Err(Fault::Todo("native SoC GPIO IO is not implemented".into())),
         Backend::None => Err(Fault::NoSuch("no IO on this board".into())),
-        Backend::Mcu => Err(Fault::NoChip),
+        Backend::Mcu => Err(Fault::NoChip(format!(
+            "the {} line discipline is not attached, or the microcontroller did not answer it (S12iomcu)",
+            crate::gpio_io::CHIP_LABEL
+        ))),
+        Backend::Gpio => Err(Fault::NoChip(
+            "this board names them in its device tree — check gpio-line-names, and that the pin-mux ran".into(),
+        )),
     }
 }
 

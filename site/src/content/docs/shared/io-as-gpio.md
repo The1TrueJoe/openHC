@@ -252,22 +252,49 @@ first and every one of ours shifts by one.
 
 So the fix is a stable *path*, not a stable number — the same answer udev gives
 with `SYMLINK+=`, and the same reason `gpiodetect` is matched on `ohc-iomcu`
-rather than `gpiochip1`. `S12iomcu` reads `DEV_NAME` back out of sysfs after the
-attach and lays down:
-
-```console
-# ls -l /dev/ohc/ir
-front-blaster  -> /dev/lirc6
-front-receiver -> /dev/lirc7
-out1 -> /dev/lirc0    out2 -> /dev/lirc1    out3 -> /dev/lirc2
-out4 -> /dev/lirc3    out5 -> /dev/lirc4    out6 -> /dev/lirc5
-
-# ir-ctl -d /dev/ohc/ir/front-blaster --send=power.txt
-```
+rather than `gpiochip1`. That is what `/dev/ohc` is: see
+[the whole namespace](#devohc--the-board-under-its-own-names) below.
 
 iod does not use those symlinks to *find* anything — it reads `DEV_NAME` from
 sysfs, which is true whether or not the script ran. It reads them only to report
 the friendlier path, so the naming rule lives in exactly one place.
+
+## /dev/ohc — the board under its own names
+
+`S03ohcdev` builds one namespace for everything this board has, from `board.env`
+plus what the kernel actually registered:
+
+```console
+# find /dev/ohc -type l | sort
+/dev/ohc/gpiochip            -> /dev/gpiochip1
+/dev/ohc/ir/front-blaster    -> /dev/lirc6
+/dev/ohc/ir/front-receiver   -> /dev/lirc7
+/dev/ohc/ir/out1             -> /dev/lirc0
+...
+/dev/ohc/ir/out6             -> /dev/lirc5
+/dev/ohc/serial/1            -> /dev/ttyS1
+/dev/ohc/serial/2            -> /dev/ttyS2
+```
+
+Every number on the right is an accident: the lirc minor is first-free from a
+shared counter, the gpiochip number depends on probe order, and `ttyS`
+numbering depends on `CONFIG_SERIAL_8250_RUNTIME_UARTS` — the very setting that
+silently drops `ttyS4` on this board at mainline's default. Every name on the
+left is what the hardware is.
+
+**Relays and contacts get no entry, and that is not an oversight.** They are
+GPIO *lines*, not devices — there is no node to point at. They live inside
+`/dev/ohc/gpiochip` and are addressed by name within it, which is the same
+stable-handle idea one level down:
+
+```bash
+gpioset $(gpiofind relay1)=1
+```
+
+It runs at S03 and again from `S12iomcu`, because the IR nodes and the gpiochip
+do not exist until the line discipline has attached. It is idempotent: it tears
+the tree down and rebuilds it from what is present, so a board where the
+microcontroller never answered simply gets the serial links and nothing else.
 
 :::note[The front panel is not "jack 7"]
 The blaster is a different piece of hardware that happens to sit behind the same

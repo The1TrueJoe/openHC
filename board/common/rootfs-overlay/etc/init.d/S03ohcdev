@@ -1,0 +1,79 @@
+#!/bin/sh
+# /dev/ohc — this board's IO under the names on the case. SHARED (board/common).
+#
+# Every kernel path underneath is a number that is an accident of probe order:
+# /dev/lircN is a first-free minor from a counter shared by every rc driver in
+# the kernel, /dev/gpiochipN moves if another chip registers first, and ttyS
+# numbering depends on CONFIG_SERIAL_8250_RUNTIME_UARTS. The names do not move.
+#
+#   /dev/ohc/gpiochip           the ohc-iomcu chip
+#   /dev/ohc/ir/out1 … outN     rear IR jacks, as labelled
+#   /dev/ohc/ir/front-blaster   internal emitter behind the front panel
+#   /dev/ohc/ir/front-receiver  the learner on the same panel
+#   /dev/ohc/serial/1 … N       rear RS-232, in the order board.env declares
+#
+# RELAYS AND CONTACTS GET NO ENTRY. Not an oversight: they are GPIO LINES, not
+# devices, so there is no node to point at. They live inside the gpiochip above
+# and are addressed by name within it, which is the same stable-handle idea:
+#
+#   gpioset $(gpiofind relay1)=1
+#   gpioget $(gpiofind contact4)
+#
+# Runs at S03, and again from S12iomcu — the IR nodes and the gpiochip do not
+# exist until the line discipline has attached. Idempotent by construction.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+link() {        # $1 = target, $2 = link path. Silent when the target is absent.
+    [ -e "$1" ] || return 1
+    mkdir -p "${2%/*}"
+    ln -sf "$1" "$2"
+}
+
+serial_links() {
+    # OHC_SERIALS is dev:label:baud, space separated. Numbered from 1 by
+    # position, matching the MQTT topics and what the installer reads.
+    #
+    # On the EA family these ports are routed through the microcontroller and
+    # have no device node at all, so nothing is linked and that is correct.
+    n=0
+    for e in $OHC_SERIALS; do
+        n=$((n + 1))
+        dev=${e%%:*}
+        case "$dev" in /*) ;; *) dev="/dev/$dev" ;; esac
+        link "$dev" "/dev/ohc/serial/$n"
+    done
+}
+
+ir_links() {
+    [ -d /sys/class/lirc ] || return 0
+    for d in /sys/class/lirc/lirc*; do
+        [ -e "$d" ] || continue
+        node=${d##*/}
+        name=$(sed -n 's/^DEV_NAME=//p' "$d/device/uevent" 2>/dev/null)
+        case "$name" in
+            "openHC IR "*) ;;
+            *) continue ;;                      # somebody else's rc device
+        esac
+        # "openHC IR out 3" -> out3;  "openHC IR front blaster" -> front-blaster
+        slug=$(echo "${name#openHC IR }" | tr "[:upper:] " "[:lower:]-")
+        case "$slug" in out-*) slug="out${slug#out-}" ;; esac
+        link "/dev/$node" "/dev/ohc/ir/$slug"
+    done
+}
+
+start() {
+    rm -rf /dev/ohc
+    serial_links
+    # The chip label, not its number — that is the whole point of the label.
+    chip=$(gpiodetect 2>/dev/null | awk '/\[ohc-iomcu\]/{print $1; exit}')
+    [ -n "$chip" ] && link "/dev/$chip" /dev/ohc/gpiochip
+    ir_links
+    [ -d /dev/ohc ] && echo "ohcdev: $(cd /dev/ohc && find . -type l | sed 's|^\./||' | sort | tr '\n' ' ')"
+}
+
+case "${1:-start}" in
+    start) start ;;
+    stop) rm -rf /dev/ohc ;;
+    restart|reload) "$0" stop; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

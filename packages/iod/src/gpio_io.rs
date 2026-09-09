@@ -15,8 +15,8 @@ use std::io;
 #[cfg(target_os = "linux")]
 use gpiocdev::{line::Value, Request};
 
-/// The chip our driver registers. Named rather than numbered because the number
-/// depends on probe order.
+/// The chip `gpio-ohc-iomcu` registers, for diagnostics only. It is NOT how the
+/// lines are found — see [`present`].
 pub const CHIP_LABEL: &str = "ohc-iomcu";
 
 #[cfg(target_os = "linux")]
@@ -24,23 +24,20 @@ fn err<E: std::fmt::Display>(e: E) -> io::Error {
     io::Error::other(e.to_string())
 }
 
-/// Is the kernel driver present and has it registered a chip?
+/// Are this board's IO lines present?
 ///
-/// Absent means the microcontroller is not answering — the driver refuses to
-/// register a chip it cannot identify, precisely so that this question has a
-/// truthful answer.
+/// Deliberately NOT "is there an ohc-iomcu chip". The HC and EA families get
+/// these lines from that driver, which names them; the IO Extender gets the
+/// same names from `gpio-line-names` in its device tree. One question, one
+/// answer, and nothing here knows which kernel mechanism provided them.
+///
+/// False on an HC-800 also means the microcontroller is not answering: the
+/// driver refuses to register a chip it cannot identify, precisely so that this
+/// has a truthful answer rather than a chip whose every read is a lie.
 #[cfg(target_os = "linux")]
 pub fn present() -> bool {
-    gpiocdev::chip::chips()
-        .map(|paths| {
-            paths.iter().any(|p| {
-                gpiocdev::Chip::from_path(p)
-                    .and_then(|c| c.info())
-                    .map(|i| i.label == CHIP_LABEL)
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+    gpiocdev::find_named_line("relay1").is_some()
+        || gpiocdev::find_named_line("contact1").is_some()
 }
 
 /// Resolve a line by the name the driver gave it (`relay0`, `contact2`).

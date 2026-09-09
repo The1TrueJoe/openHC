@@ -5,7 +5,7 @@
 //! rc-core hands out the first free minor from a counter shared with every rc
 //! driver in the kernel, so the BASE is not ours to fix. Plug in a USB IR
 //! dongle and everything shifts. `DEV_NAME` is the handle that does not move;
-//! S12iomcu turns it into a path under /dev/ohc/ir.
+//! S03ohcdev turns it into a path under /dev/ohc/ir.
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 pub struct Dev {
     pub path: PathBuf,
     pub name: String,
-    /// Stable path under `/dev/ohc/ir`, when S12iomcu has made one. DISCOVERED,
+    /// Stable path under `/dev/ohc/ir`, when S03ohcdev has made one. DISCOVERED,
     /// not computed: the script owns the naming, so there is no second copy of
     /// the rule here to drift out of step with it.
     pub link: Option<PathBuf>,

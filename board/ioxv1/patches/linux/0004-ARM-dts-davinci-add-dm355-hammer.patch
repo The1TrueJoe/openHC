@@ -13,7 +13,7 @@ forced). Boots via appended DTB; network brings up SSH.
 See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  arch/arm/boot/dts/ti/davinci/Makefile         |  3 +
- arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 52 ++++++++++
+ arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 86 ++++++++++
  arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 +++++++++++++++++++
  3 files changed, 149 insertions(+)
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,86 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
@@ -87,6 +87,40 @@ index 0000000..a959552
 +		davicom,no-eeprom;
 +		local-mac-address = [00 0f ff 18 21 9c];
 +	};
++};
++
++/*
++ * NAMED LINES, not numbers in board.env.
++ *
++ * A relay is `relay1` here for the same reason it is on the HC-800, where the
++ * IO microcontroller's driver names them: `gpiofind relay1` then resolves the
++ * same string on every board in the fleet, and iod needs no per-board table of
++ * GPIO offsets. The offsets are a property of this SoC's ball map and belong
++ * in the device tree, which is the one place that already describes it.
++ *
++ * Relays 1-8 are GIO88-95, contiguous. Contacts are NOT: 1 and 2 are GIO71 and
++ * GIO70 — reversed — and 3-8 run GIO82-87. That reversal is why a table of
++ * numbers in a shell variable was a trap waiting to be mis-sorted.
++ *
++ * These pins share balls with the VPFE/VPBE video ports and do nothing until
++ * the pin-mux is flipped; see S01pinmux, which is itself a stand-in for a real
++ * pinctrl node.
++ */
++&gpio {
++	gpio-line-names =
++		"", "dm9000_irq", "", "", "", "", "", "",	/* 0-7 */
++		"", "", "", "", "", "", "", "",	/* 8-15 */
++		"", "", "", "", "", "", "", "",	/* 16-23 */
++		"", "", "", "", "", "", "", "",	/* 24-31 */
++		"", "", "", "", "", "", "", "",	/* 32-39 */
++		"", "", "", "", "", "", "", "",	/* 40-47 */
++		"", "", "", "", "", "", "", "",	/* 48-55 */
++		"", "", "", "", "", "", "", "",	/* 56-63 */
++		"", "", "", "", "", "", "contact2", "contact1",	/* 64-71 */
++		"", "", "", "led_data", "led_link", "", "", "",	/* 72-79 */
++		"", "", "contact3", "contact4", "contact5", "contact6", "contact7", "contact8",	/* 80-87 */
++		"relay1", "relay2", "relay3", "relay4", "relay5", "relay6", "relay7", "relay8",	/* 88-95 */
++		"", "", "", "", "", "dm9000_reset", "", "";	/* 96-103 */
 +};
 diff --git a/arch/arm/boot/dts/ti/davinci/dm355.dtsi b/arch/arm/boot/dts/ti/davinci/dm355.dtsi
 new file mode 100644
