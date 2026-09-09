@@ -198,6 +198,26 @@ CONFIG_HWMON=y
 CONFIG_SENSORS_CORETEMP=y
 CONFIG_SENSORS_W83627EHF=y
 
+# ── front panel: six LEDs and the ID button ───────────────────────────────
+# The consumer drivers for what ohc-hc800.c registers. NONE of these are in the
+# x86_64 arch defconfig, and without them that driver registers two platform
+# devices that nothing binds — the build succeeds, /sys/class/leds stays empty,
+# and it looks like the GPIO map is wrong rather than the kernel config.
+#
+# The triggers are not decoration: the vendor drives c4::power from default-on
+# and the blue wifi channel from a blink trigger, and this keeps that behaviour
+# without a daemon.
+CONFIG_NEW_LEDS=y
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_GPIO=y
+CONFIG_LEDS_TRIGGERS=y
+CONFIG_LEDS_TRIGGER_DEFAULT_ON=y
+CONFIG_LEDS_TRIGGER_TIMER=y
+CONFIG_LEDS_TRIGGER_HEARTBEAT=y
+# The ID button. Polled, because the ICH line has no usable interrupt.
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_GPIO_POLLED=y
+
 # CMOS RTC — an ordinary PC RTC, so hwclock works with no I2C part to hunt for.
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_DRV_CMOS=y
