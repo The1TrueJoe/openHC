@@ -31,21 +31,25 @@
 # order comes from board.env and the IR labels come from the driver's DEV_NAME,
 # and neither belongs in a match expression.
 
+# ONE rule per subsystem, and the helper returns the whole leaf path — so a
+# device costs one exec, not one per thing it might have been.
+#
+# KERNEL!= excludes the virtual consoles. Without it SUBSYSTEM=="tty" matches
+# tty0..tty63 as well as the ports we care about, and every one of them would
+# fork a shell that sources board.env during udevadm settle. That is ~130
+# processes on a 1.8 GHz Atom before the network comes up.
+
 # IR. DEV_NAME lives on the parent rc device, not on the lirc node, so this
 # cannot be an ENV match — the helper reads it out of sysfs.
-SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/ir/%c"
+SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/%c"
 
-# Host UARTs. Nothing matches on the EA family, where the user ports are routed
-# through the microcontroller and have no device node at all — the same rule
-# will name them the day those become real ttys.
-#
-# Not KERNEL=="ttyS*": the CA-1's are ttymxc*, and which 8250-or-not the SoC
-# fits is exactly the kind of thing board.env already answers.
-SUBSYSTEM=="tty", PROGRAM="/usr/bin/ohc-udev-name serial %k", SYMLINK+="ohc/serial/%c"
-
-# Radios. Same helper, same board.env shape; the kind IS the name because a
-# board has at most one of each.
-SUBSYSTEM=="tty", PROGRAM="/usr/bin/ohc-udev-name radio %k", SYMLINK+="ohc/radio/%c"
+# User serial ports and radios, both from board.env. Nothing matches on the EA
+# family, where the user ports are routed through the microcontroller and have
+# no device node at all — the same rule will name them the day they become real
+# ttys. No KERNEL== prefix match, because which tty naming the SoC uses (ttyS,
+# ttymxc, ttyAMA) is exactly what board.env already answers.
+SUBSYSTEM=="tty", KERNEL!="tty", KERNEL!="tty[0-9]*", \
+  PROGRAM="/usr/bin/ohc-udev-name tty %k", SYMLINK+="ohc/%c"
 
 # The gpiochip carrying the relays and contacts.
 SUBSYSTEM=="gpio", KERNEL=="gpiochip*", PROGRAM="/usr/bin/ohc-udev-name gpio %k", SYMLINK+="ohc/%c"

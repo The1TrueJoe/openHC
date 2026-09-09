@@ -23,7 +23,10 @@
 
 #define pr_fmt(fmt) "ohc-iomcu: " fmt
 
+#include <linux/cdev.h>
 #include <linux/completion.h>
+#include <linux/device.h>
+#include <linux/fs.h>
 #include <linux/gpio/driver.h>
 #include <media/rc-core.h>
 #include <linux/module.h>
@@ -33,6 +36,7 @@
 #include <linux/string.h>
 #include <linux/tty.h>
 #include <linux/tty_ldisc.h>
+#include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
 /*
@@ -178,6 +182,13 @@ struct ohc_iomcu {
 	 */
 	u32 contact_mask;
 	bool contacts_valid;
+
+	/*
+	 * The /dev/ohc view. See ohc_add_nodes.
+	 */
+	dev_t devt;
+	struct cdev cdev;
+	bool nodes_added;
 
 	struct delayed_work poll_work;
 	/*
@@ -620,6 +631,9 @@ static void ohc_poll(struct work_struct *work)
 		mcu->contacts_valid = true;
 	}
 
+	/* The friendly view of the same lines. Not fatal if it fails. */
+	ohc_add_nodes(mcu, lines);
+
 	if (poll_ms > 0)
 		schedule_delayed_work(&mcu->poll_work, msecs_to_jiffies(poll_ms));
 }
@@ -763,6 +777,171 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
 		if (mcu->body_len > 0)
 			memmove(mcu->body, mcu->body + want, mcu->body_len);
 	}
+}
+
+/* ---- /dev/ohc/relay1 ------------------------------------------------------
+ *
+ * A file per line, so `echo 1 > /dev/ohc/relay1` works and somebody who has
+ * never met libgpiod can still close a relay.
+ *
+ * This is a VIEW, not a second implementation. Every access goes through the
+ * same ohc_relay_get/toggle the gpiochip uses, behind the same io_lock, and it
+ * requests NO gpio descriptor — so `gpioset` and this cannot lock each other
+ * out, and the gpiochip remains the authoritative interface. Nothing here knows
+ * anything about the wire protocol that the gpiochip path does not.
+ *
+ * Why bother, when the lines are already named: libgpiod 1.x is what Buildroot
+ * ships (2024.02.9 and 2025.02 both pin 1.6.x), and its tools cannot address a
+ * line by name — the best it offers is `gpioset $(gpiofind relay1)=1`. libgpiod
+ * 2 fixes that with `gpioset relay1=1`, and when the fleet gets there this file
+ * becomes a convenience rather than the ergonomic answer. It is still the
+ * interface a shell script, a cron job or a curious installer reaches for
+ * first, which is the whole argument for it.
+ *
+ * The vendor shipped exactly this shape — /dev/gpio/dsp_reset on a stock EA —
+ * with a bespoke driver, because their 3.16 kernel predated the GPIO chardev.
+ * We keep the ergonomics and drop the reason: this sits on gpiolib rather than
+ * replacing it.
+ */
+static int ohc_node_index(struct file *f)
+{
+	return iminor(file_inode(f));
+}
+
+static ssize_t ohc_node_read(struct file *f, char __user *buf, size_t len,
+			     loff_t *ppos)
+{
+	struct ohc_iomcu *mcu = f->private_data;
+	int idx = ohc_node_index(f);
+	char out[3];
+	bool on;
+	int ret;
+
+	if (idx < mcu->n_relays) {
+		ret = ohc_relay_get(mcu, idx, &on);
+		if (ret)
+			return ret;
+	} else {
+		u32 mask;
+
+		ret = ohc_contacts_get(mcu, &mask);
+		if (ret)
+			return ret;
+		on = !!(mask & BIT(idx - mcu->n_relays));
+	}
+	out[0] = on ? '1' : '0';
+	out[1] = '\n';
+	out[2] = '\0';
+	return simple_read_from_buffer(buf, len, ppos, out, 2);
+}
+
+/*
+ * Accepts what a person would type: 0/1, on/off, true/false, high/low. A
+ * contact is an input and says so with -EPERM rather than silently doing
+ * nothing.
+ */
+static ssize_t ohc_node_write(struct file *f, const char __user *buf,
+			      size_t len, loff_t *ppos)
+{
+	struct ohc_iomcu *mcu = f->private_data;
+	int idx = ohc_node_index(f);
+	char in[16];
+	bool want, now;
+	int ret;
+
+	if (idx >= mcu->n_relays)
+		return -EPERM;
+	if (len == 0 || len >= sizeof(in))
+		return -EINVAL;
+	if (copy_from_user(in, buf, len))
+		return -EFAULT;
+	in[len] = '\0';
+	strim(in);
+
+	if (!strcmp(in, "1") || !strcasecmp(in, "on") ||
+	    !strcasecmp(in, "true") || !strcasecmp(in, "high"))
+		want = true;
+	else if (!strcmp(in, "0") || !strcasecmp(in, "off") ||
+		 !strcasecmp(in, "false") || !strcasecmp(in, "low"))
+		want = false;
+	else
+		return -EINVAL;
+
+	/* Idempotent, for the same reason ohc_gpio_set is: the firmware has no
+	 * SET opcode, and a toggle-only write would invert a relay every time
+	 * something wrote the value it already had. */
+	ret = ohc_relay_get(mcu, idx, &now);
+	if (ret)
+		return ret;
+	if (now != want) {
+		ret = ohc_relay_toggle(mcu, idx, &now);
+		if (ret)
+			return ret;
+		if (now != want)
+			return -EIO;
+	}
+	return len;
+}
+
+static int ohc_node_open(struct inode *ino, struct file *f)
+{
+	f->private_data = container_of(ino->i_cdev, struct ohc_iomcu, cdev);
+	return 0;
+}
+
+static const struct file_operations ohc_node_fops = {
+	.owner   = THIS_MODULE,
+	.open    = ohc_node_open,
+	.read    = ohc_node_read,
+	.write   = ohc_node_write,
+	.llseek  = default_llseek,
+};
+
+/* Put them under /dev/ohc/ the way DRM and ALSA place theirs, rather than
+ * scattering relay1..N across the root of /dev. */
+static char *ohc_devnode(const struct device *dev, umode_t *mode)
+{
+	return kasprintf(GFP_KERNEL, "ohc/%s", dev_name(dev));
+}
+
+static struct class ohc_class = {
+	.name    = "ohc",
+	.devnode = ohc_devnode,
+};
+
+static void ohc_add_nodes(struct ohc_iomcu *mcu, int lines)
+{
+	int i;
+
+	if (alloc_chrdev_region(&mcu->devt, 0, lines, "ohc"))
+		return;
+
+	cdev_init(&mcu->cdev, &ohc_node_fops);
+	mcu->cdev.owner = THIS_MODULE;
+	if (cdev_add(&mcu->cdev, mcu->devt, lines)) {
+		unregister_chrdev_region(mcu->devt, lines);
+		return;
+	}
+
+	for (i = 0; i < lines; i++)
+		device_create(&ohc_class, NULL, MKDEV(MAJOR(mcu->devt), i),
+			      NULL, "%s", mcu->names[i]);
+	mcu->nodes_added = true;
+	pr_info("%s: /dev/ohc/%s .. %s\n", mcu->tty->name,
+		mcu->names[0], mcu->names[lines - 1]);
+}
+
+static void ohc_del_nodes(struct ohc_iomcu *mcu, int lines)
+{
+	int i;
+
+	if (!mcu->nodes_added)
+		return;
+	for (i = 0; i < lines; i++)
+		device_destroy(&ohc_class, MKDEV(MAJOR(mcu->devt), i));
+	cdev_del(&mcu->cdev);
+	unregister_chrdev_region(mcu->devt, lines);
+	mcu->nodes_added = false;
 }
 
 /* ---- line discipline ---------------------------------------------------- */
@@ -964,6 +1143,9 @@ static void ohc_probe(struct work_struct *work)
 		goto err_names;
 	mcu->chip_added = true;
 
+	/* The friendly view of the same lines. Not fatal if it fails. */
+	ohc_add_nodes(mcu, lines);
+
 	if (poll_ms > 0)
 		schedule_delayed_work(&mcu->poll_work, msecs_to_jiffies(poll_ms));
 
@@ -1035,11 +1217,12 @@ static void ohc_ldisc_close(struct tty_struct *tty)
 	kfree(mcu->emitters);
 	if (mcu->rx)
 		rc_unregister_device(mcu->rx);
+	lines = mcu->n_relays + mcu->n_contacts;
+	ohc_del_nodes(mcu, lines);
 	/* The probe may have decided not to register one. */
 	if (mcu->chip_added)
 		gpiochip_remove(&mcu->gc);
 
-	lines = mcu->n_relays + mcu->n_contacts;
 	if (mcu->names) {
 		for (i = 0; i < lines; i++)
 			kfree(mcu->names[i]);
@@ -1106,10 +1289,17 @@ static int __init ohc_iomcu_init(void)
 {
 	int ret;
 
+	ret = class_register(&ohc_class);
+	if (ret) {
+		pr_err("cannot register the ohc class: %d\n", ret);
+		return ret;
+	}
+
 	ohc_ldisc.num = ldisc_num;
 	ret = tty_register_ldisc(&ohc_ldisc);
 	if (ret) {
 		pr_err("cannot register line discipline %d: %d\n", ldisc_num, ret);
+		class_unregister(&ohc_class);
 		return ret;
 	}
 	pr_info("line discipline %d registered\n", ldisc_num);
@@ -1119,6 +1309,7 @@ static int __init ohc_iomcu_init(void)
 static void __exit ohc_iomcu_exit(void)
 {
 	tty_unregister_ldisc(&ohc_ldisc);
+	class_unregister(&ohc_class);
 }
 
 module_init(ohc_iomcu_init);

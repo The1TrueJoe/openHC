@@ -61,6 +61,14 @@ BR2_PACKAGE_USBUTILS=y
 # Mounting sda1/sda3 to install our own kernel, and fsck when a half-written
 # menu.lst needs sorting out.
 BR2_PACKAGE_E2FSPROGS=y
+# kexec is HOW THIS BOARD IS UPDATED, and it is why the boot chain is pristine:
+# a new image is loaded straight into the running kernel and started, touching
+# no partition at all — so GRUB, the vendor root and the factory-restore path
+# are exactly as they shipped. Without it in the image, updating means borrowing
+# a static i686 kexec from somewhere, which is how it was done before this line.
+# Zlib support because our bzImage is compressed.
+BR2_PACKAGE_KEXEC=y
+BR2_PACKAGE_KEXEC_ZLIB=y
 # ALC888S verification: 2 line out, 1 line in, coax S/PDIF. iecset drives the
 # IEC958 status bits, i.e. the coax jack specifically; alsactl is what S46audio
 # calls after unmuting.
