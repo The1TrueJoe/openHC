@@ -79,6 +79,22 @@ pub enum Cmd {
     Capabilities,
     #[serde(rename = "mcu.info")]
     McuInfo,
+    /// Send an arbitrary opcode to the microcontroller and return its reply.
+    ///
+    /// A BRING-UP TOOL. The protocol is reverse-engineered and several fields
+    /// are still inferred — the relay selector's meaning among them — and the
+    /// only way to settle those is to ask the part directly. Available only
+    /// while iod owns the port: once the kernel driver has it, this would be a
+    /// second writer on a link that answers one question at a time.
+    #[serde(rename = "mcu.raw")]
+    McuRaw {
+        opcode: u8,
+        /// Space-separated hex bytes.
+        #[serde(default)]
+        payload: String,
+        #[serde(default = "six_hundred")]
+        timeout_ms: u64,
+    },
     /// Pulse the microcontroller's reset line.
     ///
     /// Needed because the MCU CAN be wedged by a malformed request — it was,
@@ -131,12 +147,16 @@ pub enum Cmd {
 fn one() -> u8 {
     1
 }
+fn six_hundred() -> u64 {
+    600
+}
 
 pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
     match cmd {
         Cmd::Capabilities => Ok(capabilities(c)),
         Cmd::McuInfo => mcu_info(c).await,
         Cmd::McuReset => mcu_reset(c).await,
+        Cmd::McuRaw { opcode, payload, timeout_ms } => mcu_raw(c, opcode, &payload, timeout_ms).await,
         Cmd::ContactGet => contacts(c).await,
         Cmd::RelayGet => relays(c).await,
         Cmd::RelaySet { index, on } => relay_write(c, index, Some(on)).await,
@@ -221,6 +241,30 @@ async fn mcu_info(c: &Arc<Config>) -> Out {
     let measured = l.measured_baud().ok();
     Ok(json!({ "part": l.part, "baud": l.baud, "product": product,
                "version": version, "measured_baud": measured }))
+}
+
+async fn mcu_raw(c: &Arc<Config>, opcode: u8, payload: &str, timeout_ms: u64) -> Out {
+    if c.gpio_io {
+        return Err(Fault::Bad(
+            "the kernel driver owns the link; detach the line discipline to use mcu.raw".into(),
+        ));
+    }
+    let bytes = payload
+        .split_whitespace()
+        .map(|w| u8::from_str_radix(w, 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| Fault::Bad("payload must be space-separated hex bytes".into()))?;
+    let l = c.link.as_ref().ok_or(Fault::NoMcu)?;
+    let f = {
+        let mut l = l.lock().await;
+        l.request(opcode, &bytes, Duration::from_millis(timeout_ms.clamp(50, 5000)))
+    }
+    .map_err(|e| Fault::Mcu(e.to_string()))?;
+    Ok(json!({
+        "opcode": format!("{:02x}", f.opcode),
+        "payload": f.payload.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "),
+        "len": f.payload.len(),
+    }))
 }
 
 /// Hold the MCU in reset briefly, then let it run.
