@@ -289,17 +289,26 @@ fn main() {
             cfg.bus.set(&format!("serial/{i}/viewers"), serde_json::json!(0));
         }
 
-        if cfg.link.is_some() {
-            // Ask the MCU to report IR it receives. Without this the receiver
-            // is deaf and no ir/rx event can ever fire.
-            if cfg.board.io.ir_in > 0 {
-                if let Some(l) = &cfg.link {
-                    match l.lock().await.ir_capture(true) {
-                        Ok(()) => eprintln!("iod: IR receive capture enabled"),
-                        Err(e) => eprintln!("iod: could not enable IR capture: {e}"),
-                    }
+        // Ask the MCU to report IR it receives. Without this the receiver is
+        // deaf and no ir/rx event can ever fire. Only possible on the direct
+        // path: once the driver owns the port, enabling capture is its job.
+        if cfg.board.io.ir_in > 0 {
+            if let Some(l) = &cfg.link {
+                match l.lock().await.ir_capture(true) {
+                    Ok(()) => eprintln!("iod: IR receive capture enabled"),
+                    Err(e) => eprintln!("iod: could not enable IR capture: {e}"),
                 }
+            } else if cfg.gpio_io {
+                eprintln!("iod: IR receive is not enabled — the kernel driver does not do it yet");
             }
+        }
+
+        // Somebody has to keep the state mirror true, and which source it reads
+        // from is not the same question as whether iod holds the serial port.
+        // Keying this off `link` alone meant that the moment the driver took
+        // the port — the case this whole architecture is for — the poller
+        // silently never started and every relay and contact went unpublished.
+        if cfg.gpio_io || cfg.link.is_some() {
             tokio::task::spawn_local(poller(cfg.clone()));
         }
 
