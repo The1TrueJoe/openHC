@@ -90,7 +90,16 @@ export interface ConfigDoc {
   topics: { base: string };
 }
 
-/** The mirrored state, exactly as the retained topics describe it. */
+/** Panel number for a zero-based array position.
+ *
+ *  Relays, contacts, IR ports and serial ports are labelled from 1 on the
+ *  hardware, and the MQTT topics carry that number. Arrays here are indexed
+ *  from 0, so this is the one place the two meet — the same boundary iod draws
+ *  in mqtt::topics. */
+export const panel = (i: number) => i + 1;
+
+/** The mirrored state, keyed by PANEL NUMBER, exactly as the retained topics
+ *  describe it — `state.relay["1"]` is the terminal marked 1. */
 export interface IoState {
   relay?: Record<string, boolean>;
   contact?: Record<string, boolean>;
@@ -214,11 +223,11 @@ export class Io {
 
   // Commands. Fire-and-forget by design: the answer is not a return value, it
   // is the retained state topic changing — which every other open page sees too.
-  relaySet = (i: number, on: boolean) => this.#publish(`relay/${i}/set`, on ? 'ON' : 'OFF');
-  relayToggle = (i: number) => this.#publish(`relay/${i}/set`, 'TOGGLE');
-  sendIr = (port: number, pronto: string) => this.#publish(`ir/${port}/send`, pronto);
-  setBaud = (i: number, baud: number) => this.#publish(`serial/${i}/baud`, String(baud));
-  serialWrite = (i: number, data: string) => this.#publish(`serial/${i}/write`, data);
+  relaySet = (i: number, on: boolean) => this.#publish(`relay/${panel(i)}/set`, on ? 'ON' : 'OFF');
+  relayToggle = (i: number) => this.#publish(`relay/${panel(i)}/set`, 'TOGGLE');
+  sendIr = (port: number, pronto: string) => this.#publish(`ir/${panel(port)}/send`, pronto);
+  setBaud = (i: number, baud: number) => this.#publish(`serial/${panel(i)}/baud`, String(baud));
+  serialWrite = (i: number, data: string) => this.#publish(`serial/${panel(i)}/write`, data);
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {
@@ -240,4 +249,4 @@ export const io = new Io();
  *  backpressure and scrollback, none of which pub/sub does well. It attaches to
  *  the shared session iod reports on, so every viewer sees the same stream. */
 export const serialSocket = (index: number) =>
-  new WebSocket(auth(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/iod/ws/serial/${index}`));
+  new WebSocket(auth(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/iod/ws/serial/${panel(index)}`));

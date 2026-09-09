@@ -637,13 +637,19 @@ static void ohc_probe(struct work_struct *work)
 	if (!mcu->names)
 		return;
 	/*
-	 * Named lines, so `gpiofind relay0` works and a script does not have to
+	 * Named lines, so `gpiofind relay1` works and a script does not have to
 	 * know that relays happen to come first.
+	 *
+	 * The names are ONE-BASED because that is what is printed on the back of
+	 * the box. The line offset stays zero-based, as a gpiochip offset must,
+	 * and so does the selector on the wire — but neither of those is what an
+	 * installer is reading when they wire a relay. `relay1` is the terminal
+	 * labelled 1.
 	 */
 	for (i = 0; i < lines; i++) {
 		mcu->names[i] = kasprintf(GFP_KERNEL, "%s%d",
 					  i < mcu->n_relays ? "relay" : "contact",
-					  i < mcu->n_relays ? i : i - mcu->n_relays);
+					  (i < mcu->n_relays ? i : i - mcu->n_relays) + 1);
 		if (!mcu->names[i])
 			goto err_names;
 	}

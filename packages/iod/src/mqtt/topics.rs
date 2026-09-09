@@ -7,6 +7,27 @@
 use crate::events::Msg;
 use serde_json::Value;
 
+/// Turn a zero-based internal index into the number on the panel.
+///
+/// Relays, contacts, IR ports and serial ports are all labelled from 1 on the
+/// hardware, so that is what the topics carry: `relay/1` is the terminal marked
+/// 1. Internally everything counts from zero — a gpiochip offset and the MCU's
+/// wire selector both must — and the two edges that convert are this module and
+/// [`crate::gpio_io`].
+pub fn label(index: usize) -> usize {
+    index + 1
+}
+
+/// The inverse, for a number arriving from a client. `None` for 0, which is not
+/// a label any hardware carries and is far more likely to be a client that
+/// assumed zero-based.
+pub fn index(label: &str) -> Option<u8> {
+    match label.parse::<u8>() {
+        Ok(n) if n >= 1 => Some(n - 1),
+        _ => None,
+    }
+}
+
 /// `<prefix>/<id>` — everything hangs off this.
 pub fn base(prefix: &str, id: &str) -> String {
     format!("{prefix}/{id}")

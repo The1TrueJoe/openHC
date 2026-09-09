@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Zap, CircleDot, Circle, Radio } from 'lucide-react';
-import { io, type Capabilities } from '../api';
+import { io, panel, type Capabilities } from '../api';
 import { SerialSection } from './Serial';
 import { useIoState } from '../App';
 
@@ -50,7 +50,7 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
           <h2 className="mb-3 text-sm font-medium">Contacts</h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: caps.contacts.count }, (_, i) => {
-              const on = state.contact?.[i];
+              const on = state.contact?.[panel(i)];
               return (
                 <div
                   key={i}
@@ -77,7 +77,7 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
           <h2 className="mb-3 text-sm font-medium">Relays</h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: caps.relays.count }, (_, i) => {
-              const on = state.relay?.[i];
+              const on = state.relay?.[panel(i)];
               return (
                 <button
                   key={i}

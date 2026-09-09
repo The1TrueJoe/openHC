@@ -97,7 +97,7 @@ async fn poll_via_gpio(cfg: Arc<Config>) {
                 Ok(Ok(mask)) => {
                     cfg.bus.set("mcu/link", serde_json::json!(true));
                     for i in 0..contacts {
-                        cfg.bus.set(&format!("contact/{i}"), serde_json::json!(mask >> i & 1 == 1));
+                        cfg.bus.set(&format!("contact/{}", mqtt::topics::label(i as usize)), serde_json::json!(mask >> i & 1 == 1));
                     }
                 }
                 // The chip went away, or the part behind it stopped answering.
@@ -112,7 +112,7 @@ async fn poll_via_gpio(cfg: Arc<Config>) {
             .await;
             if let Ok(Ok(on)) = r {
                 for (i, v) in on.iter().enumerate() {
-                    cfg.bus.set(&format!("relay/{i}"), serde_json::json!(v));
+                    cfg.bus.set(&format!("relay/{}", mqtt::topics::label(i)), serde_json::json!(v));
                 }
             }
         }
@@ -155,13 +155,13 @@ async fn poll_via_mcu(cfg: Arc<Config>) {
                     let r = { l.lock().await.relays(cfg.board.io.relays) };
                     if let Ok(on) = r {
                         for (i, v) in on.iter().enumerate() {
-                            cfg.bus.set(&format!("relay/{i}"), serde_json::json!(v));
+                            cfg.bus.set(&format!("relay/{}", mqtt::topics::label(i)), serde_json::json!(v));
                         }
                         relays_known = true;
                     }
                 }
                 for i in 0..n {
-                    cfg.bus.set(&format!("contact/{i}"), serde_json::json!(mask >> i & 1 == 1));
+                    cfg.bus.set(&format!("contact/{}", mqtt::topics::label(i as usize)), serde_json::json!(mask >> i & 1 == 1));
                 }
             }
             Err(_) => {
@@ -285,8 +285,9 @@ fn main() {
         // The configured line rates, so the GUI shows a port's baud before
         // anybody opens a terminal on it.
         for (i, p) in cfg.board.io.serials.iter().enumerate() {
-            cfg.bus.set(&format!("serial/{i}/baud"), serde_json::json!(p.baud));
-            cfg.bus.set(&format!("serial/{i}/viewers"), serde_json::json!(0));
+            let n = mqtt::topics::label(i);
+            cfg.bus.set(&format!("serial/{n}/baud"), serde_json::json!(p.baud));
+            cfg.bus.set(&format!("serial/{n}/viewers"), serde_json::json!(0));
         }
 
         // Ask the MCU to report IR it receives. Without this the receiver is

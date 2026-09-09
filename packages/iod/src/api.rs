@@ -329,21 +329,26 @@ async fn put_config(State(c): Ctx, Json(req): Json<ConfigReq>) -> axum::response
 
 // ── the terminal socket ────────────────────────────────────────────────────
 
-async fn ws_serial(State(c): Ctx, Path(index): Path<usize>, ws: WebSocketUpgrade) -> impl IntoResponse {
+/// `{port}` is the number on the panel, so port 1 is the first one — the same
+/// identity the MQTT topics and the GUI use. See mqtt::topics.
+async fn ws_serial(State(c): Ctx, Path(port_no): Path<usize>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    let Some(index) = port_no.checked_sub(1) else {
+        return fault_response(Fault::Bad("serial ports are numbered from 1".into()));
+    };
     let Some(port) = c.board.io.serials.get(index).cloned() else {
-        return fault_response(Fault::NoSuch(format!("no serial port {index}")));
+        return fault_response(Fault::NoSuch(format!("no serial port {port_no}")));
     };
     // MCU-routed ports have no device node; their bytes travel over the IO
     // protocol's UART opcodes, which is a different path entirely. Say so
     // rather than failing to open a device that was never going to exist.
     let Some(dev) = port.dev.clone() else {
         return fault_response(Fault::Todo(format!(
-            "port {index} is {}-routed; that bridge is not implemented yet", port.transport)));
+            "port {port_no} is {}-routed; that bridge is not implemented yet", port.transport)));
     };
     let baud = c
         .bus
         .state
-        .get(&format!("serial/{index}/baud"))
+        .get(&format!("serial/{port_no}/baud"))
         .and_then(|v| v.as_u64())
         .map(|b| b as u32)
         .unwrap_or(port.baud);

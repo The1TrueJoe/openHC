@@ -25,17 +25,17 @@ gpiochip1 [ohc-iomcu] (8 lines)
 
 # gpioinfo ohc-iomcu
 gpiochip1 - 8 lines:
-	line   0:      "relay0"       output
-	line   1:      "relay1"       output
-	line   2:      "relay2"       output
-	line   3:      "relay3"       output
-	line   4:    "contact0"        input
-	line   5:    "contact1"        input
-	line   6:    "contact2"        input
-	line   7:    "contact3"        input
+	line   0:      "relay1"       output
+	line   1:      "relay2"       output
+	line   2:      "relay3"       output
+	line   3:      "relay4"       output
+	line   4:    "contact1"        input
+	line   5:    "contact2"        input
+	line   6:    "contact3"        input
+	line   7:    "contact4"        input
 
-# gpioset $(gpiofind relay0)=1
-# gpioget $(gpiofind contact0)
+# gpioset $(gpiofind relay1)=1
+# gpioget $(gpiofind contact1)
 0
 ```
 
@@ -70,6 +70,22 @@ are the ones an automation would send.
 operation, exactly as `gpioset` does. A daemon that claimed `relay0..3` for its
 lifetime would make every external tool fail with `EBUSY`, and the box would be
 no more open than when a daemon owned the serial port.
+
+## Numbering follows the panel
+
+Line names, MQTT topics, the GUI and the serial WebSocket path all count from
+**1**, because that is what is printed on the back of the box: `relay1` is the
+terminal marked 1. An installer reading a silkscreen and an integrator writing
+an automation see the same number.
+
+Zero-based indices survive only where they are genuinely offsets — the gpiochip
+line offset, and the selector on the wire to the microcontroller. Two places
+convert, and only two: `mqtt::topics` in iod and the `panel()` helper in the GUI.
+
+A topic numbered `0` is rejected rather than quietly treated as the first
+device. Nothing is labelled 0, so a client sending it has almost certainly
+assumed zero-based, and driving relay 1 for it would be the worst available
+answer.
 
 ## Why a line discipline, not serdev
 

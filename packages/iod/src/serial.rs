@@ -64,12 +64,12 @@ impl Session {
     /// sharing the session rather than fighting over the cable.
     pub fn join(&self, bus: &Bus) -> usize {
         let n = self.clients.fetch_add(1, Ordering::Relaxed) + 1;
-        bus.set(&format!("serial/{}/viewers", self.index), json!(n));
+        bus.set(&format!("serial/{}/viewers", crate::mqtt::topics::label(self.index)), json!(n));
         n
     }
     pub fn leave(&self, bus: &Bus) -> usize {
         let n = self.clients.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
-        bus.set(&format!("serial/{}/viewers", self.index), json!(n));
+        bus.set(&format!("serial/{}/viewers", crate::mqtt::topics::label(self.index)), json!(n));
         n
     }
     pub fn viewers(&self) -> usize {
@@ -105,8 +105,9 @@ impl Hub {
         // Prove the port is openable before handing back a session that looks
         // live but never produces a byte.
         let fd = open_serial(dev, baud)?;
-        bus.set(&format!("serial/{index}/baud"), json!(baud));
-        bus.set(&format!("serial/{index}/viewers"), json!(0));
+        let n = crate::mqtt::topics::label(index);
+        bus.set(&format!("serial/{n}/baud"), json!(baud));
+        bus.set(&format!("serial/{n}/viewers"), json!(0));
         // `tokio::spawn`, NOT spawn_local: this is reached from a request
         // handler, and axum spawns each connection with `tokio::spawn`, so
         // there is no LocalSet in scope here to spawn onto. The runtime is
@@ -175,7 +176,7 @@ async fn pump(
                     // that happened, it has no value between occurrences, and
                     // an external system may want to trigger on it without
                     // holding a terminal open at all.
-                    bus.event(&format!("serial/{}/rx", sess.index),
+                    bus.event(&format!("serial/{}/rx", crate::mqtt::topics::label(sess.index)),
                               json!({ "b64": crate::b64::encode(&chunk) }));
                 } else {
                     g.clear_ready();

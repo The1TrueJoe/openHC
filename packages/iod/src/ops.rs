@@ -434,7 +434,7 @@ async fn relay_write(c: &Arc<Config>, index: u8, on: Option<bool>) -> Out {
     // and a client that missed the change is wrong until the next one. Record
     // it so a new client is told on connect, and so the one that did not press
     // the button learns it changed.
-    c.bus.set(&format!("relay/{index}"), json!(now));
+    c.bus.set(&format!("relay/{}", crate::mqtt::topics::label(index as usize)), json!(now));
     Ok(json!({ "index": index, "on": now }))
 }
 
@@ -519,7 +519,7 @@ fn serial_baud(c: &Arc<Config>, index: usize, baud: u32) -> Out {
     }
     let s = session(c, index)?;
     s.set_baud(baud);
-    c.bus.set(&format!("serial/{index}/baud"), json!(baud));
+    c.bus.set(&format!("serial/{}/baud", crate::mqtt::topics::label(index)), json!(baud));
     Ok(json!({ "index": index, "baud": baud }))
 }
 

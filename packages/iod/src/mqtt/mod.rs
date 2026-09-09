@@ -81,7 +81,7 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
         // The escape hatch: any command, verbatim, as JSON.
         ["raw"] => serde_json::from_str(b).ok(),
         ["relay", n, "set"] => {
-            let index = n.parse().ok()?;
+            let index = topics::index(n)?;
             match b.to_ascii_uppercase().as_str() {
                 "ON" | "TRUE" | "1" => Some(Cmd::RelaySet { index, on: true }),
                 "OFF" | "FALSE" | "0" => Some(Cmd::RelaySet { index, on: false }),
@@ -90,11 +90,19 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
             }
         }
         ["mcu", "reset"] => Some(Cmd::McuReset),
-        ["ir", n, "send"] => Some(Cmd::IrSend { port: n.parse().ok()?, pronto: b.to_string(), repeat: 1 }),
-        ["serial", n, "write"] => {
-            Some(Cmd::SerialWrite { index: n.parse().ok()?, data: body.to_string(), hex: false, b64: false })
+        ["ir", n, "send"] => {
+            Some(Cmd::IrSend { port: topics::index(n)?, pronto: b.to_string(), repeat: 1 })
         }
-        ["serial", n, "baud"] => Some(Cmd::SerialBaud { index: n.parse().ok()?, baud: b.parse().ok()? }),
+        ["serial", n, "write"] => Some(Cmd::SerialWrite {
+            index: topics::index(n)? as usize,
+            data: body.to_string(),
+            hex: false,
+            b64: false,
+        }),
+        ["serial", n, "baud"] => Some(Cmd::SerialBaud {
+            index: topics::index(n)? as usize,
+            baud: b.parse().ok()?,
+        }),
         _ => None,
     }
 }
@@ -105,13 +113,25 @@ mod tests {
 
     #[test]
     fn plain_payloads_are_understood() {
-        assert!(matches!(parse_cmd("relay/1/set", "ON"), Some(Cmd::RelaySet { index: 1, on: true })));
-        assert!(matches!(parse_cmd("relay/1/set", "off"), Some(Cmd::RelaySet { index: 1, on: false })));
-        assert!(matches!(parse_cmd("relay/0/set", " TOGGLE\n"), Some(Cmd::RelayToggle { index: 0 })));
+        // Topics carry the number on the PANEL, so relay/1 is the first relay
+        // and reaches internal index 0.
+        assert!(matches!(parse_cmd("relay/1/set", "ON"), Some(Cmd::RelaySet { index: 0, on: true })));
+        assert!(matches!(parse_cmd("relay/4/set", "off"), Some(Cmd::RelaySet { index: 3, on: false })));
+        assert!(matches!(parse_cmd("relay/2/set", " TOGGLE\n"), Some(Cmd::RelayToggle { index: 1 })));
         // A Home Assistant switch sends exactly these, so a typo here is a
         // relay that silently never moves.
         assert!(parse_cmd("relay/1/set", "maybe").is_none());
         assert!(parse_cmd("nonsense/thing", "1").is_none());
+    }
+
+    #[test]
+    fn zero_is_not_a_label_any_hardware_carries() {
+        // Far more likely to be a client that assumed zero-based than a real
+        // request, and silently driving relay 1 for it would be the worst
+        // possible answer.
+        assert!(parse_cmd("relay/0/set", "ON").is_none());
+        assert!(parse_cmd("ir/0/send", "0000 006d").is_none());
+        assert!(parse_cmd("serial/0/baud", "9600").is_none());
     }
 
     #[test]

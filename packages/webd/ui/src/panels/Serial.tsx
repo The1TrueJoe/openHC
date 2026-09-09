@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Users, X, Plug } from 'lucide-react';
-import { io, serialSocket, type Capabilities, type SerialPort } from '../api';
+import { io, panel, serialSocket, type Capabilities, type SerialPort } from '../api';
 import { useIoState } from '../App';
 
 /** The serial ports, as a section of the IO page. Opening one raises a
@@ -19,7 +19,7 @@ export function SerialSection({ caps }: { caps: Capabilities }) {
       <h2 className="mb-3 text-sm font-medium">Serial</h2>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {ports.map((p, i) => {
-          const live = state.serial?.[i];
+          const live = state.serial?.[panel(i)];
           const viewers = live?.viewers ?? 0;
           return (
             <button
@@ -49,8 +49,8 @@ export function SerialSection({ caps }: { caps: Capabilities }) {
         <TerminalWindow
           index={open}
           port={ports[open]}
-          baud={state.serial?.[open]?.baud ?? ports[open].baud}
-          viewers={state.serial?.[open]?.viewers ?? 0}
+          baud={state.serial?.[panel(open)]?.baud ?? ports[open].baud}
+          viewers={state.serial?.[panel(open)]?.viewers ?? 0}
           onClose={() => setOpen(null)}
         />
       )}

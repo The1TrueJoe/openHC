@@ -51,12 +51,15 @@ fn find(name: &str) -> io::Result<(std::path::PathBuf, u32)> {
     Ok((l.chip, l.info.offset))
 }
 
+/// Line names are ONE-BASED — `relay1` is the terminal labelled 1 on the back
+/// of the box. Everything inside iod counts from zero, so the +1 lives here and
+/// nowhere else.
 pub fn relay_get(index: u8) -> io::Result<bool> {
-    read(&format!("relay{index}"))
+    read(&format!("relay{}", index + 1))
 }
 
 pub fn contact_get(index: u8) -> io::Result<bool> {
-    read(&format!("contact{index}"))
+    read(&format!("contact{}", index + 1))
 }
 
 #[cfg(target_os = "linux")]
@@ -80,7 +83,7 @@ fn read(name: &str) -> io::Result<bool> {
 /// has does nothing, which is what any caller of a GPIO line expects.
 #[cfg(target_os = "linux")]
 pub fn relay_set(index: u8, on: bool) -> io::Result<bool> {
-    let (chip, offset) = find(&format!("relay{index}"))?;
+    let (chip, offset) = find(&format!("relay{}", index + 1))?;
     let req = Request::builder()
         .on_chip(chip)
         .with_consumer("iod")
