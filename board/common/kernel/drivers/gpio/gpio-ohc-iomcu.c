@@ -675,6 +675,8 @@ static int ohc_ldisc_open(struct tty_struct *tty)
 	INIT_DELAYED_WORK(&mcu->poll_work, ohc_poll);
 	INIT_DELAYED_WORK(&mcu->probe_work, ohc_probe);
 	tty->disc_data = mcu;
+	/* See ohc_ldisc_receive_buf2: zero here means nothing is ever delivered. */
+	tty->receive_room = 65536;
 
 	/* Talk to the part once this returns and the ldisc lock is released. */
 	schedule_delayed_work(&mcu->probe_work, msecs_to_jiffies(50));
@@ -705,6 +707,30 @@ static void ohc_ldisc_close(struct tty_struct *tty)
 	tty->disc_data = NULL;
 	kfree(mcu);
 	pr_info("detached from %s\n", tty->name);
+}
+
+/*
+ * receive_buf2, not receive_buf, and this is the difference between a driver
+ * that works and one that silently never sees a byte.
+ *
+ * The tty layer delivers through receive_buf2 when it exists. When it does not,
+ * it falls back to receive_buf — but first clamps the count to
+ * tty->receive_room, which is zero unless the line discipline sets it. A
+ * discipline that implements only receive_buf and never sets receive_room is
+ * therefore handed nothing, forever, with no error anywhere: writes succeed,
+ * the far end answers, and every request times out.
+ *
+ * receive_buf2 returns how much it consumed and is not clamped, so it sidesteps
+ * that entirely. receive_room is set as well, for the fallback path.
+ */
+static size_t ohc_ldisc_receive_buf2(struct tty_struct *tty, const u8 *cp,
+				     const u8 *fp, size_t count)
+{
+	struct ohc_iomcu *mcu = tty->disc_data;
+
+	if (mcu)
+		ohc_feed(mcu, cp, count);
+	return count;
 }
 
 static void ohc_ldisc_receive_buf(struct tty_struct *tty, const u8 *cp,
@@ -738,6 +764,7 @@ static struct tty_ldisc_ops ohc_ldisc = {
 	.read		= ohc_ldisc_read,
 	.write		= ohc_ldisc_write,
 	.receive_buf	= ohc_ldisc_receive_buf,
+	.receive_buf2	= ohc_ldisc_receive_buf2,
 };
 
 static int __init ohc_iomcu_init(void)
