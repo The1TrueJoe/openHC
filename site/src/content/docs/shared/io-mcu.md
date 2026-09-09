@@ -285,6 +285,52 @@ UART4  PC4/PC5      60   —               user port 3
 Both boards populate a **contiguous run from channel 0**, so `output_mask` is
 dense: `0x1f` on EA1, `0x7f` on EA3.
 
+### IROUT_SEND, and the field that hard-faults the part
+
+Decoded from the vendor image and verified on air with a Global Caché learner.
+The payload is **14 fixed bytes** followed by `(len - 14) / 2` duration words:
+
+| field | size | meaning |
+|---|---|---|
+| 1 | u8 | mode; `< 2` skips the repeat block entirely |
+| 2-4 | u8×3 | 24-bit output **bitmask** — bit N is the jack labelled N+1 |
+| 5-6 | u16×2 | unread on the simple path |
+| 7 | u16 | **Pronto carrier word** |
+| 8-9 | u16×2 | repeat count, repeat offset |
+| 10+ | u16[] | burst durations; the firmware sets bit 15 on marks itself |
+
+It answers opcode `0x68` with a one-byte status, 0 for success.
+
+:::danger[A carrier word of 0 is not an error, it is a brick]
+The handler computes the carrier frequency by dividing:
+
+```
+ldr   r2, [pc, #0x1c]      ; 4,145,146 = 1e6 / 0.241246, the Pronto constant
+udiv  r1, r2, r1           ; ÷ the carrier field
+```
+
+Zero there is a divide-by-zero, and with `DIV_0_TRP` set the Cortex-M3 takes a
+UsageFault → HardFault. The part then answers **nothing** — not identify, not
+relays, not contacts — and survives a daemon restart and a full reboot. Only a
+power cycle brings it back.
+
+This was originally mistaken for a payload-length limit, because the first code
+that triggered it happened to be long. It is not: a six-word code with a zero
+carrier kills it just as dead, and a 150-byte code with a valid carrier is fine.
+:::
+
+The output selector being a bitmask rather than an index matters: `1 << port`,
+not `port`. Sending an index addresses the wrong jack, or none.
+
+Verified on an HC-800 — bit 0 out of jack 1 and bit 5 out of jack 6, both
+returning the carrier and every duration we sent, to within rounding:
+
+```
+GC-IRL,38000,343,171,23,22B,22,64BBBBBCCBCCCCCBBBCBBBBCCCBCCCC,22,3806
+```
+
+The learner speaks at **9600 baud**, not 115200.
+
 ### Relays and contacts fall out of the same table
 
 Between the IR outputs and the UART records each block carries a run of plain
