@@ -32,6 +32,7 @@
 #include <linux/gpio/driver.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/tty_ldisc.h>
@@ -151,6 +152,18 @@ struct ohc_iomcu {
 	 */
 	int n_relays;
 	int n_contacts;
+
+	/*
+	 * Diagnostics. "No reply" has three very different causes — nothing was
+	 * transmitted, nothing came back, or something came back and the decoder
+	 * rejected it — and they are indistinguishable from the timeout alone.
+	 */
+	unsigned long tx_bytes;
+	unsigned long rx_bytes;
+	unsigned long rx_frames;
+	unsigned long rx_bad_csum;
+	u8 first_rx[16];
+	int first_rx_len;
 };
 
 /* Negated 8-bit sum, plus one. */
@@ -202,6 +215,10 @@ static int ohc_write_frame(struct ohc_iomcu *mcu, u8 opcode, u8 seq,
 		out[n++] = DLE;
 
 	ret = mcu->tty->ops->write(mcu->tty, out, n);
+	if (ret > 0)
+		mcu->tx_bytes += ret;
+	if (ret >= 0 && ret < n)
+		pr_warn("short write: %d of %d bytes\n", ret, n);
 	kfree(out);
 	return ret < 0 ? ret : 0;
 }
@@ -429,8 +446,11 @@ static void ohc_frame_complete(struct ohc_iomcu *mcu)
 		return;
 
 	ck = mcu->body[body_len - 1];
-	if (ohc_checksum(mcu->body, body_len - 1) != ck)
+	if (ohc_checksum(mcu->body, body_len - 1) != ck) {
+		mcu->rx_bad_csum++;
 		return;
+	}
+	mcu->rx_frames++;
 
 	opcode = mcu->body[0];
 	seq = mcu->body[1];
@@ -462,6 +482,15 @@ static void ohc_frame_complete(struct ohc_iomcu *mcu)
 static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
 {
 	int i;
+
+	mcu->rx_bytes += count;
+	if (mcu->first_rx_len < (int)sizeof(mcu->first_rx)) {
+		int room = (int)sizeof(mcu->first_rx) - mcu->first_rx_len;
+		int take = count < room ? count : room;
+
+		memcpy(mcu->first_rx + mcu->first_rx_len, buf, take);
+		mcu->first_rx_len += take;
+	}
 
 	for (i = 0; i < count; i++) {
 		u8 b = buf[i];
@@ -567,6 +596,12 @@ static void ohc_probe(struct work_struct *work)
 		 */
 		pr_warn("no reply from the IO microcontroller on %s; no gpiochip registered\n",
 			mcu->tty->name);
+		pr_warn("  tx=%lu rx=%lu frames=%lu badcsum=%lu\n",
+			mcu->tx_bytes, mcu->rx_bytes, mcu->rx_frames, mcu->rx_bad_csum);
+		if (mcu->first_rx_len)
+			print_hex_dump(KERN_WARNING, "ohc-iomcu: first rx: ",
+				       DUMP_PREFIX_NONE, 16, 1,
+				       mcu->first_rx, mcu->first_rx_len, false);
 		return;
 	}
 
