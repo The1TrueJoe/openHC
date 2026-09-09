@@ -798,10 +798,12 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
  * interface a shell script, a cron job or a curious installer reaches for
  * first, which is the whole argument for it.
  *
- * The vendor shipped exactly this shape — /dev/gpio/dsp_reset on a stock EA —
- * with a bespoke driver, because their 3.16 kernel predated the GPIO chardev.
- * We keep the ergonomics and drop the reason: this sits on gpiolib rather than
- * replacing it.
+ * The vendor shipped this shape too — /dev/gpio/dsp_reset on a stock EA — but
+ * as SYMLINKS, not a driver: their /etc/init.d/gpio does
+ * `ln -s /sys/class/gpio/gpioN/value /dev/gpio/<name>` over the deprecated GPIO
+ * sysfs, and `ln -s /sys/class/leds/<led>/brightness` for the LEDs. That ABI is
+ * gone from modern kernels, and it carried the export/ownership hole that got
+ * it deprecated. Same ergonomics here, over the chardev-era gpiolib instead.
  */
 static int ohc_node_index(struct file *f)
 {

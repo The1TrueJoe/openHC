@@ -199,17 +199,24 @@ in the fleet, and `OHC_GPIO_*` leaves `board.env` the way `OHC_RELAY_GPIOS` did.
 
 ### Why not the vendor's `/dev/gpio/dsp_reset`
 
-Control4's own OS exposes exactly the per-line nodes this page says Linux does
-not have — `echo 1 > /dev/gpio/dsp_reset` works on a stock EA3. It is worth
-saying why openHC does not copy that.
+Control4's own OS exposes per-line nodes — `echo 1 > /dev/gpio/dsp_reset` works
+on a stock EA3 — and it is worth being exact about how, because the obvious
+guess is wrong.
 
-Their kernel is 3.16 and predates the GPIO character device, which landed in
-4.8. With no chardev ABI to use, a bespoke driver exporting a node per line was
-a reasonable thing to write. It is not reasonable now: it would mean shipping a
-parallel implementation of gpiolib that no standard tool speaks — not libgpiod,
-not Home Assistant's GPIO integration, not anything a user already has. The
-whole argument for putting this IO in the kernel was that stock tools should
-work on it, and a private `/dev/gpio` would undo that.
+They did not write a driver. `/etc/init.d/gpio` on a stock unit is a shell
+script full of symlinks:
 
-The name survives; only the mechanism changes. `dsp_reset` is still `dsp_reset`
-— it is just a line name now, reachable with the tools everyone has.
+```sh
+ln -s /sys/class/gpio/gpio206/value        /dev/gpio/zigbee_reset
+ln -s /sys/class/leds/wifi::red/brightness /dev/gpio/wifi_red
+```
+
+So `/dev/gpio` is a view over the **deprecated GPIO sysfs** plus the LED class.
+That ABI has since been removed from the kernel, and it was removed for the
+reason that makes it unattractive anyway: `export`/`unexport` has no ownership
+model, so nothing can tell who holds a line.
+
+openHC keeps the ergonomics and drops the mechanism. `/dev/ohc/relay1` is a real
+character device from `gpio-ohc-iomcu`, sitting on gpiolib rather than beside
+it, so `gpioset` and `cat /dev/ohc/relay1` cannot lock each other out — and the
+line name, not a `/dev` path, stays the authoritative handle.
