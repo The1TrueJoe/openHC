@@ -13,4 +13,8 @@
 # under /sys/module/gpio_ohc_iomcu/parameters/, and the ones that describe the
 # board are writable there. The init script sets them from board.env and THEN
 # attaches the line discipline, which is when the geometry is read.
+# NOTE: drivers/Makefile only descends into gpio/ when CONFIG_GPIOLIB=y, so this
+# line quietly builds nothing on a board without it. Every openHC board has
+# GPIOLIB, but if one ever does not, the symptom is an absent gpiochip and no
+# error anywhere — the same silent-drop shape as the obj-m trap above.
 drivers/gpio/Makefile|obj-y += gpio-ohc-iomcu.o
