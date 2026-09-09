@@ -60,6 +60,7 @@ gpioget $(gpiofind contact4)
 udev turns what the kernel reports into `/dev/ohc`, one directory per class:
 
 ```
+/dev/ohc/gpiochip              the chip carrying the relays and contacts
 /dev/ohc/ir/out1 … outN        rear IR jacks, as labelled
 /dev/ohc/ir/front-blaster      internal emitter behind the front panel
 /dev/ohc/ir/front-receiver     the learner on the same panel
@@ -74,9 +75,40 @@ so the same command works on any board in the fleet:
 ir-ctl -d /dev/ohc/ir/front-blaster --send=power.txt
 ```
 
-**Relays, contacts and the gpiochip get no entry, and that is the point rather
-than a gap.** They are lines, and lines are already named; a path to a chip
-*number* would be a step backwards from `gpiofind relay1`.
+### Why relays and contacts have no node of their own
+
+This is the question everyone asks, and the answer is not a design preference:
+**Linux has no per-line device node.** A GPIO line is addressed by *offset
+inside a chip*, through an ioctl on the chip's chardev. There is no kernel
+object for a single line to hang a node on.
+
+So `/dev/ohc/relay1` could only ever be a symlink to the whole gpiochip — and
+`/dev/ohc/relay2` would point at the same file. Opening it would not give you
+relay 1. That is a lie dressed as a convenience, and the moment somebody wrote
+`echo 1 > /dev/ohc/relay1` expecting it to work, we would have made the box
+*harder* to walk up to, not easier.
+
+The other tempting answer is a per-line sysfs attribute, like the old
+`/sys/class/gpio/gpioN/value`. That interface is deprecated and being removed
+precisely because it has no ownership model and no atomicity — reviving it in a
+new driver would be going backwards.
+
+What a line has instead is a **name**, which is strictly better than a path
+would have been: it is unique fleet-wide, it survives renumbering, and it is
+what the modern tools already speak.
+
+```console
+# gpioinfo /dev/ohc/gpiochip
+gpiochip1 - 8 lines:
+	line   0:  "relay1"    output
+	...
+	line   7:  "contact4"  input
+
+# gpioset $(gpiofind relay1)=1
+```
+
+The **chip** does get an entry, because a chip *is* a device and its number is
+exactly the sort of thing that moves.
 
 **The IO microcontroller's own tty gets no entry either.** A line discipline
 owns it, and its interface is the gpiochip and the lirc devices — pointing at

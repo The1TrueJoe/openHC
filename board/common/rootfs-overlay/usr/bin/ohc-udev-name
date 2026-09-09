@@ -5,6 +5,7 @@
 #   ohc-udev-name lirc   lirc3    -> out4
 #   ohc-udev-name serial ttyS1    -> 1
 #   ohc-udev-name radio  ttymxc4  -> zigbee
+#   ohc-udev-name gpio   gpiochip1 -> gpiochip
 #
 # A helper rather than udev match expressions because both answers come from
 # somewhere that is not the device's own properties: the IR label is on the
@@ -51,6 +52,21 @@ radio)
         [ "${e#*:}" = "$dev" ] && { echo "${e%%:*}"; exit 0; }
     done
     exit 1
+    ;;
+
+gpio)
+    # The chip carrying the relays and contacts. Its NUMBER moves with probe
+    # order; its label does not.
+    #
+    # Three ways to read the label because only one of them is guaranteed:
+    # /sys/class/gpio is the deprecated sysfs ABI and may be compiled out, the
+    # bus attribute is not on every kernel, and gpiodetect always works because
+    # it asks the chardev itself.
+    for f in "/sys/class/gpio/$dev/label" "/sys/bus/gpio/devices/$dev/label"; do
+        [ -r "$f" ] && { read -r l < "$f"; [ "$l" = "ohc-iomcu" ] && { echo gpiochip; exit 0; }; exit 1; }
+    done
+    gpiodetect 2>/dev/null | grep -q "^$dev \[ohc-iomcu\]" || exit 1
+    echo gpiochip
     ;;
 
 *)

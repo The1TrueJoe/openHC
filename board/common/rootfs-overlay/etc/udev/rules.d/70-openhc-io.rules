@@ -9,16 +9,21 @@
 #   /dev/ohc/ir/out1 … outN     rear IR jacks, as labelled
 #   /dev/ohc/ir/front-blaster   internal emitter behind the front panel
 #   /dev/ohc/ir/front-receiver  the learner on the same panel
+#   /dev/ohc/gpiochip           the chip carrying the relays and contacts
 #   /dev/ohc/serial/1 … N       rear RS-232, in the order board.env declares
 #   /dev/ohc/radio/zigbee       the EmberZNet NCP, wherever it is wired
 #   /dev/ohc/radio/zwave        likewise
 #
-# RELAYS, CONTACTS AND THE GPIOCHIP GET NO ENTRY, and that is the point rather
-# than a gap. They are GPIO LINES, and lines are already named by the kernel —
-# `relay1` by gpio-ohc-iomcu on the HC and EA families, by gpio-line-names in
-# the device tree on the IO Extender. A path to a chip NUMBER would be a step
-# back from that:
+# RELAYS AND CONTACTS GET NO ENTRY OF THEIR OWN, and that is not a gap we could
+# close: Linux has no per-line device node. A line is addressed by offset inside
+# a chip through an ioctl, so /dev/ohc/relay1 could only be a symlink to the
+# whole chip — which every other relay would point at too, and opening it would
+# not give you relay 1. That is a lie, not a convenience.
 #
+# What a line has instead is a NAME, which is strictly better, and the chip that
+# carries them does get an entry because its number is the thing that moves:
+#
+#   gpioinfo /dev/ohc/gpiochip     # lists relay1..N, contact1..N
 #   gpioset $(gpiofind relay1)=1
 #   gpioget $(gpiofind contact4)
 #
@@ -41,3 +46,6 @@ SUBSYSTEM=="tty", PROGRAM="/usr/bin/ohc-udev-name serial %k", SYMLINK+="ohc/seri
 # Radios. Same helper, same board.env shape; the kind IS the name because a
 # board has at most one of each.
 SUBSYSTEM=="tty", PROGRAM="/usr/bin/ohc-udev-name radio %k", SYMLINK+="ohc/radio/%c"
+
+# The gpiochip carrying the relays and contacts.
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", PROGRAM="/usr/bin/ohc-udev-name gpio %k", SYMLINK+="ohc/%c"
