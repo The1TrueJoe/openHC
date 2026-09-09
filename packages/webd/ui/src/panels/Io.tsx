@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Zap, CircleDot, Circle, Radio } from 'lucide-react';
 import { io, panel, type Capabilities, type IoState } from '../api';
 import { SerialSection } from './Serial';
+import { HealthSection } from './Health';
 import { useIoState } from '../App';
 
 export function IoPanel({ caps }: { caps: Capabilities }) {
@@ -102,6 +103,7 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
         </section>
       )}
 
+      <HealthSection caps={caps} state={state} />
       {caps.leds?.length ? <LedSection caps={caps} state={state} /> : null}
       {caps.ir && <IrSection caps={caps} />}
 

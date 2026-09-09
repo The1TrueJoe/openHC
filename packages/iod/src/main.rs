@@ -12,6 +12,7 @@ mod board;
 mod events;
 mod gpio;
 mod gpio_io;
+mod health;
 mod ir;
 mod led;
 mod lirc;
@@ -57,6 +58,8 @@ pub struct Config {
 async fn poller(cfg: Arc<Config>) {
     use std::time::Duration;
     const RELAY_EVERY: u32 = 10; // × 200 ms
+    const HEALTH_EVERY: u32 = 25; // × 200 ms = 5 s
+    let mut cpu = health::Cpu::default();
     let contacts = cfg.board.io.contacts;
     let relays = cfg.board.io.relays;
     let mut tick: u32 = 0;
@@ -76,6 +79,37 @@ async fn poller(cfg: Arc<Config>) {
                 }
                 // The chip went away, or the part behind it stopped answering.
                 _ => cfg.bus.set("mcu/link", serde_json::json!(false)),
+            }
+        }
+
+        // Health: temperatures, fans, CPU, memory. Every 5 s — fast enough to
+        // watch a fan spin up under load, slow enough to be free. The CPU
+        // figure NEEDS the regular cadence: it is a delta between two
+        // /proc/stat reads, so the interval IS the measurement window.
+        if tick % HEALTH_EVERY == 2 {
+            let s = health::sensors();
+            for r in s.temps.iter() {
+                cfg.bus.set(&format!("health/temp/{}", r.slug), serde_json::json!(r.value));
+            }
+            for r in s.fans.iter() {
+                cfg.bus.set(&format!("health/fan/{}", r.slug), serde_json::json!(r.value));
+            }
+            for r in s.pwm.iter() {
+                cfg.bus.set(&format!("health/pwm/{}", r.slug), serde_json::json!(r.value));
+            }
+            if let Some(pct) = cpu.sample() {
+                cfg.bus.set("health/cpu", serde_json::json!(pct));
+            }
+            if let Some((total, avail)) = health::mem() {
+                cfg.bus.set("health/mem/total_kb", serde_json::json!(total));
+                cfg.bus.set("health/mem/used_pct",
+                    serde_json::json!(((total - avail) * 100 / total.max(1)) as u8));
+            }
+            if let Some(u) = health::uptime_secs() {
+                cfg.bus.set("health/uptime_s", serde_json::json!(u));
+            }
+            if let Some(l) = health::load1() {
+                cfg.bus.set("health/load1", serde_json::json!(l));
             }
         }
 

@@ -53,6 +53,12 @@ export interface Capabilities {
          /** One entry per kernel IR node, named so a port can be matched to the
           *  device an operator would open with ir-ctl. */
          devices?: { name: string; device: string }[] };
+  /** Sensors the kernel found — hwmon, not board.env geometry. */
+  health?: {
+    temps: { slug: string; label: string; chip: string; value: number }[];
+    fans:  { slug: string; label: string; chip: string; value: number }[];
+    pwm:   { slug: string; label: string; chip: string; value: number }[];
+  };
   /** Front-panel LEDs, as the kernel registered them — not board.env geometry,
    *  so a board with no panel simply has no key here. */
   leds?: { slug: string; name: string; colour: string; function: string;
@@ -114,6 +120,16 @@ export interface IoState {
   relay?: Record<string, boolean>;
   contact?: Record<string, boolean>;
   led?: Record<string, number>;
+  /** Live board health, refreshed every 5 s by iod. */
+  health?: {
+    temp?: Record<string, number>;
+    fan?: Record<string, number>;
+    pwm?: Record<string, number>;
+    cpu?: number;
+    load1?: number;
+    uptime_s?: number;
+    mem?: { total_kb?: number; used_pct?: number };
+  };
   mcu?: { link?: boolean };
   serial?: Record<string, { baud?: number; viewers?: number }>;
 }
