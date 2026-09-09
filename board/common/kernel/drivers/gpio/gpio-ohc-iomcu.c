@@ -631,9 +631,6 @@ static void ohc_poll(struct work_struct *work)
 		mcu->contacts_valid = true;
 	}
 
-	/* The friendly view of the same lines. Not fatal if it fails. */
-	ohc_add_nodes(mcu, lines);
-
 	if (poll_ms > 0)
 		schedule_delayed_work(&mcu->poll_work, msecs_to_jiffies(poll_ms));
 }
@@ -805,16 +802,19 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
  * gone from modern kernels, and it carried the export/ownership hole that got
  * it deprecated. Same ergonomics here, over the chardev-era gpiolib instead.
  */
-static int ohc_node_index(struct file *f)
+/* Minors are allocated contiguously from mcu->devt, which is not required to
+ * start at 0 — so the line index is the offset from that base, not the raw
+ * minor. */
+static int ohc_node_index(struct ohc_iomcu *mcu, struct file *f)
 {
-	return iminor(file_inode(f));
+	return iminor(file_inode(f)) - MINOR(mcu->devt);
 }
 
 static ssize_t ohc_node_read(struct file *f, char __user *buf, size_t len,
 			     loff_t *ppos)
 {
 	struct ohc_iomcu *mcu = f->private_data;
-	int idx = ohc_node_index(f);
+	int idx = ohc_node_index(mcu, f);
 	char out[3];
 	bool on;
 	int ret;
@@ -846,7 +846,7 @@ static ssize_t ohc_node_write(struct file *f, const char __user *buf,
 			      size_t len, loff_t *ppos)
 {
 	struct ohc_iomcu *mcu = f->private_data;
-	int idx = ohc_node_index(f);
+	int idx = ohc_node_index(mcu, f);
 	char in[16];
 	bool want, now;
 	int ret;
@@ -926,7 +926,7 @@ static void ohc_add_nodes(struct ohc_iomcu *mcu, int lines)
 	}
 
 	for (i = 0; i < lines; i++)
-		device_create(&ohc_class, NULL, MKDEV(MAJOR(mcu->devt), i),
+		device_create(&ohc_class, NULL, mcu->devt + i,
 			      NULL, "%s", mcu->names[i]);
 	mcu->nodes_added = true;
 	pr_info("%s: /dev/ohc/%s .. %s\n", mcu->tty->name,
@@ -940,7 +940,7 @@ static void ohc_del_nodes(struct ohc_iomcu *mcu, int lines)
 	if (!mcu->nodes_added)
 		return;
 	for (i = 0; i < lines; i++)
-		device_destroy(&ohc_class, MKDEV(MAJOR(mcu->devt), i));
+		device_destroy(&ohc_class, mcu->devt + i);
 	cdev_del(&mcu->cdev);
 	unregister_chrdev_region(mcu->devt, lines);
 	mcu->nodes_added = false;
