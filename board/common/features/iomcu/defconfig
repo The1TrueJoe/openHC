@@ -1,0 +1,11 @@
+# openHC — the IO microcontroller.
+#
+# Relays, contacts and the IR jacks on the HC and EA families hang off a
+# companion microcontroller on a host UART, not off the SoC. The kernel driver
+# turns it into a standard gpiochip; this is the userspace half that hands it
+# the port.
+#
+# NOT every board. The CA-1 has no IO microcontroller at all, and the IO
+# Extender drives its relays from the SoC's own GPIO — neither has anything for
+# this to attach to, and forcing it on them was a package built to sit unused.
+BR2_PACKAGE_IOMCU_ATTACH=y

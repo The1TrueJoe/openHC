@@ -1,0 +1,8 @@
+# Features EVERY EA controller has, whatever the variant. Layered ahead of the
+# board's own ohc.features by build/build.sh, so ea1-v1 and ea3-v2 do not each
+# restate them.
+#
+# Per-variant features (wifi, emmc, switch, sgx, audio) belong in the BOARD
+# file, because those are exactly what the variants differ by.
+iomcu       # relays/contacts/IR live behind the IO microcontroller
+splash      # these boards have a display to draw on

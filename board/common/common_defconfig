@@ -34,15 +34,6 @@ BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 BR2_PACKAGE_LIBGPIOD=y
 BR2_PACKAGE_LIBGPIOD_TOOLS=y
 
-# Hands a UART to a kernel line discipline and stays running to hold it there.
-# That is how the IO microcontroller becomes a gpiochip (S12iomcu): these are
-# x86 PCs with no device tree or ACPI node for a Control4 co-processor, so
-# serdev has nothing to enumerate and a line discipline is the attachment that
-# works.
-#
-# util-linux's ldattach would do this, but it only ships as part of
-# BR2_PACKAGE_UTIL_LINUX_BINARIES — some fifty binaries for one ioctl.
-BR2_PACKAGE_IOMCU_ATTACH=y
 
 # --- /etc/motd is a FILE, not a build step ---
 # It used to be a source-less Buildroot package that shelled out to the host's

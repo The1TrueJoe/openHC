@@ -96,7 +96,6 @@ BR2_PACKAGE_PCIUTILS=y
 # --- framebuffer splash (EA only: ce5300-fb gives these boards a /dev/fb0) ---
 # Drawn straight to the framebuffer, not through a console. See video.fragment,
 # which deliberately leaves CONFIG_FRAMEBUFFER_CONSOLE off.
-BR2_PACKAGE_SPLASH=y
 
 # ── C library: glibc, not the shared musl default ──────────────────────────
 #
@@ -127,3 +126,9 @@ BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INSTALL_LIBSTDCPP=y
 BR2_USE_WCHAR=y
+
+# Shared by every EA board, so stated once here rather than five times. Both
+# point back into this directory, which is the giveaway that they were never
+# per-board settings.
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"

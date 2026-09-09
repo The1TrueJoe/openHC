@@ -817,5 +817,5 @@ module_init(ohc_iomcu_init);
 module_exit(ohc_iomcu_exit);
 
 MODULE_DESCRIPTION("Control4 IO microcontroller relays and contacts as a GPIO chip");
-MODULE_AUTHOR("openHC");
+MODULE_AUTHOR("Joseph Telaak");
 MODULE_LICENSE("GPL");

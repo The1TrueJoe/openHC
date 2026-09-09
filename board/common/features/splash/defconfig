@@ -1,0 +1,9 @@
+# openHC — framebuffer boot splash.
+#
+# Draws the banner straight to /dev/fb0 at boot. figlet comes with it (splash
+# selects it) because the artwork is generated on the device rather than being
+# a checked-in blob.
+#
+# Needs a framebuffer, so it is a feature rather than a fleet-wide default: the
+# CA-1 and the IO Extender have no display to draw on.
+BR2_PACKAGE_SPLASH=y

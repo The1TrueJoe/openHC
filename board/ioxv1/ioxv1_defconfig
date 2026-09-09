@@ -19,16 +19,12 @@
 BR2_arm=y
 BR2_arm926t=y
 
-BR2_OPTIMIZE_S=y
 # musl, matching the EA family. Small and fine on ARMv5 against a 7.1 kernel.
-BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 
 # --- init / login ---
 # Password login on the serial console AND ssh. Change after first boot.
-BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
-BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
 BR2_TARGET_GENERIC_HOSTNAME="openhc-ioxv1"
 BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1 (kernel-up)"
 
@@ -36,9 +32,6 @@ BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1 (kernel-up)"
 # Mainline dropped DM355 in ~v6.2; the SoC (mach-davinci/dm355.c, clk psc/pll,
 # irq-davinci-aintc) + the hammer device tree are re-added by the patches in
 # ioxv1/patches/linux/. See https://the1truejoe.github.io/openHC/iox/kernel-port/.
-BR2_LINUX_KERNEL=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
 BR2_LINUX_KERNEL_USE_DEFCONFIG=y
 BR2_LINUX_KERNEL_DEFCONFIG="multi_v5"
 # The DM355 U-Boot (IOX v1.2.0) boots a legacy uImage and passes ATAGS, not a
@@ -62,19 +55,13 @@ BR2_TARGET_ROOTFS_JFFS2=y
 BR2_TARGET_ROOTFS_JFFS2_NANDFLASH_128K=y
 
 # --- reachability + on-target tools ---
-BR2_PACKAGE_DROPBEAR=y
-BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 # NAND flashing / inspection on the device (flash_erase, nandwrite, flashcp...).
 BR2_PACKAGE_MTD=y
 # GPIO relays/contacts from userspace on a modern kernel (chardev ABI).
-BR2_PACKAGE_LIBGPIOD=y
-BR2_PACKAGE_LIBGPIOD_TOOLS=y
 # Host mkimage: post-image.sh wraps zImage+dtb into the U-Boot uImage.
 BR2_PACKAGE_HOST_UBOOT_TOOLS=y
 
 # --- mDNS identity: avahi (no D-Bus, light) ---
-BR2_PACKAGE_AVAHI=y
-BR2_PACKAGE_AVAHI_DAEMON=y
 
 # --- rootfs overlay, image wrap, kernel patches ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and

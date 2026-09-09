@@ -59,8 +59,6 @@ BR2_TARGET_ROOTFS_EXT2_4=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 
 # --- wrap the bzImage in the CEFDK container for netboot ---
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ea3-v2"
 
 # --- kernel patches: shared (i2c-pxa, pwm-ce5300) + EA3's switch board glue ---
-BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"

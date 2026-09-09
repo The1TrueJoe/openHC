@@ -34,26 +34,19 @@ BR2_ARM_ENABLE_VFP=y
 BR2_ARM_FPU_VFPV3=y
 BR2_ARM_EABIHF=y
 
-BR2_OPTIMIZE_S=y
 # musl, matching every other board in this tree.
-BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 
 # --- init / login ---
 # Console is ttymxc0 @115200 (U-Boot passes console=ttymxc0,115200).
 BR2_TARGET_GENERIC_HOSTNAME="openhc-ca1"
 BR2_TARGET_GENERIC_ISSUE="openHC Control4 CA-1 (kernel-up)"
-BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
 BR2_TARGET_GENERIC_GETTY_PORT="ttymxc0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
-BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
 
 # --- kernel: mainline stable, same version as the rest of the tree ---
 # i.MX6SL is fully supported upstream, so this is a stock defconfig plus a
 # board DTS — no SoC patches, no BR2_GLOBAL_PATCH_DIR. That is the whole reason
 # this board is a soft target compared to the DM355.
-BR2_LINUX_KERNEL=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
 BR2_LINUX_KERNEL_USE_DEFCONFIG=y
 BR2_LINUX_KERNEL_DEFCONFIG="imx_v6_v7"
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/linux/ca1.fragment"
@@ -85,15 +78,11 @@ BR2_TARGET_ROOTFS_EXT2_4=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="768M"
 
 # --- reachability + on-target tools ---
-BR2_PACKAGE_DROPBEAR=y
-BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 # SPI-NOR inspection. Note the bring-up path never writes this chip — U-Boot
 # and both environment copies live there.
 BR2_PACKAGE_MTD=y
 # The radio resets and the seven RS-485 transceiver lines, by name, from
 # userspace on the chardev ABI. See rootfs-overlay/etc/init.d/S30gpio.
-BR2_PACKAGE_LIBGPIOD=y
-BR2_PACKAGE_LIBGPIOD_TOOLS=y
 # fw_printenv/fw_setenv talk to the U-Boot environment in SPI-NOR, which is how
 # the boot path is steered on this board; mkimage builds the boot.scr that
 # stock bootcmd sources off the eMMC FAT partition.
@@ -143,8 +132,6 @@ BR2_PACKAGE_HOSTAPD=y
 BR2_PACKAGE_DNSMASQ=y
 
 # --- mDNS identity: avahi (no D-Bus, light), matching the other boards ---
-BR2_PACKAGE_AVAHI=y
-BR2_PACKAGE_AVAHI_DAEMON=y
 
 # --- rear RS-232/485 port exposed over the network (RFC2217/telnet-com-port) ---
 # ser2net's own S50ser2net init script ships with the package; it just needs a

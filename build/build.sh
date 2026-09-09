@@ -149,15 +149,23 @@ mkdir -p "$OUT"
 # files stay short lists of genuine differences.
 ALL_CFG="$REPO/board/common/common_defconfig"
 
-# Feature sets: a board lists the shared capabilities it has in board/<b>/ohc.features
-# (one word per line/space separated, '#' comments ignored). Each maps to
-# board/<family>/features/<name>.defconfig. This is what keeps the variant board
-# files short — ea3-v1 and ea1-v2 differ from their siblings by a word here, not
-# by a copied block of wpa_supplicant/ext4 settings.
+# Feature sets. A feature is a shared capability a board either has or does not,
+# named in an ohc.features file (one word per line or space separated, '#'
+# comments ignored). This is what keeps board files short: ea3-v1 and ea1-v2
+# differ from their siblings by a word here, not by a copied block of
+# wpa_supplicant/ext4 settings.
+#
+# The LIST layers the same way the defconfigs do — family first, then board —
+# so a capability every EA controller has is stated once in
+# board/ea-common/ohc.features rather than five times. Duplicates are harmless
+# and removed.
 FEATURES=""
-if [ -f "$REPO/board/$BOARD/ohc.features" ]; then
-    FEATURES=$(sed 's/#.*//' "$REPO/board/$BOARD/ohc.features" | tr '\n' ' ')
-fi
+for _ff in ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/ohc.features"} "$REPO/board/$BOARD/ohc.features"; do
+    [ -f "$_ff" ] || continue
+    FEATURES="$FEATURES $(sed 's/#.*//' "$_ff" | tr '\n' ' ')"
+done
+FEATURES=$(printf '%s\n' $FEATURES | awk '!seen[$0]++' | tr '\n' ' ')
+
 # A feature is ONE DIRECTORY holding both of its halves:
 #
 #     features/<name>/defconfig       the userspace half (Buildroot packages)
@@ -169,24 +177,26 @@ fi
 # booted, and the driver simply was not there. Together, a feature cannot
 # half-exist.
 #
-# FEAT_SCOPE is the directory under board/ that owns the features: the family
-# when there is one, otherwise the board itself. It is computed rather than
-# interpolated inline because the emitted path needs the same segment, and the
-# old inline form omitted it entirely for a board with no family — which would
-# have produced board/features/... the first time a non-EA board used one.
-if [ -n "$COMMON_CFG" ]; then
-    FEAT_SCOPE="$(basename "$(dirname "$COMMON_CFG")")"
-else
-    FEAT_SCOPE="$BOARD"
-fi
-FEAT_DIR="$REPO/board/$FEAT_SCOPE/features"
+# Features are SEARCHED across the same three scopes the defconfigs layer
+# through — common, family, board — most general first. So `splash` lives once
+# in board/common/features/ and is selected by an HC-800 and an EA3 alike, while
+# a family or a board can define one of its own without touching common.
+feature_dir() {
+    for _d in "$REPO/board/common/features/$1" \
+              ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/features/$1"} \
+              "$REPO/board/$BOARD/features/$1"; do
+        [ -d "$_d" ] && { printf '%s\n' "$_d"; return 0; }
+    done
+    return 1
+}
+
 # Kernel fragments that accompany the selected features, as BR2_EXTERNAL-relative
 # paths (Buildroot expands $(BR2_EXTERNAL_OPENHC_PATH) itself).
 FEAT_FRAGMENTS=""
 for f in $FEATURES; do
-    if [ -f "$FEAT_DIR/$f/linux.fragment" ]; then
-        FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/$FEAT_SCOPE/features/$f/linux.fragment"
-    fi
+    d=$(feature_dir "$f") || continue
+    [ -f "$d/linux.fragment" ] || continue
+    FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${d#"$REPO/board/"}/linux.fragment"
 done
 
 {
@@ -202,13 +212,14 @@ done
         echo
     fi
     for f in $FEATURES; do
-        if [ -f "$FEAT_DIR/$f/defconfig" ]; then
-            echo "# --- feature: $f ---"
-            cat "$FEAT_DIR/$f/defconfig"
-            echo
-        else
-            echo "build.sh: unknown feature '$f' (no $FEAT_DIR/$f/defconfig)" >&2
+        d=$(feature_dir "$f") || {
+            echo "build.sh: unknown feature '$f' — looked in common, ${COMMON_CFG:+$(basename "$(dirname "$COMMON_CFG")"), }$BOARD" >&2
             exit 1
+        }
+        if [ -f "$d/defconfig" ]; then
+            echo "# --- feature: $f (${d#"$REPO/board/"}) ---"
+            cat "$d/defconfig"
+            echo
         fi
     done
     cat "$BOARD_CFG"

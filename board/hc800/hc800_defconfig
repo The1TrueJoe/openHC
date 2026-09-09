@@ -66,27 +66,20 @@ BR2_x86_bonnell=y
 # note there; this board is standalone and inherits nothing from it.
 BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
 
-BR2_OPTIMIZE_S=y
 # musl, matching every other board in this tree.
-BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 
 # --- init / login ---
 # GRUB's own terminal and both vendor menu entries use ttyS0 @115200; our
 # menu.lst entry passes the same, so the getty matches.
 BR2_TARGET_GENERIC_HOSTNAME="openhc-hc800"
 BR2_TARGET_GENERIC_ISSUE="openHC Control4 HC-800 (kernel-up)"
-BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
-BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
 
 # --- kernel: mainline stable, same version as the rest of the tree ---
 # Stock x86_64 defconfig plus one fragment. No BR2_GLOBAL_PATCH_DIR: unlike the
 # CE5310 (i2c-pxa/pwm de-DT patches) and the DM355 (SoC resurrection), this
 # board needs nothing that is not already upstream.
-BR2_LINUX_KERNEL=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
 BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_BZIMAGE=y
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/linux/hc800.fragment"
@@ -114,7 +107,6 @@ BR2_TARGET_ROOTFS_CPIO_GZIP=y
 # --- reachability ---
 # Wired eth0 (r8169) is the bring-up path and comes up in S40net. Wi-Fi needs a
 # PSK we do not have at build time, so it is present but not brought up.
-BR2_PACKAGE_DROPBEAR=y
 # busybox udhcpc handles DHCP; no separate client needed.
 
 # --- Wi-Fi: NOT SUPPORTED on this kernel, and that is now a measured fact ---
@@ -156,11 +148,8 @@ BR2_PACKAGE_DROPBEAR=y
 # Wired eth0 (r8169) is unaffected and is the reachability path either way.
 
 # --- mDNS identity: avahi (built without D-Bus to stay light) ---
-BR2_PACKAGE_AVAHI=y
-BR2_PACKAGE_AVAHI_DAEMON=y
 
 # --- on-target tools ---
-BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 # It is a PC: lspci is how you check the chipset. No usbutils to go with it —
 # Buildroot's usbutils depends on BR2_PACKAGE_HAS_UDEV for its hwdb, and this
 # image uses busybox mdev like every other board here, so the symbol would be
@@ -171,8 +160,6 @@ BR2_PACKAGE_PCIUTILS=y
 # lan_disable, the reset button, the three board-revision straps) on the chardev
 # ABI. Mainline gpio-ich does not name lines, so these are chip+offset — the map
 # is in rootfs-overlay/opt/ohc/board.env.
-BR2_PACKAGE_LIBGPIOD=y
-BR2_PACKAGE_LIBGPIOD_TOOLS=y
 # Mounting sda1/sda3 to install our own kernel, and fsck for when a half-written
 # menu.lst needs sorting out. This is how openHC updates itself in place once it
 # is the running image.
@@ -206,7 +193,6 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 #
 # Needs the DRM/fbdev block in hc800.fragment; without it there is no /dev/fb0
 # and S01splash says so on the console instead of drawing.
-BR2_PACKAGE_SPLASH=y
 
 # --- component video output (the only one that actually works) ---
 # The THS8200 DAC on i2c-6 @0x21 is the sole video output anything drives on
