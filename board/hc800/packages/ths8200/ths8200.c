@@ -1,8 +1,8 @@
 /* ths8200 — bring up the TI THS8200 component video DAC over i2c-dev.
  *
  * The HC-800 has two video chips on SMBus i2c-6: a THS8200 component DAC at
- * 0x21 and an ADV7511 HDMI transmitter at 0x72. Only the THS8200 is ever
- * configured — Control4's own OS 3.x never touches the ADV7511 (see
+ * 0x21 and an ADV7513 HDMI transmitter at 0x72. Only the THS8200 is ever
+ * configured — Control4's own OS 3.x never touches the ADV7513 (see
  * board/hc800/video/ths8200-720p60.regs and the HC-800 page in the docs) — so
  * this is the board's proven route to a picture.
  *
@@ -44,7 +44,7 @@
  * "no answer at 0x21" from a chip that was answering perfectly well.
  *
  * Control4's own driver says the same thing in its boot log —
- * "THS8200-I2C: SMBUS Mode Detected" — and their ADV7511 shim is full of
+ * "THS8200-I2C: SMBUS Mode Detected" — and their ADV7513 shim is full of
  * "i2c smbus read/write" strings. They found this too.
  *
  * Going the other way is safe: the kernel EMULATES SMBus byte-data

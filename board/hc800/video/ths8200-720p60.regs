@@ -6,7 +6,7 @@
 # hardware actually had in its registers.
 #
 # WHY THIS FILE EXISTS. The THS8200 (component video DAC, i2c-6 @ 0x21) is the
-# ONLY video output on this board that is genuinely driven. The ADV7511 HDMI
+# ONLY video output on this board that is genuinely driven. The ADV7513 HDMI
 # transmitter is present and answers, but nothing configures it on OS 3.x —
 # /tmp/intel_hdmi is never created, the c4_adi_7513 device node is never made,
 # and libvidcfg.so contains only i.MX8MQ classes. So this register set is the

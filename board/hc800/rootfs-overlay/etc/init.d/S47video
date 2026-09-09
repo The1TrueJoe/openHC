@@ -6,7 +6,7 @@
 # off this hardware while it was working. See packages/ths8200 and
 # board/hc800/video/ths8200-720p60.regs.
 #
-# WHY THIS AND NOT HDMI: the ADV7511 on the same bus is fitted and answers, but
+# WHY THIS AND NOT HDMI: the ADV7513 on the same bus is fitted and answers, but
 # nothing configures it — Control4's OS 3.x never creates /tmp/intel_hdmi, never
 # makes the c4_adi_7513 node, and its libvidcfg.so contains only i.MX8MQ
 # classes. Component is the output with evidence behind it.

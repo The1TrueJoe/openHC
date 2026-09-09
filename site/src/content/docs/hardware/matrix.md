@@ -42,7 +42,7 @@ and Control4 spec doc DOC-00031-C.
 | Audio DSP | ADAU1451 | ADAU1451 | **FPGA** | none | ? | none |
 | Analog codec | ? | AK4621EF | ? | ALC888-VD (HDA) | ? | none |
 | Audio out | ? | line + coax + HDMI | ? | 2x line + coax S/PDIF | ? | none |
-| Video out | HDMI (Intel GDL) | HDMI (Intel GDL) | HDMI ? | **ADV7511 + THS8200 fitted** | ? | none (headless) |
+| Video out | HDMI (Intel GDL) | HDMI (Intel GDL) | HDMI ? | **ADV7513 + THS8200 fitted** | ? | none (headless) |
 | GPU | PowerVR SGX (closed) | PowerVR SGX + GC300 | PowerVR SGX | Intel GMA 3150 / i915 | ? | GC320 2D, unused |
 | Android LXC | yes | yes | yes | no | no | no |
 

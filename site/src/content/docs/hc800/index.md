@@ -323,7 +323,7 @@ ths8200 6-0021: THS8200 Chip Detect SUCCESS!
   ##-- c4_vid_conf --##  Intialized to 720p
 ```
 
-A TI THS8200 video DAC and an ADI ADV7511 HDMI transmitter are fitted and
+A TI THS8200 video DAC and an ADI ADV7513 HDMI transmitter are fitted and
 responding, and the vendor stack drives them to 720p at every boot. The hardware
 matrix once called this board "none (headless)"; that is wrong at the silicon
 level. (`i2c-0..i2c-5` are `i915 gmbus` buses; only `i2c-6` is the SMBus.)
@@ -340,7 +340,7 @@ card0-VGA-1    disconnected
 
 **Connected, with a zero-byte EDID and exactly one mode.** There is no display
 negotiating anything — the timings come from the **BIOS VBT**, and the LVDS port
-is wired to the THS8200/ADV7511 pair. Mainline i915 parses the same VBT, so a
+is wired to the THS8200/ADV7513 pair. Mainline i915 parses the same VBT, so a
 modern kernel should light this pipe identically with no board code at all.
 
 ### The split that matters for a port
@@ -352,12 +352,12 @@ is free:
   exports `ths8200_set_720P` / `_powerup` / `_powerdown`, driven by
   `c4_vid_conf.ko` (`Intialized to 720p`). Straightforward to redo from
   `/dev/i2c-6`.
-- **ADV7511 is not configured at all — on OS 3.x nothing drives it.**
+- **ADV7513 is not configured at all — on OS 3.x nothing drives it.**
   `c4_adi_hdmi.ko` is only an i2c chardev shim (`ioctl` read/write byte and
   block, major 250, device `c4_adi_7513`). An earlier version of this page said
   `/control4/lib/libvidcfg.so` did the register writes. It does not: that
   library's symbol table contains only **i.MX8MQ** classes
-  (`hdmi_video_imx8mq`, `device_video_output_imx8mq`) and no Intel or ADV7511
+  (`hdmi_video_imx8mq`, `device_video_output_imx8mq`) and no Intel or ADV7513
   implementation. `ioserver` asks
   `vidcfg::hdmi_object_factory::get_hdmi_interface()` for one and carries the
   string `Caught Exception (%s) while creating hdmi interface.`
@@ -369,7 +369,7 @@ is free:
 
   **So HDMI output on this board is unproven even under the vendor OS.** The
   component path through the THS8200 is the one that is actually driven, and it
-  is driven in-kernel. Getting HDMI under openHC means writing the ADV7511 setup
+  is driven in-kernel. Getting HDMI under openHC means writing the ADV7513 setup
   from the datasheet, or recovering the OS 2.10 userspace that had it — mainline's
   `drm/bridge/adv7511` wants a device-tree bridge attachment and cannot bind to
   x86 i915, so it is a userspace i2c job either way.
@@ -377,7 +377,7 @@ is free:
 openHC now builds `CONFIG_DRM=y`, `CONFIG_DRM_I915=y`,
 `CONFIG_DRM_FBDEV_EMULATION=y`, `CONFIG_FB=y` and `CONFIG_FB_DEVICE=y` so the
 boot splash has a `/dev/fb0`. That lights the pipe and draws into it; **whether
-a TV sees it is unproven** until the ADV7511 side is written.
+a TV sees it is unproven** until the ADV7513 side is written.
 
 :::caution[Two kconfig traps]
 `DRM_FBDEV_EMULATION` selects `FB_CORE`, **not** `FB`, and `FB_DEVICE` — which
@@ -526,7 +526,7 @@ the EA family and with the HC-250.
 - **Whether the two rear RS-232 jacks are wired to the host 8250s or bridged
   through the MCU's UART1/UART2.**
 - **The Zigbee NCP's real baud rate**, never opened during this pull.
-- **Whether the ADV7511/THS8200 video path terminates at a connector** on this
+- **Whether the ADV7513/THS8200 video path terminates at a connector** on this
   revision.
 - **BIOS boot-device options**, whether USB boot is available, which would give a
   second install path that touches the SSD not at all. Requires a serial console

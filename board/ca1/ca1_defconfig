@@ -1,32 +1,15 @@
 # openHC — Control4 CA-1 controller (i.MX6 SoloLite, board codename "emmet").
 #
-# Unlike ea1/ea3 (ea-common), this board has NO family base defconfig (same as
-# ioxv1): build/build.sh's default case feeds this file to Buildroot on its
-# own. Split out a ca-common when a second CA-series board lands — every
-# value here is either SoC-generic or CA-1-specific, and inventing a family for
-# one board would just add a level of indirection with nothing in it.
+# Self-contained: no family base. Split out a ca-common when a second CA board
+# lands. Hardware inventory: https://the1truejoe.github.io/openHC/ca1/
 #
-# What this board is (confirmed on a live rev-4 unit — https://the1truejoe.github.io/openHC/ca1/):
-#
-#   * i.MX6SL: ONE Cortex-A9 (ARMv7-A, VFPv3-D32 + NEON), 1 GB RAM.
-#   * 16 MB SPI-NOR (S25FL128S on ecspi2) holds U-Boot 2014.04 + a recovery
-#     kernel; 3.7 GB eMMC (usdhc2) holds vfat kernel / ext4 rootfs / ext4 recfs.
-#   * Stock U-Boot, unlocked console, writable environment, and NO secure boot
-#     (HAB fuse open, U-Boot's CSF slot zero-filled, kernel loaded with a plain
-#     bootz). We can boot our own kernel without touching flash.
-#   * Radios: ZM5304 Z-Wave on UART4, an EM35x Zigbee NCP on UART5, and a
-#     Realtek RTL8723BS Wi-Fi/BT combo on SDIO (usdhc1).
-#   * NO companion IO-MCU. The rear RS-232/RS-485 port is a host UART (UART3)
-#     in front of a GPIO-configured transceiver.
-#
-# STATUS: pre-boot. This builds a toolchain, kernel and rootfs; nobody has
-# booted it on hardware yet. Unlike the DM355 the SoC needs no resurrection
-# patches — mainline supports i.MX6SL — so the risk here is the board DTS
-# (board/ca1/linux/c4-imx6sl-ca1.dts), not the kernel.
+# i.MX6SL, one Cortex-A9, 1 GB RAM. Stock U-Boot with an unlocked console and NO
+# secure boot, so our own kernel boots without touching flash. No companion
+# IO-MCU. Mainline supports the SoC, so the risk here is the board DTS.
 
-# --- arch: i.MX6SL = single Cortex-A9, ARMv7-A, VFPv3-D32 + NEON, EABIhf ---
-# cpuinfo reports "vfpv3 ... vfpd32", i.e. the full 32 double registers, so
-# plain VFPV3 rather than the D16 variant. Hard float: there is an FPU, use it.
+# --- arch ---
+# cpuinfo reports "vfpv3 ... vfpd32" — the full 32 double registers, so plain
+# VFPV3 rather than the D16 variant.
 BR2_arm=y
 BR2_cortex_a9=y
 BR2_ARM_ENABLE_NEON=y
@@ -43,10 +26,7 @@ BR2_TARGET_GENERIC_ISSUE="openHC Control4 CA-1"
 BR2_TARGET_GENERIC_GETTY_PORT="ttymxc0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
 
-# --- kernel: mainline stable, same version as the rest of the tree ---
-# i.MX6SL is fully supported upstream, so this is a stock defconfig plus a
-# board DTS — no SoC patches, no BR2_GLOBAL_PATCH_DIR. That is the whole reason
-# this board is a soft target compared to the DM355.
+# --- kernel: stock defconfig + our board DTS, no SoC patches ---
 BR2_LINUX_KERNEL_USE_DEFCONFIG=y
 BR2_LINUX_KERNEL_DEFCONFIG="imx_v6_v7"
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/linux/ca1.fragment"
@@ -59,33 +39,24 @@ BR2_LINUX_KERNEL_ZIMAGE=y
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
 BR2_LINUX_KERNEL_CUSTOM_DTS_PATH="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/linux/c4-imx6sl-ca1.dts"
 
-# --- rootfs: ext4 on eMMC p2 (persistent) — NOT an embedded initramfs ---
-# We booted openHC from a RAM initramfs for bring-up, but that path is exhausted:
-# the whole rootfs is embedded in the zImage and decompressed below the DTB at
-# 0x83000000, so it must stay under ~40 MB decompressed. The lean image (18.5 MB
-# cpio) fit; adding even ttyd (23 MB cpio) tipped it over and hung "Starting
-# kernel" again. Python/Node for the web UI + zigbee/zwave servers never had a
-# chance. So the real system lives on the eMMC ext4 rootfs (mmcblk1p2), the
-# kernel mounts it directly (root=/dev/mmcblk1p2, see post-image.sh), and the
-# zImage carries NO initramfs — which also makes it small and permanently ends
-# the DTB-overwrite class of bug. Writing p2 replaces the stock Control4 rootfs;
-# factory restore rebuilds it from p3, so it stays recoverable.
-# BR2_TARGET_ROOTFS_INITRAMFS is intentionally OFF.
+# --- rootfs: ext4 on eMMC p2 (persistent) ---
+# NOT an embedded initramfs, which is exhausted: it decompresses below the DTB
+# at 0x83000000 and must stay under ~40 MB, and adding ttyd alone tipped it over
+# and hung "Starting kernel". The kernel mounts p2 directly. Writing p2 replaces
+# the stock rootfs; factory restore rebuilds it from p3, so it stays
+# recoverable. BR2_TARGET_ROOTFS_INITRAMFS is intentionally OFF.
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
 # Sized for the full stack (python3 web API now, node zigbee2mqtt/zwave-js next);
 # resized to fill p2 (1.9 GB) with resize2fs at install time.
 BR2_TARGET_ROOTFS_EXT2_SIZE="768M"
 
-# --- reachability + on-target tools ---
-# SPI-NOR inspection. Note the bring-up path never writes this chip — U-Boot
-# and both environment copies live there.
+# --- on-target tools ---
+# SPI-NOR inspection. The bring-up path never WRITES this chip — U-Boot and both
+# environment copies live there.
 BR2_PACKAGE_MTD=y
-# The radio resets and the seven RS-485 transceiver lines, by name, from
-# userspace on the chardev ABI. See rootfs-overlay/etc/init.d/S30gpio.
-# fw_printenv/fw_setenv talk to the U-Boot environment in SPI-NOR, which is how
-# the boot path is steered on this board; mkimage builds the boot.scr that
-# stock bootcmd sources off the eMMC FAT partition.
+# fw_printenv/fw_setenv steer the boot path through the U-Boot environment in
+# SPI-NOR; mkimage builds the boot.scr stock bootcmd sources off the eMMC FAT.
 BR2_PACKAGE_UBOOT_TOOLS=y
 BR2_PACKAGE_UBOOT_TOOLS_MKIMAGE=y
 BR2_PACKAGE_UBOOT_TOOLS_FWPRINTENV=y
@@ -97,24 +68,12 @@ BR2_PACKAGE_HOST_UBOOT_TOOLS=y
 BR2_PACKAGE_DOSFSTOOLS=y
 BR2_PACKAGE_DOSFSTOOLS_FSCK_FAT=y
 
-# --- Wi-Fi: in-tree rtl8723bs (staging) replaces the vendor 8723bs.ko ---
-# The stock image carries a 1.25 MB out-of-tree module; mainline has had
-# drivers/staging/rtl8723bs since v4.12.
-#
-# Firmware is fiddlier than it looks, checked against Buildroot 2024.02.9 and
-# Linux 7.1.8 rather than assumed:
-#
-#   * Bluetooth is covered — RTL_87XX_BT ships rtl_bt/rtl8723bs_fw.bin and
-#     rtl_bt/rtl8723bs_config-OBDA8723.bin, which is what btrtl asks for.
-#   * Wi-Fi is NOT. rtl8723b_hal_init.c does request_firmware() on
-#     "rtlwifi/rtl8723bs_nic.bin" (there is no embedded firmware array any
-#     more), and that exact file is missing from RTL_87XX's file list — it
-#     ships rtl8723bs_bt.bin and rtl8723bu_nic.bin, but not rtl8723bs_nic.bin.
-#
-# The file IS present in the linux-firmware tarball Buildroot already
-# downloads, so post-build.sh lifts it out of the extracted source rather than
-# vendoring a blob here or adding a second download. Wi-Fi is not the
-# bring-up reachability path either way — S40net brings up eth0 only.
+# --- Wi-Fi: in-tree rtl8723bs (staging), replacing the vendor 8723bs.ko ---
+# Bluetooth firmware is covered by RTL_87XX_BT. Wi-Fi is NOT: the driver
+# request_firmware()s "rtlwifi/rtl8723bs_nic.bin", which is missing from
+# RTL_87XX's file list even though it IS in the tarball Buildroot already
+# downloads — so post-build.sh lifts it out of the extracted source rather than
+# vendoring a blob or adding a second download.
 BR2_PACKAGE_LINUX_FIRMWARE=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX_BT=y
@@ -140,31 +99,23 @@ BR2_PACKAGE_DNSMASQ=y
 # switching needs those hogs converted to a real consumer first (see the DTS).
 BR2_PACKAGE_SER2NET=y
 
-# --- MQTT broker for zigbee2mqtt; also useful standalone for the Z-Wave side ---
-# Buildroot 2024.02.9's mosquitto-2.0.19 package fails to apply its own bundled
-# 0001-Revert-Fix-NetBSD-build.patch against the tarball currently served at
-# mosquitto.org ("Reversed (or previously applied) patch detected" on several
-# hunks) — a stock package/upstream-tarball mismatch, not a local config issue.
-# Revisit when the Zigbee/Z-Wave work actually needs a broker.
+# Mosquitto is OFF: Buildroot 2024.02.9's package fails to apply its own bundled
+# patch against the tarball mosquitto.org currently serves. A package/upstream
+# mismatch, not a local config issue. Revisit when a broker is actually needed.
 # BR2_PACKAGE_MOSQUITTO=y
 
 # C++ toolchain — needed by Node.js and ser2net's gensio C++ bindings.
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
-# The web dashboard + API is the Rust webd binary (packages/), cross-built
-# on the host with the React UI embedded and dropped into the overlay by
-# packages/build.sh — so no python3/ttyd interpreter or per-port terminal daemon
-# is needed on the target. board/common S90ohcweb just runs the one binary.
-
-# --- Node.js: runtime for zigbee2mqtt / zwave-js-server on the ext4 rootfs ---
-# npm included so the servers install on-target. V8 is a heavy compile — see the
-# build.sh JLEVEL note / bump Docker's VM RAM if it OOMs.
+# --- Node.js: runtime for zigbee2mqtt / zwave-js-server ---
+# npm so the servers install on-target. V8 is a heavy compile — bump Docker's VM
+# RAM if it OOMs.
 BR2_PACKAGE_NODEJS=y
 BR2_PACKAGE_NODEJS_NPM=y
 
 # --- rootfs overlay + image publishing ---
-# board/common first: the shared Rust webd starter (S90ohcweb). ca1's own
-# overlay (Wi-Fi AP fallback, net, ser2net sample) comes after so it can override.
+# BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and
+# kconfig takes the LAST assignment, not the union; later overlays win.
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ca1/rootfs-overlay"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ca1"

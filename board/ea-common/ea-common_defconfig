@@ -1,134 +1,71 @@
 # openHC — settings shared by every EA-series board (EA1, EA3).
 #
-# This is NOT a standalone defconfig. build/build.sh concatenates it with the
-# board's own <board>_defconfig and feeds the result to Buildroot as
-# BR2_DEFCONFIG. Kconfig takes the LAST assignment of a symbol, so anything a
-# board sets after this file wins — which is how the boards extend the shared
-# fragment/overlay/patch lists rather than replacing this file wholesale.
-#
-# Put something here only if it is true for the whole EA family. Board-varying
-# values (hostname, radios, reachability, image name) belong in the board file.
+# NOT standalone: build/build.sh concatenates this with the board's own file and
+# feeds the result to Buildroot. Kconfig takes the LAST assignment, so a board
+# setting something after this wins. Put something here only if it is true for
+# the whole family.
 
-# --- arch: 32-bit x86, Atom (Bonnell) tuning ---
-# Every EA is the same Intel Atom CE5310. HC800 (Atom D525) and HC250 (ARMv7)
-# are different machines and are deliberately not in scope for this tree.
-# x86_64, not i386. PROVEN on hardware 2026-08-31: CEFDK's bootlinux starts a
-# 64-bit kernel (a minimal ARCH=x86_64 build reached long mode, brought up the
-# console and panicked for lack of an init -- which is the whole test).
+# --- arch: x86_64, Bonnell tuning ---
+# Every EA is the same Intel Atom CE5310, which reports `lm`. Proven on hardware
+# 2026-08-31: CEFDK's bootlinux starts a 64-bit kernel.
 #
-# The reason to move: 32-bit x86 has been abandoned by Python packaging, and
-# that blocks Home Assistant structurally rather than incidentally. orjson has
-# NEVER published an i686 wheel and needs Rust; cryptography likewise; and HA
-# pins exact versions that no distro's prebuilt i386 packages match. On x86_64
-# every one of those ships an amd64 wheel. The CPU has always been 64-bit
-# capable -- /proc/cpuinfo reports the `lm` flag on the CE5310.
+# The reason to move off i386 is Home Assistant: orjson has never published an
+# i686 wheel, nor has cryptography, and HA pins exact versions. It also removes
+# the 32-bit lowmem split — ~934 MB of the 1.7 GB was highmem.
 #
-# It also removes the 32-bit lowmem split: with the RAM reclaim we now have
-# 1.7 GB, of which ~934 MB was highmem on i386. On x86_64 it is all ordinary.
-#
-# bonnell rather than the deprecated atom: same CPU family (the CE5310 is
-# Bonnell/Saltwell), and Buildroot says atom is superseded by bonnell since
-# gcc 4.9. The variant choice is gated `BR2_i386 || BR2_x86_64`, so it is valid
-# here.
-#
-# COST: the SGX545 userspace is Intel/Imagination BLOBS and every one is 32-bit
-# (21 ELF objects, all "Intel 80386"). 3D therefore needs Debian-style i386
-# multiarch, which depends on the PowerVR module's compat path -- pvr_drm.c does
-# wire .compat_ioctl = drm_compat_ioctl, so it is plausible but unproven. Nothing
-# else regresses: every openHC driver is arch-neutral C.
+# COST: the SGX545 userspace is 32-bit Intel/Imagination blobs, so 3D needs
+# i386 multiarch through the PowerVR module's compat path. Plausible, unproven.
 BR2_x86_64=y
 BR2_x86_bonnell=y
 
-# objtool needs host libelf, and x86_64 needs objtool.
-#
-# CONFIG_UNWINDER_ORC is the default unwinder on x86_64 and it is generated at
-# build time by tools/objtool, which #includes <gelf.h>. i686 never built
-# objtool, so this only appeared on the move to 64-bit, as:
-#
-#   tools/objtool/include/objtool/elf.h:10:10:
-#       fatal error: gelf.h: No such file or directory
-#
-# which names the kernel and not the missing host dependency. This option makes
-# Buildroot build host-elfutils first. Preferred over installing libelf-dev in
-# build/Dockerfile because it also covers native and CI builds, which do not go
-# through that image.
+# x86_64 pulls in objtool, which #includes <gelf.h>. Without this the kernel
+# build dies on a missing HOST header while naming only itself:
+#   tools/objtool/include/objtool/elf.h:10:10: fatal error: gelf.h
 BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
 
 # Inject this family's kernel drivers (board/ea-common/{drivers,sound}) via
-# OHC_KERNEL_MIRROR_HOOK. Previously the hook was unconditional in
-# external.mk, so EVERY board got these CE5300 drivers; now it is opt-in and
-# this is the only file that opts in. EA behaviour is unchanged — if an EA
-# kernel ever comes out missing gpio-intelce, pwm-ce5300 or the ADAU1451 ASoC
-# stack, this line is the first thing to check.
+# OHC_KERNEL_MIRROR_HOOK. Opt-in, and this is the only file that opts in — so if
+# an EA kernel comes out missing gpio-intelce, pwm-ce5300 or the ADAU1451 ASoC
+# stack, check this line first.
 BR2_OHC_EA_KERNEL_DRIVERS=y
 
-
 # --- init / login ---
-# Password login for the serial console AND ssh. Change after first boot.
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
 
 # --- kernel ---
-# Latest mainline stable (kernel.org). The 8250 UART and e1000 are ancient and
-# stable here; the size cost of a modern kernel is handled by the aggressive
-# trim in ea-common/linux/common.fragment (must stay under CEFDK bootlinux's
-# ~7MB copy window).
+# Size is the constraint: the bzImage must stay under CEFDK bootlinux's ~7 MB
+# copy window, which is what the aggressive trim in linux/common.fragment is for.
 BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_BZIMAGE=y
 
 # --- rootfs: standalone gzipped cpio, loaded as an external initrd ---
-# NOT embedded in the bzImage: CEFDK's bootlinux copies the whole kernel image
-# to 0x100000, and its own loader code sits at ~0x812f07 (8.07MB). A 10MB
-# embedded image overruns the loader mid-copy and crashes on return. Keeping the
-# rootfs out of the kernel keeps the bzImage small enough to fit under that, and
-# the initrd rides in high RAM via the loader's ramdisk path ([0x837560..568]).
+# NOT embedded in the bzImage. CEFDK's bootlinux copies the kernel to 0x100000
+# while its own loader sits at ~0x812f07, so a big embedded image overruns the
+# loader mid-copy and crashes on return. The initrd rides in high RAM instead.
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
 
-# --- reachability: SSH on every board ---
-# busybox udhcpc handles DHCP; no separate client needed.
-
-# --- handy on-target debugging ---
+# --- on-target debugging ---
 BR2_PACKAGE_PCIUTILS=y
 
-# --- mDNS identity: avahi (built without D-Bus to stay light) ---
-
-# --- framebuffer splash (EA only: ce5300-fb gives these boards a /dev/fb0) ---
-# Drawn straight to the framebuffer, not through a console. See video.fragment,
-# which deliberately leaves CONFIG_FRAMEBUFFER_CONSOLE off.
-
-# ── C library: glibc, not the shared musl default ──────────────────────────
-#
-# board/common sets musl, which is right for the boards that only ever run our
-# own code. The EA family additionally runs Intel's PowerVR DDK userspace
-# (packages/sgx545-um) for 3D, and those blobs are glibc-linked: a musl system
-# cannot load them at all, and nothing on the musl side can link against them.
-#
-# The alternatives were worse. gcompat -- musl's glibc-ABI shim -- is in no
-# Buildroot release, including 2026.08, so it would be a from-scratch package
-# plus an unproven ABI surface. Shipping a private glibc under /opt works, and
-# is what bring-up used, but then every program that wants GLES has to be
-# glibc-built and launched through a loader wrapper, forever.
-#
-# The cost is rootfs size, and that is the one thing this board has spare: the
-# image is 512 MB with about 7 MB used. What is actually tight is the bzImage
-# against CEFDK's ~8.07 MB copy window (1.59 MB left), and the C library does
-# not touch the kernel.
+# --- C library: glibc, not the shared musl default ---
+# The EA family runs Intel's PowerVR DDK userspace (packages/sgx545-um) for 3D,
+# and those blobs are glibc-linked — a musl system cannot load them at all.
+# gcompat is in no Buildroot release; a private glibc under /opt means a loader
+# wrapper forever. Size is the one thing this board has spare (512 MB image,
+# ~7 MB used); what is tight is the bzImage, which the C library does not touch.
 # BR2_TOOLCHAIN_BUILDROOT_MUSL is not set
 BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
 
-# C++ and wide characters, for the browser engine.
-#
-# openHC's own code is C, so neither was ever needed. WPE WebKit is C++ and
-# pulls in ICU and harfbuzz, which want wchar. Without these the wpewebkit
-# package is simply unselectable and kconfig drops it in silence -- the build
-# succeeds and the engine is just absent, which is a confusing way to find out.
+# C++ and wide characters for WPE WebKit, which pulls in ICU and harfbuzz.
+# Without these the wpewebkit package is unselectable and kconfig drops it in
+# SILENCE — the build succeeds and the engine is simply absent.
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INSTALL_LIBSTDCPP=y
 BR2_USE_WCHAR=y
 
-# Shared by every EA board, so stated once here rather than five times. Both
-# point back into this directory, which is the giveaway that they were never
-# per-board settings.
+# Both point back into this directory, which is the giveaway that they were
+# never per-board settings.
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"

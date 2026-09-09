@@ -164,7 +164,7 @@ CONFIG_GPIO_CDEV=y
 # Turn this off again the day the tools move to libgpiod 2.x.
 CONFIG_GPIO_CDEV_V1=y
 
-# SMBus. The ADV7511 HDMI transmitter (0x72) and THS8200 video DAC (0x21) live
+# SMBus. The ADV7513 HDMI transmitter (0x72) and THS8200 video DAC (0x21) live
 # here; the vendor instantiates them from its board file. We instantiate
 # nothing — this is on so the bus can be probed with i2c-tools when somebody
 # takes the video question seriously.
@@ -177,39 +177,46 @@ CONFIG_I2C_CHARDEV=y
 CONFIG_WATCHDOG=y
 CONFIG_ITCO_WDT=y
 
-# Atom package/core temperature. The vendor kernel registers no hwmon device at
-# all; coretemp is free and this is a fanless box in a rack.
+# Thermal. Two sources, because neither is sufficient alone.
+#
+# coretemp is the Atom's own digital sensor, but on this part the kernel logs
+# "Unable to read TjMax from CPU 0" and falls back to a default — a live box
+# reported 6 C and 10 C, which is not a temperature this room has ever been. So
+# treat its absolute values as suspect until TjMax is settled.
+#
+# w83627ehf drives the Winbond W83627UHG Super I/O sitting beside the UARTs. It
+# is the only part that can READ the board thermistors and the fan tachometer,
+# and the only one that can DRIVE the fan: it has a PWM output with a hardware
+# automatic mode, so the chip can regulate on its own with no fan daemon at all.
+# This board does have a fan.
 CONFIG_HWMON=y
 CONFIG_SENSORS_CORETEMP=y
+CONFIG_SENSORS_W83627EHF=y
 
 # CMOS RTC — an ordinary PC RTC, so hwclock works with no I2C part to hunt for.
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_DRV_CMOS=y
 
-# ── a head, after all: i915 + fbdev emulation for the boot splash ─────────
-# This block used to read "no head" and turn DRM and FB off, on the grounds that
-# openHC is headless everywhere and DRM is a large stack for an output nobody
-# uses. That was true until somebody wanted the EA family's boot splash on this
-# board, and it is cheap to change here for one reason: this is the board with
-# NO image-size ceiling. ea-common has to fight CEFDK bootlinux's ~8.07 MB copy
-# window (which is why it turned MODULES back on just to get DRM out of the
-# bzImage); GRUB 0.97 has no such limit and sda3 has 165 MB free, so a few MB of
-# builtin DRM costs nothing. MODULES=n above means builtin is the only option.
+# ── i915 + fbdev emulation for the boot splash ────────────────────────────
+# CONFIRMED WORKING on hardware: the splash draws. Any note elsewhere calling
+# this board headless predates that.
 #
-# The measured cost of USING it is also nothing, which is the other half of the
-# argument: a full 1280x720x32 frame is 3.6 MB and the live unit writes one to
-# /dev/fb0 at 434 MB/s -- about 8 ms. The splash draws one frame, once.
+# Cheap here because this is the board with no image-size ceiling: ea-common has
+# to fight CEFDK bootlinux's ~8.07 MB copy window, GRUB 0.97 does not, and sda3
+# has 165 MB free. MODULES=n above means builtin is the only option. Runtime
+# cost is nothing either — one 1280x720x32 frame is 3.6 MB, written at
+# 434 MB/s on the live unit, about 8 ms, once.
 #
 # Why the display comes up at all with no monitor attached: LVDS-1 reports
 # connected with a ZERO-byte EDID and exactly one mode, 1280x720, because the
 # timings come from the BIOS VBT rather than from a display. That LVDS port is
-# wired to the THS8200 component DAC (i2c-6 @0x21) and the ADV7511 HDMI
+# wired to the THS8200 component DAC (i2c-6 @0x21) and the ADV7513 HDMI
 # transmitter (@0x72). Mainline i915 parses the same VBT, so the mode should
 # come up here exactly as it does under the vendor's 3.16.
 #
 # NOTE: getting PIXELS OUT OF THE JACKS is a separate problem this does not
 # solve. The vendor configures the THS8200 in-kernel (ths8200.ko, GPL) and the
-# ADV7511 from USERSPACE (/control4/lib/libvidcfg.so, via ioserver). Mainline's
+# ADV7513 from USERSPACE (/control4/lib/libvidcfg.so, via ioserver). Mainline's
 # drm/bridge/adv7511 needs a DT bridge attachment and cannot attach to x86 i915,
 # so HDMI will need a userspace i2c configurator. Until then this lights the
 # pipe and draws into it; whether a TV sees it is unproven.

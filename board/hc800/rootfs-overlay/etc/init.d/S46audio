@@ -11,7 +11,7 @@
 # so a bare `amixer` with no -c will still find card 0 but anything addressing
 # the codec directly needs 2). Connected pins are:
 #
-#   0x11  Digital Out at Int HDMI   -> the ADV7511. Internal wiring, no jack,
+#   0x11  Digital Out at Int HDMI   -> the ADV7513. Internal wiring, no jack,
 #                                      marked NO_PRESENCE, association 3.
 #   0x14  Line Out,  Ext Rear       RCA green
 #   0x1a  Line In,   Ext Rear       RCA blue

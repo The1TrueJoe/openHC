@@ -22,15 +22,10 @@ BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
 # Password login on serial + ssh. root's password is "openhc"; board/common/
 # post-build.sh adds an `openhc` uid-0 alias so `openhc`/`openhc` is also root.
 BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
-# eudev, not mdev. The IO on these boards is named — `relay1`, not gpiochip1
-# line 88; `openHC IR front blaster`, not /dev/lirc6 — and turning those names
-# into stable paths is precisely what a device manager's rules are for. mdev can
-# run a rule too, but busybox mdev has no include mechanism, so shipping ours
-# would mean forking Buildroot's /etc/mdev.conf and letting it drift on every
-# bump. udev rules are ADDITIVE files: see /etc/udev/rules.d/70-openhc-io.rules.
-#
-# It also fires on hotplug rather than only at boot, which an init script
-# laying down symlinks cannot do.
+# eudev, not mdev: udev rules are ADDITIVE files, while busybox mdev has no
+# include mechanism and would mean forking Buildroot's /etc/mdev.conf. It also
+# fires on hotplug rather than only at boot. See /shared/io-naming/ and
+# /etc/udev/rules.d/70-openhc-io.rules.
 BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 
 # --- reachability + identity: SSH and mDNS on every board ---
@@ -44,20 +39,9 @@ BR2_PACKAGE_LIBGPIOD=y
 BR2_PACKAGE_LIBGPIOD_TOOLS=y
 
 
-# --- /etc/motd is a FILE, not a build step ---
-# It used to be a source-less Buildroot package that shelled out to the host's
-# figlet during the build. That put a banner in the build graph and a host tool
-# in the dependency list to produce a few hundred static bytes. It is now just
-# board/common/rootfs-overlay/etc/motd — a base firmware feature, shipped the
-# way every other base firmware feature is shipped.
-#
-# figlet itself stays in the image, because splash renders the banner ON THE
-# DEVICE at boot (S01splash), which is what lets the splash text change without
-# rebuilding anything.
-
-# --- common post-build: the openhc uid-0 alias. A board that needs its own
-# post-build (ca1's DTB lift) must include this path in its own list, since
-# kconfig takes the last assignment, not the union. ---
+# The openhc uid-0 alias. A board needing its own post-build (ca1's DTB lift)
+# must include this path in ITS list — kconfig takes the last assignment, not
+# the union.
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/common/post-build.sh"
 
 # Ensure switch_root (and the mount/mkdir applets the initramfs /init uses) are
