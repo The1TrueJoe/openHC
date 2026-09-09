@@ -6,7 +6,7 @@
 # reset; GLES2 additionally needs the userspace blobs and pvrsrvctl to upload
 # the microkernel, neither of which openHC ships.
 #
-# Pairs with linux/sgx.fragment, appended automatically by build/build.sh.
+# Pairs with linux.fragment beside it, appended automatically by build/build.sh.
 BR2_PACKAGE_SGX545_CE=y
 # ...and the userspace: EGL + OpenGL ES 2.0 from Intel's Cedarview DDK 1.7.
 # Must be the same DDK version as the driver -- the driver checks on connect

@@ -40,7 +40,7 @@ Fixed in `board/ea-common/patches/linux/0001-i2c-pxa-pci-enumerate-without-DT.pa
 sound/soc/ce5300/ce5300-i2s.c    platform driver: I2S + scatter-gather DMA (PCI 8086:2e60)
 sound/soc/ce5300/ce5300-ea3.c    machine driver: ties CPU DAI + codec into a card
 sound/soc/codecs/adau1451-c4.c   codec driver
-board/ea-common/linux/audio.fragment      kernel config
+board/ea-common/features/audio/linux.fragment      kernel config
 board/ea-common/features/audio.defconfig  userspace packages
 ```
 

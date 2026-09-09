@@ -1,5 +1,6 @@
-# Shared EA feature sets this board pulls in (board/ea-common/features/*.defconfig
-# and the matching linux/*.fragment). One word per feature, space separated.
+# Shared EA feature sets this board pulls in. One word per feature, space
+# separated. Each lives in board/ea-common/features/<name>/, holding both its
+# halves: defconfig (userspace) and linux.fragment (kernel).
 #   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
 #   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
 #   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
@@ -15,5 +16,5 @@ wifi emmc
 #
 # `wifi` is KEPT, because this is the EA-3 variant that has a radio and the AP +
 # captive portal is how an unplugged unit is set up. It is affordable now only
-# because ea-common/linux/wifi.fragment builds ath9k/mac80211/cfg80211 as
+# because the wifi feature's linux.fragment builds ath9k/mac80211/cfg80211 as
 # MODULES; as =y they were about a megabyte and did not fit either.

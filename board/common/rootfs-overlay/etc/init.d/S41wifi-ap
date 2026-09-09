@@ -134,7 +134,7 @@ start_ap() {
 
 # Load the radio driver, then wait for its interface to appear.
 #
-# ath9k/mac80211/cfg80211 are MODULES (see ea-common/linux/wifi.fragment: built
+# ath9k/mac80211/cfg80211 are MODULES (see ea-common/features/wifi/linux.fragment: built
 # in, they overrun CEFDK's 7,417,856-byte kernel window and the box does not
 # boot). Nothing loads them automatically here -- there is no udev, and mdev
 # does not autoload from a PCI modalias -- so the interface simply would not

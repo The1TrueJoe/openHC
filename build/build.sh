@@ -48,8 +48,14 @@ BOARD_CFG="$REPO/board/$BOARD/${BOARD}_defconfig"
 }
 echo ">> board=$BOARD"
 
-cpu=$(nproc)
-memkb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+# nproc and /proc/meminfo are Linux; the real builds run in the container. But
+# OHC_DEFCONFIG_ONLY below is useful from a Mac, and it would be silly for a
+# dry run that compiles nothing to fail on a job-count probe. Fall back rather
+# than refuse.
+cpu=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+memkb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null \
+        || { hw=$(sysctl -n hw.memsize 2>/dev/null) && echo $((hw / 1024)); } \
+        || echo 4194304)
 # 2.5 GB/job, not 1.5. gcc's largest translation units (insn-emit.o and friends
 # in host-gcc-initial) peak well above 1.5 GB each, so the old figure let two of
 # them run side by side in a 3.8 GB VM and the OOM killer took one out:
@@ -125,7 +131,10 @@ if [ "$memmb" -lt 6000 ]; then
     echo ">>   On Docker Desktop: Settings -> Resources -> Memory." >&2
 fi
 
-[ -f "$BUILDROOT_DIR/Makefile" ] || { echo "no Buildroot at $BUILDROOT_DIR" >&2; exit 1; }
+# Composing a defconfig needs none of Buildroot, so OHC_DEFCONFIG_ONLY skips
+# this — that is what makes the dry run usable outside the build container.
+[ -n "${OHC_DEFCONFIG_ONLY:-}" ] || \
+    [ -f "$BUILDROOT_DIR/Makefile" ] || { echo "no Buildroot at $BUILDROOT_DIR" >&2; exit 1; }
 mkdir -p "$OUT" "$DL"
 
 # The effective defconfig is the family base + the board's deltas, concatenated.
@@ -149,14 +158,34 @@ FEATURES=""
 if [ -f "$REPO/board/$BOARD/ohc.features" ]; then
     FEATURES=$(sed 's/#.*//' "$REPO/board/$BOARD/ohc.features" | tr '\n' ' ')
 fi
-FEAT_DIR="$(dirname "${COMMON_CFG:-$REPO/board/$BOARD/x}")/features"
-FEAT_LINUX_DIR="$(dirname "${COMMON_CFG:-$REPO/board/$BOARD/x}")/linux"
+# A feature is ONE DIRECTORY holding both of its halves:
+#
+#     features/<name>/defconfig       the userspace half (Buildroot packages)
+#     features/<name>/linux.fragment  the kernel half
+#
+# They used to be features/<name>.defconfig and linux/<name>.fragment, paired
+# only by filename across two directories. That split is how the `switch`
+# feature once shipped its userspace half with no kernel half — the board
+# booted, and the driver simply was not there. Together, a feature cannot
+# half-exist.
+#
+# FEAT_SCOPE is the directory under board/ that owns the features: the family
+# when there is one, otherwise the board itself. It is computed rather than
+# interpolated inline because the emitted path needs the same segment, and the
+# old inline form omitted it entirely for a board with no family — which would
+# have produced board/features/... the first time a non-EA board used one.
+if [ -n "$COMMON_CFG" ]; then
+    FEAT_SCOPE="$(basename "$(dirname "$COMMON_CFG")")"
+else
+    FEAT_SCOPE="$BOARD"
+fi
+FEAT_DIR="$REPO/board/$FEAT_SCOPE/features"
 # Kernel fragments that accompany the selected features, as BR2_EXTERNAL-relative
 # paths (Buildroot expands $(BR2_EXTERNAL_OPENHC_PATH) itself).
 FEAT_FRAGMENTS=""
 for f in $FEATURES; do
-    if [ -f "$FEAT_LINUX_DIR/$f.fragment" ]; then
-        FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${COMMON_CFG:+$(basename "$(dirname "$COMMON_CFG")")/}linux/$f.fragment"
+    if [ -f "$FEAT_DIR/$f/linux.fragment" ]; then
+        FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/$FEAT_SCOPE/features/$f/linux.fragment"
     fi
 done
 
@@ -173,12 +202,12 @@ done
         echo
     fi
     for f in $FEATURES; do
-        if [ -f "$FEAT_DIR/$f.defconfig" ]; then
+        if [ -f "$FEAT_DIR/$f/defconfig" ]; then
             echo "# --- feature: $f ---"
-            cat "$FEAT_DIR/$f.defconfig"
+            cat "$FEAT_DIR/$f/defconfig"
             echo
         else
-            echo "build.sh: unknown feature '$f' (no $FEAT_DIR/$f.defconfig)" >&2
+            echo "build.sh: unknown feature '$f' (no $FEAT_DIR/$f/defconfig)" >&2
             exit 1
         fi
     done
@@ -223,6 +252,14 @@ done
 } > "$EFFECTIVE"
 [ -n "$FEATURES" ] && echo ">> features: $FEATURES"
 echo ">> defconfig: $EFFECTIVE"
+
+# Compose the defconfig and stop. Useful on its own — you can read exactly what
+# a board resolves to without waiting for a build — and it is how the feature
+# composition is regression-tested when this file changes.
+if [ -n "${OHC_DEFCONFIG_ONLY:-}" ]; then
+    cat "$EFFECTIVE"
+    exit 0
+fi
 
 # BR2_EXTERNAL takes a space-separated list, so a downstream tree can add its
 # own packages and board files alongside ours.

@@ -1,6 +1,6 @@
 # Audio: ALSA userspace plus the two network audio receivers.
 #
-# Pairs with linux/audio.fragment, appended automatically by build/build.sh.
+# Pairs with linux.fragment beside it, appended automatically by build/build.sh.
 #
 # The kernel half (CE5300 I2S + ADAU1451) is openHC's own; see the fragment.
 # This half is what makes the box useful: a machine that appears on the network
