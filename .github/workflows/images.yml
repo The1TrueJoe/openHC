@@ -184,6 +184,34 @@ jobs:
           restore-keys: |
             dl-${{ env.BUILDROOT_REF }}-
 
+      # The expensive thing is the CROSS TOOLCHAIN, and it is identical on every
+      # run: host-gcc-initial and host-gcc-final are ~15 of the ~33 minutes, and
+      # nothing in this repo changes their config from one commit to the next.
+      # Caching dl/ above only saves the download, not a single compiled object.
+      #
+      # Safe to reuse because build/build.sh already defends the two ways an
+      # incremental Buildroot tree goes wrong:
+      #   * it WIPES $OUT when the resolved toolchain config changes, and again
+      #     when the on-disk compiler cannot do what .config claims;
+      #   * it runs `linux-dirclean` every time, so the kernel is always
+      #     re-extracted, re-patched and re-injected with our drivers — an
+      #     edit to board/*/kernel never rides on a stale stamp.
+      #
+      # Rolling key: the run id makes every run save a fresh entry, and
+      # restore-keys picks up the newest previous one.
+      # restore/save split rather than actions/cache, because the plain action
+      # does NOT save when the job fails — and a failed build is exactly when
+      # the toolchain is most worth keeping. A typo in a driver should cost one
+      # kernel rebuild, not another 15 minutes of gcc.
+      - name: Restore Buildroot output tree
+        id: outcache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/build/${{ matrix.board }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
+          restore-keys: |
+            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-
+
       - name: Fetch Buildroot
         run: |
           set -e
@@ -259,6 +287,25 @@ jobs:
           path: ${{ steps.bundle.outputs.bundle }}
           retention-days: 14
           if-no-files-found: error
+
+      # Drop what is regenerated every run before saving: the kernel tree is
+      # linux-dirclean'd on the next build regardless, and target/ and images/
+      # are rebuilt from staging. Keeping them would roughly double an entry
+      # that has to fit a 10 GB repo-wide budget shared with dl/.
+      - name: Trim the output tree before caching
+        if: always()
+        run: |
+          O=output/build/${{ matrix.board }}
+          [ -d "$O" ] || exit 0
+          rm -rf "$O"/build/linux-* "$O"/target "$O"/images
+          echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
+
+      - name: Save Buildroot output tree
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: output/build/${{ matrix.board }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.
