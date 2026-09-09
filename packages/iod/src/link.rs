@@ -160,22 +160,22 @@ impl Link {
         Ok(u32::from_be_bytes([p[0], p[1], p[2], p[3]]))
     }
 
-    /// State of ONE relay.
+    /// State of ONE relay, addressed by 0-BASED INDEX.
     ///
-    /// RELAY_GET takes a SELECTOR and answers `[selector, state]` — it reports a
-    /// single relay, not a bitmap. That is why an unselected query answers
-    /// `ff 00`: `ff` is the echoed "nothing in particular", not a state.
+    /// The selector is an index, not a bitmask. The firmware echoes whatever it
+    /// is handed — 0x00 through 0x09 all come back verbatim — so a GET cannot
+    /// distinguish the two readings. A TOGGLE sweep can, and did: on a live
+    /// HC-800, selectors 0x00..0x03 each flip exactly one relay while 0x04 and
+    /// above do nothing.
     ///
-    /// Decoded empirically on a live HC-800 rather than guessed:
+    ///     TOGGLE 00 -> relay 0 moves      TOGGLE 04 -> nothing
+    ///     TOGGLE 03 -> relay 3 moves      TOGGLE 08 -> nothing
     ///
-    ///     GET 01 -> [01, 00]      GET 04 -> [04, 00]
-    ///     GET 02 -> [02, 01]      GET 08 -> [08, 00]
-    ///
-    /// with relay 2 genuinely energised at the time, and the same values coming
-    /// back from TOGGLE. An earlier reading assumed a per-relay bitmap, which
-    /// `ff` disproves on a four-relay board.
+    /// This was previously read as a bitmask, which sent 1<<index and so
+    /// addressed relays 1 and 2 while never addressing 0 or 3 at all — the
+    /// board looked like it had two working relays and two dead ones.
     pub fn relay_state(&mut self, index: u8) -> io::Result<bool> {
-        let sel = 1u8 << index;
+        let sel = index;
         let f = self.request(mcu::OP_RELAY_GET, &[sel], Duration::from_millis(400))?;
         let p = &f.payload;
         if p.len() < 2 {
@@ -224,7 +224,7 @@ impl Link {
     /// Toggle one relay and return its resulting state. The reply has the same
     /// `[selector, state]` shape as a GET.
     pub fn relay_toggle(&mut self, index: u8) -> io::Result<bool> {
-        let sel = 1u8 << index;
+        let sel = index;
         let f = self.request(mcu::OP_RELAY_TOGGLE, &[sel], Duration::from_millis(600))?;
         let p = &f.payload;
         if p.len() < 2 {

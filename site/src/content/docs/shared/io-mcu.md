@@ -143,23 +143,34 @@ Captured from a live HC-800 with `ioserver` suspended:
 Note also that this is the one opcode where **the reply is not request+1**:
 `0xd2` answers `0xd7`, not `0xd3`.
 
-#### RELAY_GET's two bytes are not decoded
+#### The relay selector is an INDEX, not a bitmask
 
-The same session asked a live HC-800 — a board with **four** relays — and got:
+Settled on a live HC-800 by sweeping it. `RELAY_GET` echoes whatever selector it
+is handed — `0x00` through `0x09` all come back verbatim — so a read can never
+distinguish the two readings:
 
 ```
---> 10 02 54 11 00 00 00 9b        RELAY_GET
-<-- 10 02 55 11 02 00 02 ff 00 97
+--> 10 02 54 11 00 00 01 …        RELAY_GET sel 0x01
+<-- 10 02 55 11 00 00 02 01 00 …  [01, 00]
 ```
 
-`ff 00`. That cannot be a plain "bit N = relay N energised" map, which would
-read `0x0f` at most on four relays. Active-low, a present/valid mask, and an
-uninitialised sentinel are all live candidates. Settling it needs a unit whose
-relays can safely be toggled and watched, so openHC's LM3S firmware reports what
-it is tracking rather than guessing an encoding.
+`RELAY_TOGGLE` can, because only a real relay moves:
 
-`CONTACT_GET` in the same capture returned `00 00 00 00` — a u32 bitmask with
-every contact open, exactly as documented above and confirming that half.
+| selector | toggling it |
+|---|---|
+| `0x00` `0x01` `0x02` `0x03` | flips exactly one relay each |
+| `0x04` and above | does nothing |
+
+So the four relays are addressed `0..3`, and the reply's first byte is the echoed
+index rather than a mask.
+
+An earlier reading took it for a bitmask and sent `1 << index`. That addressed
+relays 1 and 2 — which worked — and turned indices 2 and 3 into `0x04` and
+`0x08`, which address nothing. The board appeared to have two working relays and
+two dead ones for as long as that assumption stood. It has four.
+
+The `ff 00` an unselected query returns is consistent with this: `ff` is simply
+an out-of-range index echoed back.
 
 #### The HC-800 has the same empty query surface
 

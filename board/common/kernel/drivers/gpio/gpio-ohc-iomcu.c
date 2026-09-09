@@ -262,15 +262,22 @@ out:
 }
 
 /*
- * RELAY_GET takes a SELECTOR and answers [selector, state] — it reports one
- * relay, not a bitmap. Decoded empirically: GET 0x02 answers [02, 01] with
- * relay 2 energised, and an unselected query answers ff 00, where ff is the
- * echoed "nothing in particular" rather than a state.
+ * RELAY_GET/RELAY_TOGGLE take a 0-BASED INDEX and answer [index, state].
+ *
+ * Not a bitmask, which is what an earlier reading assumed. The firmware echoes
+ * whatever selector it is given — 0x00 through 0x09 all come back verbatim —
+ * so a GET alone cannot tell the two apart. A TOGGLE can: sweeping the
+ * selectors on a live HC-800, 0x00..0x03 each flip exactly one relay and
+ * 0x04 and above do nothing at all.
+ *
+ * Under the bitmask reading, index 2 and 3 became 0x04 and 0x08 and addressed
+ * nothing, which is precisely why this board looked like it had two working
+ * relays and two dead ones. It has four.
  */
 static int ohc_relay_get(struct ohc_iomcu *mcu, int index, bool *on)
 {
 	struct ohc_frame f;
-	u8 sel = BIT(index);
+	u8 sel = (u8)index;
 	int ret;
 
 	ret = ohc_request(mcu, OP_RELAY_GET, &sel, 1, &f);
@@ -287,7 +294,7 @@ static int ohc_relay_get(struct ohc_iomcu *mcu, int index, bool *on)
 static int ohc_relay_toggle(struct ohc_iomcu *mcu, int index, bool *now)
 {
 	struct ohc_frame f;
-	u8 sel = BIT(index);
+	u8 sel = (u8)index;
 	int ret;
 
 	ret = ohc_request(mcu, OP_RELAY_TOGGLE, &sel, 1, &f);
