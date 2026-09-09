@@ -43,6 +43,34 @@ gpiochip1 - 8 lines:
 provides the MQTT surface, the retained state, the settings and the config GUI —
 but it reaches the hardware through `/dev/gpiochipN` like anything else would.
 
+## The whole chain
+
+```
+       relays, contacts                    the hardware
+              │
+      DLE/STX over a UART
+              │
+   gpio-ohc-iomcu  (line discipline)       the kernel owns the protocol
+              │
+      /dev/gpiochipN                       standard, and open to anything
+        │          │
+   gpioset       iod                       a client, like any other
+                   │
+                 MQTT                      the IO surface
+                   │
+        ┌──────────┴──────────┐
+   config GUI          Home Assistant      both speak the same topics
+```
+
+Each layer is replaceable and none is privileged. `gpioset` and iod are peers.
+The config GUI has no special access — it is an MQTT client, and its commands
+are the ones an automation would send.
+
+**iod does not hold the lines.** It requests, acts and releases for every
+operation, exactly as `gpioset` does. A daemon that claimed `relay0..3` for its
+lifetime would make every external tool fail with `EBUSY`, and the box would be
+no more open than when a daemon owned the serial port.
+
 ## Why a line discipline, not serdev
 
 `serdev` is the modern way a kernel driver claims a UART instead of leaving it
@@ -156,3 +184,24 @@ not revive it either, at either polarity. The recovery is a power cycle. See the
   device node at all.
 - **Contact interrupts**, so a `gpiomon` on a contact reports edges rather than
   the caller polling a cache that is already being polled.
+
+## Two failures worth remembering
+
+Both cost a build cycle each, and neither produced an error message anywhere.
+
+**A request issued from the line discipline's `open()` can never be answered.**
+`tty_set_ldisc()` holds `tty->ldisc_sem` for writing across the ldisc's open, and
+the receive path needs that same lock to deliver bytes. So the reply cannot
+arrive until `open()` returns. Identify is done from a work item now, once the
+lock is gone.
+
+**A line discipline that implements only `receive_buf` and never sets
+`tty->receive_room` is handed nothing, forever.** The tty layer clamps delivery
+to `receive_room`, which defaults to zero. Implement `receive_buf2` — it returns
+what it consumed and is not clamped — or set `receive_room`, or the driver
+transmits happily and observes silence.
+
+The shared symptom is the nasty part: a microcontroller that answers a userspace
+daemon perfectly and appears dead to the kernel driver on the same wire, at the
+same baud, with the same termios. Everything points at the hardware, and the
+hardware is fine.
