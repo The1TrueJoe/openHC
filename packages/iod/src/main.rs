@@ -173,20 +173,73 @@ async fn poll_via_mcu(cfg: Arc<Config>) {
         for f in strays {
             if f.opcode == mcu::OP_IRIN_CAPTURED {
                 // The receiver is the FRONT one — same panel as the blaster,
-                // so it lives under the same prefix: ir/front/send goes out,
-                // ir/front/rx comes back.
-                cfg.bus.event(
-                    "ir/front/rx",
-                    serde_json::json!({
-                        "pronto": f.payload.chunks(2)
-                            .map(|c| format!("{:04x}", u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])))
-                            .collect::<Vec<_>>().join(" "),
-                        "bytes": f.payload.len(),
+                // so it shares the prefix: ir/front/send goes out, this comes
+                // back.
+                //
+                // What the firmware hands us is NOT Pronto, and publishing it
+                // as though it were would be a trap: the first word is the
+                // 50 MHz timer PERIOD, not a Pronto carrier word, and every
+                // mark carries bit 15. Fed straight back to ir/front/send that
+                // reads as a ~3 kHz carrier and nonsense durations. So convert
+                // it here, and publish something that can actually be replayed.
+                let raw: Vec<u16> = f
+                    .payload
+                    .chunks(2)
+                    .map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)]))
+                    .collect();
+                let ev = match ir_capture_to_pronto(&raw) {
+                    Some((pronto, hz)) => serde_json::json!({
+                        "pronto": pronto,
+                        "carrier_hz": hz,
+                        "durations": raw.len().saturating_sub(1),
                     }),
-                );
+                    // Too short to carry a period plus a burst. Say so rather
+                    // than emitting a code that cannot be replayed.
+                    None => serde_json::json!({
+                        "error": "capture too short to decode",
+                        "words": raw.len(),
+                    }),
+                };
+                cfg.bus.event("ir/front/rx", ev);
             }
         }
     }
+}
+
+/// Turn a raw IRIN capture into a Pronto code that `ir.send` will accept.
+///
+/// The capture is `[timer period][durations…]`, the period being the 50 MHz
+/// system clock divided by the carrier, and bit 15 of each duration marking a
+/// burst rather than a gap. Pronto wants a carrier WORD and plain durations, so
+/// both have to be converted — and getting either wrong yields a code that is
+/// accepted and radiates the wrong thing.
+fn ir_capture_to_pronto(raw: &[u16]) -> Option<(String, u32)> {
+    const SYS_HZ: u32 = 50_000_000;
+    const PRONTO_HZ: u32 = 4_145_146; // 1e6 / 0.241246
+    let period = *raw.first()? as u32;
+    if period == 0 || raw.len() < 3 {
+        return None;
+    }
+    let carrier_hz = SYS_HZ / period;
+    if carrier_hz == 0 {
+        return None;
+    }
+    let word = (PRONTO_HZ / carrier_hz) as u16;
+    // Trailing zero words are padding, not a burst of length zero.
+    let durs: Vec<u16> = raw[1..]
+        .iter()
+        .map(|d| d & 0x7fff)
+        .take_while(|d| *d != 0)
+        .collect();
+    if durs.is_empty() {
+        return None;
+    }
+    let pairs = (durs.len() / 2) as u16;
+    let mut out = format!("0000 {word:04X} {pairs:04X} 0000");
+    for d in &durs {
+        out.push_str(&format!(" {d:04X}"));
+    }
+    Some((out, carrier_hz))
 }
 
 fn main() {
@@ -336,4 +389,31 @@ fn main() {
             eprintln!("iod: server error: {e}");
         }
     }));
+}
+
+#[cfg(test)]
+mod ir_tests {
+    use super::ir_capture_to_pronto;
+
+    #[test]
+    fn a_real_capture_decodes_to_a_replayable_code() {
+        // Straight off the front receiver with a remote pointed at it. The
+        // leading 0x0522 is the 50 MHz timer period, not a Pronto word, and the
+        // marks carry bit 15 — publishing this raw as "pronto" would replay at
+        // about 3 kHz instead of 38.
+        let raw = [0x0522u16, 0x8062, 0x0017, 0x8018, 0x0017, 0x8030, 0x0017];
+        let (code, hz) = ir_capture_to_pronto(&raw).expect("decodes");
+        assert_eq!(hz, 50_000_000 / 0x0522); // 38,052 Hz — a normal remote
+        // Carrier becomes a Pronto WORD, and every mark loses bit 15.
+        assert!(code.starts_with("0000 006C "), "got {code}");
+        assert!(code.contains(" 0062 "), "mark should lose bit 15: {code}");
+        assert!(!code.contains("8062"), "bit 15 must not survive: {code}");
+    }
+
+    #[test]
+    fn refuses_what_cannot_be_replayed() {
+        assert!(ir_capture_to_pronto(&[]).is_none());
+        assert!(ir_capture_to_pronto(&[0x0522]).is_none());     // period, no burst
+        assert!(ir_capture_to_pronto(&[0, 0x8062, 0x17]).is_none()); // period 0
+    }
 }
