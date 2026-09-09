@@ -1,0 +1,33 @@
+# /dev/ohc — this board's IO under the names on the case.
+#
+# Every kernel path underneath is a number that is an accident of probe order:
+# /dev/lircN is a first-free minor from a counter shared by every rc driver in
+# the kernel, and ttyS numbering depends on CONFIG_SERIAL_8250_RUNTIME_UARTS —
+# the very setting whose mainline default silently drops ttyS4 on an HC-800.
+# The names do not move.
+#
+#   /dev/ohc/ir/out1 … outN     rear IR jacks, as labelled
+#   /dev/ohc/ir/front-blaster   internal emitter behind the front panel
+#   /dev/ohc/ir/front-receiver  the learner on the same panel
+#   /dev/ohc/serial/1 … N       rear RS-232, in the order board.env declares
+#
+# RELAYS, CONTACTS AND THE GPIOCHIP GET NO ENTRY, and that is the point rather
+# than a gap. They are GPIO LINES, and lines are already named by the kernel —
+# `relay1` by gpio-ohc-iomcu on the HC and EA families, by gpio-line-names in
+# the device tree on the IO Extender. A path to a chip NUMBER would be a step
+# back from that:
+#
+#   gpioset $(gpiofind relay1)=1
+#   gpioget $(gpiofind contact4)
+#
+# The naming rule itself is in ohc-udev-name, not duplicated here: the serial
+# order comes from board.env and the IR labels come from the driver's DEV_NAME,
+# and neither belongs in a match expression.
+
+# IR. DEV_NAME lives on the parent rc device, not on the lirc node, so this
+# cannot be an ENV match — the helper reads it out of sysfs.
+SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/ir/%c"
+
+# Host UARTs. Nothing matches on the EA family, where the user ports are routed
+# through the microcontroller and have no device node at all.
+SUBSYSTEM=="tty", KERNEL=="ttyS*", PROGRAM="/usr/bin/ohc-udev-name serial %k", SYMLINK+="ohc/serial/%c"

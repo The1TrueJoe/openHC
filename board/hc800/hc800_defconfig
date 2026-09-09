@@ -150,12 +150,11 @@ BR2_TARGET_ROOTFS_CPIO_GZIP=y
 # --- mDNS identity: avahi (built without D-Bus to stay light) ---
 
 # --- on-target tools ---
-# It is a PC: lspci is how you check the chipset. No usbutils to go with it —
-# Buildroot's usbutils depends on BR2_PACKAGE_HAS_UDEV for its hwdb, and this
-# image uses busybox mdev like every other board here, so the symbol would be
-# silently dropped rather than built. /sys/bus/usb/devices has the same VID:PID
-# information; the radio is 0bda:8172.
+# It is a PC: lspci is how you check the chipset, and lsusb goes with it.
+# usbutils needs BR2_PACKAGE_HAS_UDEV for its hwdb, which the fleet now has —
+# board/common moved to eudev so the IO devices can be named by rule.
 BR2_PACKAGE_PCIUTILS=y
+BR2_PACKAGE_USBUTILS=y
 # The eight named ICH GPIO lines (zigbee_reset, io_reset, wlan_disable,
 # lan_disable, the reset button, the three board-revision straps) on the chardev
 # ABI. Mainline gpio-ich does not name lines, so these are chip+offset — the map

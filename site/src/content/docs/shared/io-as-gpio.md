@@ -261,12 +261,11 @@ the friendlier path, so the naming rule lives in exactly one place.
 
 ## /dev/ohc — the board under its own names
 
-`S03ohcdev` builds one namespace for everything this board has, from `board.env`
-plus what the kernel actually registered:
+udev builds one namespace for everything this board has, from `board.env` plus
+what the kernel actually registered:
 
 ```console
 # find /dev/ohc -type l | sort
-/dev/ohc/gpiochip            -> /dev/gpiochip1
 /dev/ohc/ir/front-blaster    -> /dev/lirc6
 /dev/ohc/ir/front-receiver   -> /dev/lirc7
 /dev/ohc/ir/out1             -> /dev/lirc0
@@ -277,24 +276,34 @@ plus what the kernel actually registered:
 ```
 
 Every number on the right is an accident: the lirc minor is first-free from a
-shared counter, the gpiochip number depends on probe order, and `ttyS`
-numbering depends on `CONFIG_SERIAL_8250_RUNTIME_UARTS` — the very setting that
-silently drops `ttyS4` on this board at mainline's default. Every name on the
-left is what the hardware is.
+counter shared with every rc driver, and `ttyS` numbering depends on
+`CONFIG_SERIAL_8250_RUNTIME_UARTS` — the very setting that silently drops
+`ttyS4` on this board at mainline's default. Every name on the left is what the
+hardware is.
 
-**Relays and contacts get no entry, and that is not an oversight.** They are
-GPIO *lines*, not devices — there is no node to point at. They live inside
-`/dev/ohc/gpiochip` and are addressed by name within it, which is the same
-stable-handle idea one level down:
+**Relays, contacts and the gpiochip get no entry, and that is the point rather
+than a gap.** They are GPIO *lines*, and lines are already named by the kernel —
+`relay1` by `gpio-ohc-iomcu` on the HC and EA families, by `gpio-line-names` in
+the device tree on the IO Extender. A path to a chip *number* would be a step
+back from that:
 
 ```bash
 gpioset $(gpiofind relay1)=1
 ```
 
-It runs at S03 and again from `S12iomcu`, because the IR nodes and the gpiochip
-do not exist until the line discipline has attached. It is idempotent: it tears
-the tree down and rebuilds it from what is present, so a board where the
-microcontroller never answered simply gets the serial links and nothing else.
+### Why the fleet runs eudev
+
+mdev can run a rule too, but busybox mdev has no include mechanism, so shipping
+ours would mean forking Buildroot's `/etc/mdev.conf` and letting it drift on
+every bump — the same "two copies of one thing" problem the daemon's own DLE/STX
+implementation had. udev rules are additive files; `70-openhc-io.rules` adds two
+lines and touches nothing else. It also fires on hotplug rather than only at
+boot, which an init script laying down symlinks cannot do.
+
+Both rules delegate to `ohc-udev-name` rather than matching in the rules file,
+because neither answer is a property of the device itself: the IR label lives on
+the *parent* rc device, and the serial numbering is `board.env`'s declaration
+order. Putting either in a match expression would be a second copy of it.
 
 :::note[The front panel is not "jack 7"]
 The blaster is a different piece of hardware that happens to sit behind the same

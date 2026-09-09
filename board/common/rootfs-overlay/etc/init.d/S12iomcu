@@ -42,7 +42,8 @@ start() {
     [ -n "$OHC_RELAYS" ]     && echo "$OHC_RELAYS"     > "$PARAMS/relays"
     [ -n "$OHC_CONTACTS" ]   && echo "$OHC_CONTACTS"   > "$PARAMS/contacts"
     # IR too: each emitter becomes its own lirc device, so ir-ctl and
-    # ir-keytable work without knowing anything about Control4.
+    # ir-keytable work without knowing anything about Control4. udev names them
+    # under /dev/ohc/ir as they appear — see 70-openhc-io.rules.
     [ -n "$OHC_IR_OUT" ]     && echo "$OHC_IR_OUT"     > "$PARAMS/ir_out"
     [ -n "$OHC_IR_BLASTER" ] && echo "$OHC_IR_BLASTER" > "$PARAMS/ir_blaster"
     [ -n "$OHC_IR_IN" ]      && echo "$OHC_IR_IN"      > "$PARAMS/ir_in"
@@ -61,14 +62,10 @@ start() {
     elif [ "$lines" -gt 0 ]; then
         echo "iomcu: attached to $OHC_IO_MCU_TTY but no gpiochip appeared (MCU not answering?)"
     fi
-
-    # The IR nodes and the gpiochip exist only now, so rebuild /dev/ohc.
-    /etc/init.d/S03ohcdev start
 }
 
 stop() {
     [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE"
-    /etc/init.d/S03ohcdev start
 }
 
 case "$1" in

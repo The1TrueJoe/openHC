@@ -22,7 +22,16 @@ BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
 # Password login on serial + ssh. root's password is "openhc"; board/common/
 # post-build.sh adds an `openhc` uid-0 alias so `openhc`/`openhc` is also root.
 BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
-BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
+# eudev, not mdev. The IO on these boards is named — `relay1`, not gpiochip1
+# line 88; `openHC IR front blaster`, not /dev/lirc6 — and turning those names
+# into stable paths is precisely what a device manager's rules are for. mdev can
+# run a rule too, but busybox mdev has no include mechanism, so shipping ours
+# would mean forking Buildroot's /etc/mdev.conf and letting it drift on every
+# bump. udev rules are ADDITIVE files: see /etc/udev/rules.d/70-openhc-io.rules.
+#
+# It also fires on hotplug rather than only at boot, which an init script
+# laying down symlinks cannot do.
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 
 # --- reachability + identity: SSH and mDNS on every board ---
 BR2_PACKAGE_DROPBEAR=y

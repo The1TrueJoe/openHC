@@ -4,8 +4,8 @@
 //! registers out1..N, the blaster, then the receiver from one work item — but
 //! rc-core hands out the first free minor from a counter shared with every rc
 //! driver in the kernel, so the BASE is not ours to fix. Plug in a USB IR
-//! dongle and everything shifts. `DEV_NAME` is the handle that does not move;
-//! S03ohcdev turns it into a path under /dev/ohc/ir.
+//! dongle and everything shifts. `DEV_NAME` is the handle that does not move,
+//! and udev turns it into a path under /dev/ohc/ir.
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 pub struct Dev {
     pub path: PathBuf,
     pub name: String,
-    /// Stable path under `/dev/ohc/ir`, when S03ohcdev has made one. DISCOVERED,
-    /// not computed: the script owns the naming, so there is no second copy of
-    /// the rule here to drift out of step with it.
+    /// Stable path under `/dev/ohc/ir`, when udev has made one. DISCOVERED, not
+    /// computed: `ohc-udev-name` owns the naming rule, so there is no second
+    /// copy of it here to drift out of step.
     pub link: Option<PathBuf>,
 }
 
