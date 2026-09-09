@@ -47,7 +47,7 @@ cp -f "$cpio"    "$IMAGES/$INITRD_NAME"
 # entries that have one.
 cat > "$IMAGES/menu.lst.openhc" <<EOF
 
-title		openHC $BOARD (kernel-up)
+title		openHC $BOARD
 root		$GRUB_ROOT
 kernel		/boot/$KERNEL_NAME console=ttyS0,115200
 initrd		/boot/$INITRD_NAME

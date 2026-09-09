@@ -26,7 +26,7 @@ BR2_arm926t=y
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
 BR2_TARGET_GENERIC_HOSTNAME="openhc-ioxv1"
-BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1 (kernel-up)"
+BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1"
 
 # --- kernel: mainline stable, same version as the EA family ---
 # Mainline dropped DM355 in ~v6.2; the SoC (mach-davinci/dm355.c, clk psc/pll,

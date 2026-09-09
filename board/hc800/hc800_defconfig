@@ -72,7 +72,7 @@ BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
 # GRUB's own terminal and both vendor menu entries use ttyS0 @115200; our
 # menu.lst entry passes the same, so the getty matches.
 BR2_TARGET_GENERIC_HOSTNAME="openhc-hc800"
-BR2_TARGET_GENERIC_ISSUE="openHC Control4 HC-800 (kernel-up)"
+BR2_TARGET_GENERIC_ISSUE="openHC Control4 HC-800"
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
 
