@@ -310,23 +310,39 @@ _wipe_out() {
 # So compare every toolchain-defining symbol against the tree's existing
 # .config, before defconfig overwrites the evidence, and wipe on any change.
 _TC_SYMS='BR2_TOOLCHAIN_BUILDROOT_GLIBC|BR2_TOOLCHAIN_BUILDROOT_MUSL|BR2_TOOLCHAIN_BUILDROOT_UCLIBC|BR2_INSTALL_LIBSTDCPP|BR2_TOOLCHAIN_BUILDROOT_CXX|BR2_USE_WCHAR|BR2_TOOLCHAIN_BUILDROOT_FORTRAN'
-if [ -f "$OUT/.config" ]; then
-    # LAST assignment wins, per symbol -- the same rule kconfig applies. The
-    # effective defconfig is a concatenation in which common sets musl and the
-    # family overrides it to glibc, so a naive grep sees BOTH and would compare
-    # unequal against the resolved .config on every single build, wiping the
-    # tree every time.
-    # Both forms have to be read: kconfig writes an enabled symbol as
-    # "SYM=y" and a disabled one as the COMMENT "# SYM is not set". Matching
-    # only SYM=y means a later disable is invisible, and musl never drops out
-    # when the family overrides it to glibc.
-    _resolve() {
-        sed -nE "s/^($_TC_SYMS)=y\$/\1 y/p; s/^# ($_TC_SYMS) is not set\$/\1 n/p" "$1" 2>/dev/null |
-            awk '{ last[$1] = $2 } END { for (s in last) if (last[s] == "y") print s }' |
-            sort | tr '\n' ' '
-    }
-    _want=$(_resolve "$EFFECTIVE")
-    _have=$(_resolve "$OUT/.config")
+# LAST assignment wins, per symbol -- the same rule kconfig applies. The
+# effective defconfig is a concatenation in which common sets musl and the
+# family overrides it to glibc, so a naive grep sees BOTH and would compare
+# unequal on every single build, wiping the tree every time.
+# Both forms have to be read: kconfig writes an enabled symbol as "SYM=y" and a
+# disabled one as the COMMENT "# SYM is not set". Matching only SYM=y means a
+# later disable is invisible, and musl never drops out when the family
+# overrides it to glibc.
+_resolve() {
+    sed -nE "s/^($_TC_SYMS)=y\$/\1 y/p; s/^# ($_TC_SYMS) is not set\$/\1 n/p" "$1" 2>/dev/null |
+        awk '{ last[$1] = $2 } END { for (s in last) if (last[s] == "y") print s }' |
+        sort | tr '\n' ' '
+}
+_want=$(_resolve "$EFFECTIVE")
+
+# COMPARE DEFCONFIG TO DEFCONFIG, via a stamp of what we last built from.
+#
+# The obvious thing -- compare $EFFECTIVE against the tree's .config -- is what
+# this used to do, and it is wrong in a way that only shows up once the output
+# tree is cached between builds. .config is kconfig's RESOLVED output and holds
+# symbols no defconfig ever sets: BR2_USE_WCHAR is selected by a package, not by
+# us, so it appears in .config and never in $EFFECTIVE. The two therefore could
+# not match, and every cached build "detected a toolchain change" and wiped the
+# tree -- turning a 15-minute gcc into something CI rebuilt every single time
+# while reporting a cache hit.
+#
+# A missing stamp on a tree that has a .config means an older output directory,
+# not a change. Leave it alone and let the compiler probe below judge it: that
+# check asks the toolchain what it can actually DO, which is the question that
+# matters, and it cannot be fooled by a symbol nobody wrote.
+_TC_STAMP="$OUT/.ohc-toolchain"
+if [ -f "$OUT/.config" ] && [ -f "$_TC_STAMP" ]; then
+    _have=$(cat "$_TC_STAMP" 2>/dev/null)
     if [ "$_want" != "$_have" ]; then
         echo ">> toolchain change detected"
         echo ">>   was: ${_have:-<none>}"
@@ -359,6 +375,8 @@ if [ -d "$OUT/host/bin" ] && grep -q '^BR2_INSTALL_LIBSTDCPP=y$' "$EFFECTIVE" 2>
 fi
 
 "${M[@]}" defconfig BR2_DEFCONFIG="$EFFECTIVE"
+# Record the toolchain this tree now carries, for the next run's comparison.
+mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
 # Kernel bring-up iterates on both the config fragment AND the patch set
 # (board/ea-common/patches/linux/). Buildroot applies patches only at EXTRACT time and
 # won't re-extract a cached source, so a plain reconfigure silently ignores new
