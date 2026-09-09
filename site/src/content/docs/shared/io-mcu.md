@@ -2,7 +2,7 @@
 title: The IO microcontroller
 description: The DLE/STX wire protocol, the bring-up handshake, the decoded per-board profile table, and IR in both directions.
 sidebar:
-  order: 1
+  order: 3
 ---
 
 The EA family's and HC family's IR jacks, relays, contacts and combo serial ports

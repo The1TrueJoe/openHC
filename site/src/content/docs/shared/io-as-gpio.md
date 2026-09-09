@@ -81,13 +81,10 @@ no more open than when a daemon owned the serial port.
 ## Numbering follows the panel
 
 Line names, MQTT topics, the GUI and the serial WebSocket path all count from
-**1**, because that is what is printed on the back of the box: `relay1` is the
-terminal marked 1. An installer reading a silkscreen and an integrator writing
-an automation see the same number.
-
-Zero-based indices survive only where they are genuinely offsets — the gpiochip
-line offset, and the selector on the wire to the microcontroller. Two places
-convert, and only two: `mqtt::topics` in iod and the `panel()` helper in the GUI.
+**1**, because that is what is printed on the back of the box. Zero-based
+indices survive only where they are genuinely offsets — the gpiochip line
+offset, and the selector on the wire. See [How IO is named](/shared/io-naming/)
+for the convention this is part of, and which boards meet it.
 
 A topic numbered `0` is rejected rather than quietly treated as the first
 device. Nothing is labelled 0, so a client sending it has almost certainly
@@ -250,78 +247,10 @@ the first free minor from one IDA shared by every rc driver in the kernel, and a
 driver cannot ask for a particular number. Plug in a USB IR receiver that probes
 first and every one of ours shifts by one.
 
-So the fix is a stable *path*, not a stable number — the same answer udev gives
-with `SYMLINK+=`, and the same reason `gpiodetect` is matched on `ohc-iomcu`
-rather than `gpiochip1`. That is what `/dev/ohc` is: see
-[the whole namespace](#devohc--the-board-under-its-own-names) below.
-
-iod does not use those symlinks to *find* anything — it reads `DEV_NAME` from
-sysfs, which is true whether or not the script ran. It reads them only to report
-the friendlier path, so the naming rule lives in exactly one place.
-
-## /dev/ohc — the board under its own names
-
-udev builds one namespace for everything this board has, from `board.env` plus
-what the kernel actually registered:
-
-```console
-# find /dev/ohc -type l | sort
-/dev/ohc/ir/front-blaster    -> /dev/lirc6
-/dev/ohc/ir/front-receiver   -> /dev/lirc7
-/dev/ohc/ir/out1             -> /dev/lirc0
-...
-/dev/ohc/ir/out6             -> /dev/lirc5
-/dev/ohc/serial/1            -> /dev/ttyS1
-/dev/ohc/serial/2            -> /dev/ttyS2
-```
-
-Every number on the right is an accident: the lirc minor is first-free from a
-counter shared with every rc driver, and `ttyS` numbering depends on
-`CONFIG_SERIAL_8250_RUNTIME_UARTS` — the very setting that silently drops
-`ttyS4` on this board at mainline's default. Every name on the left is what the
-hardware is.
-
-**Relays, contacts and the gpiochip get no entry, and that is the point rather
-than a gap.** They are GPIO *lines*, and lines are already named by the kernel —
-`relay1` by `gpio-ohc-iomcu` on the HC and EA families, by `gpio-line-names` in
-the device tree on the IO Extender. A path to a chip *number* would be a step
-back from that:
-
-```bash
-gpioset $(gpiofind relay1)=1
-```
-
-### Why the fleet runs eudev
-
-mdev can run a rule too, but busybox mdev has no include mechanism, so shipping
-ours would mean forking Buildroot's `/etc/mdev.conf` and letting it drift on
-every bump — the same "two copies of one thing" problem the daemon's own DLE/STX
-implementation had. udev rules are additive files; `70-openhc-io.rules` adds two
-lines and touches nothing else. It also fires on hotplug rather than only at
-boot, which an init script laying down symlinks cannot do.
-
-Both rules delegate to `ohc-udev-name` rather than matching in the rules file,
-because neither answer is a property of the device itself: the IR label lives on
-the *parent* rc device, and the serial numbering is `board.env`'s declaration
-order. Putting either in a match expression would be a second copy of it.
-
-:::note[The front panel is not "jack 7"]
-The blaster is a different piece of hardware that happens to sit behind the same
-opcode: an emitter pointed out of the case, with no socket to plug anything
-into. Numbering it after the jacks would send somebody looking for a seventh
-connector. It is named, and its MQTT topic is `ir/front/send` — sharing a prefix
-with `ir/front/rx`, which is the receiver on the same panel.
-:::
-
-### The carrier survives a capture
-
-A learned code is only replayable if you know what carrier it was learned at.
-rc-core's raw events are durations in microseconds and carry no frequency, so
-the driver emits a `LIRC_MODE2_FREQUENCY` event ahead of every capture with what
-the firmware measured, then a `LIRC_MODE2_TIMEOUT` to mark the end of the code.
-iod turns that back into a Pronto string — the same format `ir/front/send`
-accepts, so a code learned on the front receiver can be sent straight back out
-without any conversion in between.
+So the fix is a stable *path*, which is what `/dev/ohc/ir/*` is — see
+[How IO is named](/shared/io-naming/). iod does not use those symlinks to *find*
+anything: it reads `DEV_NAME` from sysfs, which is true whether or not udev ran,
+and reads the links only to report the friendlier path.
 
 ## Still to come
 

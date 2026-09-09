@@ -2,7 +2,7 @@
 title: Recovery
 description: Read this before writing anything to a device — what each button does, and the one region on each board that must never be touched.
 sidebar:
-  order: 3
+  order: 4
 ---
 
 :::danger[Read this before writing anything to a device]

@@ -10,6 +10,8 @@
 #   /dev/ohc/ir/front-blaster   internal emitter behind the front panel
 #   /dev/ohc/ir/front-receiver  the learner on the same panel
 #   /dev/ohc/serial/1 … N       rear RS-232, in the order board.env declares
+#   /dev/ohc/radio/zigbee       the EmberZNet NCP, wherever it is wired
+#   /dev/ohc/radio/zwave        likewise
 #
 # RELAYS, CONTACTS AND THE GPIOCHIP GET NO ENTRY, and that is the point rather
 # than a gap. They are GPIO LINES, and lines are already named by the kernel —
@@ -29,5 +31,13 @@
 SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/ir/%c"
 
 # Host UARTs. Nothing matches on the EA family, where the user ports are routed
-# through the microcontroller and have no device node at all.
-SUBSYSTEM=="tty", KERNEL=="ttyS*", PROGRAM="/usr/bin/ohc-udev-name serial %k", SYMLINK+="ohc/serial/%c"
+# through the microcontroller and have no device node at all — the same rule
+# will name them the day those become real ttys.
+#
+# Not KERNEL=="ttyS*": the CA-1's are ttymxc*, and which 8250-or-not the SoC
+# fits is exactly the kind of thing board.env already answers.
+SUBSYSTEM=="tty", PROGRAM="/usr/bin/ohc-udev-name serial %k", SYMLINK+="ohc/serial/%c"
+
+# Radios. Same helper, same board.env shape; the kind IS the name because a
+# board has at most one of each.
+SUBSYSTEM=="tty", PROGRAM="/usr/bin/ohc-udev-name radio %k", SYMLINK+="ohc/radio/%c"
