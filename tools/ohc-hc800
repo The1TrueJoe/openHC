@@ -197,6 +197,28 @@ my_mac() {
     ip link show 2>/dev/null | awk '$1 == "link/ether" { print $2; exit }'
 }
 
+# Block until the box answers again, and say where it landed. Without this the
+# operator is told to go and look in twenty seconds, which is both a guess and an
+# invitation to check the OLD address — the single most reliable way to convince
+# yourself a perfectly healthy box is dead.
+wait_back() {
+    say "$1 — waiting for it to come back (up to 90s) ..."
+    # Wall clock, not an iteration count: a resolve that has to fall back to the
+    # ARP sweep takes seconds of its own, so counting loops would report a time
+    # the operator could not reconcile with the one on their watch.
+    _start=$(date +%s)
+    while [ $(( $(date +%s) - _start )) -lt 90 ]; do
+        sleep 5
+        _h=$( (resolve) 2>/dev/null ) || continue
+        [ -n "$_h" ] || continue
+        _os=$(which_os "$_h" 2>/dev/null) || continue
+        say "back on $_h running $_os after $(( $(date +%s) - _start ))s"
+        return 0
+    done
+    say "no answer after 90s. Try 'ohc-hc800 find'; if that fails it needs a power cycle."
+    return 1
+}
+
 # ── commands ---------------------------------------------------------------
 cmd=${1:-}; [ $# -gt 0 ] && shift || true
 
@@ -256,6 +278,8 @@ reset)
     # that is the expected outcome, not a failure.
     rsh "$H" 'echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger' 2>/dev/null || true
     save ip ""      # the lease may well change across the reboot
+    save os vendor  # GRUB's default entry, so that is what will answer
+    wait_back "reset"
     ;;
 
 boot)
@@ -268,6 +292,12 @@ boot)
     H=$(resolve); OS=$(which_os "$H")
     MYIP=$(my_ip "$H"); MYMAC=$(my_mac)
     say "$H is running $OS; kernel $(basename "$K"), initrd $(basename "$I")"
+
+    # Said now, while it can still be acted on. The boot log is the one thing
+    # that cannot be recovered afterwards — by the time the box is up, the
+    # messages explaining why it nearly wasn't are already gone.
+    lsof -nP -iUDP:"$NETCON_PORT" >/dev/null 2>&1 ||
+        say "note: nothing is listening on udp/$NETCON_PORT — start 'ohc-hc800 log' now to keep the boot log"
 
     # From the vendor image there is no kexec binary — its kernel is built
     # CONFIG_KEXEC=y but Control4 never shipped the userspace tool. .github/
@@ -300,7 +330,7 @@ boot)
     say "loaded. executing — this connection will drop."
     rsh "$H" "sync; $KX -e" >/dev/null 2>&1 || true
     save ip ""
-    say "kexec'd. It takes a fresh DHCP lease, so give it ~20s then: ohc-hc800 find"
+    wait_back "kexec'd"
     ;;
 
 *)
