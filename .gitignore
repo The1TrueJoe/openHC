@@ -34,3 +34,6 @@ __pycache__/
 /site/.astro/
 /site/node_modules/
 c4-recon/
+
+# agent worktrees — a git repo inside this one, never ours to commit
+.claude/worktrees/
