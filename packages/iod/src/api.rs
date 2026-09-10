@@ -29,26 +29,79 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 type Ctx = State<Arc<Config>>;
 
+/// Document metadata; the paths come from the handlers.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(title = "iod", description = "Local IO. This REST surface is CAPABILITIES AND CONFIGURATION only — \
+driving a relay or sending IR is MQTT, because a relay closing is state an automation subscribes to \
+rather than a request/response. See the AsyncAPI document."),
+    tags(
+        (name = "IO", description = "What this board has, and what is carrying it."),
+        (name = "Config", description = "MQTT settings, and the fields the environment has pinned."),
+        (name = "Recovery", description = "For when the IO transport is the thing that is broken."),
+    )
+)]
+pub struct ApiDoc;
+
 pub fn router(cfg: Arc<Config>) -> Router {
+    // The router and the spec are built from ONE declaration: routes!() reads
+    // each handler's #[utoipa::path] for the method and path it mounts as well
+    // as the documentation it emits, so the two cannot drift apart.
+    let (rest, api) = OpenApiRouter::with_openapi(<ApiDoc as utoipa::OpenApi>::openapi())
+        .routes(routes!(health))
+        .routes(routes!(capabilities))
+        .routes(routes!(mcu_info))
+        .routes(routes!(mcu_reset))
+        .routes(routes!(config_get, config_put))
+        .split_for_parts();
+
+    // WebSockets stay out of the OpenAPI document. They are not
+    // request/response, and describing a byte stream as a GET that never
+    // returns would be worse than leaving them to the AsyncAPI side.
     Router::new()
-        // IO control: MQTT over a WebSocket, for the browser.
         .route("/mqtt", get(ws_mqtt))
-        // A terminal wants bytes, not packets.
         .route("/ws/serial/{index}", get(ws_serial))
-        // What the board is, and how it is configured.
-        .route("/api/health", get(health))
-        .route("/api/io", get(|s: Ctx| run(s, Cmd::Capabilities)))
-        .route("/api/io/mcu", get(|s: Ctx| run(s, Cmd::McuInfo)))
-        // Recovery, over REST as well as MQTT: a wedged MCU is exactly when
-        // you cannot rely on the IO transport to carry the fix.
-        .route("/api/io/mcu/reset", axum::routing::post(|s: Ctx| run(s, Cmd::McuReset)))
-        .route("/api/config", get(get_config).post(put_config))
+        .route("/api/openapi.json", get(move || {
+            let api = api.clone();
+            async move { axum::Json(api) }
+        }))
+        .merge(rest)
         .layer(axum::middleware::from_fn(cors))
         .layer(axum::middleware::from_fn(auth))
         .with_state(cfg)
+}
+
+#[utoipa::path(get, path = "/api/io", tag = "IO",
+    summary = "Everything a client needs to draw the UI",
+    description = "A thing with nothing behind it does not appear: a board with no relays has no \
+`relays` key at all, so a client renders straight from this without special-casing each model. \
+Carries the IR device list with stable /dev/ohc paths, and the front-panel LEDs the kernel registered.",
+    responses((status = 200, description = "capabilities")))]
+async fn capabilities(s: Ctx) -> axum::response::Response {
+    run(s, Cmd::Capabilities).await
+}
+
+#[utoipa::path(get, path = "/api/io/mcu", tag = "IO",
+    summary = "What is carrying this board's IO",
+    description = "iod cannot ask the microcontroller who it is — the kernel driver owns the link, \
+which is the point — so this reports the chip and what board.env declares.",
+    responses((status = 200, description = "chip, part, port")))]
+async fn mcu_info(s: Ctx) -> axum::response::Response {
+    run(s, Cmd::McuInfo).await
+}
+
+#[utoipa::path(post, path = "/api/io/mcu/reset", tag = "Recovery",
+    summary = "Pulse the microcontroller's reset line",
+    description = "Tries both polarities and reports which one revived the part. Available over \
+REST as well as MQTT because a wedged MCU is exactly when you cannot rely on the IO transport to \
+carry the fix.",
+    responses((status = 200, description = "which polarity worked, and whether it answered")))]
+async fn mcu_reset(s: Ctx) -> axum::response::Response {
+    run(s, Cmd::McuReset).await
 }
 
 /// Permissive CORS, deliberately.
@@ -123,6 +176,8 @@ pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+#[utoipa::path(get, path = "/api/health", tag = "IO", summary = "iod liveness",
+    responses((status = 200, description = "ok")))]
 async fn health() -> impl IntoResponse {
     Json(json!({ "ok": true, "service": "iod" }))
 }
@@ -215,7 +270,12 @@ async fn mqtt_ws_loop(c: Arc<Config>, sock: WebSocket) {
 /// The password is never sent back. A GUI does not need it to render a settings
 /// form — it needs to know whether one is SET — and echoing a broker credential
 /// to every page load is a needless way to leak it.
-async fn get_config(State(c): Ctx) -> impl IntoResponse {
+#[utoipa::path(get, path = "/api/config", tag = "Config",
+    summary = "MQTT settings",
+    description = "Fields the environment has pinned come back marked read-only rather than being \
+silently ignored on save.",
+    responses((status = 200, description = "settings + pinned fields")))]
+async fn config_get(State(c): Ctx) -> impl IntoResponse {
     let s = c.settings.lock().unwrap();
     let m = &s.mqtt;
     Json(json!({
@@ -242,12 +302,17 @@ async fn get_config(State(c): Ctx) -> impl IntoResponse {
     }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 struct ConfigReq {
     mqtt: serde_json::Value,
 }
 
-async fn put_config(State(c): Ctx, Json(req): Json<ConfigReq>) -> axum::response::Response {
+#[utoipa::path(post, path = "/api/config", tag = "Config",
+    summary = "Save MQTT settings",
+    description = "Restarts the broker or the bridge as needed; a pinned field is refused rather \
+than accepted and dropped.",
+    responses((status = 200, description = "saved")))]
+async fn config_put(State(c): Ctx, Json(req): Json<ConfigReq>) -> axum::response::Response {
     let mut next = {
         let s = c.settings.lock().unwrap();
         s.mqtt.clone()

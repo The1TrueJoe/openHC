@@ -17,8 +17,18 @@
 mod history;
 mod sensors;
 
-use axum::{extract::Query, extract::State, routing::get, Json, Router};
+use axum::{extract::Query, extract::State, Json};
+use utoipa::OpenApi;
+use utoipa_axum::{router::OpenApiRouter, routes};
 use std::sync::{Arc, Mutex};
+
+/// Document metadata. The paths come from the handlers themselves.
+#[derive(OpenApi)]
+#[openapi(
+    info(title = "sysmond", description = "Board telemetry: temperatures, fans, CPU, memory and uptime, with history."),
+    tags((name = "Telemetry", description = "Sensors and machine-wide figures, sampled on a timer."))
+)]
+struct ApiDoc;
 
 struct App {
     store: Mutex<history::Store>,
@@ -34,6 +44,14 @@ struct Window {
 
 /// The latest sample, with labels — what a dashboard shows without asking for
 /// history.
+#[utoipa::path(
+    get, path = "/api/now", tag = "Telemetry",
+    summary = "The latest telemetry sample",
+    description = "`series` describes each sensor once and `values` is positional against it. \
+Labels are the chip's own — CPUTIN, SYSTIN — because renaming them to 'cpu' and 'board' would \
+claim knowledge of where the thermistors physically sit.",
+    responses((status = 200, description = "One sample, with the series that describes it"))
+)]
 async fn now(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let st = app.store.lock().unwrap();
     let latest = st.latest();
@@ -51,6 +69,15 @@ async fn now(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 
 /// History. `series` is sent ONCE and the samples are positional against it —
 /// see the note in history.rs about not repeating every label per sample.
+#[utoipa::path(
+    get, path = "/api/history", tag = "Telemetry",
+    summary = "Telemetry history",
+    description = "A bounded ring in RAM: the daemon's memory is the same after a month as after \
+a minute. `series` is sent once and samples are positional, so a six-hour window does not repeat \
+every label four thousand times.",
+    params(("seconds" = Option<u64>, Query, description = "How far back to return. Absent or 0 means everything held.")),
+    responses((status = 200, description = "period, capacity, series and samples"))
+)]
 async fn history_h(State(app): State<Arc<App>>, Query(w): Query<Window>) -> Json<serde_json::Value> {
     let st = app.store.lock().unwrap();
     let since = if w.seconds == 0 {
@@ -71,6 +98,11 @@ async fn history_h(State(app): State<Arc<App>>, Query(w): Query<Window>) -> Json
     }))
 }
 
+#[utoipa::path(
+    get, path = "/api/health", tag = "Telemetry",
+    summary = "sysmond liveness",
+    responses((status = 200, description = "ok"))
+)]
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true, "service": "sysmond" }))
 }
@@ -117,11 +149,24 @@ fn main() {
             }
         });
 
-        let router = Router::new()
-            .route("/api/health", get(health))
-            .route("/api/now", get(now))
-            .route("/api/history", get(history_h))
-            .with_state(app);
+        // The ROUTER AND THE SPEC ARE THE SAME DECLARATION. routes!() reads the
+        // #[utoipa::path] attribute on each handler for both the method/path it
+        // mounts and the documentation it emits, so a route cannot exist
+        // undocumented and a documented route cannot fail to exist.
+        let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+            .routes(routes!(health))
+            .routes(routes!(now))
+            .routes(routes!(history_h))
+            .with_state(app)
+            .split_for_parts();
+        // Served so webd can merge it — see webd's /api/openapi.json.
+        let router = router.route(
+            "/api/openapi.json",
+            axum::routing::get(move || {
+                let api = api.clone();
+                async move { Json(api) }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind(&bind).await.unwrap_or_else(|e| {
             eprintln!("sysmond: cannot bind {bind}: {e}");
             std::process::exit(1);

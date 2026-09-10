@@ -23,6 +23,8 @@ wifi = { path = "../wifi" }
 # its upgrade plumbing, which is what forwarding a WebSocket needs.
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
 
 [build-dependencies]
 flate2 = "1"

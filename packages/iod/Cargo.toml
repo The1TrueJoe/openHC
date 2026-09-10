@@ -27,6 +27,8 @@ libc = "0.2"
 rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 bytes = "1.12.1"
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
 
 # GPIO is a Linux facility and this crate is Linux-only (it calls ppoll). Scoped
 # to the target so `cargo check` on the maintainer's Mac still typechecks the

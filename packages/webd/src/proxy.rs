@@ -28,12 +28,12 @@ use tokio::net::TcpStream;
 
 /// Where iod listens. Loopback deliberately: this proxy is for the browser's
 /// benefit, not a way to reach another machine's IO.
-fn upstream() -> String {
+pub fn iod_addr() -> String {
     std::env::var("WEBD_IOD_ADDR").unwrap_or_else(|_| "127.0.0.1:7070".into())
 }
 
 /// Where sysmond listens — telemetry, separate daemon, separate port.
-fn upstream_sys() -> String {
+pub fn sysmond_addr() -> String {
     std::env::var("WEBD_SYSMOND_ADDR").unwrap_or_else(|_| "127.0.0.1:7071".into())
 }
 
@@ -41,7 +41,7 @@ fn upstream_sys() -> String {
 /// prefix alone, so adding a third is a line here and a route in main.
 pub async fn handler(mut req: Request) -> Response {
     let is_sys = req.uri().path().starts_with("/sys/");
-    let addr = if is_sys { upstream_sys() } else { upstream() };
+    let addr = if is_sys { sysmond_addr() } else { iod_addr() };
     let mount = if is_sys { "/sys" } else { "/iod" };
     let who = if is_sys { "sysmond" } else { "iod" };
 

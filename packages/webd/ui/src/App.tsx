@@ -17,7 +17,14 @@ export function useIoState(): IoState {
   );
 }
 
-type Dest = { id: string; label: string; icon: typeof Cpu; render: (c: Capabilities) => React.ReactNode };
+type Dest = {
+  id: string; label: string; icon: typeof Cpu;
+  render: (c: Capabilities) => React.ReactNode;
+  /** Take the whole pane: no padding, no outer scroll. For a panel that
+   *  manages its own viewport — the API reference scrolls internally, and an
+   *  outer scrollbar on top of that is two scrollbars for one document. */
+  full?: boolean;
+};
 
 /** The rail is built FROM THE CAPABILITIES, not from a fixed list.
  *  A board with no relays, contacts or IR shows no IO destination at all —
@@ -32,7 +39,7 @@ function destinations(c: Capabilities): Dest[] {
   }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
-  d.push({ id: 'docs', label: 'API', icon: BookOpen, render: () => <DocsPanel /> });
+  d.push({ id: 'docs', label: 'API', icon: BookOpen, render: () => <DocsPanel />, full: true });
   d.push({ id: 'settings', label: 'Settings', icon: Settings, render: () => <SettingsPanel /> });
   return d;
 }
@@ -100,7 +107,15 @@ export default function App() {
           );
         })}
       </nav>
-      <main className="min-w-0 flex-1 overflow-auto p-5 sm:p-7">{here.render(caps)}</main>
+      <main
+        className={
+          here.full
+            ? 'min-w-0 flex-1 overflow-hidden'
+            : 'min-w-0 flex-1 overflow-auto p-5 sm:p-7'
+        }
+      >
+        {here.render(caps)}
+      </main>
     </div>
   );
 }
