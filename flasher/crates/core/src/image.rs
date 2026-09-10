@@ -46,6 +46,37 @@ pub fn ea_problems(kernel_head: Option<&[u8]>, kernel_len: u64, has_rootfs: bool
     out
 }
 
+/// Everything wrong with a would-be HC-800 release. Empty means good to flash.
+///
+/// NOTE WHAT IS NOT CHECKED: there is no size window here, and that is the
+/// point. The EA ceiling exists because CEFDK's `bootlinux` copies the kernel
+/// into a fixed ~7 MB gap; the HC-800 boots from GRUB 0.97, which has no such
+/// limit, and its kernel partition has ~165 MB free for a ~14 MB image. So the
+/// only size question is whether the pair fits the partition, which the
+/// installer asks the box directly rather than guessing from here.
+///
+/// An initramfs is REQUIRED rather than optional: openHC on this board runs
+/// entirely from RAM, and a release with no `rootfs.cpio.gz` would boot a
+/// kernel straight into a panic looking for a root it does not have.
+pub fn hc_problems(kernel_head: Option<&[u8]>, kernel_len: u64, has_initrd: bool) -> Vec<String> {
+    let mut out = vec![];
+    match kernel_head {
+        None => out.push("no bzImage in the release".into()),
+        Some(head) => {
+            if !is_bzimage(head) {
+                out.push("kernel does not look like a bzImage (no 0x55aa/HdrS magic)".into());
+            }
+            if kernel_len == 0 {
+                out.push("bzImage is empty".into());
+            }
+        }
+    }
+    if !has_initrd {
+        out.push("no initramfs (rootfs.cpio.gz) — openHC runs from RAM on this board".into());
+    }
+    out
+}
+
 pub fn headroom(kernel_len: u64) -> i64 {
     BOOTLINUX_WINDOW as i64 - kernel_len as i64
 }

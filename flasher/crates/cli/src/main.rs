@@ -39,7 +39,9 @@ fn help() {
            whose root password is not the factory default.\n\
            boards                   list known boards\n\
            plan <board>            show what installing on <board> would do\n\
-           validate <dir|zip>       check a release's images\n\
+           validate <dir|zip> [board]\n\
+                                    check a release's images; the board picks the\n\
+                                    rules (an HC-800 release has no rootfs.ext2)\n\
            install [HOST] --images <dir|zip> [--dry-run] [--yes] [--method M]\n\
                                     install openHC. EA: writes the kernel and initramfs,\n\
                                     reboots into RAM, then writes p1 and reboots into it\n\
@@ -169,16 +171,36 @@ fn images_arg(rest: &[String]) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("output/images"))
 }
 
+/// `validate <dir|zip> [board]`.
+///
+/// The board matters: an HC-800 release legitimately has no `rootfs.ext2` and
+/// no size ceiling, so running the EA checks over it reports a missing file
+/// that was never supposed to be there. Defaults to the EA rules, which is what
+/// every caller before this meant.
 fn validate(rest: &[String]) -> bool {
-    let path = rest.first().map(PathBuf::from).unwrap_or_else(|| images_arg(rest));
+    let args: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
+    let path = args.first().map(|s| PathBuf::from(s.as_str())).unwrap_or_else(|| images_arg(rest));
+    let family = args.get(1).and_then(|n| board::by_name(n)).map(|b| b.family);
     match Release::open(&path) {
         Ok(rel) => {
-            let head = rel.get("bzImage").map(|b| b[..b.len().min(0x400)].to_vec());
-            let klen = rel.get("bzImage").map(|b| b.len() as u64).unwrap_or(0);
-            let probs = image::ea_problems(head.as_deref(), klen, rel.has("rootfs.ext2"), true);
+            let kern = rel.get("openhc-hc800-kernel.img").or_else(|| rel.get("bzImage"));
+            let head = kern.map(|b| b[..b.len().min(0x400)].to_vec());
+            let klen = kern.map(|b| b.len() as u64).unwrap_or(0);
+            let (probs, note) = match family {
+                Some(board::Family::Hc) => {
+                    let initrd = rel.has("rootfs.cpio.gz") || rel.has("openhc-initrd.gz");
+                    (
+                        image::hc_problems(head.as_deref(), klen, initrd),
+                        "initramfs present, no size ceiling on this board".to_string(),
+                    )
+                }
+                _ => (
+                    image::ea_problems(head.as_deref(), klen, rel.has("rootfs.ext2"), true),
+                    format!("{} B headroom, rootfs present", image::headroom(klen)),
+                ),
+            };
             if probs.is_empty() {
-                println!("  ok: {} — bzImage {klen} B ({} B headroom), rootfs present",
-                         rel.source, image::headroom(klen));
+                println!("  ok: {} — kernel {klen} B ({note})", rel.source);
                 true
             } else {
                 for p in probs { println!("  ! {p}"); }
