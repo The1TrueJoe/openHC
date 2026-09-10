@@ -28,6 +28,7 @@
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/gpio/driver.h>
+#include <linux/math64.h>
 #include <media/rc-core.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -439,7 +440,11 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 	payload[9] = word & 0xff;
 	/* payload[10..13]: repeat count and offset, both zero */
 	for (i = 0; i < n; i++) {
-		u32 periods = ((u64)txbuf[i] * carrier) / 1000000u;
+		/* div_u64, not `/`: a u64/u32 divide on ARM emits a call to
+		 * __aeabi_uldivmod, and the kernel links no libgcc. x86 inlines
+		 * the same expression, which is why this stood until the first
+		 * ARM board tried to build it. */
+		u32 periods = div_u64((u64)txbuf[i] * carrier, 1000000u);
 
 		if (periods > 0x7fff)
 			periods = 0x7fff;
@@ -497,7 +502,7 @@ static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
 			break;			/* padding, not a zero-length burst */
 		ev.pulse = !!(w & 0x8000);
 		/* periods -> microseconds, the unit rc-core wants */
-		ev.duration = ((u64)(w & 0x7fff) * 1000000u) / carrier;
+		ev.duration = div_u64((u64)(w & 0x7fff) * 1000000u, carrier);
 		ir_raw_event_store(mcu->rx, &ev);
 	}
 	/* The capture is complete; say so rather than leaving a reader to infer
