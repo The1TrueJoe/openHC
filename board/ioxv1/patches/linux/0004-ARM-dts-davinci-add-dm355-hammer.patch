@@ -13,9 +13,9 @@ forced). Boots via appended DTB; network brings up SSH.
 See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  arch/arm/boot/dts/ti/davinci/Makefile         | 3 +++
- arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 372 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 386 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 469 insertions(+)
+ 3 files changed, 483 insertions(+)
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355.dtsi
 
@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,372 @@
+@@ -0,0 +1,386 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
@@ -166,6 +166,20 @@ index 0000000..a959552
 +		compatible = "ti,davinci-nand";
 +		reg = <0x02000000 0x807ff>,	/* CS0 data */
 +		      <0x01e10000 0x8000>;	/* EMIF control */
++
++		/*
++		 * davinci_nand asks for the AEMIF clock before it touches the
++		 * chip, and without a handle it bails at probe with
++		 * "failed to get clock" and -ENOENT — leaving /proc/mtd empty
++		 * and looking exactly like a missing controller.
++		 *
++		 * Same fixed 24 MHz stand-in the console UART uses: U-Boot has
++		 * already enabled the module clocks this board needs, so the
++		 * driver only wants something it can call clk_prepare_enable on.
++		 * Both the named and the unnamed lookup resolve to it.
++		 */
++		clocks = <&ref_clk_24m>;
++		clock-names = "aemif";
 +
 +		ti,davinci-chipselect = <0>;
 +		ti,davinci-mask-ale = <0>;
