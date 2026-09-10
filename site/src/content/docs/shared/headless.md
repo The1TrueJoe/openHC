@@ -74,6 +74,32 @@ Boards with `CONFIG_WATCHDOG` off — the whole EA family, which is up against a
 bzImage size ceiling — get the script anyway and it exits quietly. Inert beats
 absent: the file is where you would look for it.
 
+### Reachability, not just liveness, is what feeds it
+
+A plain watchdog leaves one hole, and it is the one most likely to swallow a
+box: **userspace that is perfectly healthy but has no network.** The kicker runs,
+the timer never fires, and the unit sits there alive and unreachable — which from
+the outside is indistinguishable from a hang and needs exactly the physical
+access the watchdog exists to avoid. Breaking the NIC is a normal outcome of
+working on a kernel, so this is not a corner case.
+
+So `S02watchdog` also starts a monitor that `SIGKILL`s the kicker when the uplink
+has been down for ten minutes. `SIGKILL` and not `SIGTERM`, deliberately: no
+magic `V` is written, the chip keeps counting, and the board resets. Verified on
+the unit — the kernel logs `watchdog: watchdog0: watchdog did not stop!` and the
+board is gone within the timeout.
+
+It is **off by default** and the HC-800 opts in with `OHC_NET_WATCHDOG=1`, for
+the same reason `panic=` is scoped to this board: a reset only helps if it lands
+somewhere *different*. Here it lands on the untouched vendor image, which
+answers SSH. On a board where openHC is what is installed, the identical reset
+boots the identical image into the identical dead network ten minutes later,
+forever — a reboot loop, not a safety net.
+
+It will not arm until the uplink has had carrier **and** an address at least
+once, so a board still bringing its network up — or one that has no network at
+all — is never caught by it.
+
 ### `panic=10`, so a panic is not permanent either
 
 `kernel.panic` defaults to `0`, which means *stop forever*. On a sealed box with
