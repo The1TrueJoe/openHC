@@ -9,6 +9,16 @@ Eight board profiles exist in the tree. They are at very different stages, and
 the difference between "builds" and "booted on real silicon" is the only
 distinction that matters when you are about to write something to a device.
 
+:::note[All eight build, and that is newer than it sounds]
+Until 2026-09-10 only the hc800 actually produced an image. The other seven each
+failed for a different reason — a board-name mismatch, a missing linker entry, a
+64-bit atomic ARMv5 does not have, three absent `board.env` files, a `set -e`
+misfire, a kernel driver mirrored onto two boards that have no such hardware, and
+a 64-bit divide that needs a libgcc helper the kernel never links. Every one of
+them was invisible while CI only ever built one board. The row below says
+"Builds" because a run now says so, not because nothing has objected.
+:::
+
 ## Where each board is
 
 | Board | SoC | Status | What that means |
@@ -17,9 +27,9 @@ distinction that matters when you are about to write something to a device.
 | **ea3-v2** | Intel CE5310 | **Proven** | 7.1.8 via `bootlinux`, e1000 + eMMC + SSH, **persistent self-boot** from eMMC. Fuse blown; takes over via the CEFDK autoscript. |
 | **ca1** | i.MX6SL | **Proven** | Boots our 7.1.8 kernel. openHC on eMMC ext4, Node, Rust dashboard, captive-portal Wi-Fi setup. |
 | **ioxv1** | TI DM355 | **Proven (partial)** | Kernel boots to a login prompt, dm9000 Ethernet + SSH up, all 8 relays click, front LEDs light. Serial ports and IR still blocked on the FPGA. |
-| ea1-v2 | Intel CE5310 | Builds | Boot differences unconfirmed. |
-| ea1-v2-poe | Intel CE5310 | Builds | Never booted. |
-| ea3-v1 | Intel CE5310 | Builds | Never booted. Its fuse state is unknown and may match the EA1's. |
+| ea1-v2 | Intel CE5310 | Builds | Never booted; boot differences unconfirmed. `board.env` inherited from the ea1-v1, not read off this variant. |
+| ea1-v2-poe | Intel CE5310 | Builds | Never booted. `board.env` is the EA1's IO with the EA3's networking, per its defconfig — unverified. |
+| ea3-v1 | Intel CE5310 | Builds | Never booted. Its fuse state is unknown and may match the EA1's. `board.env` is the ea3-v2's plus the radio it kept. |
 | **hc800** | Atom D525 | **Proven** | 7.1.8 booted, then **persistently installed** (GRUB entry on the spare kernel partition, boot-once via `savedefault`). Relays, contacts, six named IR devices, all six front LEDs, web UI, iod and sysmond. No kernel patches at all — the cheapest board here to bring up, as predicted. |
 
 EA5 and HC-250 are not supported. The IO-MCU firmware tree has room for the
