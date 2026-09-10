@@ -179,6 +179,24 @@ image**. Its kernel is `CONFIG_KEXEC=y` but Control4 never shipped the userspace
 tool, so `boot` pushes a static i686 one. `.github/workflows/tools.yml` builds
 it; drop `kexec-i686-static` next to the images or in `~/.cache/openhc/`.
 
+## The whole loop, measured
+
+Run on the unit on 2026-09-10, with the serial cable idle throughout:
+
+| Step | What happened |
+|---|---|
+| `ohc-hc800 reset` on openHC at `.111` | netconsole caught `sysrq: Resetting`, connection dropped |
+| board resets, GRUB `default 1` | vendor image answering SSH ~2 min later — **at `.112`, not `.111`** |
+| `ohc-hc800 find` | located it by MAC and reported `running=vendor (Control4 stock)`, kernel `3.16.38-8.260.24` |
+| `ohc-hc800 boot <dir>` | pushed the static kexec + 24 MB of image, `kexec -l`, `kexec -e` |
+| openHC back | at `.111` again, **685 lines of boot log captured over the network** |
+
+Both DHCP addresses came up inside one hour, which is the whole argument for
+never writing one down. The first attempt at this test reported the box dead
+because a **stale ARP entry** for `.111` outranked the live one for `.112` —
+`sweep()` now probes a candidate before believing it, and says which rows it
+skipped.
+
 ## What is still only on the cable
 
 Being honest about the gaps:
