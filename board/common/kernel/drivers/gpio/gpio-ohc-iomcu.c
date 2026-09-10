@@ -28,6 +28,7 @@
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/gpio/driver.h>
+#include <linux/math64.h>
 #include <media/rc-core.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -439,7 +440,13 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 	payload[9] = word & 0xff;
 	/* payload[10..13]: repeat count and offset, both zero */
 	for (i = 0; i < n; i++) {
-		u32 periods = ((u64)txbuf[i] * carrier) / 1000000u;
+		/* div_u64, not `/`. A 64-bit divide compiles to a libgcc helper
+		 * (__aeabi_uldivmod on ARM) that the kernel does not link against,
+		 * so a plain `/` here builds on x86 and fails at `LD vmlinux` on
+		 * every 32-bit board. The multiply genuinely needs 64 bits —
+		 * 0xffff * 500000 overflows u32 — so widening is not the fix.
+		 */
+		u32 periods = div_u64((u64)txbuf[i] * carrier, 1000000u);
 
 		if (periods > 0x7fff)
 			periods = 0x7fff;
@@ -497,7 +504,7 @@ static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
 			break;			/* padding, not a zero-length burst */
 		ev.pulse = !!(w & 0x8000);
 		/* periods -> microseconds, the unit rc-core wants */
-		ev.duration = ((u64)(w & 0x7fff) * 1000000u) / carrier;
+		ev.duration = div_u64((u64)(w & 0x7fff) * 1000000u, carrier);
 		ir_raw_event_store(mcu->rx, &ev);
 	}
 	/* The capture is complete; say so rather than leaving a reader to infer

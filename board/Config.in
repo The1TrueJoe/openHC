@@ -25,6 +25,29 @@ config BR2_OHC_EA_KERNEL_DRIVERS
 	  registers them per board/ea-common/kernel/objs.mk. EA family only —
 	  every driver behind it is Intel CE5300 specific.
 
+# The IO microcontroller's gpiochip driver. Same gating reason as the two below,
+# and it arrived the same way: board/common/kernel held exactly one driver and
+# the hook mirrored it into EVERY board, so ca1 and ioxv1 — neither of which has
+# an IO microcontroller at all — compiled it and then failed at the vmlinux link
+# on the remote-control core they have no reason to enable:
+#
+#   gpio-ohc-iomcu.c: undefined reference to `rc_allocate_device'
+#   gpio-ohc-iomcu.c: undefined reference to `rc_register_device'
+#
+# The userspace half was already conditional (the `iomcu` feature, whose own
+# defconfig says outright that the CA-1 and the IO Extender have nothing for it
+# to attach to). Only the kernel half was not, so the two halves disagreed about
+# which boards this exists on. Now the feature sets this and both halves follow.
+config BR2_OHC_IOMCU_KERNEL_DRIVER
+	# A PROMPT IS LOAD BEARING — see the note above.
+	bool "IO microcontroller: inject the gpiochip driver"
+	help
+	  Injects board/common/kernel/drivers/gpio/gpio-ohc-iomcu.c, which turns
+	  the relays, contacts and IR jacks behind the companion microcontroller
+	  into a standard gpiochip plus one lirc device per emitter. Needs
+	  CONFIG_RC_CORE and CONFIG_LIRC, which the `iomcu` feature's kernel
+	  fragment supplies. Set by that feature; nothing else sets it.
+
 # The HC-800's front panel: six LEDs and the ID button, on ICH GPIO lines that
 # nothing on an x86 PC enumerates. Same gating reason as above — the driver
 # drives Lite-On HC800 wiring and has no business in any other board's kernel,

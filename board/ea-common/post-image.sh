@@ -40,12 +40,19 @@ out="$IMAGES/openhc-$BOARD-kernel.img"
 # drift apart. Find it wherever this is running: the build container installs
 # it on PATH, a host build has it under flasher/target/.
 find_flasher() {
-	[ -n "${OHC_FLASH:-}" ] && { echo "$OHC_FLASH"; return; }
-	command -v ohc-flash 2>/dev/null && return
+	[ -n "${OHC_FLASH:-}" ] && { echo "$OHC_FLASH"; return 0; }
+	command -v ohc-flash 2>/dev/null && return 0
 	for p in "$EXT/../flasher/target/release/ohc-flash" \
 	         "$EXT/../flasher/target/debug/ohc-flash"; do
-		[ -x "$p" ] && { echo "$p"; return; }
+		[ -x "$p" ] && { echo "$p"; return 0; }
 	done
+	# EXPLICIT SUCCESS ON FINDING NOTHING, and this line is load bearing.
+	# Without it the function's status is the last failed `[ -x ]`, so
+	# `flash=$(find_flasher)` inherits 1 and `set -e` kills the build — which is
+	# the exact opposite of the "must NOT be able to fail the build" contract
+	# written immediately below, and it is how ea1-v1 died in CI: post-image
+	# aborted at this assignment, before it could print its own warning.
+	return 0
 }
 # The wrap is for the NETBOOT image only. It must NOT be able to fail the
 # build, because the two artifacts the installer actually needs -- the tiny

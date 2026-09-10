@@ -9,3 +9,8 @@
 # Extender drives its relays from the SoC's own GPIO — neither has anything for
 # this to attach to, and forcing it on them was a package built to sit unused.
 BR2_PACKAGE_IOMCU_ATTACH=y
+
+# ... and the kernel half. Both halves of this feature are now switched by the
+# feature, so a board cannot end up with the driver but not the daemon, or the
+# driver but not the rc-core it links against.
+BR2_OHC_IOMCU_KERNEL_DRIVER=y
