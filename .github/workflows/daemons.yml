@@ -52,6 +52,16 @@ jobs:
             target: armv7-unknown-linux-musleabihf
             cc: arm-linux-gnueabihf-gcc
             apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+          # The IO Extender, and the ONLY ARMv5 target in the fleet. It was
+          # missing here, and that omission cost a whole image build to find
+          # something this job would have caught in three minutes: iod used
+          # std::sync::atomic::AtomicU64, which does not exist on a CPU with no
+          # 64-bit atomics. armv5te is soft-float (musleabi, not the CA-1's
+          # musleabihf) because the ARM926EJ-S has no FPU.
+          - board: ioxv1
+            target: armv5te-unknown-linux-musleabi
+            cc: arm-linux-gnueabi-gcc
+            apt: gcc-arm-linux-gnueabi libc6-dev-armel-cross
 
     steps:
       - uses: actions/checkout@v4
