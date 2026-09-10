@@ -37,6 +37,18 @@ config BR2_OHC_HC800_KERNEL_DRIVERS
 	  leds-gpio and gpio-keys-polled for the panel, behind a DMI match on
 	  Lite-On HC800.
 
+# The IO Extender's FPGA. Its four RS-232 ports and eight IR outputs live
+# inside a Xilinx part that boots BLANK, so without this driver those twelve
+# pieces of IO simply do not exist. Same gating reason as the two above: it
+# bit-bangs seven named DM355 GPIOs and binds a compatible that appears in
+# exactly one device tree, so it has no business in any other board's kernel.
+config BR2_OHC_IOXV1_KERNEL_DRIVERS
+	# A PROMPT IS LOAD BEARING — see the note above.
+	bool "IO Extender: inject the FPGA slave-serial loader"
+	help
+	  Injects board/ioxv1/kernel/drivers into the kernel tree and registers
+	  them per board/ioxv1/kernel/objs.mk. IO Extender V1 only.
+
 # Buildroot packages live in <repo>/packages/ (BR2_EXTERNAL_OPENHC_PATH is board/).
 source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/figlet/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"

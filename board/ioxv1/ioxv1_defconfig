@@ -72,3 +72,8 @@ BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTE
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ioxv1"
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/patches"
+
+# The FPGA slave-serial loader (board/ioxv1/kernel/drivers/misc). Without it the
+# four RS-232 ports and eight IR outputs do not exist, because the part they
+# live in boots blank.
+BR2_OHC_IOXV1_KERNEL_DRIVERS=y

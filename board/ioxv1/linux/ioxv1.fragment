@@ -87,6 +87,18 @@ CONFIG_GPIO_SYSFS_LEGACY=y
 CONFIG_GPIO_CDEV=y
 CONFIG_GPIO_CDEV_V1=y
 
+# --- FPGA loader: request_firmware for the bitstream ---
+# ohc-iox-fpga reads the Xilinx bitstream through the firmware API. Without
+# FW_LOADER the driver builds but every load returns -ENOENT, and the four
+# RS-232 ports and eight IR outputs stay absent — which looks exactly like a
+# missing bitstream rather than a missing kernel option.
+#
+# The userspace fallback helper is deliberately OFF: there is no udev firmware
+# agent in this image, so the direct filesystem path is the only one that works
+# and the helper would only add a timeout before failing anyway.
+CONFIG_FW_LOADER=y
+CONFIG_FW_LOADER_USER_HELPER=n
+
 # --- I2C: DaVinci controller, 24c08 EEPROM @ 0x50 on bus 1 ---
 CONFIG_I2C=y
 CONFIG_I2C_DAVINCI=y
