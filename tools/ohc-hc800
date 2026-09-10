@@ -154,14 +154,25 @@ mdns_name() { printf 'openhc-%s-%s.local' "$BOARD" "$(printf '%s' "$1" | tr -d :
 # single most expensive mistake available here — it looks exactly like a box that
 # failed to come back, and it has cost real power cycles. So every candidate is
 # probed before it is believed, and only a live one is returned.
+#
+# EVERY local subnet, not the one behind the default route. A laptop is very
+# often on two networks at once — this one sits on 10.0.0.0/24 by Ethernet and
+# 192.168.1.0/24 by Wi-Fi, with the default route on the Wi-Fi — and the box is
+# reachable on exactly one of them. Picking a single interface is a coin flip.
+local_subnets() {
+    ifconfig 2>/dev/null | awk '$1 == "inet" && $2 != "127.0.0.1" { print $2 }' ||
+    ip -4 -o addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); if ($4 != "127.0.0.1") print $4 }'
+}
+
 sweep() {
     _want=$1
-    _net=$(ipconfig getifaddr en0 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
-    [ -n "$_net" ] || return 1
-    _net=${_net%.*}
-    say "sweeping ${_net}.0/24 for $_want ..."
-    _i=1; while [ "$_i" -lt 255 ]; do ping -c1 $PW "$_net.$_i" >/dev/null 2>&1 & _i=$((_i + 1)); done
-    wait 2>/dev/null || true
+    _nets=$(local_subnets | sed 's/\.[0-9]*$//' | sort -u)
+    [ -n "$_nets" ] || { say "no local IPv4 address to sweep from"; return 1; }
+    for _net in $_nets; do
+        say "sweeping ${_net}.0/24 for $_want ..."
+        _i=1; while [ "$_i" -lt 255 ]; do ping -c1 $PW "$_net.$_i" >/dev/null 2>&1 & _i=$((_i + 1)); done
+        wait 2>/dev/null || true
+    done
     arp -an 2>/dev/null | while read -r line; do
         _ip=$(printf '%s' "$line" | grep -oE '\(([0-9.]+)\)' | tr -d '()')
         _m=$(printf '%s' "$line" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1)
@@ -204,12 +215,29 @@ which_os() { rsh "$1" 'test -r /opt/ohc/board.env && echo openhc || echo vendor'
 # netpoll writes the Ethernet header itself — no ARP, no routing, which is what
 # lets it log from inside a panic — so the boot line needs OUR MAC, not just our
 # address.
-my_ip()  { ipconfig getifaddr en0 2>/dev/null || ip -4 route get "$1" 2>/dev/null | awk '{print $7; exit}'; }
+#
+# ASK THE ROUTING TABLE which interface reaches the box, rather than assuming
+# en0. On a Mac en0 is Wi-Fi on some machines and the Ethernet port on others,
+# and a USB or Thunderbolt adapter lands somewhere else entirely — guessing gets
+# you a netconsole target that silently goes nowhere and a subnet sweep that
+# scans the wrong /24.
+my_if() {
+    route -n get "$1" 2>/dev/null | awk '/interface:/ { print $2; exit }' ||
+    ip -4 route get "$1" 2>/dev/null | awk '{ for (i=1;i<NF;i++) if ($i=="dev") print $(i+1); exit }'
+}
+my_ip() {
+    _i=$(my_if "$1")
+    [ -n "$_i" ] || return 1
+    ipconfig getifaddr "$_i" 2>/dev/null ||
+    ip -4 addr show "$_i" 2>/dev/null | awk '$1=="inet" { sub(/\/.*/, "", $2); print $2; exit }'
+}
 # Anchored, because macOS prints "energy-efficient-ethernet" in the media line
 # and a bare /ether/ happily returns the string "autoselect".
 my_mac() {
-    ifconfig en0 2>/dev/null | awk '$1 == "ether" { print $2; exit }' ||
-    ip link show 2>/dev/null | awk '$1 == "link/ether" { print $2; exit }'
+    _i=$(my_if "$1")
+    [ -n "$_i" ] || return 1
+    ifconfig "$_i" 2>/dev/null | awk '$1 == "ether" { print $2; exit }' ||
+    ip link show "$_i" 2>/dev/null | awk '$1 == "link/ether" { print $2; exit }'
 }
 
 # Block until the box answers again, and say where it landed. Without this the
@@ -311,7 +339,7 @@ boot)
     [ -n "$K" ] && [ -n "$I" ] || die "$DIR has no kernel/initrd pair"
 
     H=$(resolve); OS=$(which_os "$H")
-    MYIP=$(my_ip "$H"); MYMAC=$(my_mac)
+    MYIP=$(my_ip "$H" || true); MYMAC=$(my_mac "$H" || true)
     say "$H is running $OS; kernel $(basename "$K"), initrd $(basename "$I")"
 
     # Said now, while it can still be acted on. The boot log is the one thing
