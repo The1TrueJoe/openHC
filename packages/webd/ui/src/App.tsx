@@ -1,10 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
 import { SettingsPanel } from './panels/Settings';
 import { DocsPanel } from './panels/Docs';
+import { SystemPanel } from './panels/System';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -39,6 +40,13 @@ function destinations(c: Capabilities): Dest[] {
   }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
+  // The controller itself: sensors, fan, front panel. Distinct from IO, which
+  // is the hardware wired TO it.
+  //
+  // Unconditional, unlike the IO entry: every Linux box has /proc, so sysmond
+  // always has CPU, memory and uptime to report even on a board with no hwmon
+  // and no panel. The sections inside hide themselves individually.
+  d.push({ id: 'system', label: 'System', icon: Activity, render: (c) => <SystemPanel caps={c} /> });
   d.push({ id: 'docs', label: 'API', icon: BookOpen, render: () => <DocsPanel />, full: true });
   d.push({ id: 'settings', label: 'Settings', icon: Settings, render: () => <SettingsPanel /> });
   return d;

@@ -59,7 +59,7 @@ export function HealthSection() {
           );
         })}
         {t.cpu !== null && (
-          <Stat label="CPU" sub={t.load1 !== null ? `load ${t.load1}` : ''} value={`${t.cpu}%`} tone="text-ink" />
+          <Stat label="CPU" sub={t.load1 !== null ? `load ${t.load1.toFixed(2)}` : ''} value={`${t.cpu}%`} tone="text-ink" />
         )}
         {t.mem_used_pct !== null && (
           <Stat
