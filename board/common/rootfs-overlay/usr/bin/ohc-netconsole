@@ -27,9 +27,19 @@ PORT_LOCAL=6665
 
 usage() { echo "usage: ohc-netconsole {on <host> [port] | off | status}"; exit 1; }
 
+# The MOUNTPOINT always exists — the kernel creates /sys/kernel/config whether or
+# not anything is mounted there — so testing for the directory is not a test of
+# anything. Ask /proc/mounts, or this quietly skips the mount and then blames the
+# kernel for a feature that is present and simply not reachable yet.
 need_configfs() {
-    [ -d /sys/kernel/config ] || mount -t configfs none /sys/kernel/config 2>/dev/null
-    [ -d "$CFG" ] || { echo "netconsole: no configfs interface (CONFIG_NETCONSOLE_DYNAMIC off)"; exit 1; }
+    grep -q ' /sys/kernel/config configfs ' /proc/mounts 2>/dev/null ||
+        mount -t configfs none /sys/kernel/config 2>/dev/null
+    [ -d "$CFG" ] || {
+        grep -q configfs /proc/filesystems 2>/dev/null ||
+            { echo "netconsole: this kernel has no configfs"; exit 1; }
+        echo "netconsole: configfs is mounted but has no netconsole/ — CONFIG_NETCONSOLE_DYNAMIC is off"
+        exit 1
+    }
 }
 
 uplink() {
