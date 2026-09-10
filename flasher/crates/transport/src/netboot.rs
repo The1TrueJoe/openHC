@@ -271,6 +271,22 @@ pub fn serve(
         overwrite: false,
         ..Default::default()
     };
+    // Turn tftpd's logging ON, and do not skip this.
+    //
+    // Its `log_info!` prints only when its verbosity counter is >1, and the
+    // counter defaults to 1 — so "Received Read request from ..." and every
+    // other transfer line is suppressed by default. That is not cosmetic: this
+    // tool's entire diagnostic story is "watch what the box asks for", and
+    // without it a successful transfer and a box that never sent a request
+    // look exactly the same from the terminal. It cost an evening of
+    // power-cycles here before anyone read the crate's macros.
+    //
+    // The counter is a OnceLock that only `Config::new` sets, by parsing `-v`,
+    // and `verbosity_set` is not exported from the crate root. So this parse is
+    // the only way to reach it; the Config it returns is deliberately dropped,
+    // because the real one is built below.
+    let _ = tftpd::Config::new(["tftpd", "-v", "-v"].iter().map(|s| s.to_string()));
+
     let mut tftp = tftpd::Server::new(&tftp_cfg)
         .map_err(|e| io::Error::other(format!("tftp on {}:69 — {e}", cfg.server_ip)))?;
     let tftp_abort = tftp.get_abort_flag();
@@ -448,6 +464,22 @@ mod tests {
             "127.0.0.1 must belong to some interface on any host that can run this"
         );
         assert!(interface_holding(Ipv4Addr::new(203, 0, 113, 7)).is_none());
+    }
+
+    /// The regression that hid a whole evening's worth of evidence: tftpd's
+    /// transfer logging is off unless its verbosity counter is raised, and the
+    /// only way to raise it is the `-v` parse. If this stops working, a box
+    /// that never asks for a file and a box that fetches one successfully
+    /// produce identical output.
+    #[test]
+    fn tftpd_logging_is_actually_switched_on() {
+        let cfg = tftpd::Config::new(["tftpd", "-v", "-v"].iter().map(|s| s.to_string()));
+        assert!(cfg.is_ok(), "the -v parse must succeed or the side effect never happens");
+        assert!(
+            tftpd::verbosity() > 1,
+            "verbosity is {} — log_info! needs >1, so transfers would be silent",
+            tftpd::verbosity()
+        );
     }
 
     #[test]
