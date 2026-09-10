@@ -7,6 +7,7 @@
 
 pub mod board;
 pub mod cefdk;
+pub mod hc800;
 pub mod image;
 pub mod method;
 

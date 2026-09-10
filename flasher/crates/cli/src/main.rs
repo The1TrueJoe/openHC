@@ -2,7 +2,7 @@
 //! for power users and scripts.
 
 use ohc_flash_core::{board, image, method, Method};
-use ohc_flash_engine::{network, Progress, Release};
+use ohc_flash_engine::{hc800, network, Progress, Release};
 use ohc_flash_transport as tp;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -38,11 +38,15 @@ fn help() {
            boards                   list known boards\n\
            plan <board>            show what installing on <board> would do\n\
            validate <dir|zip>       check a release's images\n\
-           install [HOST] --images <dir|zip> [--dry-run] [--yes]\n\
-                                    install openHC end to end: writes the kernel and\n\
-                                    initramfs, reboots into RAM, then writes p1 and\n\
-                                    reboots into it. --no-wait stops after stage 1;\n\
-                                    --self-install uses the tiny boot-init instead\n\
+           install [HOST] --images <dir|zip> [--dry-run] [--yes] [--method M]\n\
+                                    install openHC. EA: writes the kernel and initramfs,\n\
+                                    reboots into RAM, then writes p1 and reboots into it\n\
+                                    (--no-wait stops after stage 1; --self-install uses\n\
+                                    the tiny boot-init instead).\n\
+                                    HC-800: --method kexec (default) writes NOTHING and\n\
+                                    runs openHC from RAM; --method grub installs it to\n\
+                                    the kernel partition so it survives a power cut.\n\
+                                    --netconsole <ip>[:port] ships the boot log to you\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            wrap <bzImage> <out> [--header FILE]\n\
@@ -113,18 +117,44 @@ fn identify(rest: &[String]) -> bool {
 }
 
 fn plan(rest: &[String]) -> bool {
-    let Some(name) = rest.first() else { eprintln!("usage: ohc-flash plan <board>"); return false };
+    let Some(name) = rest.first() else {
+        eprintln!("usage: ohc-flash plan <board> [method]"); return false
+    };
     let Some(b) = board::by_name(name) else { eprintln!("unknown board '{name}'"); return false };
     let id = ohc_flash_core::Identity { board: Some(b), candidates: vec![b], running: board::Running::Stock, raw: vec![] };
-    let (Some(m), rej) = method::choose(&id, None) else { eprintln!("no method for {}", b.name); return false };
-    let pl = method::plan(b, m);
     println!("  board:  {} ({})", b.name, b.desc);
-    println!("  method: {} — {}", m.name(), m.summary());
+
+    // Named method: show just that one. Otherwise show the preferred method and
+    // then EVERY other method that also applies — on the HC-800 the choice
+    // between writing nothing and writing the bootloader is the whole decision,
+    // and hiding the second option behind a flag nobody knows about is not a
+    // way to present it.
+    if let Some(want) = rest.get(1) {
+        let Some(&m) = method::METHODS.iter().find(|m| m.name() == want.as_str()) else {
+            eprintln!("unknown method '{want}'"); return false
+        };
+        if let Err(why) = m.suitable(&id) { eprintln!("  {} does not apply: {why}", m.name()); return false }
+        show_plan(b, m, true);
+        return true;
+    }
+    let (Some(m), rej) = method::choose(&id, None) else { eprintln!("no method for {}", b.name); return false };
+    show_plan(b, m, true);
+    for other in method::METHODS.iter().copied().filter(|&o| o != m && o.suitable(&id).is_ok()) {
+        println!("\n  also available:");
+        show_plan(b, other, false);
+    }
     for (rm, why) in rej { println!("  (not {}: {why})", rm.name()); }
-    for s in &pl.steps { println!("    - {s}"); }
+    true
+}
+
+fn show_plan(b: &board::Board, m: Method, steps: bool) {
+    println!("  method: {} — {}", m.name(), m.summary());
+    let pl = method::plan(b, m);
+    if steps {
+        for s in &pl.steps { println!("    - {s}"); }
+    }
     for w in &pl.writes { println!("    ! {w}"); }
     println!("  recovery: {}", pl.reversible);
-    true
 }
 
 fn images_arg(rest: &[String]) -> PathBuf {
@@ -214,6 +244,31 @@ fn wrap(rest: &[String]) -> bool {
     true
 }
 
+/// Ask before writing. One place, so every flow phrases it the same way.
+fn confirm(what: &str) -> bool {
+    use std::io::Write;
+    eprint!("\n  {what}? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).ok();
+    matches!(line.trim(), "y" | "yes")
+}
+
+/// `--netconsole <ip>[:port]` — where the box should send its kernel log while
+/// it boots. Worth passing: that window is the only part of a kexec install a
+/// serial cable can see and SSH cannot.
+fn netconsole_arg(rest: &[String]) -> Option<String> {
+    let v = rest.windows(2).find(|w| w[0] == "--netconsole").map(|w| w[1].clone())?;
+    let (ip, port) = match v.split_once(':') {
+        Some((i, p)) => (i.to_string(), p.to_string()),
+        None => (v, "6666".to_string()),
+    };
+    // netpoll writes the Ethernet header itself, with no ARP and no routing —
+    // which is exactly what lets it keep logging from inside a panic, and also
+    // why broadcast is the only honest default when we do not know the MAC.
+    Some(format!("netconsole=6665@/eth0,{port}@{ip}/ff:ff:ff:ff:ff:ff"))
+}
+
 fn install(rest: &[String]) -> bool {
     let dry = rest.iter().any(|a| a == "--dry-run");
     let yes = rest.iter().any(|a| a == "--yes");
@@ -234,7 +289,14 @@ fn install(rest: &[String]) -> bool {
         id.board.unwrap()
     };
 
-    let (Some(m), rej) = method::choose(&id, None) else { eprintln!("  no method applies"); return false };
+    let prefer = match rest.windows(2).find(|w| w[0] == "--method").map(|w| w[1].as_str()) {
+        Some(name) => match method::METHODS.iter().find(|m| m.name() == name) {
+            Some(&m) => Some(m),
+            None => { eprintln!("  unknown method '{name}'"); return false; }
+        },
+        None => None,
+    };
+    let (Some(m), rej) = method::choose(&id, prefer) else { eprintln!("  no method applies"); return false };
     for (rm, why) in &rej { println!("  (not {}: {why})", rm.name()); }
     let pl = method::plan(board, m);
     println!("  method: {} — {}", m.name(), m.summary());
@@ -242,21 +304,33 @@ fn install(rest: &[String]) -> bool {
     for w in &pl.writes { println!("    ! {w}"); }
     println!("  recovery: {}", pl.reversible);
 
-    if m != Method::Network {
-        eprintln!("  only the network method is wired into the CLI so far");
-        return false;
-    }
-
     let images = images_arg(rest);
     let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
     if dry { println!("\n  (dry run — nothing written)"); return true; }
-    if !yes {
-        eprint!("\n  proceed with stage 1 (RAM installer)? [y/N] ");
-        use std::io::Write; std::io::stdout().flush().ok();
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line).ok();
-        if !matches!(line.trim(), "y" | "yes") { return false; }
+
+    // The HC-800 flows are single-stage; the EA network flow is not, so they
+    // part company here rather than pretending to share a shape.
+    if matches!(m, Method::Kexec | Method::Grub) {
+        if !yes && !confirm(match m {
+            Method::Kexec => "start openHC from RAM (writes nothing)",
+            _ => "write the kernel partition and the bootloader",
+        }) {
+            return false;
+        }
+        let p = Progress::stdout();
+        let r = match m {
+            Method::Kexec => hc800::kexec(&ssh, &rel, netconsole_arg(rest).as_deref(), &p),
+            _ => hc800::install_grub(&ssh, &rel, &p),
+        };
+        if let Err(e) = r { eprintln!("  {e:#}"); return false; }
+        return true;
     }
+
+    if m != Method::Network {
+        eprintln!("  {} is not wired into the CLI yet", m.name());
+        return false;
+    }
+    if !yes && !confirm("proceed with stage 1 (RAM installer)") { return false; }
 
     let p = Progress::stdout();
     // The tiny self-installer is opt-in, NOT the default. It writes a separate
