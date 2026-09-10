@@ -38,8 +38,11 @@ vendor root and the factory-restore image are byte-identical to how they shipped
    └──────────────────────────┘
 ```
 
-Every arrow into the stock image is automatic except the last, and every one of
-them can be taken from another room. That is the entire argument.
+The two middle arrows are the ones that matter: a panic and a hang get back to a
+reachable system **with nobody in the room**. `sysrq-b` is the same thing on
+demand, and it works when userspace is too wedged to run `reboot`. The power
+cycle is the only one that still needs hands, and after this it is the fallback
+rather than the procedure.
 
 `menu.lst` is what makes the top box unconditional: `default 1` selects the
 vendor root, `fallback 1` points at that same entry, and `timeout 0` with
