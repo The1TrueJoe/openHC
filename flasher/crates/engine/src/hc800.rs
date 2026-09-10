@@ -77,12 +77,31 @@ fn netconsole_arg(ssh: &Ssh, ip: &str, port: u16, uplink: &str) -> Option<String
     let cmd = format!(
         r#"ping -c 1 -W 1 {ip} >/dev/null 2>&1; awk '$1 == "{ip}" && $4 != "00:00:00:00:00:00" {{ print $4 }}' /proc/net/arp"#
     );
-    let mac = ssh.run(&cmd, false).ok()?;
-    let mac = mac.split_whitespace().next()?.to_string();
+    let mac = ssh.run(&cmd, false).ok()?.split_whitespace().next()?.to_string();
     if mac.len() != 17 {
         return None;
     }
-    Some(format!("netconsole=6665@/{uplink},{port}@{ip}/{mac}"))
+
+    // THE SOURCE ADDRESS HAS TO BE LITERAL. netconsole is set up from the boot
+    // line at about four seconds, well before DHCP has finished, so leaving the
+    // source empty makes netpoll try to read it off the interface and give up:
+    //
+    //   netpoll: netconsole: no IP address for eth0, aborting
+    //   netconsole: Not enabling netconsole for cmdline0. Netpoll setup failed
+    //
+    // which is silent from the operator's side — the listener simply never sees
+    // a packet, exactly as if the box had died. So we use the address the box
+    // has RIGHT NOW, before the kexec. It is only a UDP source address; nothing
+    // needs it to still be true afterwards, and the lease is usually the same
+    // one anyway.
+    let src = ssh
+        .run(&format!("ip -4 addr show {uplink} 2>/dev/null | awk '$1 == \"inet\" {{ print $2 }}'"), false)
+        .ok()?;
+    let src = src.split_whitespace().next()?.split('/').next()?.to_string();
+    if src.is_empty() {
+        return None;
+    }
+    Some(format!("netconsole=6665@{src}/{uplink},{port}@{ip}/{mac}"))
 }
 
 /// Start openHC out of the running system. **Writes to no partition.**

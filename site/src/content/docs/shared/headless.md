@@ -126,10 +126,17 @@ netconsole=6665@<box>/eth0,6666@<you>/<your-mac>
 Built in, not a module: a module loads too late to log the thing that stopped the
 module loading. Listen with `ohc-hc800 log`.
 
-**It starts at about 6.3 seconds**, when the NIC comes up — that is a real limit,
-not a bug. Anything before that is only visible on the wire if you have the
-cable. In practice a failure that early is a failure to boot at all, and the
-answer to that is the watchdog, not a log.
+**It does not lose the early boot.** netconsole registers as a console with
+`CON_PRINTBUFFER`, so when it comes up at around 6.9 s the kernel replays
+everything already in the ring buffer — a captured log from this board starts at
+`[    0.000000] Linux version` and carries **616 lines from before netconsole
+itself existed**. So for a box that boots, the network gives you exactly what
+the cable would have.
+
+The limit is narrower than it looks, then, but it is real: a hang *before* that
+replay happens means the buffer is never flushed and you get **nothing at all**.
+That failure is a failure to boot, and the answer to it is the watchdog rather
+than a log.
 
 The boot line bakes in the listener's address, which is awkward when the laptop
 moves. `ohc-netconsole on <host>` drives the same driver through configfs
@@ -219,6 +226,7 @@ Run on the unit on 2026-09-10, with the serial cable idle throughout:
 
 | Step | What happened |
 |---|---|
+| `ohc-flash install --method kexec --netconsole` | staged 25 MB, resolved the listener's MAC from the box, kexec'd — **679 log lines captured, from `[0.000000]`** |
 | `ohc-hc800 reset` on openHC at `.111` | netconsole caught `sysrq: Resetting`, connection dropped |
 | board resets, GRUB `default 1` | vendor image answering SSH ~2 min later — **at `.112`, not `.111`** |
 | `ohc-hc800 find` | located it by MAC and reported `running=vendor (Control4 stock)`, kernel `3.16.38-8.260.24` |
@@ -255,8 +263,9 @@ after.
 
 Being honest about the gaps:
 
-- **Anything before the NIC comes up** — roughly the first 6 seconds. A failure
-  there is a failure to boot, and the recovery is the watchdog.
+- **A hang before netconsole's replay**, i.e. in roughly the first 7 seconds.
+  Not the *messages* from that window — those are replayed — but a box that
+  stops inside it sends nothing at all. The recovery is the watchdog.
 - **GRUB itself.** No interactive menu exists (`timeout 0`, `hiddenmenu`), so
   there is nothing to catch even with a cable attached. Choosing a different
   entry means editing `default`, which is a write to `sda1` — see
