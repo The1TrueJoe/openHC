@@ -304,3 +304,62 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     )));
     Ok(())
 }
+
+/// Point the saved GRUB default at an installed openHC and reboot into it.
+///
+/// This is the other half of [`install_grub`], and it exists because the
+/// boot-once property deliberately makes openHC forget itself: every openHC
+/// boot runs `savedefault` and hands the default straight back to Control4. So
+/// after any reset the box is on stock with openHC still sitting on disk, and
+/// getting back is not a reinstall — it is one byte, changed here.
+///
+/// Refuses if there is no openHC entry, rather than setting a default that
+/// points at nothing.
+pub fn boot_installed(ssh: &Ssh, p: &Progress) -> Result<()> {
+    let gm = "/mnt/ohc-grub";
+    ssh.run(&format!("mkdir -p {gm} && mount {} {gm}", hc::GRUB_PART), true)
+        .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;
+
+    let menu = ssh.read_file(&format!("{gm}/boot/grub/menu.lst"));
+    let has_entry = menu.as_deref().is_some_and(|m| m.contains("title\t\topenHC"));
+    if !has_entry {
+        let _ = ssh.run(&format!("umount {gm}"), false);
+        bail!("no openHC entry in menu.lst — install it first (--method grub)");
+    }
+    for f in [hc::KERNEL_FILE, hc::INITRD_FILE] {
+        let km = "/mnt/ohc-kernel";
+        let present = ssh
+            .run(
+                &format!("mkdir -p {km} && mount -o ro {} {km} && test -s {km}{f} && echo yes; umount {km} 2>/dev/null", hc::KERNEL_PART),
+                false,
+            )
+            .map(|o| o.contains("yes"))
+            .unwrap_or(false);
+        if !present {
+            let _ = ssh.run(&format!("umount {gm}"), false);
+            bail!("menu.lst names {f} but it is not on {} — refusing to boot a missing kernel", hc::KERNEL_PART);
+        }
+    }
+
+    // Only the first line changes. The rest of the file is padding that GRUB's
+    // `savedefault` rewrites in place, by sector — replacing the whole file
+    // would move its blocks and quietly break that.
+    ssh.run(
+        &format!(
+            "sed -i '1s/.*/{}/' {gm}/boot/grub/default && sync && umount {gm}",
+            hc::ENTRY_OPENHC
+        ),
+        true,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    p.emit(Event::step(format!("saved default -> entry {} (openHC)", hc::ENTRY_OPENHC)));
+
+    p.emit(Event::step("rebooting — this connection will drop".into()));
+    let _ = ssh.run("sync; reboot", false);
+    p.emit(Event::resolved(
+        "on its way. openHC will hand the default straight back to Control4 as it boots, so this \
+         is a one-shot: any later reset returns to stock"
+            .into(),
+    ));
+    Ok(())
+}

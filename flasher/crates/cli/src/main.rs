@@ -19,6 +19,7 @@ fn main() -> ExitCode {
         "validate" => validate(rest),
         "install" => install(rest),
         "rootfs" => rootfs(rest),
+        "boot" => boot(rest),
         "wrap" => wrap(rest),
         "help" | "-h" | "--help" => { help(); true }
         other => { eprintln!("unknown command '{other}'\n"); help(); false }
@@ -49,6 +50,9 @@ fn help() {
                                     --netconsole <ip>[:port] ships the boot log to you\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
+           boot [HOST]              HC-800: re-enter an INSTALLED openHC. Every openHC\n\
+                                    boot hands the GRUB default back to Control4, so\n\
+                                    this is how you go back in after a reset\n\
            wrap <bzImage> <out> [--header FILE]\n\
                                     wrap a bzImage in a CEFDK container\n\n\
          The GUI (`ohc-flasher`) is the primary front end for non-CLI users.\n"
@@ -264,6 +268,21 @@ fn netconsole_arg(rest: &[String]) -> Option<(String, u16)> {
         Some((i, p)) => Some((i.to_string(), p.parse().unwrap_or(6666))),
         None => Some((v, 6666)),
     }
+}
+
+/// `boot [HOST]` — re-enter an installed openHC on an HC-800.
+fn boot(rest: &[String]) -> bool {
+    let Some((_host, ssh)) = connect(rest) else { return false };
+    let id = tp::identify(&ssh);
+    match id.board.map(|b| b.family) {
+        Some(ohc_flash_core::board::Family::Hc) => {}
+        _ => { eprintln!("  `boot` is an HC-800 command; this is {}", id.describe()); return false }
+    }
+    if let Err(e) = hc800::boot_installed(&ssh, &Progress::stdout()) {
+        eprintln!("  {e:#}");
+        return false;
+    }
+    true
 }
 
 fn install(rest: &[String]) -> bool {
