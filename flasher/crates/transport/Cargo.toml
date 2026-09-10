@@ -10,3 +10,12 @@ license.workspace = true
 # dropped in later without touching the engine.
 [dependencies]
 ohc-flash-core = { workspace = true }
+# Netboot. The wire formats are not worth owning: dhcproto is a complete DHCPv4
+# codec and tftpd is a TFTP server that already implements the option
+# extensions (blocksize, timeout, tsize, windowsize) a bootloader may ask for.
+# What stays ours is the policy — one MAC, one file — which is the only part
+# that is actually about flashing a Control4 box.
+dhcproto = "0.15"
+tftpd = "1"
+tempfile = "3"
+

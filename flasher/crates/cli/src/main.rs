@@ -20,6 +20,7 @@ fn main() -> ExitCode {
         "install" => install(rest),
         "rootfs" => rootfs(rest),
         "wrap" => wrap(rest),
+        "netboot" => netboot(rest),
         "help" | "-h" | "--help" => { help(); true }
         other => { eprintln!("unknown command '{other}'\n"); help(); false }
     };
@@ -46,7 +47,11 @@ fn help() {
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            wrap <bzImage> <out> [--header FILE]\n\
-                                    wrap a bzImage in a CEFDK container\n\n\
+                                    wrap a bzImage in a CEFDK container\n\
+           netboot --mac <MAC> --image <FILE> --client-ip <ADDR>\n\
+                   [--server-ip A] [--bootfile NAME] [--netmask M] [--minutes N]\n\
+                                    answer ONE box's DHCP and TFTP it a kernel, for a\n\
+                                    unit whose console is unreachable. Needs root.\n\n\
          The GUI (`ohc-flasher`) is the primary front end for non-CLI users.\n"
     );
 }
@@ -321,5 +326,151 @@ fn rootfs(rest: &[String]) -> bool {
     match network::stage2_write_rootfs(&ssh, &rel, &p) {
         Ok(()) => { println!("\n  done — the box is rebooting into openHC on p1."); true }
         Err(e) => { eprintln!("  stage 2 failed: {e:#}"); false }
+    }
+}
+
+/// Netboot a box whose console is unreachable.
+///
+/// The case this is for: a Control4 U-Boot with `run tst` armed DHCPs, then
+/// TFTPs from a `serverip` that no longer exists, and drops to a prompt nobody
+/// can see. It answers no TCP and ignores ICMP, so it looks bricked — but it
+/// still broadcasts a DISCOVER on every power cycle, and `dhcp` takes serverip
+/// from the OFFER rather than from its saved environment.
+///
+/// --mac is required and there is no serve-everyone mode on purpose: this runs
+/// on a live home network, and every reply is gated on that one address.
+fn netboot(rest: &[String]) -> bool {
+    let arg = |k: &str| rest.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
+
+    let Some(mac_s) = arg("--mac") else {
+        eprintln!("usage: ohc-flash netboot --mac <MAC> --image <FILE> --client-ip <ADDR>");
+        eprintln!("  the MAC is required: this answers exactly one box and ignores every other.");
+        return false;
+    };
+    let Some(mac) = tp::netboot::parse_mac(&mac_s) else {
+        eprintln!("  '{mac_s}' is not a MAC address");
+        return false;
+    };
+    let Some(image) = arg("--image").map(PathBuf::from) else {
+        eprintln!("  --image <FILE> is required (the kernel to serve)");
+        return false;
+    };
+    // Checked HERE, not by serve(), so a typo does not first print
+    // "POWER-CYCLE THE BOX NOW" and then admit it has nothing to serve.
+    if !image.is_file() {
+        eprintln!("  no image at {}", image.display());
+        return false;
+    }
+
+    let ipv4 = |v: &str, what: &str| -> Option<std::net::Ipv4Addr> {
+        match v.parse() {
+            Ok(a) => Some(a),
+            Err(_) => { eprintln!("  '{v}' is not an IPv4 address ({what})"); None }
+        }
+    };
+
+    // No sensible default: the address to offer is the one the box already had,
+    // which the operator knows from the lease table or a capture and we do not.
+    let Some(client_raw) = arg("--client-ip") else {
+        eprintln!("  --client-ip <ADDR> is required — offer it the address it already had");
+        return false;
+    };
+    let Some(client_ip) = ipv4(&client_raw, "--client-ip") else { return false };
+
+    let server_ip = match arg("--server-ip") {
+        Some(v) => match ipv4(&v, "--server-ip") { Some(a) => a, None => return false },
+        // Ask the routing table which of our addresses faces that box, so the
+        // common case needs no flag and a multi-homed host still gets it right.
+        None => match tp::netboot::local_ip_towards(client_ip) {
+            Some(a) => a,
+            None => {
+                eprintln!("  cannot work out which local address faces {client_ip}; pass --server-ip");
+                return false;
+            }
+        },
+    };
+
+    let netmask = match arg("--netmask") {
+        Some(v) => match ipv4(&v, "--netmask") { Some(a) => a, None => return false },
+        None => std::net::Ipv4Addr::new(255, 255, 255, 0),
+    };
+    let bootfile = arg("--bootfile").unwrap_or_else(|| {
+        tp::netboot::default_bootfile(arg("--board").as_deref().unwrap_or("ioxv1"))
+    });
+    let minutes: u64 = arg("--minutes").and_then(|v| v.parse().ok()).unwrap_or(10);
+
+    println!("  netboot: answering {} and nothing else", tp::netboot::format_mac(&mac));
+    println!("    offering   {client_ip}  netmask {netmask}");
+    println!("    serverip   {server_ip}  bootfile {bootfile}");
+    println!("    serving    {}", image.display());
+    println!("\n  POWER-CYCLE THE BOX NOW — listening for {minutes} minutes.\n");
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ignored = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let acked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // A watcher, so the run ends by saying whether the box actually came up
+    // rather than leaving the operator to go and check. It only starts probing
+    // once we have ACKed, because before that there is nothing to wait for.
+    let (w_stop, w_acked) = (stop.clone(), acked.clone());
+    let watcher = std::thread::spawn(move || {
+        while !w_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            if w_acked.load(std::sync::atomic::Ordering::Relaxed)
+                && tp::ssh_port_open(&client_ip.to_string())
+            {
+                println!("  --> {client_ip} is answering SSH. It booted.");
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        }
+        false
+    });
+
+    let (ig, ak) = (ignored.clone(), acked.clone());
+    let cfg = tp::netboot::Config { mac, client_ip, server_ip, netmask, image, bootfile };
+    let served = tp::netboot::serve(
+        cfg,
+        std::time::Duration::from_secs(minutes * 60),
+        stop.clone(),
+        move |e| {
+            use std::sync::atomic::Ordering::Relaxed;
+            use tp::netboot::Event::*;
+            match e {
+                Listening { dhcp, tftp } => println!("  listening: dhcp/{dhcp} tftp/{tftp}"),
+                Dhcp { saw, replied: Some(kind) } => {
+                    if matches!(kind, tp::netboot::DhcpMessageType::Ack) {
+                        ak.store(true, Relaxed);
+                    }
+                    println!("  dhcp  {saw:?} -> {kind:?}");
+                }
+                Dhcp { saw, replied: None } => println!("  dhcp  {saw:?} (nothing to say)"),
+                // Counted, not printed: on a live network this is every other
+                // machine's lease renewal, and it would bury the lines that matter.
+                Ignored { .. } => { ig.fetch_add(1, Relaxed); }
+                Failed { what } => eprintln!("  !     {what}"),
+            }
+        },
+    );
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let booted = watcher.join().unwrap_or(false);
+
+    let skipped = ignored.load(std::sync::atomic::Ordering::Relaxed);
+    if skipped > 0 {
+        println!("\n  ignored {skipped} DHCP packets from other machines");
+    }
+    match served {
+        Err(e) => { eprintln!("  {e}"); false }
+        Ok(()) if booted => true,
+        Ok(()) if acked.load(std::sync::atomic::Ordering::Relaxed) => {
+            println!("  the box took the lease. Watch the tftp lines above for the transfer;");
+            println!("  if none appeared, its bootcmd is not netbooting and it needs a console.");
+            true
+        }
+        Ok(()) => {
+            eprintln!("  nothing was offered. Either the box was never power-cycled, or another");
+            eprintln!("  DHCP server answered first, or the MAC is wrong — check it and retry.");
+            false
+        }
     }
 }
