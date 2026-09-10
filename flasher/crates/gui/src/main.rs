@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText};
 use ohc_flash_core::board::Running;
 use ohc_flash_core::{board, image, method, Board, Identity, Method};
-use ohc_flash_engine::{network, updates, Event, GhRelease, Progress, Release};
+use ohc_flash_engine::{hc800, network, updates, Event, GhRelease, Progress, Release};
 use ohc_flash_transport as tp;
 
 /// This flasher's own version, baked in by CI (`OHC_VERSION`) so it can tell
@@ -881,8 +881,15 @@ impl App {
 
         ui.add_space(12.0);
         match chosen {
-            Some(Method::Network) => {
-                let plan = method::plan(b, Method::Network);
+            Some(m @ (Method::Network | Method::Kexec | Method::Grub)) => {
+                let plan = method::plan(b, m);
+                // Said before anything else, because on the HC-800 the default
+                // method writes to no partition at all, and that is the single
+                // most reassuring thing anyone reading this screen can be told.
+                if m.writes_nothing() {
+                    ui.label(RichText::new("This writes nothing to the controller.").strong());
+                    ui.add_space(6.0);
+                }
                 ui.label(RichText::new("What the install will do").strong());
                 ui.add_space(4.0);
                 for s in &plan.steps {
@@ -1078,7 +1085,10 @@ impl App {
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(method::plan(b, Method::Network).reversible).weak(),
+                    RichText::new(
+                        method_for(b).map(|m| method::plan(b, m).reversible).unwrap_or_default(),
+                    )
+                    .weak(),
                 );
                 ui.add_space(14.0);
                 if ui
@@ -1258,6 +1268,7 @@ impl App {
         let (ssh, host) = (conn.ssh.clone(), conn.host.clone());
         let secure = b.secure_boot;
         let self_install = self.self_install;
+        let Some(m) = method_for(b) else { return };
 
         sh.error = None;
         sh.phase = Some(if finish_only { Phase::Restarting } else { Phase::Writing });
@@ -1267,7 +1278,7 @@ impl App {
 
         spawn(sh, shared, "Installing…", move |s| {
             let p = sink(s);
-            let out = run_install(s, &p, &ssh, &host, &rel, secure, self_install, finish_only);
+            let out = run_install(s, &p, &ssh, &host, &rel, m, secure, self_install, finish_only);
             let mut g = s.lock().unwrap();
             g.wait = None;
             match out {
@@ -1437,6 +1448,21 @@ fn probe_unit(s: &Arc<Mutex<Shared>>, ip: &str, passwords: &[String]) {
     g.push(Lvl::Detail, line);
 }
 
+/// Which method this board installs with.
+///
+/// Reaching the install screen means we are logged into a running system, so
+/// `Stock` stands in for the live identity — every method that could be chosen
+/// here requires one anyway, and the board is what actually decides.
+fn method_for(b: &'static ohc_flash_core::board::Board) -> Option<Method> {
+    let id = Identity {
+        board: Some(b),
+        candidates: vec![b],
+        running: ohc_flash_core::board::Running::Stock,
+        raw: vec![],
+    };
+    method::choose(&id, None).0
+}
+
 /// The install sequence itself, off the UI thread. Mirrors the CLI's `install`
 /// so both front ends drive the engine identically.
 #[allow(clippy::too_many_arguments)]
@@ -1446,10 +1472,28 @@ fn run_install(
     ssh: &tp::Ssh,
     host: &str,
     rel: &Release,
+    method: Method,
     secure_boot: bool,
     self_install: bool,
     finish_only: bool,
 ) -> Result<(), String> {
+    // The HC-800 flows are SINGLE STAGE. The EA install has to reboot into a RAM
+    // installer halfway through because p1 is the running root and a mounted
+    // root cannot be overwritten; neither HC-800 method has that problem — kexec
+    // writes nothing at all, and the grub install only touches partitions that
+    // are not mounted. So they finish here rather than falling into the
+    // wait-for-reboot machinery below, which would sit watching an address that
+    // was never going to change.
+    match method {
+        Method::Kexec => {
+            return hc800::kexec(ssh, rel, None, p).map_err(|e| format!("{e:#}"));
+        }
+        Method::Grub => {
+            return hc800::install_grub(ssh, rel, p).map_err(|e| format!("{e:#}"));
+        }
+        _ => {}
+    }
+
     if !finish_only {
         if self_install {
             network::install_self(ssh, rel, secure_boot, p).map_err(|e| format!("{e:#}"))?;
@@ -1508,7 +1552,7 @@ fn gate(
                 raw: vec![],
             };
             match method::choose(&probe, None).0 {
-                Some(Method::Network) => None,
+                Some(Method::Network | Method::Kexec | Method::Grub) => None,
                 Some(other) => Some(format!("the {} method is command-line only", other.name())),
                 None => Some("no install method applies to this controller".into()),
             }

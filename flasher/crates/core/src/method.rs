@@ -206,7 +206,10 @@ pub fn plan(board: &Board, method: Method) -> Plan {
                         "switch `default {ENTRY_VENDOR}` to `default saved`, so the openHC entry's \
                          `savedefault {ENTRY_VENDOR}` makes every openHC boot a BOOT-ONCE"
                     ),
-                    format!("set the saved default to {ENTRY_OPENHC} and reboot"),
+                    format!(
+                        "point the saved default at entry {ENTRY_OPENHC}. NOT a reboot: the box \
+                         keeps running whatever it is running until you restart it"
+                    ),
                 ],
                 writes: vec![
                     format!("{KERNEL_PART}: {KERNEL_FILE}, {INITRD_FILE} (files, on the spare kernel partition)"),
