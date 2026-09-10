@@ -23,7 +23,10 @@
 # which tells the driver this was a deliberate close — otherwise stopping the
 # kicker would be exactly how you fire the timer, and every clean shutdown would
 # end in a reset nobody asked for.
-DAEMON=/usr/sbin/watchdog
+# /sbin, which is where busybox installs the applet — not /usr/sbin, where the
+# standalone watchdog daemon lives on a distro. Resolved rather than hardcoded so
+# an image carrying the real daemon works too.
+DAEMON=$(command -v watchdog 2>/dev/null || echo /sbin/watchdog)
 WDT=/dev/watchdog
 PIDF=/var/run/ohc-watchdog.pid
 TIMEOUT=30
