@@ -16,6 +16,10 @@
 import mqtt, { type MqttClient } from 'mqtt';
 
 const HTTP = `${location.origin}/iod`;
+/* Telemetry is a DIFFERENT daemon behind a different mount. Deriving it from
+   HTTP gave /iod/sys/api/now, which 404s — webd proxies /sys to sysmond and
+   /iod to iod, and they are not nested. */
+const SYS = `${location.origin}/sys`;
 const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
@@ -144,7 +148,7 @@ export interface Telemetry {
 
 export const rest = {
   /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
-  telemetry: () => j<Telemetry>(`${HTTP}/sys/api/now`),
+  telemetry: () => j<Telemetry>(`${SYS}/api/now`),
   capabilities: () => j<Capabilities>(`${HTTP}/api/io`),
   mcu: () => j<McuInfo>(`${HTTP}/api/io/mcu`),
   config: () => j<ConfigDoc>(`${HTTP}/api/config`),

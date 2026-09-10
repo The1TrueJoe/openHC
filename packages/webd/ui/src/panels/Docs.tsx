@@ -55,6 +55,25 @@ export function DocsPanel() {
    of which belong in a bundle that ships inside a RAM rootfs, and which does not
    build for the browser without a pile of polyfills.
    The document is ours and its shape is simple, so this reads it directly. */
+/* The specs are written in markdown because that is what the format says they
+   are. Rendering the two constructs actually used — **bold** and `code` — is a
+   dozen lines; pulling a markdown library for it would add more bundle than the
+   whole AsyncAPI panel costs. Anything else degrades to plain text, which is
+   the correct failure. */
+function md(text: string) {
+  return text.split(/\n\n+/).map((para, i) => (
+    <p key={i} className="mb-2 last:mb-0">
+      {para.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((bit, j) => {
+        if (bit.startsWith('**') && bit.endsWith('**'))
+          return <strong key={j} className="text-ink">{bit.slice(2, -2)}</strong>;
+        if (bit.startsWith('`') && bit.endsWith('`'))
+          return <code key={j} className="rounded bg-raised px-1 font-mono text-[0.9em]">{bit.slice(1, -1)}</code>;
+        return <span key={j}>{bit}</span>;
+      })}
+    </p>
+  ));
+}
+
 type Chan = { address: string; summary?: string; description?: string;
               messages?: Record<string, { $ref?: string }> };
 type Spec = {
@@ -93,7 +112,7 @@ function AsyncApiWrap() {
     <div className="space-y-6 p-5">
       <div>
         <h3 className="text-base font-semibold">{spec.info?.title}</h3>
-        <p className="mt-1 whitespace-pre-line text-sm text-muted">{spec.info?.description}</p>
+        <div className="mt-1 text-sm text-muted">{md(spec.info?.description ?? '')}</div>
       </div>
       <div className="flex flex-wrap gap-3">
         {Object.entries(spec.servers ?? {}).map(([k, s]) => (
@@ -117,7 +136,7 @@ function AsyncApiWrap() {
                     <span className="text-[11px] text-muted">{msgName(c)}</span>
                   </div>
                   <div className="mt-1 text-sm text-ink">{c.summary}</div>
-                  {c.description && <div className="mt-1 text-xs text-muted">{c.description}</div>}
+                  {c.description && <div className="mt-1 text-xs text-muted">{md(c.description)}</div>}
                 </div>
               ))}
             </div>
