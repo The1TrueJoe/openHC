@@ -344,9 +344,12 @@ async fn alive(c: &Arc<Config>) -> bool {
     }
     let has_contact = c.board.io.contacts > 0;
     let has_relay = c.board.io.relays > 0;
+    // Copied out before the closure: the blocking task outlives this borrow of
+    // `c`, so reaching through it inside would not compile.
+    let low = c.board.io.contacts_active_low;
     tokio::task::spawn_blocking(move || {
         if has_contact {
-            crate::gpio_io::contact_get(0).is_ok()
+            crate::gpio_io::contact_get(0, low).is_ok()
         } else if has_relay {
             crate::gpio_io::relay_get(0).is_ok()
         } else {
@@ -441,7 +444,8 @@ async fn contacts(c: &Arc<Config>) -> Out {
         return Err(Fault::NoSuch("this board has no contacts".into()));
     }
     io_ready(c)?;
-    let mask = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(n))
+    let low = c.board.io.contacts_active_low;
+    let mask = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(n, low))
         .await
         .map_err(|e| Fault::Io(e.to_string()))?
         .map_err(|e| Fault::Io(e.to_string()))?;

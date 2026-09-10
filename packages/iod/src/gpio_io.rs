@@ -55,8 +55,15 @@ pub fn relay_get(index: u8) -> io::Result<bool> {
     read(&format!("relay{}", index + 1))
 }
 
-pub fn contact_get(index: u8) -> io::Result<bool> {
-    read(&format!("contact{}", index + 1))
+/// Is contact `index` MADE?
+///
+/// `active_low` is the board's electrical sense, not a preference: on native
+/// GPIO these are pull-up inputs, so an open terminal reads high and a closed
+/// one is shorted to ground. Behind an IO microcontroller the firmware has
+/// already normalised it. See `Io::contacts_active_low`.
+pub fn contact_get(index: u8, active_low: bool) -> io::Result<bool> {
+    let level = read(&format!("contact{}", index + 1))?;
+    Ok(level != active_low)
 }
 
 #[cfg(target_os = "linux")]
@@ -100,10 +107,10 @@ pub fn relay_toggle(index: u8) -> io::Result<bool> {
 }
 
 /// Every contact, as a bitmask — the shape the rest of iod already speaks.
-pub fn contacts_mask(count: u8) -> io::Result<u32> {
+pub fn contacts_mask(count: u8, active_low: bool) -> io::Result<u32> {
     let mut mask = 0u32;
     for i in 0..count {
-        if contact_get(i)? {
+        if contact_get(i, active_low)? {
             mask |= 1 << i;
         }
     }

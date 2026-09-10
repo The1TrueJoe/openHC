@@ -60,6 +60,7 @@ async fn poller(cfg: Arc<Config>) {
 
     let contacts = cfg.board.io.contacts;
     let relays = cfg.board.io.relays;
+    let low = cfg.board.io.contacts_active_low;
     let mut tick: u32 = 0;
 
     loop {
@@ -67,7 +68,7 @@ async fn poller(cfg: Arc<Config>) {
         tick = tick.wrapping_add(1);
 
         if contacts > 0 {
-            let r = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(contacts)).await;
+            let r = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(contacts, low)).await;
             match r {
                 Ok(Ok(mask)) => {
                     cfg.bus.set("mcu/link", serde_json::json!(true));

@@ -67,6 +67,13 @@ pub struct Io {
     pub ir_in: u8,
     pub relays: u8,
     pub contacts: u8,
+    /// Does a CLOSED contact read as 0?
+    ///
+    /// True on native-GPIO boards, where these are pull-up inputs and closing
+    /// the contact shorts it to ground. False behind an IO microcontroller,
+    /// which normalises the sense in firmware before iod sees it. Getting this
+    /// wrong does not fail loudly — it reports every idle contact as made.
+    pub contacts_active_low: bool,
 
     /// The GPIO chip by DRIVER LABEL, not number — the number depends on probe
     /// order and has moved between kernels on this hardware.
@@ -198,6 +205,10 @@ impl Board {
                 ir_in: num(&e, "OHC_IR_IN"),
                 relays: num(&e, "OHC_RELAYS"),
                 contacts: num(&e, "OHC_CONTACTS"),
+                contacts_active_low: e
+                    .get("OHC_CONTACTS_ACTIVE_LOW")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false),
                 gpio_chip: e.get("OHC_GPIO_CHIP_LABEL").filter(|s| !s.is_empty()).cloned(),
                 io_reset_gpio: e.get("OHC_GPIO_IO_RESET").and_then(|v| v.parse().ok()),
                 relay_gpios: lines(&e, "OHC_RELAY_GPIOS"),

@@ -13,9 +13,9 @@ forced). Boots via appended DTB; network brings up SSH.
 See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  arch/arm/boot/dts/ti/davinci/Makefile         | 3 +++
- arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 254 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 372 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 351 insertions(+)
+ 3 files changed, 469 insertions(+)
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355.dtsi
 
@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,372 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
@@ -140,6 +140,124 @@ index 0000000..a959552
 +		reset-gpios = <&gpio 101 GPIO_ACTIVE_LOW>;
 +		davicom,no-eeprom;
 +		local-mac-address = [00 0f ff 18 21 9c];
++	};
++
++	/*
++	 * NAND on async EMIF CS0, and the vendor's partition table.
++	 *
++	 * Two reg windows, which is what the davinci-nand binding wants: the
++	 * chip's data window on CS0, then the EMIF control registers. Both
++	 * addresses are the vendor's own (`hammer_nand_resources` in
++	 * board-hammer.c, with DAVINCI_ASYNC_EMIF_CONTROL_BASE defined at the
++	 * top of that file as 0x01e10000).
++	 *
++	 * The reason this node exists is the FPGA bitstream. `fpga_fw.bin` is on
++	 * the stock root filesystem, and without a NAND node /proc/mtd is empty
++	 * and there is no route to it — no bitstream, no serial ports, no IR.
++	 *
++	 * ECC IS THE OPEN QUESTION. Control4 carries both a 4-bit hardware-ECC
++	 * patch and a "UBL compatible ECC" patch, so their layout may not match
++	 * what mainline computes. If reads come back with correctable-error
++	 * storms or JFFS2 refuses to mount, that is the reason, and the fallback
++	 * is a raw `nanddump` searched for the Xilinx sync word rather than a
++	 * mounted filesystem.
++	 */
++	nand: nand@2000000 {
++		compatible = "ti,davinci-nand";
++		reg = <0x02000000 0x807ff>,	/* CS0 data */
++		      <0x01e10000 0x8000>;	/* EMIF control */
++
++		ti,davinci-chipselect = <0>;
++		ti,davinci-mask-ale = <0>;
++		ti,davinci-mask-cle = <0>;
++		ti,davinci-mask-chipsel = <0>;
++		ti,davinci-ecc-mode = "hw";
++		ti,davinci-ecc-bits = <4>;
++		ti,davinci-nand-use-bbt;
++
++		/*
++		 * Read out of the vendor board file verbatim, names included, so
++		 * a partition here means the same thing it means to Control4's
++		 * own tooling. Offsets are absolute; several deliberately
++		 * overlap (partition 0 spans the whole device, and the
++		 * bootloader/environment pair sits inside the first megabyte),
++		 * which is how the vendor wrote it.
++		 *
++		 * The one that matters for the FPGA is "rootfs1" at 182M — the
++		 * kernel command line the box boots with says
++		 * root=/dev/mtdblock8, and this is that partition.
++		 */
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot-env";
++				reg = <0x00000000 0x00020000>;	/* 0, 128K */
++				read-only;
++			};
++			partition@20000 {
++				label = "ubl";
++				reg = <0x00020000 0x00080000>;	/* 128K, 512K */
++				read-only;
++			};
++			partition@a0000 {
++				label = "u-boot";
++				reg = <0x000a0000 0x00100000>;	/* 640K, 1M */
++				read-only;
++			};
++			partition@1e0000 {
++				label = "u-boot-env-redundant";
++				reg = <0x001e0000 0x00020000>;	/* 1920K, 128K */
++				read-only;
++			};
++			partition@200000 {
++				label = "kernel0";
++				reg = <0x00200000 0x00300000>;	/* 2M, 3M */
++				read-only;
++			};
++			partition@500000 {
++				label = "rootfs0";
++				reg = <0x00500000 0x04000000>;	/* 5M, 64M */
++				read-only;
++			};
++			partition@4500000 {
++				label = "recovery-kernel";
++				reg = <0x04500000 0x00300000>;	/* 69M, 3M */
++				read-only;
++			};
++			partition@4800000 {
++				label = "recovery-rootfs";
++				reg = <0x04800000 0x04000000>;	/* 72M, 64M */
++				read-only;
++			};
++			partition@8800000 {
++				label = "jffs2-img";
++				reg = <0x08800000 0x00800000>;	/* 136M, 8M */
++				read-only;
++			};
++			partition@9000000 {
++				label = "internal";
++				reg = <0x09000000 0x02600000>;	/* 144M, 38M */
++				read-only;
++			};
++			partition@b600000 {
++				label = "rootfs1";
++				reg = <0x0b600000 0x04000000>;	/* 182M, 64M */
++				read-only;
++			};
++			partition@f600000 {
++				label = "kernel1";
++				reg = <0x0f600000 0x00300000>;	/* 246M, 3M */
++				read-only;
++			};
++			partition@f900000 {
++				label = "persistent-logs";
++				reg = <0x0f900000 0x00600000>;	/* 249M, 6M */
++				read-only;
++			};
++		};
 +	};
 +
 +	/*
