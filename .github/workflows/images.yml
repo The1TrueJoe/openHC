@@ -288,16 +288,25 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      # Drop what is regenerated every run before saving: the kernel tree is
-      # linux-dirclean'd on the next build regardless, and target/ and images/
-      # are rebuilt from staging. Keeping them would roughly double an entry
-      # that has to fit a 10 GB repo-wide budget shared with dl/.
+      # Drop only what is genuinely rebuilt. That is a shorter list than it
+      # looks:
+      #
+      #   build/linux-*  yes — build.sh runs linux-dirclean every time, so the
+      #                  kernel is re-extracted, re-patched and re-injected with
+      #                  our drivers on every build regardless.
+      #   images/        yes — pure output, and already uploaded above.
+      #   target/        NO. This looked regenerable and is not: packages
+      #                  install INTO it, and their stamps say "installed", so a
+      #                  restored tree without it never refills it and the build
+      #                  dies at target-finalize with
+      #                  "sed: can't read .../target/etc/hosts".
+      #   staging/       NO, for the same reason.
       - name: Trim the output tree before caching
         if: always()
         run: |
           O=output/build/${{ matrix.board }}
           [ -d "$O" ] || exit 0
-          rm -rf "$O"/build/linux-* "$O"/target "$O"/images
+          rm -rf "$O"/build/linux-* "$O"/images
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
       - name: Save Buildroot output tree
