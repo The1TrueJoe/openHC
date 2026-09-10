@@ -239,25 +239,56 @@ because a **stale ARP entry** for `.111` outranked the live one for `.112` —
 `sweep()` now probes a candidate before believing it, and says which rows it
 skipped.
 
-## What this deliberately does *not* give you
+## Installing it, without giving up any of that
 
-**A power cycle still returns the box to Control4.** openHC is kexec'd, so it
-lives entirely in RAM and nothing on disk knows it exists. That is the property
-the whole recovery story is built on — but it also means a power cut, or the
-watchdog doing its job, leaves you on stock until you run `boot` again. Closing
-the lid does not make openHC the thing the box runs; it makes openHC the thing
-you can *put* on the box from anywhere.
+A `kexec` install lives entirely in RAM, so a power cut leaves you on stock with
+25 MB to push again. The persistent install fixes that **without** inverting the
+recovery story, and the trick is one GRUB Legacy keyword.
 
-Making it survive a power cycle means writing `sda1`, and GRUB Legacy has the
-right primitive for doing that safely: `savedefault` is in the installed
-`stage2`, so `default saved` plus `savedefault 1` on an openHC entry gives
-**boot-once** — GRUB reverts the default to the vendor entry before it hands
-over to the kernel, so a bad image costs one power cycle and nothing else.
-`fallback 1` covers an unreadable kernel on top of that.
+The naive persistent install is `default 2`, and it quietly undoes everything
+above: openHC becomes what the box boots, so a panic reboots into the same
+panic and the network watchdog resets into the same dead network. A safety net
+turns into a loop.
 
-That is a real change to the boot chain rather than a runtime one, so read
-[Recovery](/shared/recovery/) first — and take the `sda1` backup before, not
-after.
+Instead the openHC entry ends with `savedefault 1`, and `default` becomes
+`saved`. GRUB executes that **before** handing over to the kernel, so every
+openHC boot immediately re-points the default back at Control4:
+
+```
+default         saved            <- was `default 1`
+...
+title           openHC
+root            (hd0,2)
+kernel          /boot/openhc-bzImage console=ttyS0,115200
+initrd          /boot/openhc-initrd.gz
+savedefault     1                <- hands the default back, before booting
+boot
+```
+
+openHC is therefore always exactly **one** boot. Anything at all — panic,
+watchdog, power cut, `reset` — comes back on stock, which answers SSH. Going
+back in is `ohc-flash boot`, which sets one byte and reboots; the images are
+already on disk.
+
+Measured on the unit, in this order:
+
+| | |
+|---|---|
+| probe `default saved` with saved = the stock entry | booted stock — GRUB reads `/boot/grub/default` correctly on this stage2 |
+| `ohc-flash install --method grub` | 169536 KB free on `sda3`, wrote 25628 KB, `menu.lst verified, 596 bytes` |
+| reboot | **openHC from disk**, `panic=10 console=ttyS0,115200`, no kexec |
+| read `/boot/grub/default` | already `1` — `savedefault` fired during that boot |
+| reboot again | stock Control4 |
+| `ohc-flash boot` | openHC again, and the default back to `1` |
+
+:::caution[sda1 is the one unrecoverable partition]
+Every recovery layer on this board — including the hardware factory-default
+button — needs GRUB to read `menu.lst` from `sda1`. Take the byte-exact backup
+first (`backups/hc800/`, md5 recorded and verified), and read back what you
+wrote. The installer refuses to write a `menu.lst` whose
+`support_factorydefault` / `factorydefault` lines it cannot find afterwards, and
+restores its own backup if the read-back differs. `sda2` is never written by any
+method. See [Recovery](/shared/recovery/).
 
 ## What is still only on the cable
 
