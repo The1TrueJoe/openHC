@@ -190,9 +190,11 @@ which_os() { rsh "$1" 'test -r /opt/ohc/board.env && echo openhc || echo vendor'
 # lets it log from inside a panic — so the boot line needs OUR MAC, not just our
 # address.
 my_ip()  { ipconfig getifaddr en0 2>/dev/null || ip -4 route get "$1" 2>/dev/null | awk '{print $7; exit}'; }
+# Anchored, because macOS prints "energy-efficient-ethernet" in the media line
+# and a bare /ether/ happily returns the string "autoselect".
 my_mac() {
-    ifconfig en0 2>/dev/null | awk '/ether/ { print $2; exit }' ||
-    ip link show 2>/dev/null | awk '/link\/ether/ { print $2; exit }'
+    ifconfig en0 2>/dev/null | awk '$1 == "ether" { print $2; exit }' ||
+    ip link show 2>/dev/null | awk '$1 == "link/ether" { print $2; exit }'
 }
 
 # ── commands ---------------------------------------------------------------
@@ -228,6 +230,11 @@ push)
     ;;
 
 log)
+    # A second listener binds nothing and prints nothing, which looks exactly
+    # like a box that has stopped talking. Say so instead.
+    if lsof -nP -iUDP:"$NETCON_PORT" >/dev/null 2>&1; then
+        die "udp/$NETCON_PORT is already held: $(lsof -nP -iUDP:"$NETCON_PORT" | awk 'NR==2 {print $1, $2}')"
+    fi
     say "netconsole listener on udp/$NETCON_PORT — Ctrl-C to stop"
     exec python3 -c '
 import socket, sys
