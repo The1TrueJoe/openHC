@@ -142,6 +142,14 @@ mdns_name() { printf 'openhc-%s-%s.local' "$BOARD" "$(printf '%s' "$1" | tr -d :
 
 # Ping every host on our /24 so the ARP table fills, then look for our MAC.
 # Crude, but it is the only method that works no matter which OS is running.
+#
+# THE ARP TABLE REMEMBERS ADDRESSES THE BOX NO LONGER HAS. It takes a fresh DHCP
+# lease on every boot and moves between .111 and .112; the old entry does not
+# expire for many minutes, so a plain "first row with our MAC" match will happily
+# hand back an address that has been dead since the last reboot. That is the
+# single most expensive mistake available here — it looks exactly like a box that
+# failed to come back, and it has cost real power cycles. So every candidate is
+# probed before it is believed, and only a live one is returned.
 sweep() {
     _want=$1
     _net=$(ipconfig getifaddr en0 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
@@ -153,7 +161,10 @@ sweep() {
     arp -an 2>/dev/null | while read -r line; do
         _ip=$(printf '%s' "$line" | grep -oE '\(([0-9.]+)\)' | tr -d '()')
         _m=$(printf '%s' "$line" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1)
-        [ -n "$_ip" ] && [ -n "$_m" ] && [ "$(norm_mac "$_m")" = "$_want" ] && { printf '%s\n' "$_ip"; break; }
+        [ -n "$_ip" ] && [ -n "$_m" ] || continue
+        [ "$(norm_mac "$_m")" = "$_want" ] || continue
+        alive "$_ip" || { say "  ($_ip is a stale ARP entry, skipping)"; continue; }
+        printf '%s\n' "$_ip"; break
     done
 }
 
@@ -230,15 +241,13 @@ find)
     save ip "$H"
     # One connection, not two: every extra one is another roll against the
     # refusal rate above.
-    rsh "$H" 'if [ -r /opt/ohc/board.env ]; then
-                  echo "running=openHC"; uname -r; uptime; cat /proc/cmdline
-              else
-                  echo "running=vendor (Control4 stock)"; uname -r; uptime
-              fi' | {
-        read -r first
-        printf '%s  mac=%s  %s\n' "$H" "$M" "$first"
-        cat
-    } || die "found $H but it will not let us in"
+    OUT=$(rsh "$H" 'if [ -r /opt/ohc/board.env ]; then
+                        echo "running=openHC"; uname -r; uptime; cat /proc/cmdline
+                    else
+                        echo "running=vendor (Control4 stock)"; uname -r; uptime
+                    fi') || die "$H answers ARP but not SSH — still booting, or wedged before dropbear"
+    printf '%s  mac=%s  %s\n' "$H" "$M" "$(printf '%s\n' "$OUT" | head -1)"
+    printf '%s\n' "$OUT" | tail -n +2
     ;;
 
 sh)
@@ -276,7 +285,15 @@ reset)
     # A sysrq reboot goes through the kernel, not init, so it still works when
     # userspace is too wedged to run `reboot`. The connection dies with the box;
     # that is the expected outcome, not a failure.
-    rsh "$H" 'echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger' 2>/dev/null || true
+    # ONE attempt, not the usual retry. The connection dying is the intended
+    # outcome here, so retrying it means ~50 seconds of ssh timeouts before the
+    # tool even starts watching for the box to come back — during which it looks
+    # like nothing is happening, which is the opposite of what this is for.
+    for _p in $(pw_list | tr '\n' ' '); do
+        # shellcheck disable=SC2086
+        sshpass -p "$_p" ssh $SSHOPT -o ConnectTimeout=5 "root@$H" \
+            'echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger' >/dev/null 2>&1 && break
+    done
     save ip ""      # the lease may well change across the reboot
     save os vendor  # GRUB's default entry, so that is what will answer
     wait_back "reset"
