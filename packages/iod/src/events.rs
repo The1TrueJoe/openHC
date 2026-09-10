@@ -21,7 +21,6 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
@@ -113,7 +112,15 @@ impl State {
 #[derive(Clone)]
 pub struct Bus {
     tx: broadcast::Sender<Envelope>,
-    seq: Arc<AtomicU64>,
+    /// A plain mutex, NOT an atomic, because the IO Extender's ARM926EJ-S is
+    /// ARMv5TE and has no 64-bit atomics — `std::sync::atomic::AtomicU64` does
+    /// not exist on that target, so iod simply did not compile for it.
+    /// Narrowing to `AtomicUsize` was the other option and is worse: usize is
+    /// 32 bits there, so the counter would silently wrap, and a wrap in a
+    /// gap-detection sequence looks exactly like the gap it exists to detect.
+    /// The lock costs nothing — iod runs on a current-thread runtime, so it is
+    /// never contended.
+    seq: Arc<Mutex<u64>>,
     pub state: Arc<State>,
 }
 
@@ -125,14 +132,18 @@ impl Bus {
         // 512 is generous enough to absorb a burst of serial traffic without
         // lagging a slow browser off the bus.
         let (tx, _) = broadcast::channel(512);
-        Bus { tx, seq: Arc::new(AtomicU64::new(0)), state: Arc::new(State::default()) }
+        Bus { tx, seq: Arc::new(Mutex::new(0)), state: Arc::new(State::default()) }
     }
 
     fn send(&self, msg: Msg) {
         // Pre-increment, so the counter always holds the LAST seq assigned and
         // the first real message is 1. `snapshot` depends on that: it must be
         // able to name a position without consuming one.
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let seq = {
+            let Ok(mut n) = self.seq.lock() else { return };
+            *n += 1;
+            *n
+        };
         // Err just means nobody is listening.
         let _ = self.tx.send(Envelope { seq, ts: now(), msg });
     }
@@ -168,7 +179,7 @@ impl Bus {
     /// everything after it; 0 means nothing has been published yet.
     pub fn snapshot(&self) -> Envelope {
         Envelope {
-            seq: self.seq.load(Ordering::Relaxed),
+            seq: self.seq.lock().map(|n| *n).unwrap_or(0),
             ts: now(),
             msg: Msg::Snapshot { state: self.state.doc() },
         }
