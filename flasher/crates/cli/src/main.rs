@@ -436,7 +436,16 @@ fn netboot(rest: &[String]) -> bool {
             use std::sync::atomic::Ordering::Relaxed;
             use tp::netboot::Event::*;
             match e {
-                Listening { dhcp, tftp } => println!("  listening: dhcp/{dhcp} tftp/{tftp}"),
+                Listening { dhcp, tftp, iface } => match iface {
+                    Some(i) => println!("  listening: dhcp/{dhcp} tftp/{tftp} pinned to {i}"),
+                    // Worth shouting about: unpinned means replies follow the
+                    // routing table, which on a multi-homed host is how they end
+                    // up on the wrong LAN while still reporting success.
+                    None => println!(
+                        "  listening: dhcp/{dhcp} tftp/{tftp} — NOT pinned to an interface; \
+                         replies follow the routing table"
+                    ),
+                },
                 Dhcp { saw, replied: Some(kind) } => {
                     if matches!(kind, tp::netboot::DhcpMessageType::Ack) {
                         ak.store(true, Relaxed);

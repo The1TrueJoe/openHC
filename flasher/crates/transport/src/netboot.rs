@@ -53,7 +53,9 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Both listeners are up. Nothing happens until the box is power-cycled.
-    Listening { dhcp: u16, tftp: u16 },
+    /// `iface` is the interface the DHCP socket is pinned to — worth printing,
+    /// because a reply on the wrong wire is invisible and looks like success.
+    Listening { dhcp: u16, tftp: u16, iface: Option<String> },
     /// A DHCP message from the MAC we care about, and what we said back.
     Dhcp { saw: MessageType, replied: Option<MessageType> },
     /// A DHCP message from some other machine. Counted, never answered — this
@@ -255,7 +257,7 @@ pub fn serve(
     let cfg = Arc::new(cfg);
     let emit: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(emit);
 
-    let dhcp_sock = bind_broadcast(67)?;
+    let (dhcp_sock, iface) = bind_dhcp(cfg.server_ip)?;
 
     let tftp_cfg = tftpd::Config {
         ip_address: IpAddr::V4(cfg.server_ip),
@@ -273,7 +275,7 @@ pub fn serve(
         .map_err(|e| io::Error::other(format!("tftp on {}:69 — {e}", cfg.server_ip)))?;
     let tftp_abort = tftp.get_abort_flag();
 
-    emit(Event::Listening { dhcp: 67, tftp: 69 });
+    emit(Event::Listening { dhcp: 67, tftp: 69, iface: iface.clone() });
 
     let (c1, s1, e1) = (cfg.clone(), stop.clone(), emit.clone());
     let dhcp_thread = std::thread::spawn(move || dhcp_thread(c1, s1, dhcp_sock, e1));
@@ -292,8 +294,91 @@ pub fn serve(
     Ok(())
 }
 
+/// Which interface holds `ip`, by name.
+///
+/// The DHCP socket has to be pinned to it, and the pinning APIs take a name (or
+/// an index derived from one) rather than an address.
+fn interface_holding(ip: Ipv4Addr) -> Option<String> {
+    if_addrs::get_if_addrs()
+        .ok()?
+        .into_iter()
+        .find(|i| matches!(&i.addr, if_addrs::IfAddr::V4(v) if v.ip == ip))
+        .map(|i| i.name)
+}
+
+/// Tie a socket to one interface, so a broadcast cannot wander.
+///
+/// THE bug this fixes: a DHCP reply is addressed to 255.255.255.255, which says
+/// nothing about which wire it belongs on, so the kernel resolves it through the
+/// routing table. On a machine with two networks that is a coin toss, and on the
+/// dual-homed Mac this was first run against it was not even a toss — macOS had
+/// a cloned host route for 255.255.255.255 pointing at the *other* interface, so
+/// every OFFER and ACK left on the wrong LAN. `send_to` returned Ok each time,
+/// the tool logged "replied", and the box a metre away heard nothing. Silent,
+/// total, and indistinguishable from the bootloader ignoring us.
+///
+/// Unsupported platforms fall through: the socket still works, it is just back
+/// to trusting the routing table, and `Listening.iface` reports None so the
+/// operator can see that is what happened.
+fn pin_to_interface(sock: &socket2::Socket, iface: &str) -> io::Result<()> {
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    {
+        return sock.bind_device(Some(iface.as_bytes()));
+    }
+    #[cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos", target_os = "watchos"))]
+    {
+        let name = std::ffi::CString::new(iface).map_err(io::Error::other)?;
+        // SAFETY: `name` is a valid NUL-terminated C string for this call, and
+        // if_nametoindex only reads it. Zero means "no such interface".
+        let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+        let index = std::num::NonZeroU32::new(index).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("no interface index for {iface}"))
+        })?;
+        return sock.bind_device_by_index_v4(Some(index));
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (sock, iface);
+        Ok(())
+    }
+}
+
+/// The DHCP socket: bound to every address (a client with no lease broadcasts,
+/// so a socket bound to one unicast address would never see a DISCOVER) but
+/// PINNED to one interface, so replies leave by the wire the request arrived on.
+fn bind_dhcp(server_ip: Ipv4Addr) -> io::Result<(UdpSocket, Option<String>)> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    sock.set_reuse_address(true)?;
+    sock.set_broadcast(true)?;
+    sock.set_read_timeout(Some(Duration::from_millis(500)))?;
+
+    // Pin BEFORE bind: on Linux SO_BINDTODEVICE after bind does not retroactively
+    // constrain the socket.
+    let iface = interface_holding(server_ip);
+    if let Some(name) = &iface {
+        pin_to_interface(&sock, name)?;
+    }
+
+    sock.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 67).into()).map_err(|e| {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => {
+                io::Error::new(e.kind(), "port 67 needs root — try sudo".to_string())
+            }
+            io::ErrorKind::AddrInUse => io::Error::new(
+                e.kind(),
+                "port 67 is taken — another dhcpd is already running".to_string(),
+            ),
+            _ => e,
+        }
+    })?;
+    Ok((sock.into(), iface))
+}
+
 /// A broadcast-capable UDP socket with a read timeout, so the thread notices
 /// `stop` instead of blocking in `recv_from` forever.
+#[allow(dead_code)]
 fn bind_broadcast(port: u16) -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)).map_err(|e| {
         // The two ways this fails are worth telling apart: one is a sudo away,
@@ -351,6 +436,18 @@ mod tests {
         );
         m.opts_mut().insert(v4::DhcpOption::MessageType(MessageType::Discover));
         m
+    }
+
+    /// Not much of an assertion, but it catches the case that matters: if this
+    /// returns None for an address the host genuinely holds, every reply falls
+    /// back to the routing table and the whole tool goes silently wrong.
+    #[test]
+    fn the_loopback_address_resolves_to_an_interface() {
+        assert!(
+            interface_holding(Ipv4Addr::LOCALHOST).is_some(),
+            "127.0.0.1 must belong to some interface on any host that can run this"
+        );
+        assert!(interface_holding(Ipv4Addr::new(203, 0, 113, 7)).is_none());
     }
 
     #[test]
