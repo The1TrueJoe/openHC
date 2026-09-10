@@ -23,14 +23,80 @@
 # which tells the driver this was a deliberate close — otherwise stopping the
 # kicker would be exactly how you fire the timer, and every clean shutdown would
 # end in a reset nobody asked for.
+
 # /sbin, which is where busybox installs the applet — not /usr/sbin, where the
 # standalone watchdog daemon lives on a distro. Resolved rather than hardcoded so
 # an image carrying the real daemon works too.
 DAEMON=$(command -v watchdog 2>/dev/null || echo /sbin/watchdog)
 WDT=/dev/watchdog
 PIDF=/var/run/ohc-watchdog.pid
+LIVEPID=/var/run/ohc-netlive.pid
 TIMEOUT=30
 INTERVAL=10
+
+# THE HOLE A PLAIN WATCHDOG LEAVES. A box whose network dies but whose userspace
+# is perfectly healthy will keep kicking the watchdog forever: alive, and
+# unreachable, and never reset. On a sealed unit that is indistinguishable from a
+# hang and needs exactly the physical access the watchdog exists to avoid — and
+# it is the most likely way to lose a box, because breaking the NIC is a normal
+# outcome of working on the kernel.
+#
+# So reachability, not just liveness, is what keeps the timer fed. The monitor
+# below SIGKILLs the kicker when the uplink has been down long enough — no magic
+# 'V', so the chip fires and the board resets into something that answers.
+#
+# OFF BY DEFAULT, and a board opts in with OHC_NET_WATCHDOG=1 in board.env.
+# The same reasoning as panic= on the HC-800: this is only a recovery if the
+# reboot lands somewhere DIFFERENT. On the HC-800 it lands on the untouched
+# vendor image, which answers SSH — a real way back. On a board where openHC is
+# what is installed, the identical reset boots the identical image into the
+# identical dead network, ten minutes later, forever. That is not a safety net,
+# it is a reboot loop, so it stays off unless a board says otherwise.
+#
+# Two more conservatisms, because a wrong automatic reboot is worse than the
+# problem it fixes:
+#   * it does not arm until the uplink has had a carrier AND an address ONCE, so
+#     a board still bringing its network up is never caught mid-boot;
+#   * the grace period is ten minutes — far longer than a DHCP renewal, a router
+#     reboot, or a switch reconverging.
+GRACE=600
+
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+UPLINK="${OHC_UPLINK_IFACE:-eth0}"
+
+# Reachable enough to be worth staying up for: the uplink has carrier and an
+# address. Deliberately NOT a ping of anything — the gateway is somebody else's
+# machine, and rebooting this box because a router went away is not our call.
+reachable() {
+    [ "$(cat "/sys/class/net/$UPLINK/carrier" 2>/dev/null)" = 1 ] || return 1
+    ip -4 addr show "$UPLINK" 2>/dev/null | grep -q "inet " && return 0
+    ifconfig "$UPLINK" 2>/dev/null | grep -q "inet "
+}
+
+netlive() {
+    # Wait for the first good state before arming. Until then this loop is a
+    # no-op, which is exactly right on a board still bringing its network up —
+    # or one that has no network to bring up.
+    while ! reachable; do sleep 10; done
+    down=0
+    while sleep 10; do
+        if reachable; then
+            [ "$down" -gt 0 ] && logger -t ohc-watchdog "$UPLINK back after ${down}s" 2>/dev/null
+            down=0
+            continue
+        fi
+        down=$((down + 10))
+        [ "$down" = 60 ] && logger -t ohc-watchdog "$UPLINK down — reset in $((GRACE - down))s" 2>/dev/null
+        [ "$down" -lt "$GRACE" ] && continue
+        # SIGKILL, not SIGTERM: busybox writes the magic 'V' on a clean exit,
+        # and that is precisely what we do NOT want here. No 'V' means the chip
+        # keeps counting and resets the board within $TIMEOUT.
+        echo "ohc-watchdog: $UPLINK down ${down}s — letting the watchdog reset the board" > /dev/kmsg 2>/dev/null
+        logger -t ohc-watchdog "$UPLINK down ${down}s — letting the watchdog fire" 2>/dev/null
+        kill -9 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
+        return 0
+    done
+}
 
 case "$1" in
     start)
@@ -40,12 +106,19 @@ case "$1" in
                -- -F -T "$TIMEOUT" -t "$INTERVAL" "$WDT"; then
             echo "armed — ${TIMEOUT}s timeout, kicked every ${INTERVAL}s"
         else
-            echo "could not arm $WDT"
+            echo "could not arm $WDT"; exit 0
         fi
+        [ "${OHC_NET_WATCHDOG:-0}" = 1 ] || exit 0
+        start-stop-daemon -S -q -b -m -p "$LIVEPID" -x "$0" -- __netlive \
+            && echo "watchdog: reset if $UPLINK stays down for ${GRACE}s"
         ;;
+    __netlive) netlive ;;
     stop)
+        # The liveness monitor first: killing the kicker while it is still
+        # watching would just have it decide the box is unreachable and race us.
+        start-stop-daemon -K -q -p "$LIVEPID" 2>/dev/null
         start-stop-daemon -K -q -p "$PIDF" 2>/dev/null
-        rm -f "$PIDF"
+        rm -f "$PIDF" "$LIVEPID"
         ;;
     restart) "$0" stop; sleep 1; "$0" start ;;
     *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
