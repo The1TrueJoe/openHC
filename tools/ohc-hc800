@@ -56,12 +56,16 @@ SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 
 command -v sshpass >/dev/null || die "sshpass is not installed (brew install sshpass)"
 
-# ONE AUTH IN TWELVE IS SPURIOUSLY REFUSED. Measured, not suspected: twelve
-# identical `sshpass ... echo ok` runs against a healthy box produced one
-# "Permission denied (publickey,password)" and eleven successes. So a refusal is
-# not evidence of the wrong password, and a tool that treats it as one will tell
-# you the box is unreachable roughly every twelfth command — which is exactly
-# the sort of thing that sends you looking for the serial cable again. Retry.
+# ROUGHLY ONE AUTH IN TEN IS SPURIOUSLY REFUSED. Measured, not suspected: 47
+# identical `sshpass ... true` runs against a healthy box produced 5
+# "Permission denied (publickey,password)" and 42 successes. It is sshpass
+# racing dropbear's password prompt on the pty, not the password being wrong —
+# the rate is the same with and without the legacy algorithm options above, and
+# public-key auth (which never touches that prompt) would remove it entirely.
+#
+# So a refusal is not evidence of the wrong password, and a tool that treats it
+# as one will call the box unreachable roughly every tenth command — exactly the
+# sort of thing that sends you looking for the serial cable again. Retry.
 #
 # Which password worked is cached, because it also says which OS booted, and
 # leading with the right one halves the connections a multi-step operation makes.

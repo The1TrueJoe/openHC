@@ -154,13 +154,18 @@ Seed it once, if mDNS is not available to you:
 OHC_HOST=10.0.0.111 tools/ohc-hc800 find
 ```
 
-:::caution[One auth in twelve is refused]
-Measured on a healthy box: twelve identical `sshpass` runs produced one
-`Permission denied (publickey,password)` and eleven successes. A refusal is
-**not** evidence of a wrong password, and a tool that treats it as one reports
-the box unreachable roughly every twelfth command — which is exactly what sends
-you looking for the serial cable again. `ohc-hc800` retries; anything you write
-yourself should too.
+:::caution[About one auth in ten is refused]
+Measured on a healthy box: 47 identical `sshpass` runs produced 5
+`Permission denied (publickey,password)` and 42 successes. It is **sshpass
+racing dropbear's password prompt**, not a wrong password — the rate is the same
+with and without the legacy algorithm options, and it happens against both
+images.
+
+A tool that treats a refusal as authoritative will call the box unreachable
+roughly every tenth command, which is exactly what sends you looking for the
+serial cable again. `ohc-hc800` retries; anything you write yourself should too.
+The real cure is **public-key auth**, which never touches that prompt — worth
+adding a key to the image if you find yourself scripting against it a lot.
 :::
 
 ## Deploying a new build
