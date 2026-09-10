@@ -197,6 +197,26 @@ because a **stale ARP entry** for `.111` outranked the live one for `.112` —
 `sweep()` now probes a candidate before believing it, and says which rows it
 skipped.
 
+## What this deliberately does *not* give you
+
+**A power cycle still returns the box to Control4.** openHC is kexec'd, so it
+lives entirely in RAM and nothing on disk knows it exists. That is the property
+the whole recovery story is built on — but it also means a power cut, or the
+watchdog doing its job, leaves you on stock until you run `boot` again. Closing
+the lid does not make openHC the thing the box runs; it makes openHC the thing
+you can *put* on the box from anywhere.
+
+Making it survive a power cycle means writing `sda1`, and GRUB Legacy has the
+right primitive for doing that safely: `savedefault` is in the installed
+`stage2`, so `default saved` plus `savedefault 1` on an openHC entry gives
+**boot-once** — GRUB reverts the default to the vendor entry before it hands
+over to the kernel, so a bad image costs one power cycle and nothing else.
+`fallback 1` covers an unreadable kernel on top of that.
+
+That is a real change to the boot chain rather than a runtime one, so read
+[Recovery](/shared/recovery/) first — and take the `sda1` backup before, not
+after.
+
 ## What is still only on the cable
 
 Being honest about the gaps:
