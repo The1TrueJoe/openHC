@@ -12,3 +12,23 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [target.i686-unknown-linux-musl]
 linker = "rust-lld"
 rustflags = ["-C", "target-feature=+crt-static", "-C", "target-cpu=bonnell"]
+
+# The IOX v1 is a TI DM355 — ARM926EJ-S, i.e. ARMv5TEJ, no hardware FP, so the
+# soft-float `musleabi` target rather than the CA-1's `musleabihf`.
+#
+# THIS BLOCK'S ABSENCE IS WHAT BROKE THE IOX IMAGE. With no linker named here,
+# cargo falls back to the host `cc`, which on an x86_64 runner meets an ARM
+# crt1.o and says "relocations in generic ELF (EM: 40)" — a message that sends
+# you looking for a missing cross-toolchain when what is missing is these three
+# lines. build.sh now refuses to start rather than let that happen again.
+[target.armv5te-unknown-linux-musleabi]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static", "-C", "target-cpu=arm926ej-s"]
+
+# The HC-800 is x86_64, the same arch as every runner and every dev machine that
+# builds it, so the host `cc` links it correctly and it has always worked without
+# a block here. Named anyway, so "which linker does this target use" has one
+# answer for all four boards instead of three answers and a coincidence.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static"]
