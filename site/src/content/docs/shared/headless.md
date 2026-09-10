@@ -176,6 +176,19 @@ it configures itself after one successful `find`.
 `tools/ohc-hc800` is the loop, with the discovery and the two root passwords
 already handled:
 
+The flasher is the other half of this, and the two have different jobs:
+`ohc-hc800` is the ad-hoc tool for a box you are working on; `ohc-flash` is the
+installer.
+
+```bash
+ohc-flash identify 10.0.0.111                       # what is it, and how sure are we
+ohc-flash plan hc800                                # both methods, and what each writes
+ohc-flash install HOST --images DIR --method kexec  # run it from RAM, writes nothing
+ohc-flash install HOST --images DIR --method grub   # persistent
+ohc-flash boot HOST                                 # re-enter an installed openHC
+ohc-flash uninstall HOST                            # put the boot chain back
+```
+
 ```bash
 tools/ohc-hc800 find                    # where is it, and which OS booted
 tools/ohc-hc800 sh 'dmesg | tail -30'   # run something
@@ -280,6 +293,8 @@ Measured on the unit, in this order:
 | read `/boot/grub/default` | already `1` — `savedefault` fired during that boot |
 | reboot again | stock Control4 |
 | `ohc-flash boot` | openHC again, and the default back to `1` |
+| `ohc-flash uninstall` | `menu.lst` restored from the backup the install kept, images removed from `sda3`, vendor entries byte-identical |
+| reinstall from pristine stock | ran the `default 1` → `default saved` conversion for real, `menu.lst verified, 595 bytes` |
 
 :::caution[sda1 is the one unrecoverable partition]
 Every recovery layer on this board — including the hardware factory-default
