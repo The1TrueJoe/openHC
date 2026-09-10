@@ -60,12 +60,38 @@ fn stage(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<(String, String)> {
     Ok((kp, ip))
 }
 
+/// Build a `netconsole=` boot argument aimed at `(ip, port)`.
+///
+/// THE DESTINATION MAC IS RESOLVED ON THE BOX, not guessed here. netpoll writes
+/// the Ethernet header itself — no ARP, no routing, which is exactly what lets
+/// it keep logging from inside a panic — so it needs a real MAC, and the only
+/// machine that can see the right one is the box.
+///
+/// Broadcast is NOT a usable fallback, which is worth stating because it looks
+/// like one: `ff:ff:ff:ff:ff:ff` was tried against a listener on the same flat
+/// segment and delivered **nothing at all**. So a failed resolve returns None
+/// and the caller boots without netconsole rather than with a target that
+/// silently goes nowhere.
+fn netconsole_arg(ssh: &Ssh, ip: &str, port: u16, uplink: &str) -> Option<String> {
+    // Ping first so the entry is fresh, then read the box's own ARP table.
+    let cmd = format!(
+        r#"ping -c 1 -W 1 {ip} >/dev/null 2>&1; awk '$1 == "{ip}" && $4 != "00:00:00:00:00:00" {{ print $4 }}' /proc/net/arp"#
+    );
+    let mac = ssh.run(&cmd, false).ok()?;
+    let mac = mac.split_whitespace().next()?.to_string();
+    if mac.len() != 17 {
+        return None;
+    }
+    Some(format!("netconsole=6665@/{uplink},{port}@{ip}/{mac}"))
+}
+
 /// Start openHC out of the running system. **Writes to no partition.**
 ///
-/// `netconsole` is worth passing whenever the caller knows where to listen: the
-/// window between `kexec -e` and the new kernel bringing up the NIC is the only
-/// part of this that a serial cable can see and SSH cannot.
-pub fn kexec(ssh: &Ssh, rel: &Release, netconsole: Option<&str>, p: &Progress) -> Result<()> {
+/// `netconsole` is `(listener ip, port)`; worth passing whenever the caller
+/// knows where to listen, because the window between `kexec -e` and the new
+/// kernel bringing up the NIC is the only part of this that a serial cable can
+/// see and SSH cannot.
+pub fn kexec(ssh: &Ssh, rel: &Release, netconsole: Option<(&str, u16)>, p: &Progress) -> Result<()> {
     let (kp, ip) = stage(ssh, rel, p)?;
 
     // The vendor image's kernel is CONFIG_KEXEC=y but Control4 never shipped
@@ -91,10 +117,30 @@ pub fn kexec(ssh: &Ssh, rel: &Release, netconsole: Option<&str>, p: &Progress) -
     let _ = ssh.run("/etc/init.d/S02watchdog stop 2>/dev/null; true", false);
 
     let mut append = hc::CMDLINE.to_string();
-    if let Some(nc) = netconsole {
-        append.push(' ');
-        append.push_str(nc);
-        p.emit(Event::detail(format!("netconsole: {nc}")));
+    if let Some((ip, port)) = netconsole {
+        // The uplink's name as the BOX sees it, from its own board.env, rather
+        // than an assumed eth0 — a board with a managed switch calls it
+        // something else and the argument would point at a device that is not
+        // there.
+        let uplink = ssh
+            .read_file("/opt/ohc/board.env")
+            .and_then(|e| {
+                e.lines()
+                    .find_map(|l| l.trim().strip_prefix("OHC_UPLINK_IFACE=").map(str::to_string))
+            })
+            .map(|v| v.split('#').next().unwrap_or("").trim().trim_matches('"').to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "eth0".into());
+        match netconsole_arg(ssh, ip, port, &uplink) {
+            Some(nc) => {
+                p.emit(Event::detail(format!("netconsole: {nc}")));
+                append.push(' ');
+                append.push_str(&nc);
+            }
+            None => p.emit(Event::warn(format!(
+                "could not resolve {ip}'s MAC from the box — booting without netconsole,                  because a target with a guessed MAC delivers nothing and looks like a dead box"
+            ))),
+        }
     }
 
     p.emit(Event::step("kexec -l (staging into the running kernel)".into()));

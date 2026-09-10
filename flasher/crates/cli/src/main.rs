@@ -256,17 +256,14 @@ fn confirm(what: &str) -> bool {
 
 /// `--netconsole <ip>[:port]` — where the box should send its kernel log while
 /// it boots. Worth passing: that window is the only part of a kexec install a
-/// serial cable can see and SSH cannot.
-fn netconsole_arg(rest: &[String]) -> Option<String> {
+/// serial cable can see and SSH cannot. The engine resolves the listener's MAC
+/// from the box, so only an address is needed here.
+fn netconsole_arg(rest: &[String]) -> Option<(String, u16)> {
     let v = rest.windows(2).find(|w| w[0] == "--netconsole").map(|w| w[1].clone())?;
-    let (ip, port) = match v.split_once(':') {
-        Some((i, p)) => (i.to_string(), p.to_string()),
-        None => (v, "6666".to_string()),
-    };
-    // netpoll writes the Ethernet header itself, with no ARP and no routing —
-    // which is exactly what lets it keep logging from inside a panic, and also
-    // why broadcast is the only honest default when we do not know the MAC.
-    Some(format!("netconsole=6665@/eth0,{port}@{ip}/ff:ff:ff:ff:ff:ff"))
+    match v.split_once(':') {
+        Some((i, p)) => Some((i.to_string(), p.parse().unwrap_or(6666))),
+        None => Some((v, 6666)),
+    }
 }
 
 fn install(rest: &[String]) -> bool {
@@ -319,7 +316,10 @@ fn install(rest: &[String]) -> bool {
         }
         let p = Progress::stdout();
         let r = match m {
-            Method::Kexec => hc800::kexec(&ssh, &rel, netconsole_arg(rest).as_deref(), &p),
+            Method::Kexec => {
+                let nc = netconsole_arg(rest);
+                hc800::kexec(&ssh, &rel, nc.as_ref().map(|(i, p)| (i.as_str(), *p)), &p)
+            }
             _ => hc800::install_grub(&ssh, &rel, &p),
         };
         if let Err(e) = r { eprintln!("  {e:#}"); return false; }
