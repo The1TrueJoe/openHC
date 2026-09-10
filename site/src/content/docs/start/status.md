@@ -20,7 +20,7 @@ distinction that matters when you are about to write something to a device.
 | ea1-v2 | Intel CE5310 | Builds | Boot differences unconfirmed. |
 | ea1-v2-poe | Intel CE5310 | Builds | Never booted. |
 | ea3-v1 | Intel CE5310 | Builds | Never booted. Its fuse state is unknown and may match the EA1's. |
-| **hc800** | Atom D525 | Builds | Never booted, and it is the **cheapest board here to bring up** — it needs no kernel patches at all. |
+| **hc800** | Atom D525 | **Proven** | 7.1.8 booted, then **persistently installed** (GRUB entry on the spare kernel partition, boot-once via `savedefault`). Relays, contacts, six named IR devices, all six front LEDs, web UI, iod and sysmond. No kernel patches at all — the cheapest board here to bring up, as predicted. |
 
 EA5 and HC-250 are not supported. The IO-MCU firmware tree has room for the
 HC-250's Stellaris part, and the decoded MCU profile table already describes the
@@ -31,8 +31,12 @@ EA5, but neither board has been in hand.
 - **Booting an unsigned, self-built kernel** on the EA family, on the CA-1, and
   on the DM355 — three completely different bootloaders, three different
   bypasses, none of them requiring a signature.
-- **Persistent installs that survive a power cycle** on the EA3 and the CA-1,
-  with the stock image left in place as a one-button recovery.
+- **Persistent installs that survive a power cycle** on the EA3, the CA-1 and
+  the HC-800, with the stock image left in place as a one-button recovery. The
+  HC-800's is deliberately a **boot-once**: GRUB hands the default back to
+  Control4 as openHC starts, so a panic, a watchdog reset or a power cut always
+  returns to a system that answers SSH. See [Working without
+  serial](/shared/headless/).
 - **The IO-MCU wire protocol**, end to end: bring-up out of the bootloader,
   the DLE/STX framing, IR transmit confirmed emitting 38 kHz on a live jack,
   IR capture decoding a real NEC remote, and contacts measured in both
