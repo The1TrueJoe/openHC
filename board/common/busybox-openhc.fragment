@@ -9,3 +9,7 @@ CONFIG_MKDIR=y
 CONFIG_UMOUNT=y
 CONFIG_SLEEP=y
 CONFIG_SEQ=y
+
+# etc/init.d/S02watchdog kicks /dev/watchdog through this applet, and -F (run in
+# the foreground) is what lets start-stop-daemon own the pidfile.
+CONFIG_WATCHDOG=y

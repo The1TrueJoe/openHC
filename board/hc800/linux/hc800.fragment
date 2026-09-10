@@ -23,6 +23,27 @@
 # actually needs is forced =y here rather than inherited.
 CONFIG_MODULES=n
 
+# ── a built-in command line, for the one setting that must never be forgotten ─
+# The HC-800 gets its real boot line from whoever started it — GRUB's menu.lst,
+# or `kexec --append` — and neither of those lives in this repository. That is
+# fine for the console and the root device, which the launcher genuinely knows
+# better than we do. It is NOT fine for panic=.
+#
+# kernel.panic defaults to 0, which means "on a panic, stop forever". On a
+# sealed box with no serial cable attached, stopping forever is indistinguishable
+# from a dead unit and needs someone to walk over and pull the power. panic=10
+# prints, waits ten seconds for netconsole to get the trace out, and reboots —
+# into the vendor image, which answers SSH. Baking it in here makes surviving a
+# panic a property of the IMAGE, so it holds no matter how the kernel was
+# started or who typed the command.
+#
+# CMDLINE_EXTEND (x86's default when OVERRIDE is off): this string goes first
+# and the bootloader's is appended, and the later value of a repeated key wins —
+# so a launcher can still override panic= when it wants to.
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="panic=10"
+CONFIG_CMDLINE_EXTEND=y
+
 # ── serial: five 8250 UARTs, and ttyS4 is the one that gets lost ──────────
 # The UARTs are LPC/ISA-range and enumerate through PNPACPI (the live unit
 # reports them as PNP devices "00:02".."00:06"), so SERIAL_8250_PNP is load
@@ -177,10 +198,42 @@ CONFIG_I2C=y
 CONFIG_I2C_I801=y
 CONFIG_I2C_CHARDEV=y
 
-# iTCO watchdog. The vendor runs /sbin/watchdog -t 10 against it, so it is
-# known good on this silicon. Needs LPC_ICH (above) for the NO_REBOOT bit.
+# --- working on this box with the lid on and no serial cable ---
+#
+# The HC-800 is a sealed appliance that is meant to sit in a rack, and every one
+# of the four settings below exists so that a box in that state can still be
+# debugged and, more importantly, can still RECOVER WITHOUT A HUMAN. Between
+# them, the only failure that needs someone in the room is loss of power.
+#
+# iTCO watchdog. The vendor runs /sbin/watchdog -t 10 against it, so it is known
+# good on this silicon. Needs LPC_ICH (above) for the NO_REBOOT bit.
+#
+# What makes it a recovery mechanism and not just a reset: our kernel is only
+# ever kexec'd, never installed, so GRUB's `default 1` is still the vendor image
+# — a watchdog reset lands on stock Control4, which answers SSH, and the box can
+# be re-launched from anywhere. `fallback 1` points at that same entry, so
+# repeated resets never escalate toward the factory-restore path.
 CONFIG_WATCHDOG=y
 CONFIG_ITCO_WDT=y
+
+# netconsole: the kernel log over UDP. The `netconsole=` boot argument is the
+# only way to see the messages from before userspace exists, which is exactly
+# the window a serial cable was covering. Built IN, not a module — a module
+# loads too late to log the thing that stopped the module loading.
+CONFIG_NETCONSOLE=y
+
+# ... and the configfs half, which the arch defconfig does not turn on. This is
+# what usr/bin/ohc-netconsole drives: attach a log stream to a box that is
+# already up, from whatever machine you happen to be at, without rebuilding the
+# image or rebooting to change the address baked into the boot line.
+CONFIG_NETCONSOLE_DYNAMIC=y
+CONFIG_CONFIGFS_FS=y
+
+# sysrq, reachable through /proc/sysrq-trigger. The last resort when userspace
+# is too far gone to run `reboot` but sshd still answers: `echo b` resets the
+# board from inside the kernel, skipping every shutdown path that might be the
+# thing that is stuck.
+CONFIG_MAGIC_SYSRQ=y
 
 # Thermal. Two sources, because neither is sufficient alone.
 #

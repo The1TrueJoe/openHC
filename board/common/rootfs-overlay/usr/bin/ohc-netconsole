@@ -1,0 +1,82 @@
+#!/bin/sh
+# Point the kernel log at a machine on the network, at runtime.
+#
+#   ohc-netconsole on 10.0.0.105        # start shipping dmesg to that host:6666
+#   ohc-netconsole on 10.0.0.105 9999   # ... on a different port
+#   ohc-netconsole off
+#   ohc-netconsole status
+#
+# WHY THIS EXISTS. The `netconsole=` kernel argument is the only way to see
+# messages from before userspace, but it bakes the listener's address into the
+# boot line — so watching a running box from a laptop that just moved subnets
+# means rebuilding, or at least rebooting. This drives the SAME driver through
+# configfs instead, so you can attach a log stream over SSH to a box that is
+# already up and leave the boot line alone.
+#
+# The two are complementary, not alternatives: `netconsole=` for the boot you
+# cannot log into, this for the box you can.
+#
+# THE REMOTE MAC IS NOT OPTIONAL to netpoll — it writes the Ethernet header
+# itself, with no ARP and no routing, which is exactly what lets it log from
+# inside a panic. So we resolve it here: ping once, read the ARP table, and fall
+# back to broadcast if that fails. Broadcast works on a flat segment and costs
+# every host on it a dropped frame per line; a resolved MAC is better manners.
+CFG=/sys/kernel/config/netconsole
+T="$CFG/ohc"
+PORT_LOCAL=6665
+
+usage() { echo "usage: ohc-netconsole {on <host> [port] | off | status}"; exit 1; }
+
+need_configfs() {
+    [ -d /sys/kernel/config ] || mount -t configfs none /sys/kernel/config 2>/dev/null
+    [ -d "$CFG" ] || { echo "netconsole: no configfs interface (CONFIG_NETCONSOLE_DYNAMIC off)"; exit 1; }
+}
+
+uplink() {
+    [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+    echo "${OHC_UPLINK_IFACE:-eth0}"
+}
+
+remote_mac() {
+    ping -c 1 -W 1 "$1" >/dev/null 2>&1
+    mac=$(awk -v ip="$1" '$1 == ip && $4 != "00:00:00:00:00:00" { print $4 }' /proc/net/arp 2>/dev/null | head -1)
+    [ -n "$mac" ] && { echo "$mac"; return; }
+    echo "ff:ff:ff:ff:ff:ff"
+}
+
+case "$1" in
+on)
+    [ -n "$2" ] || usage
+    need_configfs
+    [ -d "$T" ] && { echo 0 > "$T/enabled" 2>/dev/null; rmdir "$T"; }
+    mkdir "$T" || { echo "netconsole: cannot create target"; exit 1; }
+    mac=$(remote_mac "$2")
+    # local_ip is left unset on purpose: netpoll fills it from the interface, so
+    # this keeps working across a DHCP lease change.
+    echo "$(uplink)"        > "$T/dev_name"
+    echo "$PORT_LOCAL"      > "$T/local_port"
+    echo "$2"               > "$T/remote_ip"
+    echo "${3:-6666}"       > "$T/remote_port"
+    echo "$mac"             > "$T/remote_mac"
+    if echo 1 > "$T/enabled" 2>/dev/null; then
+        echo "netconsole: -> $2:${3:-6666} via $(uplink) ($mac)"
+        echo "netconsole: attached by ohc-netconsole" > /dev/kmsg
+    else
+        echo "netconsole: the driver refused the target"; rmdir "$T" 2>/dev/null; exit 1
+    fi
+    ;;
+off)
+    need_configfs
+    [ -d "$T" ] || { echo "netconsole: not attached"; exit 0; }
+    echo 0 > "$T/enabled" 2>/dev/null
+    rmdir "$T" && echo "netconsole: detached"
+    ;;
+status)
+    need_configfs
+    [ -d "$T" ] || { echo "netconsole: not attached"; exit 0; }
+    printf 'netconsole: %s -> %s:%s (%s) enabled=%s\n' \
+        "$(cat "$T/dev_name")" "$(cat "$T/remote_ip")" "$(cat "$T/remote_port")" \
+        "$(cat "$T/remote_mac")" "$(cat "$T/enabled")"
+    ;;
+*) usage ;;
+esac

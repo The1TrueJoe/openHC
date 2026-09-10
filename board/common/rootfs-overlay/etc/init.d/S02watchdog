@@ -1,0 +1,49 @@
+#!/bin/sh
+# Hardware watchdog — SHARED across boards (board/common).
+#
+# THIS IS WHAT MAKES A BOX SAFE TO CLOSE UP AND WALK AWAY FROM. Without it, a
+# kernel hang or a wedged userspace means the unit is unreachable until somebody
+# walks over and pulls the power. With it, the silicon resets the board on its
+# own — and on the HC-800 that lands back on the vendor image via GRUB, which
+# answers SSH, so the box can be re-kexec'd from anywhere.
+#
+# Doing nothing when there is no watchdog device is the normal case, not an
+# error: the EA family builds with CONFIG_WATCHDOG off (bzImage size ceiling),
+# so this script is inert there rather than absent.
+#
+# S02, right after the splash: a watchdog that only starts once the whole stack
+# is up cannot cover the part of boot most likely to hang.
+#
+# -T is the TIMEOUT the chip counts down; -t is how often we kick it. Kicking at
+# a third of the timeout means two missed kicks are survivable and three are not.
+# 30 s is also what the vendor image uses on this same NM10 TCO, so it is a known
+# good value on the silicon rather than a guess.
+#
+# STOPPING IT DOES NOT ARM A RESET. busybox writes the magic 'V' on SIGTERM,
+# which tells the driver this was a deliberate close — otherwise stopping the
+# kicker would be exactly how you fire the timer, and every clean shutdown would
+# end in a reset nobody asked for.
+DAEMON=/usr/sbin/watchdog
+WDT=/dev/watchdog
+PIDF=/var/run/ohc-watchdog.pid
+TIMEOUT=30
+INTERVAL=10
+
+case "$1" in
+    start)
+        [ -c "$WDT" ] || { echo "watchdog: no $WDT on this board"; exit 0; }
+        printf "watchdog: "
+        if start-stop-daemon -S -q -b -m -p "$PIDF" -x "$DAEMON" \
+               -- -F -T "$TIMEOUT" -t "$INTERVAL" "$WDT"; then
+            echo "armed — ${TIMEOUT}s timeout, kicked every ${INTERVAL}s"
+        else
+            echo "could not arm $WDT"
+        fi
+        ;;
+    stop)
+        start-stop-daemon -K -q -p "$PIDF" 2>/dev/null
+        rm -f "$PIDF"
+        ;;
+    restart) "$0" stop; sleep 1; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

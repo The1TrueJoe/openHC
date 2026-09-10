@@ -1,0 +1,303 @@
+#!/bin/sh
+# Work on a sealed HC-800 over the network — no serial cable, no lid off.
+#
+#   ohc-hc800 find                 where is it, and which OS is running
+#   ohc-hc800 sh 'dmesg | tail'    run something on it
+#   ohc-hc800 push file...         copy files to /tmp on it
+#   ohc-hc800 boot <dir>           push the images in <dir> and kexec into them
+#   ohc-hc800 log                  listen for netconsole (Ctrl-C to stop)
+#   ohc-hc800 reset                sysrq-reboot, back to the vendor image
+#
+# WHY THIS IS SAFE TO RUN ON A BOX YOU CANNOT REACH. openHC is never installed
+# on this board — `boot` kexecs it out of the running system, writing nothing to
+# any partition — so GRUB, the vendor root and the factory-restore image stay
+# exactly as they shipped. A power cycle, a panic (panic=10, built into our
+# kernel) and a watchdog reset all land on the same place: the stock Control4
+# image, which answers SSH. That is the loop:
+#
+#     vendor image  --boot-->  openHC  --panic/hang/reset-->  vendor image
+#
+# and every arrow in it can be taken from another room.
+#
+# TWO PASSWORDS, because which one works tells you which OS booted: openHC's
+# own, or the vendor's (which is the same on every unit Control4 ever shipped).
+# Both are tried, most-recently-successful first.
+#
+# FINDING IT. The unit takes a DHCP lease, so its address moves; do not hardcode
+# one. openHC publishes _openhc._tcp over mDNS and its hostname carries the MAC,
+# which is the fast path. The vendor image publishes something else entirely, so
+# the fallback is an ARP sweep for the MAC — the one identifier that is the same
+# whichever OS is up. The MAC is learned the first time we find the box and
+# cached, so this configures itself after one successful `find`.
+
+set -eu
+
+BOARD=hc800
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/openhc"
+NETCON_PORT=6666        # where we listen
+NETCON_SRC=6665         # the box's source port
+
+case "$(uname)" in Darwin) PW=-W1000 ;; *) PW=-W1 ;; esac
+
+say() { printf '%s\n' "$*" >&2; }
+die() { say "ohc-hc800: $*"; exit 1; }
+
+# ── ssh -------------------------------------------------------------------
+# The vendor runs a 2015-era dropbear whose key exchange and ciphers modern
+# OpenSSH refuses by default; the `+` forms re-enable them without disabling
+# anything for our own, current, dropbear. Host keys are not checked because the
+# rootfs is a ramdisk — openHC generates a fresh key every boot by design, so a
+# known_hosts entry would be wrong more often than right.
+SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+        -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa
+        -o KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1
+        -o Ciphers=+aes128-ctr,aes256-ctr,3des-cbc -o MACs=+hmac-sha1
+        -o ConnectTimeout=8 -o LogLevel=ERROR"
+
+command -v sshpass >/dev/null || die "sshpass is not installed (brew install sshpass)"
+
+# ONE AUTH IN TWELVE IS SPURIOUSLY REFUSED. Measured, not suspected: twelve
+# identical `sshpass ... echo ok` runs against a healthy box produced one
+# "Permission denied (publickey,password)" and eleven successes. So a refusal is
+# not evidence of the wrong password, and a tool that treats it as one will tell
+# you the box is unreachable roughly every twelfth command — which is exactly
+# the sort of thing that sends you looking for the serial cable again. Retry.
+#
+# Which password worked is cached, because it also says which OS booted, and
+# leading with the right one halves the connections a multi-step operation makes.
+# It is a cached ORDER, not a cached secret: only the name openhc|vendor is written.
+PW_TRIES=3
+pw_list() {
+    case "$(saved os)" in
+        vendor) printf "%s\n%s\n" "t0talc0ntr0l4!" "openhc" ;;
+        *)      printf "%s\n%s\n" "openhc" "t0talc0ntr0l4!" ;;
+    esac
+}
+pw_note() { [ "$1" = openhc ] && save os openhc || save os vendor; }
+
+# $2.. is the command; runs it on $1 and prints its output.
+rsh() {
+    _h=$1; shift
+    _n=0
+    while [ "$_n" -lt "$PW_TRIES" ]; do
+        _n=$((_n + 1))
+        for _p in $(pw_list | tr "\n" " "); do
+            # shellcheck disable=SC2086
+            if _out=$(sshpass -p "$_p" ssh $SSHOPT "root@$_h" "$@" 2>&1); then
+                pw_note "$_p"; printf "%s\n" "$_out"; return 0
+            fi
+            # Anything that is NOT an auth failure — no route, connection
+            # refused, the command itself exiting non-zero — is real, and
+            # retrying it just wastes the operator's time.
+            printf "%s" "$_out" | grep -q "Permission denied" || {
+                printf "%s\n" "$_out" >&2; return 1
+            }
+        done
+        sleep 1
+    done
+    say "$_h refused both passwords $PW_TRIES times — wrong box, or it is not openHC/vendor"
+    return 1
+}
+
+# Same retry, for files. -O forces the legacy SCP protocol: the vendor's
+# dropbear has no sftp-server, and without it modern scp fails with a bare
+# "subsystem request failed" that says nothing about why.
+rcp() {
+    _h=$1; shift
+    _n=0
+    while [ "$_n" -lt "$PW_TRIES" ]; do
+        _n=$((_n + 1))
+        for _p in $(pw_list | tr "\n" " "); do
+            # shellcheck disable=SC2086
+            if _out=$(sshpass -p "$_p" scp -O $SSHOPT "$@" "root@$_h:/tmp/" 2>&1); then
+                pw_note "$_p"; return 0
+            fi
+            printf "%s" "$_out" | grep -q "Permission denied" || {
+                printf "%s\n" "$_out" >&2; return 1
+            }
+        done
+        sleep 1
+    done
+    say "$_h refused both passwords $PW_TRIES times"
+    return 1
+}
+
+# ── finding the box -------------------------------------------------------
+# arp prints MAC bytes without leading zeros ("0:f:ff:57:b9:78"); every other
+# tool writes them padded. Normalise so the two can be compared at all.
+norm_mac() {
+    printf '%s' "$1" | tr 'A-Z' 'a-z' | awk -F: '{
+        for (i = 1; i <= NF; i++) printf "%s%02s", (i > 1 ? ":" : ""), $i
+    }'
+}
+mac_at() { arp -n "$1" 2>/dev/null | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1; }
+alive()  { ping -c1 $PW "$1" >/dev/null 2>&1; }
+
+saved() { cat "$CACHE/$BOARD.$1" 2>/dev/null || true; }
+save()  { mkdir -p "$CACHE"; printf '%s\n' "$2" > "$CACHE/$BOARD.$1"; }
+
+# openHC's hostname is openhc-<board>-<MAC>, and avahi publishes it, so a known
+# MAC is also a known name.
+mdns_name() { printf 'openhc-%s-%s.local' "$BOARD" "$(printf '%s' "$1" | tr -d : | tr 'a-z' 'A-Z')"; }
+
+# Ping every host on our /24 so the ARP table fills, then look for our MAC.
+# Crude, but it is the only method that works no matter which OS is running.
+sweep() {
+    _want=$1
+    _net=$(ipconfig getifaddr en0 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    [ -n "$_net" ] || return 1
+    _net=${_net%.*}
+    say "sweeping ${_net}.0/24 for $_want ..."
+    _i=1; while [ "$_i" -lt 255 ]; do ping -c1 $PW "$_net.$_i" >/dev/null 2>&1 & _i=$((_i + 1)); done
+    wait 2>/dev/null || true
+    arp -an 2>/dev/null | while read -r line; do
+        _ip=$(printf '%s' "$line" | grep -oE '\(([0-9.]+)\)' | tr -d '()')
+        _m=$(printf '%s' "$line" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1)
+        [ -n "$_ip" ] && [ -n "$_m" ] && [ "$(norm_mac "$_m")" = "$_want" ] && { printf '%s\n' "$_ip"; break; }
+    done
+}
+
+resolve() {
+    if [ -n "${OHC_HOST:-}" ]; then printf '%s\n' "$OHC_HOST"; return; fi
+    _mac=${OHC_MAC:-$(saved mac)}
+    _last=$(saved ip)
+
+    # 1. exactly where it was last time, if that is still the same machine
+    if [ -n "$_last" ] && alive "$_last"; then
+        if [ -z "$_mac" ] || [ "$(norm_mac "$(mac_at "$_last")")" = "$_mac" ]; then
+            printf '%s\n' "$_last"; return
+        fi
+    fi
+    # 2. mDNS, which is instant when openHC is the thing running
+    if [ -n "$_mac" ]; then
+        _n=$(mdns_name "$_mac")
+        if alive "$_n"; then
+            _ip=$(ping -c1 $PW "$_n" 2>/dev/null | grep -oE '\(([0-9.]+)\)' | tr -d '()' | head -1)
+            [ -n "$_ip" ] && { save ip "$_ip"; printf '%s\n' "$_ip"; return; }
+        fi
+        # 3. the sweep, which works even when the vendor image is up
+        _ip=$(sweep "$_mac")
+        [ -n "$_ip" ] && { save ip "$_ip"; printf '%s\n' "$_ip"; return; }
+    fi
+    die "cannot find the box. Run it once as OHC_HOST=<ip> ohc-hc800 find to teach it the MAC."
+}
+
+# Which image is answering? openHC ships /opt/ohc/board.env; the vendor does not.
+which_os() { rsh "$1" 'test -r /opt/ohc/board.env && echo openhc || echo vendor'; }
+
+# ── this machine, as the box sees it --------------------------------------
+# netpoll writes the Ethernet header itself — no ARP, no routing, which is what
+# lets it log from inside a panic — so the boot line needs OUR MAC, not just our
+# address.
+my_ip()  { ipconfig getifaddr en0 2>/dev/null || ip -4 route get "$1" 2>/dev/null | awk '{print $7; exit}'; }
+my_mac() {
+    ifconfig en0 2>/dev/null | awk '/ether/ { print $2; exit }' ||
+    ip link show 2>/dev/null | awk '/link\/ether/ { print $2; exit }'
+}
+
+# ── commands ---------------------------------------------------------------
+cmd=${1:-}; [ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+find)
+    H=$(resolve)
+    M=$(norm_mac "$(mac_at "$H")")
+    [ -n "$M" ] && [ "$M" != ":::::" ] && save mac "$M"
+    save ip "$H"
+    # One connection, not two: every extra one is another roll against the
+    # refusal rate above.
+    rsh "$H" 'if [ -r /opt/ohc/board.env ]; then
+                  echo "running=openHC"; uname -r; uptime; cat /proc/cmdline
+              else
+                  echo "running=vendor (Control4 stock)"; uname -r; uptime
+              fi' | {
+        read -r first
+        printf '%s  mac=%s  %s\n' "$H" "$M" "$first"
+        cat
+    } || die "found $H but it will not let us in"
+    ;;
+
+sh)
+    [ $# -gt 0 ] || die "usage: ohc-hc800 sh <command>"
+    rsh "$(resolve)" "$@"
+    ;;
+
+push)
+    [ $# -gt 0 ] || die "usage: ohc-hc800 push <file>..."
+    rcp "$(resolve)" "$@" && say "pushed to /tmp"
+    ;;
+
+log)
+    say "netconsole listener on udp/$NETCON_PORT — Ctrl-C to stop"
+    exec python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", int(sys.argv[1])))
+while True:
+    d, _ = s.recvfrom(2048)
+    sys.stdout.write(d.decode("utf-8", "replace").rstrip("\n") + "\n")
+    sys.stdout.flush()
+' "$NETCON_PORT"
+    ;;
+
+reset)
+    H=$(resolve)
+    say "sysrq-reboot on $H — it will come back on the vendor image"
+    # A sysrq reboot goes through the kernel, not init, so it still works when
+    # userspace is too wedged to run `reboot`. The connection dies with the box;
+    # that is the expected outcome, not a failure.
+    rsh "$H" 'echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger' 2>/dev/null || true
+    save ip ""      # the lease may well change across the reboot
+    ;;
+
+boot)
+    DIR=${1:-output/build/$BOARD/images}
+    [ -d "$DIR" ] || die "no image directory at $DIR"
+    K=$(ls "$DIR"/openhc-hc800-kernel.img "$DIR"/bzImage 2>/dev/null | head -1)
+    I=$(ls "$DIR"/openhc-initrd.gz "$DIR"/rootfs.cpio.gz 2>/dev/null | head -1)
+    [ -n "$K" ] && [ -n "$I" ] || die "$DIR has no kernel/initrd pair"
+
+    H=$(resolve); OS=$(which_os "$H")
+    MYIP=$(my_ip "$H"); MYMAC=$(my_mac)
+    say "$H is running $OS; kernel $(basename "$K"), initrd $(basename "$I")"
+
+    # From the vendor image there is no kexec binary — its kernel is built
+    # CONFIG_KEXEC=y but Control4 never shipped the userspace tool. .github/
+    # workflows/tools.yml builds the static i686 one that goes here.
+    KX=/usr/sbin/kexec
+    if [ "$OS" = vendor ]; then
+        S=$(ls "$DIR/kexec-i686-static" "$CACHE/kexec-i686-static" 2>/dev/null | head -1) ||
+            die "the vendor image has no kexec; put kexec-i686-static in $DIR (see .github/workflows/tools.yml)"
+        rcp "$H" "$S"; rsh "$H" 'chmod +x /tmp/kexec-i686-static' >/dev/null
+        KX=/tmp/kexec-i686-static
+    else
+        # Our own watchdog is armed. kexec -e jumps straight to the new kernel
+        # without running any shutdown script, so stop the kicker properly here
+        # — busybox writes the magic 'V' on the way out, which disarms the TCO
+        # rather than leaving a 30-second fuse burning across the handover.
+        rsh "$H" '/etc/init.d/S02watchdog stop 2>/dev/null; true' >/dev/null
+    fi
+
+    say "pushing $(( ($(wc -c < "$K") + $(wc -c < "$I")) / 1048576 )) MB ..."
+    rcp "$H" "$K" "$I"
+    KB=/tmp/$(basename "$K"); IB=/tmp/$(basename "$I")
+
+    APPEND="console=ttyS0,115200"
+    if [ -n "$MYIP" ] && [ -n "$MYMAC" ]; then
+        APPEND="$APPEND netconsole=$NETCON_SRC@$H/eth0,$NETCON_PORT@$MYIP/$MYMAC"
+        say "netconsole -> $MYIP:$NETCON_PORT   (run 'ohc-hc800 log' in another shell first)"
+    fi
+
+    rsh "$H" "$KX -l $KB --initrd=$IB --append='$APPEND'" || die "kexec -l refused the image"
+    say "loaded. executing — this connection will drop."
+    rsh "$H" "sync; $KX -e" >/dev/null 2>&1 || true
+    save ip ""
+    say "kexec'd. It takes a fresh DHCP lease, so give it ~20s then: ohc-hc800 find"
+    ;;
+
+*)
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac
