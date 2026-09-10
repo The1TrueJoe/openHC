@@ -87,6 +87,18 @@ CONFIG_GPIO_SYSFS_LEGACY=y
 CONFIG_GPIO_CDEV=y
 CONFIG_GPIO_CDEV_V1=y
 
+# --- kexec: how this board gets a new kernel without a power cycle ---
+# Every test image so far has reached this box by netboot, which needs a DHCP
+# and TFTP server on a privileged port, a human to pull the power, and a
+# bootloader whose environment we cannot edit. kexec replaces all of that with
+# scp + two commands over the SSH session that is already open.
+#
+# It matters more here than on most boards because the alternative is so
+# expensive: the console is read-only on this unit, so a kernel that fails to
+# boot cannot be diagnosed from the serial line, and every attempt costs a
+# power cycle and a netboot window.
+CONFIG_KEXEC=y
+
 # --- FPGA loader: request_firmware for the bitstream ---
 # ohc-iox-fpga reads the Xilinx bitstream through the firmware API. Without
 # FW_LOADER the driver builds but every load returns -ENOENT, and the four
