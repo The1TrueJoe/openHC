@@ -20,6 +20,7 @@ fn main() -> ExitCode {
         "install" => install(rest),
         "rootfs" => rootfs(rest),
         "boot" => boot(rest),
+        "uninstall" => uninstall(rest),
         "wrap" => wrap(rest),
         "help" | "-h" | "--help" => { help(); true }
         other => { eprintln!("unknown command '{other}'\n"); help(); false }
@@ -53,6 +54,8 @@ fn help() {
            boot [HOST]              HC-800: re-enter an INSTALLED openHC. Every openHC\n\
                                     boot hands the GRUB default back to Control4, so\n\
                                     this is how you go back in after a reset\n\
+           uninstall [HOST] [--yes]  HC-800: remove openHC and restore the stock\n\
+                                    menu.lst from the backup the install kept\n\
            wrap <bzImage> <out> [--header FILE]\n\
                                     wrap a bzImage in a CEFDK container\n\n\
          The GUI (`ohc-flasher`) is the primary front end for non-CLI users.\n"
@@ -279,6 +282,26 @@ fn boot(rest: &[String]) -> bool {
         _ => { eprintln!("  `boot` is an HC-800 command; this is {}", id.describe()); return false }
     }
     if let Err(e) = hc800::boot_installed(&ssh, &Progress::stdout()) {
+        eprintln!("  {e:#}");
+        return false;
+    }
+    true
+}
+
+/// `uninstall [HOST]` — put an HC-800's boot chain back the way it shipped.
+fn uninstall(rest: &[String]) -> bool {
+    let Some((_host, ssh)) = connect(rest) else { return false };
+    let id = tp::identify(&ssh);
+    match id.board.map(|b| b.family) {
+        Some(ohc_flash_core::board::Family::Hc) => {}
+        _ => { eprintln!("  `uninstall` is an HC-800 command; this is {}", id.describe()); return false }
+    }
+    if !rest.iter().any(|a| a == "--yes")
+        && !confirm("remove the openHC entry and restore the stock menu.lst")
+    {
+        return false;
+    }
+    if let Err(e) = hc800::uninstall(&ssh, &Progress::stdout()) {
         eprintln!("  {e:#}");
         return false;
     }

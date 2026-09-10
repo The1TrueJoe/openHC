@@ -363,3 +363,101 @@ pub fn boot_installed(ssh: &Ssh, p: &Progress) -> Result<()> {
     ));
     Ok(())
 }
+
+/// Remove an installed openHC and put the boot chain back the way it shipped.
+///
+/// The point of this is that it is a REAL revert, not a best effort: the
+/// installer kept `menu.lst.pre-openhc` beside the file it edited, so what goes
+/// back is the original bytes rather than a reconstruction. Only if that backup
+/// is missing does it fall back to editing, and then it says so.
+///
+/// The kernel and initramfs on the kernel partition are removed too. `sda2` was
+/// never written, so nothing there needs undoing.
+pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
+    let gm = "/mnt/ohc-grub";
+    ssh.run(&format!("mkdir -p {gm} && mount {} {gm}", hc::GRUB_PART), true)
+        .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;
+    let menu = format!("{gm}/boot/grub/menu.lst");
+    let backup = format!("{menu}.pre-openhc");
+
+    let have_backup = ssh.run(&format!("test -s {backup}"), false).is_ok();
+    if have_backup {
+        ssh.run(&format!("cp {backup} {menu}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
+        p.emit(Event::step("menu.lst restored from the pre-install backup".into()));
+    } else {
+        // No backup: drop our entry and put `default` back to the stock one.
+        // Editing rather than restoring, which is worth saying out loud.
+        let before = ssh.read_file(&menu).context("menu.lst is unreadable")?;
+        let mut out = String::new();
+        let mut in_ours = false;
+        for l in before.lines() {
+            if l.starts_with("title") {
+                in_ours = l.contains("openHC");
+            }
+            if in_ours {
+                continue;
+            }
+            if l.trim_start().starts_with("default") {
+                out.push_str(&format!("default\t\t{}\n", hc::ENTRY_VENDOR));
+            } else {
+                out.push_str(l);
+                out.push('\n');
+            }
+        }
+        if out == before {
+            let _ = ssh.run(&format!("umount {gm}"), false);
+            p.emit(Event::warn("no openHC entry in menu.lst; nothing to remove".into()));
+            return Ok(());
+        }
+        ssh.put_stream(out.as_bytes(), &format!("cat > {menu}"))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        p.emit(Event::warn(
+            "no pre-install backup found — menu.lst was edited rather than restored".into(),
+        ));
+    }
+
+    // Read back, and check the vendor's two guarded lines survived. Same rule
+    // as the install: this partition does not get written on trust.
+    let after = ssh.read_file(&menu).context("menu.lst unreadable after restoring it")?;
+    for line in hc::GUARDED_LINES {
+        if !after.lines().any(|l| l.trim_start().starts_with(line)) {
+            let _ = ssh.run(&format!("umount {gm}"), false);
+            bail!("`{line}` is missing after the restore — do NOT reboot; menu.lst needs a look");
+        }
+    }
+    if after.contains("title\t\topenHC") {
+        let _ = ssh.run(&format!("umount {gm}"), false);
+        bail!("the openHC entry is still in menu.lst after the restore");
+    }
+    // `default saved` is left alone deliberately when the backup restored it to
+    // a number; if it is still `saved`, point it at the vendor entry so the
+    // file it reads cannot outlive the entry it names.
+    if after.lines().any(|l| l.trim_start().starts_with("default") && l.contains("saved")) {
+        ssh.run(
+            &format!("sed -i '1s/.*/{}/' {gm}/boot/grub/default 2>/dev/null; true", hc::ENTRY_VENDOR),
+            false,
+        )
+        .ok();
+        p.emit(Event::detail(format!("`default saved` kept, saved -> entry {}", hc::ENTRY_VENDOR)));
+    }
+    ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // The images last: menu.lst no longer names them, so deleting them now
+    // cannot leave an entry pointing at a file that is gone.
+    let km = "/mnt/ohc-kernel";
+    let _ = ssh.run(
+        &format!(
+            "mkdir -p {km} && mount {} {km} && rm -f {km}{} {km}{} && sync && umount {km}",
+            hc::KERNEL_PART,
+            hc::KERNEL_FILE,
+            hc::INITRD_FILE
+        ),
+        false,
+    );
+    p.emit(Event::resolved(
+        "removed. The boot chain is back to what Control4 shipped; nothing on this board was ever \
+         written outside menu.lst and the spare kernel partition"
+            .into(),
+    ));
+    Ok(())
+}
