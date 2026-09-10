@@ -18,7 +18,7 @@ because the pin isn't connected to the GPIO block.
 | Reg | Address | Write | Effect |
 |---|---|---|---|
 | PINMUX0 | `0x01c40000` | `0x00000155` | GIO82–95 → GPIO (relays 88–95, contacts 3–8) |
-| PINMUX1 | `0x01c40004` | `0x0011416A` | GIO70/75/76 → GPIO (contact2, data/link LEDs) |
+| PINMUX1 | `0x01c40004` | `0x0013416A` | GIO70/71/75/76 → GPIO (contacts 1-2, data/link LEDs) |
 
 The field layout is **mainline's own `dm355_pins[]` table** (`arch/arm/mach-davinci/dm355.c`,
 last present in v6.1), which is more precise than reading it off the TRM by hand.
@@ -34,6 +34,7 @@ is two bits wide with `01` = peripheral:
 | PINMUX0 | 11–14 | `VIN_CAM_HD`, `VIN_CAM_VD`, `VIN_CAM_WEN`, `VIN_PCLK` | GIO82–85 = contacts 3–6 (one bit each) |
 | PINMUX1 | 8–15 | `VOUT_COUTH_EN` | includes GIO75/76 (data/link LEDs) |
 | PINMUX1 | 16 | `VOUT_HVSYNC` | unidentified |
+| PINMUX1 | **17** | *(in no published table)* | GIO71 = **contact1** — SET this bit |
 | PINMUX1 | 18–19 | `VOUT_FIELD` | GIO70 = **contact2** |
 
 :::caution[Keep PINMUX1 bits [5:0]]
@@ -48,15 +49,27 @@ runtime stand-in; the proper fix is DT pinctrl.
 **Not yet confirmed:** the contact bits above. They follow the same field layout
 and the same reasoning, but nothing has read a contact through them yet.
 
-:::caution[contact1 = GIO71 is still unresolved]
-Mainline names PINMUX1 bits 18–19 `VOUT_FIELD`, with an alias `VOUT_FIELD_G70`
-for mode 0 — **GIO70**, i.e. contact **2**. No field anywhere in `dm355_pins[]`
-is identified as GIO71, so contact 1 has no known mux bit.
+:::tip[contact1 is PINMUX1 bit 17, which is in no table]
+Mainline's `dm355_pins[]` documents bit 16 (`VOUT_HVSYNC`) and bits 18–19
+(`VOUT_FIELD`) and **nothing between them**, so bit 17 reads as reserved. It is
+not — setting it routes GIO71 to the GPIO block, and with it set all eight
+contacts read correctly.
 
-Settle it the way the relays were settled: hold a closure on terminal 1 and sweep
-one PINMUX1 field at a time, watching `gpioget contact1`. Do not guess a value in
-`S01pinmux` — PINMUX0 bits 0–7 are the EMIF address pins, and a wrong write there
-takes out NAND, the dm9000 and the FPGA at once.
+Found by sweeping every bit of both registers on a live board while watching
+bit 7 of the GPIO `IN` register, after first proving the field was not the
+problem: clearing PINMUX0 *entirely* and PINMUX1's whole video range still left
+GIO71 at 0.
+
+Two things made this hard to see. The pins are shared with the SoC's VPFE/VPBE
+peripherals even though **this board has no video at all**, so "muxed to video"
+never meant a video feature existed. And the polarity is not uniform: the video
+fields are 2 bits with `01` = peripheral, so clearing selects GPIO — but
+`VOUT_HVSYNC` at bit 16 is a 1-bit field whose mode **0** is the peripheral.
+Clearing "more" bits therefore selected *more* video, not less.
+
+Sweeping is the right tool here and costs almost nothing: openHC on this board
+is RAM-only and nothing is flashed, so the worst a wrong pin-mux write can do is
+require a power cycle.
 :::
 
 ## Relays (8) — confirmed clicking
