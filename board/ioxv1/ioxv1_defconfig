@@ -1,44 +1,29 @@
 # openHC — Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
 #
-# Self-contained defconfig (no family base): there is only one DM355 IO Extender,
-# and a hypothetical V2 may well be different silicon, so a shared "iox-common"
-# would be indirection with nothing behind it — same call as ca1. build/build.sh
-# feeds this straight to Buildroot as BR2_DEFCONFIG.
-#
-# What this board is (confirmed on a live unit):
-#   * TI DaVinci DM355 (ARM926EJ-S / ARMv5TE), 128MB RAM, 256MB Micron NAND.
-#   * On-board IO: 8 relays (GPIO 88-95), 8 contacts (GPIO 71/70/82-87),
-#     8 IR-out + 4 serial behind a Xilinx FPGA on async-EMIF CS1 @ 0x04000200.
-#   * Ethernet: dm9000 @ 0x04014000. Reachability is wired, and it is the only
-#     path. NO companion IO-MCU (unlike the EA family) — the IO is native.
-#   * Dual-bank + recovery NAND, stock U-Boot 1.2.0-IOX. `run tst` netboots a
-#     uImage into RAM without touching flash — that is the bring-up loop.
+# Self-contained: no family base. TI DaVinci DM355 (ARM926EJ-S), 128 MB RAM,
+# 256 MB NAND. Native IO — no companion IO-MCU: 8 relays and 8 contacts on SoC
+# GPIO (named in the device tree, see /shared/io-naming/), 8 IR-out and 4 serial
+# behind a Xilinx FPGA on async-EMIF CS1. dm9000 Ethernet is the only
+# reachability path. Stock U-Boot's `run tst` netboots a uImage into RAM without
+# touching flash — that is the bring-up loop.
 
-# --- arch: TI DaVinci DM355 = ARM926EJ-S, ARMv5TE, EABI, soft-float, LE ---
-# No FPU on ARM926 -> soft float (implied).
+# --- arch: ARM926EJ-S, ARMv5TE, no FPU so soft float (implied) ---
 BR2_arm=y
 BR2_arm926t=y
 
-BR2_OPTIMIZE_S=y
 # musl, matching the EA family. Small and fine on ARMv5 against a 7.1 kernel.
-BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 
 # --- init / login ---
 # Password login on the serial console AND ssh. Change after first boot.
-BR2_TARGET_GENERIC_ROOT_PASSWD="openhc"
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
-BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
 BR2_TARGET_GENERIC_HOSTNAME="openhc-ioxv1"
-BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1 (kernel-up)"
+BR2_TARGET_GENERIC_ISSUE="openHC IO Extender V1"
 
 # --- kernel: mainline stable, same version as the EA family ---
 # Mainline dropped DM355 in ~v6.2; the SoC (mach-davinci/dm355.c, clk psc/pll,
 # irq-davinci-aintc) + the hammer device tree are re-added by the patches in
 # ioxv1/patches/linux/. See https://the1truejoe.github.io/openHC/iox/kernel-port/.
-BR2_LINUX_KERNEL=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
 BR2_LINUX_KERNEL_USE_DEFCONFIG=y
 BR2_LINUX_KERNEL_DEFCONFIG="multi_v5"
 # The DM355 U-Boot (IOX v1.2.0) boots a legacy uImage and passes ATAGS, not a
@@ -61,23 +46,29 @@ BR2_TARGET_ROOTFS_INITRAMFS=y
 BR2_TARGET_ROOTFS_JFFS2=y
 BR2_TARGET_ROOTFS_JFFS2_NANDFLASH_128K=y
 
-# --- reachability + on-target tools ---
-BR2_PACKAGE_DROPBEAR=y
-BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
-# NAND flashing / inspection on the device (flash_erase, nandwrite, flashcp...).
+# --- on-target tools ---
+# NAND flashing / inspection (flash_erase, nandwrite, flashcp).
 BR2_PACKAGE_MTD=y
-# GPIO relays/contacts from userspace on a modern kernel (chardev ABI).
-BR2_PACKAGE_LIBGPIOD=y
-BR2_PACKAGE_LIBGPIOD_TOOLS=y
 # Host mkimage: post-image.sh wraps zImage+dtb into the U-Boot uImage.
 BR2_PACKAGE_HOST_UBOOT_TOOLS=y
 
 # --- mDNS identity: avahi (no D-Bus, light) ---
-BR2_PACKAGE_AVAHI=y
-BR2_PACKAGE_AVAHI_DAEMON=y
 
 # --- rootfs overlay, image wrap, kernel patches ---
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/rootfs-overlay"
+# BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and
+# kconfig takes the last assignment of a symbol, not the union, so naming only
+# the board overlay silently dropped board/common/rootfs-overlay -- and with it
+# S40net, which is what brings eth0 (dm9000) up. Also lost were S09hostname (the
+# per-unit MAC suffix), S45netmon, S41wifi-ap and the avahi service file, so the
+# board advertised nothing on mDNS either. ca1 and hc800 list both; this board
+# and hc800 had the same bug.
+#
+# The shared scripts are board.env-driven and no-op on what this board does not
+# have: OHC_WIFI_IFACE is unset in ioxv1's board.env (dm9000, wired only), so
+# S41wifi-ap and S45netmon exit immediately, and S90ohcweb skips itself when
+# webd was not built in. Order matters -- later overlays overwrite earlier
+# ones, which is how ioxv1/rootfs-overlay/init replaces the EA pivot.
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/rootfs-overlay"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ioxv1"
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/patches"

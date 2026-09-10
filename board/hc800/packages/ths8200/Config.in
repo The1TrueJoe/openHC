@@ -1,0 +1,13 @@
+config BR2_PACKAGE_THS8200
+	bool "ths8200 (component video output)"
+	depends on BR2_PACKAGE_HAS_UDEV || !BR2_PACKAGE_HAS_UDEV
+	help
+	  Configure the TI THS8200 video DAC over i2c-dev, from a register
+	  file captured off working hardware.
+
+	  This is the HC-800's only proven video output. The ADV7513 HDMI
+	  transmitter on the same bus is fitted and answers, but nothing
+	  configures it even under the vendor OS, so component is what
+	  actually produces a picture.
+
+	  Needs CONFIG_I2C_CHARDEV and CONFIG_I2C_I801 in the kernel.

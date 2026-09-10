@@ -1,0 +1,309 @@
+#!/bin/sh
+# ohc-hc800-boot — stage, arm, disarm and inspect an openHC boot on an HC-800.
+#
+# Runs ON the unit (busybox sh). Copy it over and run it there:
+#
+#     cat board/hc800/tools/ohc-hc800-boot | ssh root@<ip> 'cat > /tmp/ohcboot; sh /tmp/ohcboot status'
+#
+#   status    what is installed and what will boot next    (read-only, always safe)
+#   stage     copy kernel+initrd onto sda3                 (writes sda3 only)
+#   arm       add the menu entry and boot openHC ONCE      (writes sda1)
+#   disarm    restore the stock menu.lst                   (writes sda1)
+#   unstage   remove our kernel+initrd from sda3           (writes sda3)
+#
+# ── BEFORE YOU USE THIS AT ALL: TRY KEXEC INSTEAD ─────────────────────────
+#
+# This tool edits the bootloader. There is a way to boot an openHC kernel that
+# edits NOTHING, and it should be the first thing tried.
+#
+# The vendor kernel is built CONFIG_KEXEC=y, and a static i686 kexec-tools
+# (CI: .github/workflows/tools.yml -> artifact `kexec-i686-static`) runs on the
+# stock OS 3.x userspace. Staging the kernel in tmpfs and kexec'ing it touches
+# NO partition: sda1 is never written, menu.lst is never edited, and factory
+# recovery is not merely preserved but never approached. Failure costs a power
+# cycle back into a completely unmodified box.
+#
+# TESTED as far as it can be without rebooting — on 2026-09-08 the 64-bit
+# openHC bzImage loaded cleanly from the 32-bit vendor kernel
+# (kexec_loaded 0 -> 1 -> 0, exit 0), which was the real open question.
+#
+#   cat kexec-i686-static | ssh root@<ip> 'cat > /tmp/kexec; chmod +x /tmp/kexec'
+#   cat openhc-bzImage    | ssh root@<ip> 'cat > /tmp/ohc-bzImage'
+#   cat openhc-initrd.gz  | ssh root@<ip> 'cat > /tmp/ohc-initrd.gz'
+#   ssh root@<ip> '/tmp/kexec -l /tmp/ohc-bzImage --initrd=/tmp/ohc-initrd.gz \
+#                    --append="console=ttyS0,115200"'
+#   ssh root@<ip> 'cat /sys/kernel/kexec_loaded'    # must read 1
+#   # ...watch ttyS0, THEN the point of no return:
+#   ssh root@<ip> '/tmp/kexec -e'
+#
+# `kexec -u` unloads at any point before `-e`. /tmp is 32 MB of tmpfs and
+# kernel+initrd is ~19 MB, so it fits with little to spare.
+#
+# USE THIS TOOL INSTEAD when you want openHC to SURVIVE a reboot — a kexec'd
+# kernel does not persist, so the next power cycle returns to the vendor image.
+#
+# ── READ THIS BEFORE `arm` ────────────────────────────────────────────────
+#
+# ARM WITH A HAND ON THE POWER, and read the four layers below first.
+#
+#   1. BOOT-ONCE. `default saved` + `savedefault 1` on our entry: GRUB rewrites
+#      the default to the VENDOR entry at boot time, BEFORE the kernel is handed
+#      control. openHC gets exactly one attempt per `arm`, whatever happens.
+#   2. FALLBACK. `fallback 1` covers a kernel or initrd that cannot be READ.
+#   3. A VISIBLE MENU ON SERIAL. `arm` sets `timeout 10` and comments out
+#      `hiddenmenu`. menu.lst already has `serial --unit=0` / `terminal serial`
+#      and this board's console is bidirectional, so ttyS0 @115200 gets ten
+#      seconds to pick ANY entry -- including the factory image -- with no disk
+#      write and no physical access.
+#   4. THE FACTORY-DEFAULT BUTTON, the one that works when nothing else does.
+#      Control4 patched this GRUB with a hardware path: stage2 contains
+#      "Factory default button asserted" and menu.lst carries
+#      `support_factorydefault 1` / `factorydefault 0`. Hold that button at
+#      power-on and GRUB boots ENTRY 0 regardless of `default`. It runs below
+#      the OS, so a broken openHC entry cannot defeat it. Entry 0 is
+#      self-contained on sda2 -- own kernel, own rootfs, own restore_images --
+#      so it survives anything done to sda3 or sda4.
+#
+# WHAT IS STILL NOT RECOVERABLE:
+#
+#   * A SILENT HANG with nobody present. A kernel that stops without panicking
+#     leaves no console, no network and no armed watchdog; layers 1-2 have
+#     already done their work and layer 4 needs a finger on a button. Nothing is
+#     damaged -- the box just sits there until power-cycled. Hence the flag.
+#   * CORRUPTING sda1, which every layer above needs GRUB to read. There is a
+#     byte-exact backup in backups/hc800/ with the restore command in its README.
+#
+# The mechanism is GRUB Legacy's `savedefault`, which is present in this unit's
+# installed stage2 (verified by string-dumping it). `default saved` makes GRUB
+# read /boot/grub/default; our entry's `savedefault 1` rewrites that file to the
+# vendor entry AT BOOT TIME, before the kernel is even handed control. So openHC
+# gets exactly one attempt per `arm`, whatever happens next.
+#
+# ── The one risk that is not designed away ────────────────────────────────
+#
+# `arm` and `disarm` write to sda1, the partition holding GRUB's stage2 and
+# menu.lst. That filesystem is the only thing on this disk whose corruption is
+# unrecoverable without physical access — a damaged sda1 means GRUB cannot load
+# stage2 and NOTHING boots, including the factory-restore entry. The writes here
+# are tiny appends to a 463-byte text file on a quiescent ext3, which is about
+# as safe as writing to sda1 gets, but it is not zero. Both commands take a
+# backup first and `disarm` restores it verbatim.
+#
+# sda2 (factory restore) and sda4 (the vendor root) are never touched by any
+# command in this script.
+set -u
+
+P1=/mnt/ohc-p1          # sda1: GRUB, menu.lst
+P3=/mnt/ohc-p3          # sda3: kernels
+GRUBDIR="$P1/boot/grub"
+MENU="$GRUBDIR/menu.lst"
+BACKUP="$GRUBDIR/menu.lst.pre-openhc"
+KERNEL=openhc-bzImage
+INITRD=openhc-initrd.gz
+ENTRY_TITLE="openHC hc800 (one shot)"
+
+die() { echo "ohc-hc800-boot: $*" >&2; exit 1; }
+
+# busybox on the stock image has NO `mountpoint` applet — checked on a live
+# unit. Using it would make every "is it already mounted?" test fail open, and
+# each run would stack another mount on the same directory. /proc/mounts is
+# always there and needs no applet at all.
+is_mounted() { grep -q " $1 " /proc/mounts 2>/dev/null; }
+
+mount_at() {   # $1 = device, $2 = dir, $3 = ro|rw
+    mkdir -p "$2"
+    is_mounted "$2" && return 0
+    mount -o "$3" "$1" "$2"
+}
+mount_rw() {
+    mount_at /dev/sda1 "$P1" rw || die "cannot mount sda1 rw"
+    mount_at /dev/sda3 "$P3" rw || die "cannot mount sda3 rw"
+}
+mount_ro() {
+    mount_at /dev/sda1 "$P1" ro || die "cannot mount sda1 ro"
+    mount_at /dev/sda3 "$P3" ro || die "cannot mount sda3 ro"
+}
+# Unmount only what we mounted, and only if nothing else holds it. Leaving a
+# stray rw mount on sda1 across a power cut is exactly the corruption we are
+# trying not to cause.
+unmount_all() {
+    sync
+    is_mounted "$P1" && umount "$P1" 2>/dev/null
+    is_mounted "$P3" && umount "$P3" 2>/dev/null
+    return 0
+}
+
+# Every write to sda1 ends with an explicit sync + unmount. On a box that may
+# lose power at any moment, an unflushed menu.lst is the corruption case we are
+# actually trying to avoid.
+finish_write() { sync; sleep 1; unmount_all; }
+
+cmd_status() {
+    mount_ro
+    echo "== sda3 (kernels) =="
+    ls -l "$P3/boot/" 2>/dev/null | sed 's/^/  /'
+    df -h "$P3" 2>/dev/null | tail -1 | sed 's/^/  /'
+    echo "== sda1 menu.lst =="
+    sed 's/^/  /' "$MENU" 2>/dev/null || echo "  (unreadable)"
+    echo "== saved default =="
+    if [ -f "$GRUBDIR/default" ]; then
+        echo "  /boot/grub/default present, first line: $(head -1 "$GRUBDIR/default")"
+    else
+        echo "  /boot/grub/default ABSENT (needed by 'default saved')"
+    fi
+    echo "== backup =="
+    [ -f "$BACKUP" ] && echo "  $BACKUP present" || echo "  no backup yet (nothing armed)"
+    echo "== recovery posture =="
+    if grep -q "^support_factorydefault" "$MENU" 2>/dev/null; then
+        echo "  factory-default BUTTON honoured by GRUB (support_factorydefault present)"
+    else
+        echo "  WARNING: no support_factorydefault line — the hardware button path is OFF"
+    fi
+    if grep -q "^hiddenmenu" "$MENU" 2>/dev/null; then
+        echo "  menu HIDDEN, $(grep -m1 '^timeout' "$MENU" | tr -s ' 	' ' ') — serial cannot pick an entry"
+    else
+        echo "  menu VISIBLE, $(grep -m1 '^timeout' "$MENU" | tr -s ' 	' ' ') — serial can pick any entry"
+    fi
+    mkdir -p /tmp/ohc-p2
+    if mount -o ro /dev/sda2 /tmp/ohc-p2 2>/dev/null || is_mounted /tmp/ohc-p2; then
+        k=$(ls /tmp/ohc-p2/boot/bzImage >/dev/null 2>&1 && echo "kernel present" || echo "NO KERNEL")
+        n=$(ls /tmp/ohc-p2/restore_images/*.tgz 2>/dev/null | wc -l)
+        echo "  sda2 factory system: $k, $n restore image(s)"
+        umount /tmp/ohc-p2 2>/dev/null
+    else
+        echo "  sda2 factory system: COULD NOT MOUNT"
+    fi
+    unmount_all
+}
+
+cmd_stage() {
+    [ -f "/tmp/$KERNEL" ] || die "put the kernel at /tmp/$KERNEL first"
+    [ -f "/tmp/$INITRD" ] || die "put the initrd at /tmp/$INITRD first"
+    mount_rw
+    need=$(( $(wc -c < "/tmp/$KERNEL") + $(wc -c < "/tmp/$INITRD") ))
+    free=$(( $(df -k "$P3" | tail -1 | awk '{print $4}') * 1024 ))
+    [ "$free" -gt "$need" ] || { unmount_all; die "sda3 has $free bytes free, need $need"; }
+    # Fingerprint what we must NOT disturb, before touching anything. sda3 is
+    # also where the VENDOR kernel lives, and the currently-default boot entry
+    # loads it from here — so a botched write to this partition costs the normal
+    # boot, not just ours. Proving it is byte-identical afterwards is cheap.
+    vend_before=$(md5sum "$P3/boot/bzImage-3.16.38-8.260.24" 2>/dev/null | cut -d" " -f1)
+    menu_before=$(md5sum "$MENU" 2>/dev/null | cut -d" " -f1)
+
+    cp "/tmp/$KERNEL" "$P3/boot/$KERNEL" || { unmount_all; die "copy failed"; }
+    cp "/tmp/$INITRD" "$P3/boot/$INITRD" || { unmount_all; die "copy failed"; }
+    sync
+
+    # Verify the copies rather than trusting cp's exit status: a short write on
+    # a nearly-full filesystem returns 0 from cp on some busybox builds, and a
+    # truncated kernel is a boot that dies with no useful message.
+    for f in "$KERNEL" "$INITRD"; do
+        a=$(md5sum "/tmp/$f" | cut -d" " -f1)
+        b=$(md5sum "$P3/boot/$f" | cut -d" " -f1)
+        if [ "$a" != "$b" ]; then
+            rm -f "$P3/boot/$f"; finish_write
+            die "$f did not copy intact ($a != $b) — removed the bad copy"
+        fi
+        echo "  $f  md5 $a  OK"
+    done
+
+    vend_after=$(md5sum "$P3/boot/bzImage-3.16.38-8.260.24" 2>/dev/null | cut -d" " -f1)
+    menu_after=$(md5sum "$MENU" 2>/dev/null | cut -d" " -f1)
+    [ "$vend_before" = "$vend_after" ] || { finish_write; die "VENDOR KERNEL CHANGED — stop and investigate"; }
+    [ "$menu_before" = "$menu_after" ] || { finish_write; die "menu.lst CHANGED during stage — stop and investigate"; }
+    echo "  vendor kernel unchanged ($vend_after)"
+    echo "  menu.lst unchanged      ($menu_after)"
+
+    finish_write
+    echo "staged. Nothing boots differently yet — menu.lst is untouched."
+}
+
+cmd_arm() {
+    [ "${1:-}" = "--yes-i-am-watching-the-power" ] || die \
+"refusing. 'arm' changes what this box boots and the one failure mode it cannot
+   self-heal is a silent hang, which needs a physical power cycle. Re-run as:
+       $0 arm --yes-i-am-watching-the-power"
+    mount_rw
+    [ -f "$P3/boot/$KERNEL" ] || { unmount_all; die "not staged — run 'stage' first"; }
+    [ -f "$P3/boot/$INITRD" ] || { unmount_all; die "not staged — run 'stage' first"; }
+    grep -q "$ENTRY_TITLE" "$MENU" && { unmount_all; die "already armed (disarm first)"; }
+
+    cp "$MENU" "$BACKUP" || { unmount_all; die "could not back up menu.lst"; }
+
+    # GRUB Legacy's saved-default file is a fixed-size record, not a bare
+    # number: stage2 rewrites it in place and will not grow it, so it has to be
+    # created at the size GRUB expects or savedefault silently does nothing.
+    printf '2\n#\n# WARNING: this file is used by GRUB and must not be edited\n' > "$GRUBDIR/default"
+    # pad to 512 bytes, which is what grub-set-default writes
+    while [ "$(wc -c < "$GRUBDIR/default")" -lt 512 ]; do printf '#\n' >> "$GRUBDIR/default"; done
+
+    {
+        echo ""
+        echo "title		$ENTRY_TITLE"
+        echo "root		(hd0,2)"
+        echo "kernel		/boot/$KERNEL console=ttyS0,115200 panic=10"
+        echo "initrd		/boot/$INITRD"
+        echo "savedefault	1"
+        echo "boot"
+    } >> "$MENU"
+
+    # `default saved` is what makes savedefault mean anything. fallback 1 covers
+    # the case where our kernel or initrd cannot be READ at all.
+    # Rewritten without embedded tabs: busybox sed does not expand \t in a
+    # replacement, so a tab has to be a literal one, and a literal tab in a
+    # shell script is an invitation for an editor to eat it. GRUB Legacy
+    # accepts spaces here exactly as it accepts tabs.
+    sed -i 's/^default[ 	].*/default saved/' "$MENU"
+    sed -i 's/^fallback[ 	].*/fallback 1/' "$MENU"
+
+    # Recovery layer 3: a menu a serial console can actually use. The stock
+    # file is `timeout 0` + `hiddenmenu`, which boots instantly with no way
+    # in. Ten seconds on a console that already exists costs nothing and
+    # turns "the box will not boot" into "pick another entry", with no disk
+    # write and no physical access. disarm restores the silent boot.
+    sed -i 's/^timeout[ 	].*/timeout 10/' "$MENU"
+    sed -i 's/^hiddenmenu/#hiddenmenu   # openHC: shown so serial can recover/' "$MENU"
+
+    echo "== menu.lst is now =="; sed 's/^/  /' "$MENU"
+    finish_write
+    echo ""
+    echo "ARMED. Next boot: openHC, ONCE. The boot after that: the vendor image,"
+    echo "whatever happens — savedefault rewrites the default before the kernel runs."
+    echo ""
+    echo "You now get a 10-second GRUB menu on ttyS0 @115200. If openHC misbehaves,"
+    echo "press a key there and pick entry 1 (vendor) or entry 0 (factory image)."
+    echo "If it will not even reach the menu: hold the factory-default button at"
+    echo "power-on and GRUB boots the factory image regardless of any of this."
+    echo ""
+    echo "Reboot when ready:  reboot"
+}
+
+cmd_disarm() {
+    mount_rw
+    if [ -f "$BACKUP" ]; then
+        cp "$BACKUP" "$MENU" || { unmount_all; die "restore failed — DO NOT REBOOT, fix menu.lst by hand"; }
+        rm -f "$BACKUP"
+        echo "menu.lst restored from backup."
+    else
+        echo "no backup found; leaving menu.lst alone." >&2
+    fi
+    rm -f "$GRUBDIR/default"
+    echo "== menu.lst is now =="; sed 's/^/  /' "$MENU"
+    finish_write
+}
+
+cmd_unstage() {
+    mount_rw
+    rm -f "$P3/boot/$KERNEL" "$P3/boot/$INITRD"
+    finish_write
+    echo "unstaged."
+}
+
+case "${1:-status}" in
+    status)  cmd_status ;;
+    stage)   cmd_stage ;;
+    arm)     shift; cmd_arm "$@" ;;
+    disarm)  cmd_disarm ;;
+    unstage) cmd_unstage ;;
+    *) echo "usage: $0 {status|stage|arm|disarm|unstage}"; exit 1 ;;
+esac

@@ -1,0 +1,30 @@
+[package]
+name = "webd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC controller web dashboard. Board-agnostic; serves the embedded React UI, answers system and network questions, and proxies the IO server so the GUI needs one origin."
+
+[[bin]]
+name = "webd"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt", "net", "macros", "time", "io-util", "signal", "sync", "fs"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "set-header"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+libc = "0.2"
+wifi = { path = "../wifi" }
+# For the /iod reverse proxy. All three are already in the tree via axum, so
+# this adds no new third-party code — only access to hyper's client side and
+# its upgrade plumbing, which is what forwarding a WebSocket needs.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+
+[build-dependencies]
+flate2 = "1"

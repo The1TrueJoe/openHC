@@ -1,0 +1,38 @@
+#!/bin/sh
+# Configure the component video output — HC-800 only.
+#
+# The vendor does this in-kernel at module load ("c4_vid_conf: Intialized to
+# 720p"); we do it from userspace over i2c-dev, replaying a register set read
+# off this hardware while it was working. See packages/ths8200 and
+# board/hc800/video/ths8200-720p60.regs.
+#
+# WHY THIS AND NOT HDMI: the ADV7513 on the same bus is fitted and answers, but
+# nothing configures it — Control4's OS 3.x never creates /tmp/intel_hdmi, never
+# makes the c4_adi_7513 node, and its libvidcfg.so contains only i.MX8MQ
+# classes. Component is the output with evidence behind it.
+#
+# S47: after the framebuffer exists (i915 comes up in the kernel) and after
+# audio, before the services in S50. Ordering against the splash does not matter
+# — the DAC scans out whatever the framebuffer holds, whenever it is configured.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+BUS="${OHC_VIDEO_I2C_BUS:-6}"
+ADDR="${OHC_VIDEO_THS8200_ADDR:-0x21}"
+REGS="${OHC_VIDEO_REGS:-/opt/ohc/video/ths8200-720p60.regs}"
+
+case "${1:-start}" in
+    start)
+        [ "${OHC_VIDEO_AUTOCONFIG:-1}" = 1 ] || { echo "video: autoconfig off"; exit 0; }
+        [ -x /usr/bin/ths8200 ] || exit 0
+        if [ ! -e "/dev/i2c-$BUS" ]; then
+            echo "video: no /dev/i2c-$BUS (CONFIG_I2C_CHARDEV / I2C_I801?)"
+            exit 0
+        fi
+        # The tool identifies the chip before writing and exits non-zero if it
+        # is not a THS8200, so a wrong bus number costs a message, not 138
+        # writes into something else.
+        /usr/bin/ths8200 -b "$BUS" -a "$ADDR" "$REGS" 2>&1 | sed 's/^/video: /'
+        ;;
+    stop) : ;;
+    restart|reload) "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

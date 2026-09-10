@@ -18,7 +18,7 @@ platform_device_id path (REGS_CE4100) when of_node is NULL and numbers
 the adapters from the platform id (i2c-0..2). fast_mode stays 0 (100kHz),
 which is fine for the LM75 + DS1339 on i2c-0.
 
-Signed-off-by: openHC <openhc@localhost>
+Author: Joseph Telaak <joseph@telaak.dev>
 ---
 --- a/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:30
 +++ b/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:16

@@ -43,6 +43,11 @@ pub struct Board {
     pub secure_boot: bool,
     pub has_switch: bool,
     pub has_wifi: bool,
+    /// `(sys_vendor, product_name)` from SMBIOS, for the boards that HAVE
+    /// SMBIOS. The HC-800 is a PC with an AMI BIOS and no `/proc/c4board` at
+    /// all, so DMI is not a nicety there — it is the only identifier that works
+    /// from stock, from openHC, and from anything else that boots on it.
+    pub dmi: Option<(&'static str, &'static str)>,
     pub notes: &'static str,
 }
 
@@ -66,6 +71,7 @@ pub const BOARDS: &[Board] = &[
         secure_boot: false,
         has_switch: false,
         has_wifi: true,
+        dmi: None,
         notes: "fuse clear: an unsigned container at 0x400 boots, so no autoscript is needed.",
     },
     Board {
@@ -77,6 +83,7 @@ pub const BOARDS: &[Board] = &[
         secure_boot: false,
         has_switch: false,
         has_wifi: true,
+        dmi: None,
         notes: "ids not yet read off hardware; boot behaviour assumed to match v1 and NOT verified.",
     },
     Board {
@@ -88,6 +95,7 @@ pub const BOARDS: &[Board] = &[
         secure_boot: false,
         has_switch: true,
         has_wifi: false,
+        dmi: None,
         notes: "CEFDK's own enum calls this board_ea1p = 5, which is not /proc/c4board/type.",
     },
     Board {
@@ -99,6 +107,7 @@ pub const BOARDS: &[Board] = &[
         secure_boot: true,
         has_switch: true,
         has_wifi: true,
+        dmi: None,
         notes: "",
     },
     Board {
@@ -110,6 +119,7 @@ pub const BOARDS: &[Board] = &[
         secure_boot: true,
         has_switch: true,
         has_wifi: false,
+        dmi: None,
         notes: "secure-boot fuse BLOWN (measured): bootkernel rejects unsigned images, so this \
                 board must install via the autoscript + bootlinux path.",
     },
@@ -122,6 +132,7 @@ pub const BOARDS: &[Board] = &[
         secure_boot: false,
         has_switch: false,
         has_wifi: false,
+        dmi: None,
         notes: "stock bootcmd already tries boot.scr on the vfat partition; dropping one takes \
                 over and deleting it reverts.",
     },
@@ -134,18 +145,27 @@ pub const BOARDS: &[Board] = &[
         secure_boot: false,
         has_switch: false,
         has_wifi: false,
+        dmi: None,
         notes: "",
     },
     Board {
         name: "hc800",
         family: Family::Hc,
-        desc: "HC800 (Atom D525)",
+        desc: "HC800 (Atom D525, Lite-On AE100)",
+        // Not a Control4 embedded board: there is no /proc/c4board here, it is
+        // an AMI BIOS PC with real DMI. `dmi` below is what identifies it, and
+        // it is why these two stay None rather than being guessed at.
         c4_type: None,
         c4_revs: &[],
         secure_boot: false,
         has_switch: false,
-        has_wifi: false,
-        notes: "",
+        has_wifi: true,
+        // Read off the unit: `sys_vendor` really does carry the trailing dot.
+        dmi: Some(("Lite-On Tech.", "HC800")),
+        notes: "board rev 4 (straps read 100b). Nothing in the boot chain verifies anything: \
+                no UEFI, no TPM, no module signing — GRUB 0.97 loads a bare bzImage named in a \
+                plain-text menu.lst. Wi-Fi is a USB RTL8191SU whose staging driver is gone from \
+                mainline, so openHC has no wlan0 on this board yet.",
     },
 ];
 
@@ -249,9 +269,17 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
             return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, raw };
         }
     }
-    // Older overlays carry only OHC_MODEL (1/3/5), i.e. the family not the variant.
     if let Some(model) = get("OHC_MODEL") {
         raw.push(("OHC_MODEL".into(), model.clone()));
+        // OHC_MODEL is a BOARD NAME on every board outside the EA family —
+        // `hc800`, `ioxv1`, `ca1` all write their own name there. Only the EA
+        // overlays use it as a bare model number, so try the name first.
+        // Without this a running openHC on an HC-800 came back unidentified,
+        // and the flasher refused to touch the one board it is safest on.
+        if let Some(b) = by_name(&model) {
+            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, raw };
+        }
+        // EA overlays carry only 1/3/5, i.e. the family and not the variant.
         let prefix = format!("ea{}", model.trim());
         let pool: Vec<_> = BOARDS
             .iter()
@@ -261,6 +289,36 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
         return Identity { board, candidates: pool, running: Running::Openhc, raw };
     }
     Identity::none(Running::Openhc)
+}
+
+/// Identify from SMBIOS, i.e. `/sys/class/dmi/id/{sys_vendor,product_name}`.
+///
+/// This is the HC-800's route and effectively only the HC-800's: the embedded
+/// boards have no SMBIOS, and the HC-800 has no `/proc/c4board`. It works
+/// identically from the stock Control4 image and from a running openHC, which
+/// matters because on this board those are the two systems a takeover is ever
+/// launched from.
+///
+/// Matching is case-insensitive and trims, because these strings come out of a
+/// BIOS table that nobody proofread — the vendor string really is
+/// `Lite-On Tech.`, trailing dot and all.
+pub fn from_dmi(vendor: Option<&str>, product: Option<&str>, running: Running) -> Identity {
+    let mut raw = vec![];
+    if let Some(v) = vendor {
+        raw.push(("sys_vendor".into(), v.to_string()));
+    }
+    if let Some(p) = product {
+        raw.push(("product_name".into(), p.to_string()));
+    }
+    let norm = |s: &str| s.trim().to_ascii_lowercase();
+    let hit = BOARDS.iter().find(|b| match (b.dmi, vendor, product) {
+        (Some((bv, bp)), Some(v), Some(p)) => norm(bv) == norm(v) && norm(bp) == norm(p),
+        _ => false,
+    });
+    match hit {
+        Some(b) => Identity { board: Some(b), candidates: vec![b], running, raw },
+        None => Identity { board: None, candidates: vec![], running, raw },
+    }
 }
 
 /// Identify from CEFDK's own banner text, e.g. `Board : Type 1, Rev 5`.

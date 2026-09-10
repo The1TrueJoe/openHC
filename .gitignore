@@ -4,6 +4,12 @@
 /br2-external/buildroot/
 *.img
 *.bin
+# NO EXCEPTION for the vendor IO-MCU images. They are Control4/Snap One
+# proprietary firmware, and "the owner of the hardware already has them" is a
+# reason someone may keep a copy — not a licence to redistribute one from a
+# public repository. Pull them off your own unit; see
+# board/hc800/firmware/io-mcu/lm3s1162/vendor/README.md for where they live and
+# the checksums to confirm you have the right ones.
 # scratch
 /tmp/
 *.log
@@ -27,3 +33,7 @@ __pycache__/
 /site/dist/
 /site/.astro/
 /site/node_modules/
+c4-recon/
+
+# agent worktrees — a git repo inside this one, never ours to commit
+.claude/worktrees/

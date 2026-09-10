@@ -2,7 +2,7 @@
 title: The IO microcontroller
 description: The DLE/STX wire protocol, the bring-up handshake, the decoded per-board profile table, and IR in both directions.
 sidebar:
-  order: 1
+  order: 3
 ---
 
 The EA family's and HC family's IR jacks, relays, contacts and combo serial ports
@@ -112,7 +112,75 @@ answering**:
 | `0x56` | `0x55` | `00 00` | RELAY_TOGGLE / STATE_GET |
 | `0x74` | `0x75` | `00 00 00 00` | CONTACT_GET (u32 bitmask) |
 | `0xa1` | `0xa4` | `01` | UART_SEND → READY_FOR_DATA |
-| `0xd2` | `0xd7` | `00 07 <u16>` | AUTO_BAUD_GET (the u16 varies per sync — a timing measurement) |
+| `0xd2` | `0xd7` | `<u32 BE baud>` | AUTO_BAUD_GET — see below; NOT `00 07` + a u16 |
+
+#### AUTO_BAUD_GET returns a 32-bit baud rate
+
+This row was read wrong for a long time, and the HC-800 is what exposed it. The
+EA's four payload bytes are `00 07 08 00`, which invites the reading "`00 07`,
+then a 16-bit measurement" — and that is what this page used to say.
+
+It is one **32-bit big-endian integer**, and it is the baud rate:
+
+```
+EA1/EA3   00 07 08 00  =  460800   exactly the link rate
+HC-800    00 01 c2 07  =  115207   the link rate, MEASURED (nominal 115200)
+```
+
+The HC-800 is the giveaway: 115207 is 0.006% off nominal, so it is a measurement
+rather than a constant — and it is meaningless as a "carrier period", while
+being obviously right as a baud. Read the EA's the same way and `00 07 08 00`
+lands exactly on its 460800. The leading `00 07` was never a header; it is the
+top half of the number.
+
+Captured from a live HC-800 with `ioserver` suspended:
+
+```
+--> 10 02 d2 13 00 00 00 1b        AUTO_BAUD_GET
+<-- 10 02 d7 13 02 00 04 00 01 c2 07 46
+```
+
+Note also that this is the one opcode where **the reply is not request+1**:
+`0xd2` answers `0xd7`, not `0xd3`.
+
+#### The relay selector is an INDEX, not a bitmask
+
+Settled on a live HC-800 by sweeping it. `RELAY_GET` echoes whatever selector it
+is handed — `0x00` through `0x09` all come back verbatim — so a read can never
+distinguish the two readings:
+
+```
+--> 10 02 54 11 00 00 01 …        RELAY_GET sel 0x01
+<-- 10 02 55 11 00 00 02 01 00 …  [01, 00]
+```
+
+`RELAY_TOGGLE` can, because only a real relay moves:
+
+| selector | toggling it |
+|---|---|
+| `0x00` `0x01` `0x02` `0x03` | flips exactly one relay each |
+| `0x04` and above | does nothing |
+
+So the four relays are addressed `0..3`, and the reply's first byte is the echoed
+index rather than a mask.
+
+An earlier reading took it for a bitmask and sent `1 << index`. That addressed
+relays 1 and 2 — which worked — and turned indices 2 and 3 into `0x04` and
+`0x08`, which address nothing. The board appeared to have two working relays and
+two dead ones for as long as that assumption stood. It has four.
+
+The `ff 00` an unselected query returns is consistent with this: `ff` is simply
+an out-of-range index echoed back.
+
+#### The HC-800 has the same empty query surface
+
+The four documented-but-unimplemented queries were re-tested against the
+LM3S1162, and all four are unimplemented there too — `0x12` IR_PIN_STATE_GET,
+`0x42` IR_MODE_GET, `0x68` IROUT_STATUS and `0x94` CAPABILITIES_GET each
+returned **nothing at all**. So the conclusion above holds for both families: a
+host must treat a capabilities timeout as normal rather than as an error, and a
+replacement firmware is free to drop unknown opcodes in silence, because that is
+exactly what the stock ones do.
 
 **`CAPABILITIES_GET` (0x94) isn't implemented**, nor are `IR_PIN_STATE_GET`
 (0x12), `IR_MODE_GET` (0x42) or `IROUT_STATUS` (0x68) as queries, tried with both
@@ -216,6 +284,79 @@ UART4  PC4/PC5      60   —               user port 3
 
 Both boards populate a **contiguous run from channel 0**, so `output_mask` is
 dense: `0x1f` on EA1, `0x7f` on EA3.
+
+### IROUT_SEND, and the field that hard-faults the part
+
+Decoded from the vendor image and verified on air with a Global Caché learner.
+The payload is **14 fixed bytes** followed by `(len - 14) / 2` duration words:
+
+| field | size | meaning |
+|---|---|---|
+| 1 | u8 | mode; `< 2` skips the repeat block entirely |
+| 2-4 | u8×3 | 24-bit output **bitmask** — bit N is the jack labelled N+1 |
+| 5-6 | u16×2 | unread on the simple path |
+| 7 | u16 | **Pronto carrier word** |
+| 8-9 | u16×2 | repeat count, repeat offset |
+| 10+ | u16[] | burst durations; the firmware sets bit 15 on marks itself |
+
+It answers opcode `0x68` with a one-byte status, 0 for success.
+
+:::danger[A carrier word of 0 is not an error, it is a brick]
+The handler computes the carrier frequency by dividing:
+
+```
+ldr   r2, [pc, #0x1c]      ; 4,145,146 = 1e6 / 0.241246, the Pronto constant
+udiv  r1, r2, r1           ; ÷ the carrier field
+```
+
+Zero there is a divide-by-zero, and with `DIV_0_TRP` set the Cortex-M3 takes a
+UsageFault → HardFault. The part then answers **nothing** — not identify, not
+relays, not contacts — and survives a daemon restart and a full reboot. Only a
+power cycle brings it back.
+
+This was originally mistaken for a payload-length limit, because the first code
+that triggered it happened to be long. It is not: a six-word code with a zero
+carrier kills it just as dead, and a 150-byte code with a valid carrier is fine.
+:::
+
+The output selector being a bitmask rather than an index matters: `1 << port`,
+not `port`. Sending an index addresses the wrong jack, or none.
+
+On an HC-800 the mask is **bit 0..5 = the six rear jacks, bit 6 = the internal
+front blaster**, and nothing else in the 24 bits does anything. So the front
+emitter is not "jack 7" — it is a different piece of hardware with no socket
+behind it, which is why openHC addresses it by name (`ir/front/send`) rather
+than by a number that would send somebody hunting for a seventh connector. The
+front receiver sits on the same panel, so its captures come back on
+`ir/front/rx`.
+
+Verified on an HC-800 — bit 0 out of jack 1 and bit 5 out of jack 6, both
+returning the carrier and every duration we sent, to within rounding:
+
+```
+GC-IRL,38000,343,171,23,22B,22,64BBBBBCCBCCCCCBBBCBBBBCCCBCCCC,22,3806
+```
+
+The learner speaks at **9600 baud**, not 115200.
+
+### The contact mask is LITTLE-endian
+
+`CONTACT_GET` answers a u32 in which **byte 0 carries contacts 1-8**, bit 0 being
+the first contact and 1 meaning CLOSED.
+
+This was read as big-endian for a long time and nothing caught it, because a
+board with every contact open answers `00 00 00 00` — identical either way.
+Closing contact 4 on an HC-800 answers:
+
+```
+08 00 00 00
+```
+
+Little-endian that is bit 3, the fourth contact. Big-endian it would be bit 27,
+which is not a contact any of this hardware has.
+
+Note the AUTO_BAUD response really is big-endian, so the two genuinely differ;
+do not "fix" one to match the other.
 
 ### Relays and contacts fall out of the same table
 
@@ -518,23 +659,130 @@ Two things this settles:
 **Which physical jack is which channel is still unknown.** It's a PCB fact,
 resolvable by driving one channel at a time and watching which emitter lights.
 
-## The HC-800 conflict, unresolved
+## The HC-800: mostly resolved
 
-For reference, the HC-800's LM3S1162 image uses only TIMER0–3 and all three UARTs
-— UART0 host, UART1/UART2 the two user ports.
+An earlier version of this page said the HC-800's LM3S1162 image "uses only
+TIMER0–3 and all three UARTs — UART0 host, UART1/UART2 the two user ports", and
+flagged both halves as contradicted by a live unit. Both are now settled, and
+neither by the reading that produced them.
 
-**Both halves of that sentence are contradicted by a live HC-800**, and neither
-conflict is resolved:
+### The two user serial ports are HOST UARTs
 
-- **IR count.** The owner counts **six IR jacks**, not four. A timer count is a
-  *lower bound* on channel count, not the count: every Stellaris GPTM has two
-  capture/compare outputs, so TIMER0–3 can drive up to eight IR carriers. The EA
-  decoding above reads channels off the pin/exception table, which is why it's
-  trustworthy; the HC800 figure was inferred from timer numbers alone. **Redo it
-  against the pin table before believing either number.**
-- **The two user serial ports.** On the live unit `ioserver` holds `/dev/ttyS1`
-  and `/dev/ttyS2` — **host 8250 UARTs**, not MCU-routed, at the same time as it
-  holds `/dev/ttyS3` for the MCU itself. If the LM3S image really does configure
-  UART1/UART2, then either they land somewhere other than the rear jacks, or the
-  host UARTs are bridged through the MCU. Nothing visible from a running system
-  distinguishes those.
+`ioserver` on a running HC-800 holds **three** ports at once:
+
+```
+ioserver(2791) -> /dev/ttyS3     the LM3S1162
+ioserver(2791) -> /dev/ttyS1     0x2f8, RTS|DTR
+ioserver(2791) -> /dev/ttyS2     0x3e8, RTS|DTR
+```
+
+`ttyS1` and `ttyS2` are real 16550As on the LPC bus, opened and configured
+directly by the daemon — note the asserted modem lines, where the never-opened
+Zigbee port at `ttyS4` shows no flags at all. The rear RS-232 jacks are wired to
+the host, not routed through the MCU.
+
+So why does the image configure three UARTs? Because **it is the same binary as
+the HC-250**: `.flash.config` maps `hc800` and `hc250` to one pair of files.
+"MultiConfig" in the filename means multi-**processor**, not multi-board — the
+image carries `Processor: LM3S1162 / LM3S615 / LM3S811 / LM3S815 / Undefined`
+and four config blocks to match. A feature present in the image is not
+necessarily a feature of this board.
+
+**Consequence for a replacement firmware:** the HC-800's MCU does IR, 4 relays
+and 4 contacts, and no user serial at all.
+
+### Six IR outputs, on PWM — not four, on timers
+
+The old figure came from counting timer base addresses, which is a lower bound
+rather than a count. The vector table settles it. The stock image's table is 46
+entries (16 system + 30 IRQs) and only six handlers differ from the common
+default at `0x7783`:
+
+| IRQ | Peripheral |
+|---|---|
+| 5, 6 | UART0, UART1 |
+| 9 | PWM **Fault** |
+| 10, 11, 12 | PWM generators **0, 1, 2** |
+
+**This part has a PWM module and the firmware uses it** — the module's base
+`0x40028000` sits at flash `0x4BA0`, immediately beside those handlers. Three
+generators drive two outputs each, which is six, matching the owner's six rear
+jacks. That is also the sharpest difference from the EA's TM4C1231D5, which has
+no PWM module at all and must synthesise the carrier from a timer CCP.
+
+Note what is *absent*: no timer, GPIO or SysTick interrupt is claimed anywhere.
+Contacts are polled, and burst timing runs off the PWM generator interrupts.
+
+### The pin map: format decoded, assignment still open
+
+The per-processor config blocks live at flash `0x10B8`, stride `0x3D4`, and the
+record formats are now known:
+
+```
+GPIO pin record    8 bytes   { u32 gpio_base; u32 pin }
+                             bits 0..7 = mask, BIT 8 = POPULATED
+timer record      12 bytes   { u32 timer_base; u32 mask; u32 mask2 }
+                             four per block, always TIMER2, TIMER0, TIMER3, TIMER1
+```
+
+Two things confirm the decoding rather than merely fitting it. First, the **last
+six pins of every block are the three UARTs at their textbook Stellaris
+pinouts** — UART0 `PA0`/`PA1`, UART1 `PD2`/`PD3`, UART2 `PG0`/`PG1`. Second,
+block 3 — the `Undefined` processor — contains *only* those six, which is
+exactly what an unknown part should be given: a host link and nothing else.
+
+Blocks 0, 1 and 2 share the same first thirteen pins, so a profile is a prefix
+length here too:
+
+```
+PD4 PC7 PC6 PF4 PC5 PC4 PF5 PB4 PB5 PA7 PB6 PF2 PA6 ...
+```
+
+The tempting reading is `PD4` = IR receiver (first descriptor, sitting among the
+timer records, mirroring the EA layout) and then `PC7 PC6 PF4 PC5 PC4 PF5` = the
+six IR outputs. Six is the right number in the right place.
+
+**It is not safe to act on yet.** `PC4`–`PC7` are classically the CCP
+(capture/compare) pins on Stellaris, not PWM pins — while the vector table says
+the carrier is on PWM and no timer interrupt is taken. Those two facts do not
+sit together. Resolving it needs the LM3S1162 pin table (the datasheet's
+"Signals by Function", or StellarisWare's `pin_map.h` under `PART_LM3S1162`).
+Which block corresponds to the LM3S1162 is also unproven: the strings run
+LM3S615, LM3S815, LM3S811, LM3S1162, but block 3 is the minimal one, so block
+order is not string order.
+
+Until that is closed, openHC's LM3S firmware keeps `OHC_IR_PINS_KNOWN` and
+`OHC_RELAY_PINS_KNOWN` at `0`: it runs, answers the host and builds correct
+carriers inside the PWM peripheral, but enables no output pin and drives no
+relay. A relay here may be switching a real load.
+
+### The protocol is confirmed on this part
+
+Asked directly, on `/dev/ttyS3` of a live unit with `ioserver` suspended:
+
+```
+--> 10 02 34 01 00 00 00 cb                     FIRMWARE_VERSION_GET
+<-- 10 02 35 01 02 00 08 "03.26.15"         33
+--> 10 02 24 02 00 00 00 da                     PRODUCT_NAME
+<-- 10 02 25 02 02 00 1b "c4:ir_processor:c4-ir01-i2c" 6c
+```
+
+Reply opcode = request + 1, flags bit 1 = response, checksum = negated 8-bit
+sum — the same protocol this page documents for the EA, decoded by the same
+`ohc_proto.c` without modification. **The host link is 115200 on this board**,
+not the EA's 460800. The reported version matches the extracted image exactly,
+so the running firmware is the file in `/control4/firmware/io/`.
+
+### Image container
+
+The LM3S application file is wrapped, where the TM4C ones are raw:
+
+```
+[0x000 .. 0x0FF]      256-byte Control4 text header, 0xFF padded
+[0x100 .. 0x100FF]    64 KB flash image (low 4 KB left erased — the bootloader)
+[0x10100 .. 0x10101]  CRC-16/ARC of the whole 64 KB, little-endian
+```
+
+CRC-16/ARC: poly `0x8005`, init 0, reflected in and out, no final xor. openHC's
+`tools/mkimage.py` reproduces the stock image's stored `0xa578` exactly, which
+is what makes the format trustworthy enough to flash against.

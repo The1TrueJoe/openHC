@@ -1,0 +1,129 @@
+@import 'tailwindcss';
+@import '@xterm/xterm/css/xterm.css';
+
+/* Semantic tokens, not literal colours.
+   Panels ask for `bg-panel` and `text-ink`; which actual colour that is depends
+   on the scheme below. Naming them by ROLE is what makes one stylesheet serve
+   both schemes — a panel written against `bg-slate-900` can only ever be dark. */
+@theme inline {
+  --color-ground: var(--ground);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-edge: var(--edge);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+
+  --color-accent: var(--accent);
+  --color-live: var(--live);
+  --color-warm: var(--warm);
+  --color-alarm: var(--alarm);
+
+  /* Manrope first, as the house UI specifies. A controller on a LAN cannot
+     fetch a webfont, so a panel without it installed gets the system face
+     rather than a blank page. */
+  --font-sans: Manrope, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Light is the base definition so every token has a value unconditionally.
+   A colour defined only inside a media query is a colour that disappears in
+   whichever context that query does not match. */
+:root {
+  --ground: #eef1f5;
+  --panel: #ffffff;
+  --raised: #f7f9fb;
+  --edge: rgb(16 24 40 / 0.11);
+  --ink: #101828;
+  --muted: #5f6b7f;
+
+  --accent: oklch(0.55 0.15 245);
+  --live: oklch(0.62 0.16 150);
+  --warm: oklch(0.68 0.15 70);
+  --alarm: oklch(0.58 0.2 25);
+
+  --shade: rgb(16 24 40 / 0.05);
+  color-scheme: light;
+}
+
+/* Dark is a GREY, not a black. Near-black panels look like a terminal rather
+   than a product, and on the cheap panels these controllers are configured
+   from, true black crushes every border into invisibility. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --ground: #212630;
+    --panel: #2a303b;
+    --raised: #333a47;
+    --edge: rgb(255 255 255 / 0.1);
+    --ink: #e8ecf3;
+    --muted: #99a3b5;
+
+    --accent: oklch(0.72 0.13 245);
+    --live: oklch(0.8 0.15 150);
+    --warm: oklch(0.82 0.13 75);
+    --alarm: oklch(0.7 0.17 22);
+
+    --shade: rgb(255 255 255 / 0.055);
+    color-scheme: dark;
+  }
+}
+
+/* An explicit choice wins over the system in both directions, so a manual
+   toggle remains possible without rewriting any of the above. */
+:root[data-theme='dark'] {
+  --ground: #212630;
+  --panel: #2a303b;
+  --raised: #333a47;
+  --edge: rgb(255 255 255 / 0.1);
+  --ink: #e8ecf3;
+  --muted: #99a3b5;
+
+  --accent: oklch(0.72 0.13 245);
+  --live: oklch(0.8 0.15 150);
+  --warm: oklch(0.82 0.13 75);
+  --alarm: oklch(0.7 0.17 22);
+
+  --shade: rgb(255 255 255 / 0.055);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+}
+
+/* A hairline that reads correctly in both schemes: a fixed white border is
+   invisible on light, a fixed black one is invisible on dark. */
+.hair {
+  border-color: var(--edge);
+}
+.shade {
+  background: var(--shade);
+}
+
+/* A controller is often driven from a phone on the installer's ladder. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: var(--edge);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* xterm sits inside our panel chrome, so it should not paint its own ground. */
+.xterm,
+.xterm-viewport {
+  background: transparent !important;
+}

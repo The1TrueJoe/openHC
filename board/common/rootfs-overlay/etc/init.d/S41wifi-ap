@@ -6,7 +6,7 @@
 #   (a) joins a previously-saved home network in station mode, or
 #   (b) if none is saved (or the join fails), brings wlan up as an OPEN AP named
 #       for the hostname (openhc-<model>-<mac>) and raises a captive portal —
-#       ohc-webd redirects :80 to it — so a phone can pick a network
+#       webd redirects :80 to it — so a phone can pick a network
 #       and hand us its credentials. Submitting them writes the station config
 #       and restarts this script, which then takes path (a).
 #
@@ -17,12 +17,31 @@
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 UPLINK="${OHC_UPLINK_IFACE:-eth0}"
 WIFI="${OHC_WIFI_IFACE:-}"
+# Three knobs that were hardcoded until the HC-800 turned up and broke all
+# three. Defaults reproduce the previous behaviour exactly, so the EA and CA-1
+# boards are unaffected by their existence.
+#
+#   OHC_WIFI_DRIVER      wpa_supplicant backend. nl80211 for a cfg80211 radio;
+#                        the HC-800's RTL8192SU is on staging r8712u, which sets
+#                        netdev->wireless_handlers and registers NO wiphy, so
+#                        nl80211 finds nothing and only -Dwext drives it.
+#   OHC_WIFI_MODULE      module to modprobe before the interface can exist.
+#                        EMPTY means the driver is builtin and there is nothing
+#                        to load — which is the HC-800 case, and asking modprobe
+#                        for a builtin returns failure, so this cannot just be
+#                        left pointing at ath9k.
+#   OHC_WIFI_AP_CAPABLE  0 for a radio that cannot run hostapd. r8712u is a
+#                        station-only WEXT driver: no AP mode, and no nl80211
+#                        for hostapd to drive even if it had one.
+OHC_WIFI_DRIVER="${OHC_WIFI_DRIVER:-nl80211}"
+OHC_WIFI_MODULE="${OHC_WIFI_MODULE-ath9k}"
+OHC_WIFI_AP_CAPABLE="${OHC_WIFI_AP_CAPABLE:-1}"
 AP_ADDR="10.42.0.1"
 AP_PORT="8080"                     # the setup portal's own port (webd keeps :80)
 STA_CONF="/etc/wpa_supplicant/wpa_supplicant-${WIFI}.conf"
-SCAN_CACHE="/tmp/ohc-wifi-scan"    # SSIDs the portal offers, captured at AP start
-PORTAL=/opt/ohc/bin/ohc-portal     # the captive-portal web app, run only with the AP
-PORTAL_FLAG="/tmp/ohc-ap-portal"   # holds the portal URL; ohc-webd redirects :80 probes here while it exists
+SCAN_CACHE="/tmp/wifi-scan"    # SSIDs the portal offers, captured at AP start
+PORTAL=/opt/ohc/bin/portal     # the captive-portal web app, run only with the AP
+PORTAL_FLAG="/tmp/ohc-ap-portal"   # holds the portal URL; webd redirects :80 probes here while it exists
 
 have_link() { [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = 1 ]; }
 
@@ -64,7 +83,7 @@ wired_online() {
 sta_join() {
     [ -s "$STA_CONF" ] || return 1
     ip link set "$WIFI" up
-    wpa_supplicant -B -i "$WIFI" -D nl80211 -c "$STA_CONF" >/dev/null 2>&1 || return 1
+    wpa_supplicant -B -i "$WIFI" -D "$OHC_WIFI_DRIVER" -c "$STA_CONF" >/dev/null 2>&1 || return 1
     i=0
     while [ $i -lt 15 ]; do
         udhcpc -i "$WIFI" -t 3 -T 2 -n >/dev/null 2>&1 && return 0
@@ -79,7 +98,7 @@ sta_join() {
 scan_networks() {
     ip link set "$WIFI" up
     printf 'ctrl_interface=/var/run/wpa_supplicant\n' > /tmp/wpa-scan.conf
-    wpa_supplicant -B -i "$WIFI" -D nl80211 -c /tmp/wpa-scan.conf >/dev/null 2>&1 || return 1
+    wpa_supplicant -B -i "$WIFI" -D "$OHC_WIFI_DRIVER" -c /tmp/wpa-scan.conf >/dev/null 2>&1 || return 1
     wpa_cli -i "$WIFI" scan >/dev/null 2>&1
     sleep 3
     wpa_cli -i "$WIFI" scan_results 2>/dev/null \
@@ -103,7 +122,7 @@ start_ap() {
     printf 'Wi-Fi AP: %s ' "$SSID"
     if start-stop-daemon -S -q -b --exec /usr/sbin/hostapd -- -B /etc/hostapd/hostapd.conf \
        && start-stop-daemon -S -q -b --exec /usr/sbin/dnsmasq -- --conf-file=/etc/dnsmasq-ap.conf; then
-        # the captive portal is its own app (ohc-portal) on its own port — the
+        # the captive portal is its own app (portal) on its own port — the
         # dashboard stays put on :80 and just redirects probes here (PORTAL_FLAG).
         [ -x "$PORTAL" ] && start-stop-daemon -S -q -b --exec "$PORTAL" -- "0.0.0.0:$AP_PORT"
         echo "http://$AP_ADDR:$AP_PORT/" > "$PORTAL_FLAG"
@@ -115,7 +134,7 @@ start_ap() {
 
 # Load the radio driver, then wait for its interface to appear.
 #
-# ath9k/mac80211/cfg80211 are MODULES (see ea-common/linux/wifi.fragment: built
+# ath9k/mac80211/cfg80211 are MODULES (see ea-common/features/wifi/linux.fragment: built
 # in, they overrun CEFDK's 7,417,856-byte kernel window and the box does not
 # boot). Nothing loads them automatically here -- there is no udev, and mdev
 # does not autoload from a PCI modalias -- so the interface simply would not
@@ -127,7 +146,11 @@ start_ap() {
 # interface immediately loses the race.
 load_radio() {
     [ -d "/sys/class/net/$WIFI" ] && return 0
-    modprobe ath9k >/dev/null 2>&1 || return 1
+    # No module named means the driver is builtin; if the interface is still
+    # absent at this point it is genuinely absent, and modprobe would only
+    # return failure for a builtin and mislead the caller.
+    [ -n "$OHC_WIFI_MODULE" ] || return 1
+    modprobe "$OHC_WIFI_MODULE" >/dev/null 2>&1 || return 1
     i=0
     while [ $i -lt 20 ]; do
         [ -d "/sys/class/net/$WIFI" ] && return 0
@@ -139,7 +162,7 @@ load_radio() {
 start() {
     [ -n "$WIFI" ] || { echo "Wi-Fi AP: no radio on this board, skipping"; return 0; }
     if ! load_radio; then
-        echo "Wi-Fi AP: $WIFI never appeared (ath9k loaded? lsmod | grep ath9k)"
+        echo "Wi-Fi AP: $WIFI never appeared (module '${OHC_WIFI_MODULE:-builtin}')"
         return 0
     fi
     if on=$(wired_online); then
@@ -155,6 +178,14 @@ start() {
     # station join failed or no saved network — clean up and offer the setup portal
     killall wpa_supplicant 2>/dev/null
     ip addr flush dev "$WIFI" 2>/dev/null
+    if [ "$OHC_WIFI_AP_CAPABLE" != 1 ]; then
+        # Say so rather than failing quietly inside start_ap: on a station-only
+        # radio the AP is not misconfigured, it is impossible, and the operator
+        # needs to know the box is reachable over Ethernet only.
+        echo "Wi-Fi: $WIFI is station-only ($OHC_WIFI_DRIVER) — no setup AP on this board."
+        echo "Wi-Fi: put credentials in $STA_CONF and re-run this script."
+        return 0
+    fi
     scan_networks
     start_ap
 }

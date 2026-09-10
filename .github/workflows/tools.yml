@@ -1,0 +1,102 @@
+# Host-side tools that have to run on a VENDOR Control4 userspace, not on ours.
+#
+# openHC's own binaries are built by Buildroot against musl for the target we
+# are installing. This workflow is for the opposite case: a binary that must run
+# on the STOCK image, before openHC exists, to help get openHC onto the box.
+#
+# Today that is exactly one thing: kexec.
+#
+# WHY KEXEC MATTERS HERE. The HC-800's vendor kernel is built CONFIG_KEXEC=y
+# (verified by reading /proc/config.gz off a live unit), which means an openHC
+# kernel can be started from the RUNNING vendor system with **no persistent
+# change to the box at all** — no menu.lst edit, no write to sda1, no staging.
+# If it fails, a power cycle returns to a completely untouched vendor image, and
+# the factory-recovery path is never even approached. That is a strictly safer
+# first test than editing the bootloader, and it is why this build exists.
+#
+# And `kexec -l` (load) is a separate step from `kexec -e` (execute), so the
+# whole path can be validated — does this kernel image even load? — without
+# rebooting anything.
+
+name: tools
+
+on:
+  push:
+    paths: &tool-paths
+      - '.github/workflows/tools.yml'
+  pull_request:
+    paths: *tool-paths
+  workflow_dispatch:
+
+concurrency:
+  group: tools-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # kernel.org release. Pinned: this produces a binary someone will run as root
+  # on hardware with no recovery console, so "whatever is newest today" is not
+  # an acceptable input.
+  KEXEC_VERSION: "2.0.31"
+
+jobs:
+  kexec-i686:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 32-bit, and STATIC. The target is Control4's OS 3.x userspace: i686
+      # glibc from 2015-ish, whose shared libraries we neither have nor want to
+      # match. A static binary removes the entire question.
+      - name: Install a 32-bit toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-multilib libc6-dev-i386 wget xz-utils
+          echo 'int main(void){return 0;}' > /tmp/t.c
+          gcc -m32 -static -o /tmp/t /tmp/t.c
+          file /tmp/t | grep -q "Intel 80386" \
+            || { echo "toolchain is not producing i386 binaries"; exit 1; }
+          echo "32-bit static toolchain OK"
+
+      - name: Fetch kexec-tools
+        run: |
+          set -e
+          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
+
+      # --host is what selects kexec's i386 architecture support. Building it
+      # x86_64 and passing -m32 would compile the wrong loader set.
+      - name: Build static i686 kexec
+        run: |
+          set -e
+          cd "kexec-tools-${KEXEC_VERSION}"
+          ./configure \
+            --host=i686-pc-linux-gnu \
+            --build=x86_64-pc-linux-gnu \
+            CC="gcc -m32" \
+            LDFLAGS="-static" \
+            --without-zlib --without-lzma --without-xen
+          make -j"$(nproc)"
+          cp build/sbin/kexec ../kexec-i686-static || cp build/sbin/kexec.static ../kexec-i686-static
+
+      - name: Verify it is what we claim
+        run: |
+          set -e
+          file kexec-i686-static
+          file kexec-i686-static | grep -q "ELF 32-bit.*Intel 80386" \
+            || { echo "not a 32-bit x86 binary"; exit 1; }
+          file kexec-i686-static | grep -q "statically linked" \
+            || { echo "NOT STATIC — it would need the vendor's glibc"; exit 1; }
+          # A dynamic section would mean a runtime dependency we cannot satisfy.
+          if readelf -d kexec-i686-static 2>/dev/null | grep -q NEEDED; then
+            echo "binary has NEEDED entries — not truly static"; exit 1
+          fi
+          ls -l kexec-i686-static
+          echo "OK: static i386, no shared-library dependencies"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kexec-i686-static
+          path: kexec-i686-static
+          retention-days: 30
+          if-no-files-found: error

@@ -1,11 +1,72 @@
 comment "openHC board options"
 
+# The EA family's kernel drivers (CE5300 GPIO/PWM/LED/SPI/framebuffer and the
+# ADAU1451 ASoC stack) are COPIED into the kernel tree by
+# OHC_KERNEL_MIRROR_HOOK in board/external.mk. That hook used to run for every
+# board, which meant an HC-800 or a CA-1 kernel silently got Intel CE5300
+# drivers registered obj-y. It is not theoretical: it broke the hc800 build at
+# the vmlinux link, because the ASoC machine drivers reference
+# devm_snd_soc_register_component and friends and hc800 has no CONFIG_SND_SOC
+# (it is an HDA board, not an ASoC one):
+#
+#   ce5300-i2s.c: undefined reference to `devm_snd_soc_register_component'
+#   ce5300-ea3.c: undefined reference to `devm_snd_soc_register_card'
+#
+# Gating in Config.in rather than by sniffing the board name in a Makefile keeps
+# it explicit and greppable. ea-common_defconfig sets this; nothing else does.
+config BR2_OHC_EA_KERNEL_DRIVERS
+	# A PROMPT IS LOAD BEARING. A prompt-less bool is not user-settable, so
+	# kconfig would silently discard the BR2_OHC_EA_KERNEL_DRIVERS=y line in
+	# ea-common_defconfig and leave it n — stripping every EA kernel driver
+	# from the EA boards with no error anywhere. Do not "tidy" this string away.
+	bool "EA family: inject the CE5300 kernel drivers"
+	help
+	  Injects board/ea-common/{drivers,sound} into the kernel tree and
+	  registers them per board/ea-common/kernel/objs.mk. EA family only —
+	  every driver behind it is Intel CE5300 specific.
+
+# The IO microcontroller's gpiochip driver. Same gating reason as the two below,
+# and it arrived the same way: board/common/kernel held exactly one driver and
+# the hook mirrored it into EVERY board, so ca1 and ioxv1 — neither of which has
+# an IO microcontroller at all — compiled it and then failed at the vmlinux link
+# on the remote-control core they have no reason to enable:
+#
+#   gpio-ohc-iomcu.c: undefined reference to `rc_allocate_device'
+#   gpio-ohc-iomcu.c: undefined reference to `rc_register_device'
+#
+# The userspace half was already conditional (the `iomcu` feature, whose own
+# defconfig says outright that the CA-1 and the IO Extender have nothing for it
+# to attach to). Only the kernel half was not, so the two halves disagreed about
+# which boards this exists on. Now the feature sets this and both halves follow.
+config BR2_OHC_IOMCU_KERNEL_DRIVER
+	# A PROMPT IS LOAD BEARING — see the note above.
+	bool "IO microcontroller: inject the gpiochip driver"
+	help
+	  Injects board/common/kernel/drivers/gpio/gpio-ohc-iomcu.c, which turns
+	  the relays, contacts and IR jacks behind the companion microcontroller
+	  into a standard gpiochip plus one lirc device per emitter. Needs
+	  CONFIG_RC_CORE and CONFIG_LIRC, which the `iomcu` feature's kernel
+	  fragment supplies. Set by that feature; nothing else sets it.
+
+# The HC-800's front panel: six LEDs and the ID button, on ICH GPIO lines that
+# nothing on an x86 PC enumerates. Same gating reason as above — the driver
+# drives Lite-On HC800 wiring and has no business in any other board's kernel,
+# even though a DMI match makes it inert there.
+config BR2_OHC_HC800_KERNEL_DRIVERS
+	# A PROMPT IS LOAD BEARING — see the note above.
+	bool "HC-800: inject the front-panel board driver"
+	help
+	  Injects board/hc800/kernel/drivers into the kernel tree. Registers
+	  leds-gpio and gpio-keys-polled for the panel, behind a DMI match on
+	  Lite-On HC800.
+
 # Buildroot packages live in <repo>/packages/ (BR2_EXTERNAL_OPENHC_PATH is board/).
-source "$BR2_EXTERNAL_OPENHC_PATH/../packages/figlet/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/figlet/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-motd/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-splash/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/splash/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/iomcu-attach/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-ce/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-um/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/wpebackend-pvr/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/ohc-webview/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/webview/Config.in"

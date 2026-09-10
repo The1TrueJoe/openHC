@@ -1,0 +1,124 @@
+# Cross-build the IO-processor firmware for both microcontroller families.
+#
+# This exists because the firmware is the one part of openHC that CANNOT be
+# compile-checked on a normal developer machine: it needs arm-none-eabi-gcc, and
+# the maintainer's Mac does not have it. The LM3S1162 tree was written and
+# reviewed without ever being compiled, which is exactly the situation CI is for
+# — a firmware that does not build is not a firmware, and the failure mode on
+# real hardware (a part that takes an image and then does nothing) gives you no
+# clue which it was.
+#
+# It is deliberately NOT part of images.yml. That workflow is a 45-minute
+# Buildroot matrix; this is a 30-second cross-compile, and coupling them means
+# either waiting three quarters of an hour to learn about a typo, or skipping
+# the check when only firmware changed.
+
+name: io-mcu
+
+on:
+  push:
+    paths: &mcu-paths
+      - 'board/*/firmware/io-mcu/**'
+      - '.github/workflows/io-mcu.yml'
+  pull_request:
+    paths: *mcu-paths
+  workflow_dispatch:
+
+concurrency:
+  group: io-mcu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The EA tree emits a bare .bin; the HC-800 tree wraps it in
+          # Control4's container, so it gets the `image` target and a CRC check.
+          - name: tm4c1231d5-ea1
+            dir: board/ea-common/firmware/io-mcu/tm4c1231d5
+            target: fw
+            args: BOARD=ea1
+          - name: tm4c1231d5-ea3
+            dir: board/ea-common/firmware/io-mcu/tm4c1231d5
+            target: fw
+            args: BOARD=ea3
+          - name: lm3s1162-hc800
+            dir: board/hc800/firmware/io-mcu/lm3s1162
+            target: image
+            args: BOARD=hc800
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # libnewlib-arm-none-eabi is NOT optional, despite -nostdlib.
+      #
+      # We link -nostdlib and supply our own libc_min.c, so no newlib *library*
+      # is used — but both ohc_proto.c and main.c #include <string.h>, and the
+      # HEADERS live in libnewlib, which Ubuntu splits out of gcc-arm-none-eabi
+      # and lists only as a recommend. With --no-install-recommends every job
+      # died identically:
+      #
+      #     src/main.c:28:10: fatal error: string.h: No such file or directory
+      #
+      # This does not reproduce on the maintainer's Mac, where the
+      # gcc-arm-embedded cask bundles the headers with the compiler — which is
+      # exactly the class of difference this workflow exists to catch.
+      - name: Install the cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi
+          arm-none-eabi-gcc --version | head -1
+          # Ask the COMPILER whether it can find the header, rather than
+          # guessing where the header lives. -print-file-name=include returns
+          # GCC's own include dir (stddef.h, stdint.h), which never contains
+          # string.h — newlib's is elsewhere, and hardcoding that path is how
+          # this check failed the first time while the toolchain was fine.
+          echo '#include <string.h>' \
+            | arm-none-eabi-gcc -ffreestanding -E -xc - > /dev/null \
+            || { echo 'bare-metal string.h not found — is libnewlib installed?'; exit 1; }
+          echo "string.h resolves OK" 
+
+      - name: Build ${{ matrix.name }}
+        run: make -C ${{ matrix.dir }} ${{ matrix.target }} ${{ matrix.args }}
+
+      # `make size` (invoked by the build) already refuses to call an image
+      # flashable if the vector table is wrong. This re-checks the container's
+      # CRC independently for the boards that build one, because a good ELF
+      # inside a mis-wrapped container is still a brick.
+      - name: Verify the flashable container
+        if: matrix.target == 'image'
+        run: make -C ${{ matrix.dir }} verify
+
+      # Prove the packer against Control4's OWN image, not just our own output:
+      # if mkimage.py stops reproducing the stock image's CRC, the container
+      # format has drifted and anything we flash is suspect.
+      #
+      # The stock image is NOT in this repository — it is proprietary firmware
+      # and redistributing it is not ours to do. So this check runs only for
+      # somebody who has pulled it off their own unit, and is skipped in CI
+      # rather than pretending to have verified something it could not see.
+      - name: Check the packer still reproduces the STOCK image's CRC
+        if: matrix.name == 'lm3s1162-hc800'
+        run: |
+          stock=board/hc800/firmware/io-mcu/lm3s1162/vendor/700-00165_LM3S1162_IoProcMultiConfig1162_03.26.15_2.8.0.507079-fw.bin
+          if [ -f "$stock" ]; then
+            python3 board/hc800/firmware/io-mcu/lm3s1162/tools/mkimage.py --verify "$stock"
+          else
+            echo "stock image not present (it is not redistributable) — skipping"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: io-mcu-${{ matrix.name }}
+          path: |
+            ${{ matrix.dir }}/build/*/io-mcu.elf
+            ${{ matrix.dir }}/build/*/io-mcu.bin
+            ${{ matrix.dir }}/build/*/io-mcu-fw.bin
+            ${{ matrix.dir }}/build/*/io-mcu.map
+          retention-days: 14
+          if-no-files-found: error

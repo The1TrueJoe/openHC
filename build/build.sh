@@ -48,8 +48,14 @@ BOARD_CFG="$REPO/board/$BOARD/${BOARD}_defconfig"
 }
 echo ">> board=$BOARD"
 
-cpu=$(nproc)
-memkb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+# nproc and /proc/meminfo are Linux; the real builds run in the container. But
+# OHC_DEFCONFIG_ONLY below is useful from a Mac, and it would be silly for a
+# dry run that compiles nothing to fail on a job-count probe. Fall back rather
+# than refuse.
+cpu=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+memkb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null \
+        || { hw=$(sysctl -n hw.memsize 2>/dev/null) && echo $((hw / 1024)); } \
+        || echo 4194304)
 # 2.5 GB/job, not 1.5. gcc's largest translation units (insn-emit.o and friends
 # in host-gcc-initial) peak well above 1.5 GB each, so the old figure let two of
 # them run side by side in a 3.8 GB VM and the OOM killer took one out:
@@ -125,7 +131,10 @@ if [ "$memmb" -lt 6000 ]; then
     echo ">>   On Docker Desktop: Settings -> Resources -> Memory." >&2
 fi
 
-[ -f "$BUILDROOT_DIR/Makefile" ] || { echo "no Buildroot at $BUILDROOT_DIR" >&2; exit 1; }
+# Composing a defconfig needs none of Buildroot, so OHC_DEFCONFIG_ONLY skips
+# this — that is what makes the dry run usable outside the build container.
+[ -n "${OHC_DEFCONFIG_ONLY:-}" ] || \
+    [ -f "$BUILDROOT_DIR/Makefile" ] || { echo "no Buildroot at $BUILDROOT_DIR" >&2; exit 1; }
 mkdir -p "$OUT" "$DL"
 
 # The effective defconfig is the family base + the board's deltas, concatenated.
@@ -140,24 +149,54 @@ mkdir -p "$OUT"
 # files stay short lists of genuine differences.
 ALL_CFG="$REPO/board/common/common_defconfig"
 
-# Feature sets: a board lists the shared capabilities it has in board/<b>/ohc.features
-# (one word per line/space separated, '#' comments ignored). Each maps to
-# board/<family>/features/<name>.defconfig. This is what keeps the variant board
-# files short — ea3-v1 and ea1-v2 differ from their siblings by a word here, not
-# by a copied block of wpa_supplicant/ext4 settings.
+# Feature sets. A feature is a shared capability a board either has or does not,
+# named in an ohc.features file (one word per line or space separated, '#'
+# comments ignored). This is what keeps board files short: ea3-v1 and ea1-v2
+# differ from their siblings by a word here, not by a copied block of
+# wpa_supplicant/ext4 settings.
+#
+# The LIST layers the same way the defconfigs do — family first, then board —
+# so a capability every EA controller has is stated once in
+# board/ea-common/ohc.features rather than five times. Duplicates are harmless
+# and removed.
 FEATURES=""
-if [ -f "$REPO/board/$BOARD/ohc.features" ]; then
-    FEATURES=$(sed 's/#.*//' "$REPO/board/$BOARD/ohc.features" | tr '\n' ' ')
-fi
-FEAT_DIR="$(dirname "${COMMON_CFG:-$REPO/board/$BOARD/x}")/features"
-FEAT_LINUX_DIR="$(dirname "${COMMON_CFG:-$REPO/board/$BOARD/x}")/linux"
+for _ff in ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/ohc.features"} "$REPO/board/$BOARD/ohc.features"; do
+    [ -f "$_ff" ] || continue
+    FEATURES="$FEATURES $(sed 's/#.*//' "$_ff" | tr '\n' ' ')"
+done
+FEATURES=$(printf '%s\n' $FEATURES | awk '!seen[$0]++' | tr '\n' ' ')
+
+# A feature is ONE DIRECTORY holding both of its halves:
+#
+#     features/<name>/defconfig       the userspace half (Buildroot packages)
+#     features/<name>/linux.fragment  the kernel half
+#
+# They used to be features/<name>.defconfig and linux/<name>.fragment, paired
+# only by filename across two directories. That split is how the `switch`
+# feature once shipped its userspace half with no kernel half — the board
+# booted, and the driver simply was not there. Together, a feature cannot
+# half-exist.
+#
+# Features are SEARCHED across the same three scopes the defconfigs layer
+# through — common, family, board — most general first. So `splash` lives once
+# in board/common/features/ and is selected by an HC-800 and an EA3 alike, while
+# a family or a board can define one of its own without touching common.
+feature_dir() {
+    for _d in "$REPO/board/common/features/$1" \
+              ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/features/$1"} \
+              "$REPO/board/$BOARD/features/$1"; do
+        [ -d "$_d" ] && { printf '%s\n' "$_d"; return 0; }
+    done
+    return 1
+}
+
 # Kernel fragments that accompany the selected features, as BR2_EXTERNAL-relative
 # paths (Buildroot expands $(BR2_EXTERNAL_OPENHC_PATH) itself).
 FEAT_FRAGMENTS=""
 for f in $FEATURES; do
-    if [ -f "$FEAT_LINUX_DIR/$f.fragment" ]; then
-        FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${COMMON_CFG:+$(basename "$(dirname "$COMMON_CFG")")/}linux/$f.fragment"
-    fi
+    d=$(feature_dir "$f") || continue
+    [ -f "$d/linux.fragment" ] || continue
+    FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${d#"$REPO/board/"}/linux.fragment"
 done
 
 {
@@ -173,13 +212,14 @@ done
         echo
     fi
     for f in $FEATURES; do
-        if [ -f "$FEAT_DIR/$f.defconfig" ]; then
-            echo "# --- feature: $f ---"
-            cat "$FEAT_DIR/$f.defconfig"
-            echo
-        else
-            echo "build.sh: unknown feature '$f' (no $FEAT_DIR/$f.defconfig)" >&2
+        d=$(feature_dir "$f") || {
+            echo "build.sh: unknown feature '$f' — looked in common, ${COMMON_CFG:+$(basename "$(dirname "$COMMON_CFG")"), }$BOARD" >&2
             exit 1
+        }
+        if [ -f "$d/defconfig" ]; then
+            echo "# --- feature: $f (${d#"$REPO/board/"}) ---"
+            cat "$d/defconfig"
+            echo
         fi
     done
     cat "$BOARD_CFG"
@@ -224,6 +264,64 @@ done
 [ -n "$FEATURES" ] && echo ">> features: $FEATURES"
 echo ">> defconfig: $EFFECTIVE"
 
+# ---- preflight: every path the defconfig NAMES has to exist -----------------
+#
+# Buildroot does not check these up front. It discovers a missing rootfs overlay
+# at `target-finalize`, which is the very last step — so a typo, or a board file
+# naming a directory nobody created, costs a full toolchain build before it says
+# anything. That is exactly how ea1-v2, ea1-v2-poe and ea3-v1 failed: thirty-odd
+# minutes each, ending in
+#
+#   rsync: change_dir ".../board/ea1-v2/rootfs-overlay" failed: No such file
+#   make: *** [Makefile:750: target-finalize] Error 23
+#
+# One second here, with the offending key named, instead.
+#
+# The reverse check matters just as much and Buildroot can never make it: an
+# overlay directory that EXISTS but is not listed is silently ignored, so the
+# board boots without the files somebody carefully wrote. Nothing fails; the
+# behaviour is just quietly wrong.
+_pf_missing=0
+_pf_check() {   # $1 = defconfig key, $2 = dir|file
+    _vals=$(sed -n "s/^$1=\"\(.*\)\"$/\1/p" "$EFFECTIVE" | tail -1)
+    for _v in $_vals; do
+        _p=$(printf '%s' "$_v" | sed "s#\$(BR2_EXTERNAL_OPENHC_PATH)#$REPO/board#")
+        case "$2" in
+            dir)  [ -d "$_p" ] && continue ;;
+            file) [ -f "$_p" ] && continue ;;
+        esac
+        echo "build.sh: $1 names a $2 that does not exist:" >&2
+        echo "    $_p" >&2
+        _pf_missing=1
+    done
+}
+_pf_check BR2_ROOTFS_OVERLAY dir
+_pf_check BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES file
+_pf_check BR2_GLOBAL_PATCH_DIR dir
+_pf_check BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES file
+
+# An overlay that exists and is not listed: a warning, not an error, because a
+# downstream tree may legitimately keep one it composes in some other way.
+for _d in "$REPO/board/$BOARD/rootfs-overlay" \
+          ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/rootfs-overlay"}; do
+    [ -d "$_d" ] || continue
+    grep -q "$(basename "$(dirname "$_d")")/rootfs-overlay" "$EFFECTIVE" ||
+        echo "build.sh: WARNING $_d exists but no BR2_ROOTFS_OVERLAY entry names it" >&2
+done
+
+[ "$_pf_missing" = 0 ] || {
+    echo "build.sh: refusing to start a build that cannot finish" >&2
+    exit 1
+}
+
+# Compose the defconfig and stop. Useful on its own — you can read exactly what
+# a board resolves to without waiting for a build — and it is how the feature
+# composition is regression-tested when this file changes.
+if [ -n "${OHC_DEFCONFIG_ONLY:-}" ]; then
+    cat "$EFFECTIVE"
+    exit 0
+fi
+
 # BR2_EXTERNAL takes a space-separated list, so a downstream tree can add its
 # own packages and board files alongside ours.
 BR2_EXT="$REPO/board${OHC_EXTRA_EXTERNAL:+ $OHC_EXTRA_EXTERNAL}"
@@ -262,23 +360,39 @@ _wipe_out() {
 # So compare every toolchain-defining symbol against the tree's existing
 # .config, before defconfig overwrites the evidence, and wipe on any change.
 _TC_SYMS='BR2_TOOLCHAIN_BUILDROOT_GLIBC|BR2_TOOLCHAIN_BUILDROOT_MUSL|BR2_TOOLCHAIN_BUILDROOT_UCLIBC|BR2_INSTALL_LIBSTDCPP|BR2_TOOLCHAIN_BUILDROOT_CXX|BR2_USE_WCHAR|BR2_TOOLCHAIN_BUILDROOT_FORTRAN'
-if [ -f "$OUT/.config" ]; then
-    # LAST assignment wins, per symbol -- the same rule kconfig applies. The
-    # effective defconfig is a concatenation in which common sets musl and the
-    # family overrides it to glibc, so a naive grep sees BOTH and would compare
-    # unequal against the resolved .config on every single build, wiping the
-    # tree every time.
-    # Both forms have to be read: kconfig writes an enabled symbol as
-    # "SYM=y" and a disabled one as the COMMENT "# SYM is not set". Matching
-    # only SYM=y means a later disable is invisible, and musl never drops out
-    # when the family overrides it to glibc.
-    _resolve() {
-        sed -nE "s/^($_TC_SYMS)=y\$/\1 y/p; s/^# ($_TC_SYMS) is not set\$/\1 n/p" "$1" 2>/dev/null |
-            awk '{ last[$1] = $2 } END { for (s in last) if (last[s] == "y") print s }' |
-            sort | tr '\n' ' '
-    }
-    _want=$(_resolve "$EFFECTIVE")
-    _have=$(_resolve "$OUT/.config")
+# LAST assignment wins, per symbol -- the same rule kconfig applies. The
+# effective defconfig is a concatenation in which common sets musl and the
+# family overrides it to glibc, so a naive grep sees BOTH and would compare
+# unequal on every single build, wiping the tree every time.
+# Both forms have to be read: kconfig writes an enabled symbol as "SYM=y" and a
+# disabled one as the COMMENT "# SYM is not set". Matching only SYM=y means a
+# later disable is invisible, and musl never drops out when the family
+# overrides it to glibc.
+_resolve() {
+    sed -nE "s/^($_TC_SYMS)=y\$/\1 y/p; s/^# ($_TC_SYMS) is not set\$/\1 n/p" "$1" 2>/dev/null |
+        awk '{ last[$1] = $2 } END { for (s in last) if (last[s] == "y") print s }' |
+        sort | tr '\n' ' '
+}
+_want=$(_resolve "$EFFECTIVE")
+
+# COMPARE DEFCONFIG TO DEFCONFIG, via a stamp of what we last built from.
+#
+# The obvious thing -- compare $EFFECTIVE against the tree's .config -- is what
+# this used to do, and it is wrong in a way that only shows up once the output
+# tree is cached between builds. .config is kconfig's RESOLVED output and holds
+# symbols no defconfig ever sets: BR2_USE_WCHAR is selected by a package, not by
+# us, so it appears in .config and never in $EFFECTIVE. The two therefore could
+# not match, and every cached build "detected a toolchain change" and wiped the
+# tree -- turning a 15-minute gcc into something CI rebuilt every single time
+# while reporting a cache hit.
+#
+# A missing stamp on a tree that has a .config means an older output directory,
+# not a change. Leave it alone and let the compiler probe below judge it: that
+# check asks the toolchain what it can actually DO, which is the question that
+# matters, and it cannot be fooled by a symbol nobody wrote.
+_TC_STAMP="$OUT/.ohc-toolchain"
+if [ -f "$OUT/.config" ] && [ -f "$_TC_STAMP" ]; then
+    _have=$(cat "$_TC_STAMP" 2>/dev/null)
     if [ "$_want" != "$_have" ]; then
         echo ">> toolchain change detected"
         echo ">>   was: ${_have:-<none>}"
@@ -311,6 +425,8 @@ if [ -d "$OUT/host/bin" ] && grep -q '^BR2_INSTALL_LIBSTDCPP=y$' "$EFFECTIVE" 2>
 fi
 
 "${M[@]}" defconfig BR2_DEFCONFIG="$EFFECTIVE"
+# Record the toolchain this tree now carries, for the next run's comparison.
+mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
 # Kernel bring-up iterates on both the config fragment AND the patch set
 # (board/ea-common/patches/linux/). Buildroot applies patches only at EXTRACT time and
 # won't re-extract a cached source, so a plain reconfigure silently ignores new

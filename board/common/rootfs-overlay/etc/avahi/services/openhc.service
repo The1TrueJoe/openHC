@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?><!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <!-- openHC mDNS advertisement — SHARED (board/common). Boards that run the web
-     dashboard (ohc-webd on :80) advertise themselves here so the same tooling
+     dashboard (webd on :80) advertise themselves here so the same tooling
      that finds the EA family (ohc-mdns publishes the matching _openhc._tcp) finds
      them too. The host part of the .local name comes from the hostname avahi
      already publishes (S09hostname: openhc-<board>-<MAC>); %h expands to it. -->

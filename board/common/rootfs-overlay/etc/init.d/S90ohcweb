@@ -1,24 +1,26 @@
 #!/bin/sh
 # openHC web dashboard + API — SHARED (board/common).
 #
-# Starts the ohc-webd binary (/opt/ohc/bin/ohc-webd), built by packages/build.sh
-# and cross-compiled with the React UI embedded. It serves the dashboard, the
-# board-driven REST API, and a WebSocket serial bridge for the in-browser
-# terminal. Board-agnostic — everything it shows comes from /opt/ohc/board.env,
-# so this one init script + one binary run on every board.
+# Starts the webd binary (/opt/ohc/bin/webd), built by packages/build.sh
+# and cross-compiled with the React UI embedded. It serves the dashboard and a
+# board-driven REST API for system and network questions. It does NOT touch the
+# IO: relays, contacts, IR and the serial ports all belong to iod (S89ohcio),
+# and the GUI reaches them as a client of that on :7070. Board-agnostic —
+# everything it shows comes from /opt/ohc/board.env, so this one init script +
+# one binary run on every board.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 WEB_PORT="${OHC_WEB_PORT:-80}"
-WEBD=/opt/ohc/bin/ohc-webd
+WEBD=/opt/ohc/bin/webd
 
 start() {
     [ -x "$WEBD" ] || { echo "ohcweb: $WEBD not installed (run 'make webd BOARD=...')"; return 0; }
-    start-stop-daemon -S -q -b -m -p /var/run/ohc-webd.pid --exec "$WEBD" -- \
+    start-stop-daemon -S -q -b -m -p /var/run/webd.pid --exec "$WEBD" -- \
         --bind "0.0.0.0:$WEB_PORT" \
-        && echo "ohcweb: ohc-webd on :$WEB_PORT"
+        && echo "ohcweb: webd on :$WEB_PORT"
 }
 
 stop() {
-    [ -f /var/run/ohc-webd.pid ] && start-stop-daemon -K -q -p /var/run/ohc-webd.pid
+    [ -f /var/run/webd.pid ] && start-stop-daemon -K -q -p /var/run/webd.pid
 }
 
 case "$1" in

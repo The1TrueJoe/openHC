@@ -1,0 +1,76 @@
+#!/bin/sh
+# openHC IO microcontroller — attach it as a GPIO chip. SHARED (board/common).
+#
+# The relays and contacts hang off a companion microcontroller on a host UART,
+# not off the SoC. gpio-ohc-iomcu turns that into a standard gpiochip, so a
+# relay is a GPIO line like any other and `gpioset` closes it. This script is
+# what makes the chip exist.
+#
+# Runs EARLY — before iod (S89) and webd (S90) — because those are clients of
+# the chip, not owners of the UART. Anything else on the box can use it too;
+# that is the point of putting it in the kernel rather than behind a daemon.
+#
+# The attachment is a LINE DISCIPLINE, not serdev. serdev binds through device
+# tree or ACPI, and these are x86 PCs whose firmware has no node describing a
+# Control4 co-processor, so nothing would ever bind. ldattach hands the port to
+# the kernel the same way PPP and n_gsm are attached, and it stays running to
+# hold the discipline in place.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+PARAMS=/sys/module/gpio_ohc_iomcu/parameters
+LDISC="${OHC_IO_MCU_LDISC:-29}"          # N_DEVELOPMENT
+PIDFILE=/var/run/iomcu-ldattach.pid
+
+start() {
+    # Boards with no IO microcontroller: nothing to attach, and saying so beats
+    # a failure that looks like broken hardware.
+    [ "$OHC_IO_BACKEND" = "mcu" ] || { echo "iomcu: no IO microcontroller on this board"; return 0; }
+    [ -n "$OHC_IO_MCU_TTY" ] || { echo "iomcu: OHC_IO_MCU_TTY is unset in board.env"; return 1; }
+    [ -d "$PARAMS" ] || { echo "iomcu: gpio-ohc-iomcu is not in this kernel"; return 1; }
+
+    # A board can have an IO microcontroller and nothing this driver exposes:
+    # the EA1's IO is two MCU-routed UARTs, with no relays, no contacts and no
+    # IR of its own. Skip and say why rather than looking broken.
+    lines=$(( ${OHC_RELAYS:-0} + ${OHC_CONTACTS:-0} ))
+    ir=$(( ${OHC_IR_OUT:-0} + ${OHC_IR_BLASTER:-0} + ${OHC_IR_IN:-0} ))
+    [ "$lines" -gt 0 ] || [ "$ir" -gt 0 ] || {
+        echo "iomcu: no relays, contacts or IR on this board — nothing to attach"
+        return 0
+    }
+
+    # Geometry first: the driver latches it when the discipline attaches.
+    [ -n "$OHC_RELAYS" ]     && echo "$OHC_RELAYS"     > "$PARAMS/relays"
+    [ -n "$OHC_CONTACTS" ]   && echo "$OHC_CONTACTS"   > "$PARAMS/contacts"
+    # IR too: each emitter becomes its own lirc device, so ir-ctl and
+    # ir-keytable work without knowing anything about Control4. udev names them
+    # under /dev/ohc/ir as they appear — see 70-openhc-io.rules.
+    [ -n "$OHC_IR_OUT" ]     && echo "$OHC_IR_OUT"     > "$PARAMS/ir_out"
+    [ -n "$OHC_IR_BLASTER" ] && echo "$OHC_IR_BLASTER" > "$PARAMS/ir_blaster"
+    [ -n "$OHC_IR_IN" ]      && echo "$OHC_IR_IN"      > "$PARAMS/ir_in"
+
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec /usr/bin/iomcu-attach -- \
+        "$OHC_IO_MCU_TTY" "${OHC_IO_MCU_BAUD:-115200}" "$LDISC" \
+        || { echo "iomcu: attach failed"; return 1; }
+
+    # Give the driver a moment to identify the part and register the chip; it
+    # refuses to create a gpiochip for a microcontroller that is not answering,
+    # so an absent chip here is a real diagnosis rather than a race.
+    sleep 1
+    chip=$(grep -l ohc-iomcu /sys/class/gpio/gpiochip*/label 2>/dev/null | head -1)
+    if [ -n "$chip" ] || gpiodetect 2>/dev/null | grep -q ohc-iomcu; then
+        echo "iomcu: $OHC_IO_MCU_TTY attached — relays and contacts are GPIO lines"
+    elif [ "$lines" -gt 0 ]; then
+        echo "iomcu: attached to $OHC_IO_MCU_TTY but no gpiochip appeared (MCU not answering?)"
+    fi
+}
+
+stop() {
+    [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE"
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

@@ -1,0 +1,27 @@
+#!/bin/sh
+# sysmond — board telemetry. SHARED (board/common).
+#
+# S88: before iod (S89) and webd (S90) only so its history has a head start;
+# nothing depends on it. If it is absent the GUI simply shows no Health panel,
+# which is the same thing that happens on a board with no hwmon at all.
+#
+# Telemetry is REST, not MQTT, and it lives in its own daemon rather than inside
+# iod. A board temperature every five seconds is not something an automation
+# subscribes to, and a retained topic cannot answer the question telemetry is
+# for — "what did it do over the last hour". See packages/sysmond.
+BIN=/opt/ohc/bin/sysmond
+PIDFILE=/var/run/sysmond.pid
+
+case "$1" in
+    start)
+        [ -x "$BIN" ] || { echo "sysmond: not built into this image"; exit 0; }
+        printf "sysmond: "
+        start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec "$BIN" \
+            && echo "telemetry on :7071" || echo "failed"
+        ;;
+    stop)
+        start-stop-daemon -K -q -p "$PIDFILE"
+        ;;
+    restart) "$0" stop; sleep 1; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

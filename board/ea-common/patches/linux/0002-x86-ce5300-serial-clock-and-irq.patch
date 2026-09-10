@@ -27,7 +27,7 @@ drop (intel_kernel_patches/00178086 and 00999901), which makes the same change:
 Scope: applied only to the EA family (board/ea-common/patches), which is the
 only openHC target with this SoC.
 
-Signed-off-by: openHC <openhc@localhost>
+Author: Joseph Telaak <joseph@telaak.dev>
 ---
 --- a/arch/x86/include/asm/serial.h
 +++ b/arch/x86/include/asm/serial.h

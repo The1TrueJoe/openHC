@@ -52,7 +52,7 @@ The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
 rather than by the SSP function's own id, which it shares with the CE4100, so
 genuine CE4100 hardware is unaffected.
 
-Signed-off-by: openHC <openhc@localhost>
+Author: Joseph Telaak <joseph@telaak.dev>
 ---
 --- a/include/linux/pxa2xx_ssp.h
 +++ b/include/linux/pxa2xx_ssp.h

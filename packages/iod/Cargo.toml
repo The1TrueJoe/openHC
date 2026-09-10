@@ -1,0 +1,38 @@
+[package]
+name = "iod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC IO server. Owns every local IO on the controller — serial, IR out/in, relays, contacts — behind one board-agnostic API."
+
+[[bin]]
+name = "iod"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt", "net", "macros", "time", "io-util", "signal", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+libc = "0.2"
+# rustls, not native-tls: no OpenSSL to cross-compile, and a controller with no
+# system CA story is better served by a stack it carries itself.
+#
+# `use-rustls-no-provider` rather than `use-rustls` deliberately. The latter
+# pulls rustls's default crypto provider, aws-lc-rs, which needs CMake and a
+# cross C toolchain — and this workspace links with rust-lld precisely so it
+# needs neither. ring is selected below instead: it wants only a C compiler for
+# a handful of shims, which CI can supply per target.
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+bytes = "1.12.1"
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+
+# GPIO is a Linux facility and this crate is Linux-only (it calls ppoll). Scoped
+# to the target so `cargo check` on the maintainer's Mac still typechecks the
+# rest of the daemon — that host build is the fast feedback loop, and losing it
+# to a dependency that could never run there would be a bad trade.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpiocdev = "0.8"

@@ -311,7 +311,7 @@ needed — mainline `snd_hda_codec_realtek` will produce the right jacks:
 That's the owner's "2 line out, 1 line in, 1 coax out", one for one. Every other
 pin complex reads `0x411111f0` (not connected).
 
-## Video: present in silicon, absent from the panel
+## Video: a real GPU, a fixed 720p pipe, and one missing piece
 
 Two video chips are instantiated on the **SMBus** by the vendor's board code:
 
@@ -323,16 +323,155 @@ ths8200 6-0021: THS8200 Chip Detect SUCCESS!
   ##-- c4_vid_conf --##  Intialized to 720p
 ```
 
-So a TI THS8200 video DAC and an ADI HDMI transmitter are **fitted and
-responding**, and the vendor stack configures them to 720p at every boot. The
-hardware matrix previously called this board "none (headless)"; **that's wrong at
-the silicon level.**
+A TI THS8200 video DAC and an ADI ADV7513 HDMI transmitter are fitted and
+responding, and the vendor stack drives them to 720p at every boot. The hardware
+matrix once called this board "none (headless)"; that is wrong at the silicon
+level. (`i2c-0..i2c-5` are `i915 gmbus` buses; only `i2c-6` is the SMBus.)
 
-It is still right at the panel level for our purposes — the unit's rear panel has
-no video connector its owner uses, and openHC is headless on every board. Recorded
-as an open question, not built.
+### How the pipe is fed
 
-Note `i2c-0..i2c-5` are `i915 gmbus` buses; only `i2c-6` is the SMBus.
+`i915` is builtin in the vendor kernel and brings up `inteldrmfb` at
+1280x720x32. The connector topology is the interesting part:
+
+```
+card0-LVDS-1   connected     edid: 0 bytes    modes: 1280x720
+card0-VGA-1    disconnected
+```
+
+**Connected, with a zero-byte EDID and exactly one mode.** There is no display
+negotiating anything — the timings come from the **BIOS VBT**, and the LVDS port
+is wired to the THS8200/ADV7513 pair. Mainline i915 parses the same VBT, so a
+modern kernel should light this pipe identically with no board code at all.
+
+### The split that matters for a port
+
+The two external chips are configured in different places, and only one of them
+is free:
+
+- **THS8200 is configured in-kernel, and it is GPL.** `ths8200.ko` is 11 KB and
+  exports `ths8200_set_720P` / `_powerup` / `_powerdown`, driven by
+  `c4_vid_conf.ko` (`Intialized to 720p`). Straightforward to redo from
+  `/dev/i2c-6`.
+- **ADV7513 is not configured at all — on OS 3.x nothing drives it.**
+  `c4_adi_hdmi.ko` is only an i2c chardev shim (`ioctl` read/write byte and
+  block, major 250, device `c4_adi_7513`). An earlier version of this page said
+  `/control4/lib/libvidcfg.so` did the register writes. It does not: that
+  library's symbol table contains only **i.MX8MQ** classes
+  (`hdmi_video_imx8mq`, `device_video_output_imx8mq`) and no Intel or ADV7513
+  implementation. `ioserver` asks
+  `vidcfg::hdmi_object_factory::get_hdmi_interface()` for one and carries the
+  string `Caught Exception (%s) while creating hdmi interface.`
+
+  On a live unit the evidence is unambiguous: `/tmp/intel_hdmi`, which
+  `ioserver` creates on success, **does not exist**, and `/dev/c4_adi_7513` and
+  `/dev/c4_vid_conf` are **not created as device nodes at all** — despite both
+  modules registering char majors (250 and 249). Nothing opens the shim.
+
+  **So HDMI output on this board is unproven even under the vendor OS.** The
+  component path through the THS8200 is the one that is actually driven, and it
+  is driven in-kernel. Getting HDMI under openHC means writing the ADV7513 setup
+  from the datasheet, or recovering the OS 2.10 userspace that had it — mainline's
+  `drm/bridge/adv7511` wants a device-tree bridge attachment and cannot bind to
+  x86 i915, so it is a userspace i2c job either way.
+
+openHC now builds `CONFIG_DRM=y`, `CONFIG_DRM_I915=y`,
+`CONFIG_DRM_FBDEV_EMULATION=y`, `CONFIG_FB=y` and `CONFIG_FB_DEVICE=y` so the
+boot splash has a `/dev/fb0`. That lights the pipe and draws into it; **whether
+a TV sees it is unproven** until the ADV7513 side is written.
+
+:::caution[Two kconfig traps]
+`DRM_FBDEV_EMULATION` selects `FB_CORE`, **not** `FB`, and `FB_DEVICE` — which
+creates `/dev/fbX` — defaults to the value of `FB`. Set only the emulation
+symbol and you get a working framebuffer console with no node for userspace to
+open. And leave `FRAMEBUFFER_CONSOLE` **off**: fbcon clears the framebuffer when
+it takes the surface, which is what ate the EA's first splash.
+:::
+
+### The output that does work, and how openHC drives it
+
+The THS8200 is configured, in-kernel, at every vendor boot — and the vendor
+driver exposes its live register state at `/proc/driver/ths8200/dump`. Reading
+that off a working unit gives a **known-good 720p60 register set that was never
+reconstructed from a datasheet**, and every timing in it cross-checks against
+CEA-861 exactly:
+
+| register | value | decodes to | 720p60 |
+|---|---|---|---|
+| `DTG1_TOT_PIXELS` | `0x06,0x72` | htotal 1650 | 1650 |
+| `DTG1_FRAME_SZ` | `0x27,0xee` | vtotal 750 | 750 |
+| `DTG1_SPEC_A` | `0x28` | hsync 40 | 40 |
+| `DTG1_SPEC_B` | `0x6e` | hfront 110 | 110 |
+| `VERSION` | `0x04` | the chip answering | — |
+
+That agreement is what makes the capture trustworthy: it validates both the dump
+and mainline's GPL `ths8200_regs.h`, independently.
+
+All 138 registers are in `board/hc800/video/ths8200-720p60.regs`, and
+`packages/ths8200` replays them over `/dev/i2c-6` at boot (`S47video`). The
+tool reads `VERSION` first and refuses to write unless it reads `0x04`, so a
+wrong bus or address costs a message rather than 138 stray writes into whatever
+else answers. The register values are data, not compiled in — re-capturing from
+hardware does not mean rebuilding the image.
+
+### It costs almost nothing to use
+
+Measured on the live unit, writing a full 1280x720x32 frame to `/dev/fb0`:
+
+```
+3686400 bytes (3.5MB) copied, 0.008101 seconds, 434.0 MB/s
+```
+
+**~8 ms of CPU to repaint the entire screen**, and ~13 ms/frame end to end from
+a RAM source — a ceiling around 77 fps for pure blit. So a splash is free, a
+status screen that repaints on change is unmeasurable, and only something
+*animating* costs real CPU (~24% of one core at 30 fps, for the blit alone).
+Getting pixels onto the panel is not the expensive part; rasterising them is.
+
+### Can it run WPE WebKit?
+
+Yes, and more easily than the EA family — with one large caveat.
+
+Mesa 24.0.9's **`i915` gallium driver explicitly claims `0xa001 "Intel(R)
+Pineview"`**, this exact chip. Because Mesa provides real EGL + GBM + Wayland,
+this board needs **no custom libwpe backend**: the EA's `wpebackend-pvr` exists
+only because the PowerVR DDK 1.7 predates Wayland. Stock `wpebackend-fdo` plus
+**`cog` with `BR2_PACKAGE_COG_PLATFORM_DRM`** drives KMS directly through
+GBM/EGL with no compositor.
+
+Two prerequisites are config, not code:
+
+- `BR2_PACKAGE_COG_PLATFORM_DRM` depends on `BR2_PACKAGE_HAS_UDEV` (libinput).
+  Every openHC board uses busybox mdev, so this means switching to eudev.
+- wpewebkit needs `BR2_TOOLCHAIN_BUILDROOT_CXX`, `BR2_INSTALL_LIBSTDCPP` and
+  `BR2_USE_WCHAR`. Without them kconfig drops wpewebkit **silently** — the build
+  succeeds and the engine is simply absent.
+
+**The caveat is the fragment shader.** From `i915_screen.c` and `i915_reg.h`,
+i915g offers GLSL **1.20** (GL 2.1 / GLES 2.0), **64 ALU + 32 TEX
+instructions**, 4 texture indirections, **`MAX_CONTROL_FLOW_DEPTH = 0`** (every
+`if` is flattened), **32 vec4 uniforms**, 10 varyings, one render target — and
+**vertex shaders run on the CPU** via draw/gallivm. That is Shader-Model-2.0
+class. Simple TextureMapper blits will compile; rounded-rect clips, blurs and
+filters will not.
+
+So build Mesa with **both** `GALLIUM_DRIVER_I915` and `GALLIUM_DRIVER_SWRAST`
+and choose at runtime (`GALLIUM_DRIVER=i915` vs `llvmpipe`). llvmpipe is the
+correctness fallback, but it wants `BR2_PACKAGE_MESA3D_LLVM` — a very long build
+— and the D525 is **SSSE3-only, no SSE4.1/AVX**, 2c/4t at 1.8 GHz. Expect
+single-digit to low-teens fps at 720p.
+
+### What Control4 actually shipped
+
+Worth knowing before assuming the GPU was ever exercised: **OS 3.x has no
+graphics stack on this box at all** — no GL, no EGL, no Mesa, no X, no navigator
+process. On-screen was an OS 2.10-and-earlier feature. The 2.10 GPL index
+(`src-2.10.0.540110-res.xml`, 301 entries, and it covers `linux-3.16.38` — this
+board's kernel) shows the UI stack was **DirectFB 1.4.2 / 1.6 plus GStreamer
+1.10.3**. No Mesa, no X, no EGL anywhere in it. Control4 never used this GPU's
+3D engine; the on-screen navigator was a 2D framebuffer UI.
+
+(Mesa is MIT-licensed and so would not be *obliged* to appear in a GPL drop —
+but DirectFB's presence is the positive evidence, not Mesa's absence.)
 
 ## Everything else that showed up
 
@@ -387,7 +526,7 @@ the EA family and with the HC-250.
 - **Whether the two rear RS-232 jacks are wired to the host 8250s or bridged
   through the MCU's UART1/UART2.**
 - **The Zigbee NCP's real baud rate**, never opened during this pull.
-- **Whether the ADV7511/THS8200 video path terminates at a connector** on this
+- **Whether the ADV7513/THS8200 video path terminates at a connector** on this
   revision.
 - **BIOS boot-device options**, whether USB boot is available, which would give a
   second install path that touches the SSD not at all. Requires a serial console

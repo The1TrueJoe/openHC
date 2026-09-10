@@ -58,7 +58,7 @@ help:
 	@echo "openHC — Control4 EA-series kernel-up build"
 	@echo ""
 	@echo "  make image [BOARD=...]       build the netboot kernel image (Docker Buildroot)"
-	@echo "  make webd  [BOARD=...]       build the ohc-webd dashboard (Rust+React) into the overlay"
+	@echo "  make webd  [BOARD=...]       build the webd dashboard (Rust+React) into the overlay"
 	@echo "  make mcu   [BOARD=ea1|ea3]   build the TM4C IO-MCU firmware (EA only)"
 	@echo "  make netboot                 serve $(IMAGE) to the target (EA CEFDK path)"
 	@echo "  make probe                   drop CEFDK to its shell (cookie, no kernel)"
@@ -90,7 +90,7 @@ image:
 		--build-arg BOARD=$(BOARD) $(if $(JOBS),--build-arg BR2_JLEVEL=$(JOBS)) \
 		--output type=local,dest=output/images .
 
-# Build the ohc-webd dashboard (Rust server + embedded React UI) on the host and
+# Build the webd dashboard (Rust server + embedded React UI) on the host and
 # stage it into board/common/rootfs-overlay/opt/ohc/bin, so the next `make image`
 # bundles it. Needs rustup (with the board's target added) + node/npm. See
 # packages/README.md. Cross-compiles with rust-lld — no Docker or cross-binutils.
@@ -108,14 +108,19 @@ webd:
 mcu:
 	@case "$(BOARD)" in \
 	  ea*) : ;; \
-	  hc800) echo "mcu: hc800's IO-MCU is a Stellaris LM3S1162, not a TM4C1231D5."; \
-	         echo "  Same DLE/STX framing and the same TI serial flash-loader, but a"; \
-	         echo "  different part and a different image — there is no openHC firmware"; \
-	         echo "  for it yet. See https://the1truejoe.github.io/openHC/shared/io-mcu/ and https://the1truejoe.github.io/openHC/hc800/."; \
-	         exit 1 ;; \
+	  hc800) : ;; \
 	  *) echo "mcu: $(BOARD) has native on-board IO — no companion MCU to build"; exit 1 ;; \
 	esac
+# hc800's IO-MCU is a Stellaris LM3S1162 (Cortex-M3), not the EA family's TM4C
+# (M4F) — a different part, a different image, and its own source tree. It also
+# builds a FLASHABLE image rather than a bare .bin, because Control4's
+# bootloader wants the 256-byte header + CRC-16/ARC container; `image` does that
+# wrapping, `fw` alone would leave a file the bootloader rejects.
+ifeq ($(BOARD),hc800)
+	$(MAKE) -C board/hc800/firmware/io-mcu/lm3s1162 image BOARD=hc800
+else
 	$(MAKE) -C board/ea-common/firmware/io-mcu/tm4c1231d5 fw BOARD=$(BOARD)
+endif
 
 # Serve the built kernel over BOOTP+TFTP. Needs root (binds :67/:69); run the
 # printed command yourself if make cannot get privileges. EA/CEFDK only — the

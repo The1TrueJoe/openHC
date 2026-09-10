@@ -1,0 +1,5 @@
+# openHC — BCM53125 managed-switch userspace. Shared by ea3-v1/ea3-v2/ea1-v2-poe.
+# The kernel side is the linux.fragment beside this file; the board glue driver
+# is ea-common/kernel/drivers/spi/spi-ea-b53-board.c. Nothing extra is needed
+# in userspace beyond bridge tooling for managing the two port netdevs.
+BR2_PACKAGE_BRIDGE_UTILS=y

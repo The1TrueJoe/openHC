@@ -41,7 +41,7 @@
 # Piece 3 is the unverified one. See the patch header before trusting this.
 
 # ── BCM53125 switch: NOW ENABLED ────────────────────────────────────────────
-# The kernel side is ea-common/linux/switch.fragment and the board glue is
+# The kernel side is ea-common/features/switch/linux.fragment and the board glue is
 # ea-common/drivers/spi/spi-ea-b53-board.c, both pulled in by the
 # 'switch' entry in board/ea3-v2/ohc.features. The glue's old compile failure
 # (dsa_chip_data moved out of <net/dsa.h>) is fixed. Port 1's DSA bring-up is
@@ -182,5 +182,5 @@ CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc
 # EA-3 v2 only. Do not promote this to ea-common: the EA-1 boards have not been
 # measured and a memmap= past the end of real DRAM is unrecoverable.
 
-# eMMC storage (sdhci-pci + ext4) comes from ea-common/linux/emmc.fragment
+# eMMC storage (sdhci-pci + ext4) comes from ea-common/features/emmc/linux.fragment
 # via the 'emmc' entry in board/ea3-v2/ohc.features.

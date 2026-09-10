@@ -1,0 +1,15 @@
+config BR2_PACKAGE_IOMCU_ATTACH
+	bool "iomcu-attach (IO microcontroller line discipline)"
+	help
+	  Hands a UART to the gpio-ohc-iomcu line discipline, which is what
+	  turns the IO microcontroller's relays and contacts into a standard
+	  gpiochip.
+
+	  On x86 there is no device tree or ACPI node describing a Control4
+	  co-processor, so serdev has nothing to bind to and the attachment has
+	  to come from userspace. This sets the line speed and issues TIOCSETD,
+	  then holds the descriptor — a line discipline lasts only as long as
+	  the fd that set it.
+
+	  util-linux's ldattach does the same job, but only comes with
+	  BR2_PACKAGE_UTIL_LINUX_BINARIES and its fifty-odd other tools.

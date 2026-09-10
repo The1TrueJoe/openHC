@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# Draw the openHC banner on the video output as early as possible.
+#
+# SHARED across boards (board/common). It lived in ea-common until the HC-800
+# became the second user; nothing in it was ever CE5300-specific except one
+# error string, because splash asks the framebuffer for its own geometry
+# (FBIOGET_[VF]SCREENINFO) rather than being told.
+#
+# Where /dev/fb0 comes from is per-board and does not change anything here:
+#   ea*    ce5300-fb, the scanout CEFDK leaves running (CONFIG_FB_SIMPLE)
+#   hc800  i915 fbdev emulation on the GMA 3150 (CONFIG_DRM_FBDEV_EMULATION)
+# On the EA there is no modeset to wait for; on the HC-800 the fbdev client has
+# already done it by the time init runs. Either way: if the node is there, it is
+# drawable.
+#
+# S01 so it lands before the network and the rest of the stack: the point is
+# that the screen stops showing the vendor's bootloader splash the moment openHC
+# is up.
+#
+# figlet runs here on the device rather than at build time, so the banner is
+# generated, not stored. That is also what makes it cheap to put per-unit text
+# on screen later (hostname, address) instead of a fixed wordmark.
+#
+# The banner goes to the framebuffer and NOWHERE ELSE -- this is a splash
+# screen, not console output. What does go to the console is one line saying
+# whether it worked and, if not, why.
+
+BANNER_TEXT=${BANNER_TEXT:-openHC}
+FBDEV=${FBDEV:-/dev/fb0}
+
+case "$1" in
+	start)
+		# Quiet when the board never asked for a splash: this script is in
+		# the SHARED overlay now, so it also runs on images that do not
+		# select BR2_PACKAGE_SPLASH, and announcing a missing binary on
+		# every one of those is noise, not diagnosis.
+		[ -x /usr/bin/splash ] || exit 0
+
+		# From here on the board DID opt in, so every failure is loud. This
+		# used to exit 0 in silence, and a board that drew nothing then also
+		# explained nothing -- there was no way to tell "no framebuffer" from
+		# "wrong pixel format" without reading the source.
+		[ -x /usr/bin/figlet ] || {
+			echo "Splash: figlet missing from this image"
+			exit 0
+		}
+		if [ ! -e "$FBDEV" ]; then
+			echo "Splash: no $FBDEV -- no framebuffer driver bound."
+			echo "Splash:   ea*   expected ce5300-fb   (check CONFIG_FB_SIMPLE)"
+			echo "Splash:   hc800 expected i915 fbdev  (check CONFIG_DRM_I915,"
+			echo "Splash:         CONFIG_DRM_FBDEV_EMULATION, CONFIG_FB_DEVICE)"
+			exit 0
+		fi
+
+		printf "Splash: "
+		# splash explains itself on stderr (e.g. "need 32bpp, got 16").
+		# Let that through: it is the whole diagnosis.
+		if figlet -f slant "$BANNER_TEXT" | /usr/bin/splash - "$FBDEV"; then
+			echo "OK ($FBDEV)"
+		else
+			echo "FAILED to draw to $FBDEV"
+		fi
+		;;
+	stop)
+		;;
+	restart|reload)
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

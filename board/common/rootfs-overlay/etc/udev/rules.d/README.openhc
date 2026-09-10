@@ -1,0 +1,27 @@
+Both 80-net-name-slot.rules and 80-net-setup-link.rules are symlinks to
+/dev/null, which is the canonical way to mask one of udev's own rule files.
+
+They disable PREDICTABLE INTERFACE NAMING. Without it the device manager renames
+eth0 to enp2s0 on the HC-800, and every board.env in the tree names eth0 —
+OHC_ID_IFACE, OHC_MDNS_IFACE, OHC_UPLINK_IFACE — so S40net finds nothing and the
+box boots perfectly with no network. It looks exactly like a hang and is not.
+
+TWO FILENAMES, because the rule lives in a different file depending on who
+ships it:
+
+    eudev          /lib/udev/rules.d/80-net-name-slot.rules   <- what we run
+    systemd-udev   /lib/udev/rules.d/80-net-setup-link.rules
+
+Masking only the systemd name did nothing here, and cost a full build cycle to
+find. Masking a file that does not exist is harmless, so mask both and stop
+caring which device manager the image happens to use.
+
+The rule also honours a kernel command line flag — its first line is
+`ENV{net.ifnames}=="0", GOTO="net_name_slot_end"` — but that would have to be
+set in GRUB, the kexec cmdline, U-Boot and CEFDK separately, on five boards.
+One file in the overlay covers all of them.
+
+Masking rather than renaming the board.env keys, because the kernel name is
+stable across this fleet (eth0 on x86, imx6 and davinci alike) while the
+"predictable" name encodes the PCI path and would differ per board — the
+opposite of what the rest of the naming convention is for.

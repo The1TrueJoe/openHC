@@ -99,4 +99,8 @@ pub const KNOWN: &[&str] = &[
     "openhc-ca1-zImage",
     "c4-imx6sl-ca1.dtb",
     "boot.scr",
+    // The HC-800 bundle carries these prefixed names alongside the plain ones.
+    // Listed so a release trimmed to just them still opens.
+    "openhc-hc800-kernel.img",
+    "openhc-initrd.gz",
 ];

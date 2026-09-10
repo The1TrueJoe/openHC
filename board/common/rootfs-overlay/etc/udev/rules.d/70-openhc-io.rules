@@ -1,0 +1,55 @@
+# /dev/ohc — this board's IO under the names on the case.
+#
+# Every kernel path underneath is a number that is an accident of probe order:
+# /dev/lircN is a first-free minor from a counter shared by every rc driver in
+# the kernel, and ttyS numbering depends on CONFIG_SERIAL_8250_RUNTIME_UARTS —
+# the very setting whose mainline default silently drops ttyS4 on an HC-800.
+# The names do not move.
+#
+#   /dev/ohc/ir/out1 … outN     rear IR jacks, as labelled
+#   /dev/ohc/ir/front-blaster   internal emitter behind the front panel
+#   /dev/ohc/ir/front-receiver  the learner on the same panel
+#   /dev/ohc/gpiochip           the chip carrying the relays and contacts
+#   /dev/ohc/serial/1 … N       rear RS-232, in the order board.env declares
+#   /dev/ohc/radio/zigbee       the EmberZNet NCP, wherever it is wired
+#   /dev/ohc/radio/zwave        likewise
+#
+# RELAYS AND CONTACTS GET NO ENTRY OF THEIR OWN, and that is not a gap we could
+# close: Linux has no per-line device node. A line is addressed by offset inside
+# a chip through an ioctl, so /dev/ohc/relay1 could only be a symlink to the
+# whole chip — which every other relay would point at too, and opening it would
+# not give you relay 1. That is a lie, not a convenience.
+#
+# What a line has instead is a NAME, which is strictly better, and the chip that
+# carries them does get an entry because its number is the thing that moves:
+#
+#   gpioinfo /dev/ohc/gpiochip     # lists relay1..N, contact1..N
+#   gpioset $(gpiofind relay1)=1
+#   gpioget $(gpiofind contact4)
+#
+# The naming rule itself is in ohc-udev-name, not duplicated here: the serial
+# order comes from board.env and the IR labels come from the driver's DEV_NAME,
+# and neither belongs in a match expression.
+
+# ONE rule per subsystem, and the helper returns the whole leaf path — so a
+# device costs one exec, not one per thing it might have been.
+#
+# KERNEL!= excludes the virtual consoles. Without it SUBSYSTEM=="tty" matches
+# tty0..tty63 as well as the ports we care about, and every one of them would
+# fork a shell that sources board.env during udevadm settle. That is ~130
+# processes on a 1.8 GHz Atom before the network comes up.
+
+# IR. DEV_NAME lives on the parent rc device, not on the lirc node, so this
+# cannot be an ENV match — the helper reads it out of sysfs.
+SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/%c"
+
+# User serial ports and radios, both from board.env. Nothing matches on the EA
+# family, where the user ports are routed through the microcontroller and have
+# no device node at all — the same rule will name them the day they become real
+# ttys. No KERNEL== prefix match, because which tty naming the SoC uses (ttyS,
+# ttymxc, ttyAMA) is exactly what board.env already answers.
+SUBSYSTEM=="tty", KERNEL!="tty", KERNEL!="tty[0-9]*", \
+  PROGRAM="/usr/bin/ohc-udev-name tty %k", SYMLINK+="ohc/%c"
+
+# The gpiochip carrying the relays and contacts.
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", PROGRAM="/usr/bin/ohc-udev-name gpio %k", SYMLINK+="ohc/%c"

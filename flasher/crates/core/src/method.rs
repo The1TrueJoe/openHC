@@ -17,6 +17,17 @@ pub enum Method {
     /// Drive the CEFDK shell over serial. Needs a console and the ID button;
     /// the fallback when nothing is running to ssh into.
     Serial,
+    /// HC-800: start openHC out of the running system with `kexec`. Writes to
+    /// NO partition at all — not the bootloader, not the vendor root, not the
+    /// factory-restore image — so the box is byte-identical afterwards and a
+    /// power cycle returns it to stock. The safest install in this tool, and
+    /// the one to reach for first on that board.
+    Kexec,
+    /// HC-800: the persistent install. Copies the kernel and initramfs onto the
+    /// spare ext3 kernel partition and appends a `menu.lst` entry, so openHC
+    /// survives a power cut. This is the only method here that writes the
+    /// bootloader partition.
+    Grub,
 }
 
 impl Method {
@@ -25,6 +36,8 @@ impl Method {
             Method::Network => "network",
             Method::Uboot => "uboot",
             Method::Serial => "serial",
+            Method::Kexec => "kexec",
+            Method::Grub => "grub",
         }
     }
 
@@ -33,6 +46,8 @@ impl Method {
             Method::Network => "over SSH — no serial, no button (default)",
             Method::Uboot => "copy files to the vfat partition — no serial (CA-1)",
             Method::Serial => "via the CEFDK shell — needs a serial console and the ID button",
+            Method::Kexec => "run it from RAM — writes nothing to disk, reverts on a power cycle",
+            Method::Grub => "install to the kernel partition — survives a power cut (HC-800)",
         }
     }
 
@@ -40,7 +55,15 @@ impl Method {
         match self {
             Method::Network | Method::Serial => &[Family::Ea],
             Method::Uboot => &[Family::Ca],
+            Method::Kexec | Method::Grub => &[Family::Hc],
         }
+    }
+
+    /// True when the method leaves every partition byte-identical. Only
+    /// [`Method::Kexec`] qualifies, and the UI leans on it to say so out loud
+    /// before anyone commits to something that does write.
+    pub fn writes_nothing(self) -> bool {
+        matches!(self, Method::Kexec)
     }
 
     /// Can this method install onto this identity? Returns the reason when not,
@@ -64,7 +87,9 @@ impl Method {
                 board.name, board.family
             ));
         }
-        if matches!(self, Method::Network | Method::Uboot) && !matches!(id.running, Stock | Openhc) {
+        if matches!(self, Method::Network | Method::Uboot | Method::Kexec | Method::Grub)
+            && !matches!(id.running, Stock | Openhc)
+        {
             return Err("needs a running system to log into".into());
         }
         Ok(())
@@ -74,7 +99,12 @@ impl Method {
 /// Methods in preference order — cheapest-for-the-user first, so "the default
 /// needs no cable and no button" falls out of the ordering rather than a
 /// special case.
-pub const METHODS: &[Method] = &[Method::Network, Method::Uboot, Method::Serial];
+///
+/// Kexec sits ahead of Grub for the same reason Network sits ahead of Serial:
+/// on the board where both apply, the one that writes nothing is the one a user
+/// should land on without having to choose it.
+pub const METHODS: &[Method] =
+    &[Method::Network, Method::Uboot, Method::Kexec, Method::Grub, Method::Serial];
 
 /// Choose a method for an identity, optionally forced. Returns the chosen
 /// method and the reasons the others were rejected (for display).
@@ -151,6 +181,47 @@ pub fn plan(board: &Board, method: Method) -> Plan {
             reversible: "delete boot.scr from the vfat partition; the stock boot path returns"
                 .into(),
         },
+        Method::Kexec => Plan {
+            method,
+            steps: vec![
+                "copy bzImage + rootfs.cpio.gz to /tmp on the running system".into(),
+                "kexec -l (stage into the running kernel — still nothing written)".into(),
+                "kexec -e (jump straight into openHC, skipping BIOS and GRUB)".into(),
+            ],
+            writes: vec!["nothing. /tmp is a tmpfs; no partition is opened for writing".into()],
+            needs_serial: false,
+            needs_button: false,
+            reversible: "a power cycle. GRUB, the vendor root and the factory-restore image are \
+                         never touched, so there is nothing to revert"
+                .into(),
+        },
+        Method::Grub => {
+            use crate::hc800::*;
+            Plan {
+                method,
+                steps: vec![
+                    format!("mount {KERNEL_PART} ({KERNEL_LABEL}) and copy the kernel + initramfs to /boot"),
+                    format!("mount {GRUB_PART} ({GRUB_LABEL}) and append entry {ENTRY_OPENHC} to menu.lst"),
+                    format!(
+                        "switch `default {ENTRY_VENDOR}` to `default saved`, so the openHC entry's \
+                         `savedefault {ENTRY_VENDOR}` makes every openHC boot a BOOT-ONCE"
+                    ),
+                    format!(
+                        "point the saved default at entry {ENTRY_OPENHC}. NOT a reboot: the box \
+                         keeps running whatever it is running until you restart it"
+                    ),
+                ],
+                writes: vec![
+                    format!("{KERNEL_PART}: {KERNEL_FILE}, {INITRD_FILE} (files, on the spare kernel partition)"),
+                    format!("{GRUB_PART}: /boot/grub/menu.lst and /boot/grub/default"),
+                ],
+                needs_serial: false,
+                needs_button: false,
+                reversible: format!(
+                    "openHC re-points the default at the stock entry on every boot, so a reset of any kind already returns to Control4. To remove it entirely, delete the entry from menu.lst. {RESTORE_PART} is never written, and holding the ID button at power-on boots entry {ENTRY_FACTORY} regardless of what menu.lst says"
+                ),
+            }
+        }
         Method::Serial => Plan {
             method,
             steps: vec![

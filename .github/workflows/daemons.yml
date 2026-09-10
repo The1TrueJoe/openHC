@@ -1,0 +1,151 @@
+# Cross-build the openHC userspace daemons for every board target.
+#
+# These are the SERVICES in packages/ — iod (the IO server), webd (the config
+# GUI it is a client of), portal, and the wifi lib they share. They are Rust,
+# static musl, and staged into the rootfs overlay rather than built by
+# Buildroot, so nothing else in CI compiles them.
+#
+# Why this exists: the maintainer's Mac has only Homebrew's cargo, which has no
+# cross std for any of these targets, so `cargo check` locally only ever proves
+# the code compiles for macOS. That is a weak check for a daemon whose serial
+# layer is libc termios — B460800 does not even exist on Darwin. CI is the only
+# place these are compiled for what they actually run on.
+
+name: daemons
+
+on:
+  push:
+    paths: &daemon-paths
+      - 'packages/**'
+      - '.github/workflows/daemons.yml'
+  pull_request:
+    paths: *daemon-paths
+  workflow_dispatch:
+
+concurrency:
+  group: daemons-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: hc800
+            target: x86_64-unknown-linux-musl
+            # ring (iod's TLS, for the MQTT bridge) compiles a few C shims, so
+            # each target needs a C compiler even though rust-lld does the
+            # linking. Nothing else in the workspace needs one.
+            cc: musl-gcc
+            apt: musl-tools
+          - board: ea1
+            target: i686-unknown-linux-musl
+            cc: i686-linux-gnu-gcc
+            # libc6-dev-*-cross carries the target's headers. Without it the
+            # cross gcc falls back to /usr/include and dies on a missing
+            # bits/libc-header-start.h — and --no-install-recommends below is
+            # exactly what stops apt pulling it in on its own.
+            apt: gcc-i686-linux-gnu libc6-dev-i386-cross
+          - board: ca1
+            target: armv7-unknown-linux-musleabihf
+            cc: arm-linux-gnueabihf-gcc
+            apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the target's std and a C compiler for it
+        run: |
+          rustup target add ${{ matrix.target }}
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+          rustc --version && cargo --version
+          ${{ matrix.cc }} --version | head -1
+
+      # ring's build.rs reads CC_<target>. Setting it here rather than in
+      # .cargo/config.toml keeps the local Mac build (host-only, no cross C)
+      # working unchanged.
+      - name: Point ring at that compiler
+        run: |
+          # Only the TARGET is underscored — piping the whole line through tr
+          # would rewrite the compiler name too (musl-gcc -> musl_gcc).
+          echo "CC_$(echo '${{ matrix.target }}' | tr '-' '_')=${{ matrix.cc }}" >> "$GITHUB_ENV"
+
+      # Rust first, WITHOUT webd. webd's build.rs embeds ui/dist, so building it
+      # before the UI exists would produce a binary that silently serves the
+      # fallback page — and a Rust error would be buried under a frontend build.
+      # Checking the rest first keeps the two failures separable.
+      - name: cargo check — every crate but webd, for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo check --workspace --target ${{ matrix.target }} --exclude webd
+
+      # Host-target, once. The unit tests cover pure logic — base64 framing for
+      # serial payloads, event-topic filtering, state-delta suppression — none
+      # of which is target-specific, so running them three times proves nothing.
+      - name: cargo test
+        if: matrix.board == 'hc800'
+        working-directory: packages
+        run: cargo test -p iod
+
+      # portal too — it is in the artifact, and `cargo check` would not have
+      # produced a binary for it.
+      - name: Build iod + portal for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo build --release -p iod -p portal --target ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/webd/ui/package-lock.json
+
+      # MUST precede cargo: build.rs reads ui/dist at compile time, and an
+      # absent dist is not an error there — it is a binary with no UI in it.
+      - name: Build the config GUI
+        working-directory: packages/webd/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          test -f dist/index.html || { echo "UI build produced no index.html"; exit 1; }
+          du -sh dist
+
+      - name: Build webd for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo build --release -p webd --target ${{ matrix.target }}
+
+      - name: Confirm the UI really got embedded
+        working-directory: packages
+        run: |
+          f=target/${{ matrix.target }}/release/webd
+          ls -l "$f"
+          # The fallback page ships in every build; the real UI does not. If the
+          # binary has no asset table entry for index.html, build.rs saw no dist.
+          if ! strings "$f" | grep -q "index.html"; then
+            echo "webd has no embedded index.html — build.rs did not see ui/dist"; exit 1
+          fi
+          echo "OK: UI embedded"
+
+      - name: What did we get?
+        working-directory: packages
+        run: |
+          f=target/${{ matrix.target }}/release/iod
+          ls -l "$f"
+          file "$f"
+          # Static musl: it has to run on a rootfs that may have no loader at
+          # all beyond busybox, so a NEEDED entry here is a bug, not a detail.
+          if command -v readelf >/dev/null && readelf -d "$f" 2>/dev/null | grep -q NEEDED; then
+            echo "iod is dynamically linked — expected a static musl binary"; exit 1
+          fi
+          echo "OK: static"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daemons-${{ matrix.board }}
+          path: |
+            packages/target/${{ matrix.target }}/release/iod
+            packages/target/${{ matrix.target }}/release/webd
+            packages/target/${{ matrix.target }}/release/portal
+          retention-days: 14
+          if-no-files-found: error

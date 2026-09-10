@@ -1,0 +1,41 @@
+#!/bin/sh
+# openHC initramfs /init — IO Extender V1 (DM355).
+#
+# Buildroot's own fs/cpio/init, kept verbatim so that including
+# board/common/rootfs-overlay is safe on this board. See the identical file in
+# board/hc800/rootfs-overlay/init for the long version of why.
+#
+# Short version: ioxv1_defconfig lists both overlays and the board one is
+# applied second, so this replaces the SHARED /init. The shared one pivots to a
+# persistent openHC rootfs on /dev/mmcblk0p1, and this board has no eMMC — its
+# persistent store is NAND (JFFS2, BR2_TARGET_ROOTFS_JFFS2 above). It would spin
+# its whole 100 x 0.1s search, print
+#
+#     openHC: WARNING /dev/mmcblk0p1 never appeared after 100 tries
+#
+# and fall through to exactly what this does.
+#
+# The rootfs here is the initramfs EMBEDDED in the uImage, so there is nothing
+# to pivot to on a netboot. If a JFFS2-on-NAND pivot is ever wanted, this is the
+# file that grows it — mount the MTD partition and switch_root, mirroring the
+# shared /init's eMMC logic with the right device.
+#
+# Buildroot only installs its fs/cpio/init when no /init already exists
+# (ROOTFS_CPIO_ADD_INIT is guarded by `if [ ! -e $(TARGET_DIR)/init ]`), so
+# shipping one here SUPPRESSES it — hence the devtmpfs mount and console
+# re-open below rather than a bare exec.
+
+# devtmpfs does not get automounted for initramfs
+/bin/mount -t devtmpfs devtmpfs /dev
+
+# use the /dev/console device node from devtmpfs if possible to not
+# confuse glibc's ttyname_r().
+# This may fail (E.G. booted with console=), and errors from exec will
+# terminate the shell, so use a subshell for the test
+if (exec 0</dev/console) 2>/dev/null; then
+    exec 0</dev/console
+    exec 1>/dev/console
+    exec 2>/dev/console
+fi
+
+exec /sbin/init "$@"

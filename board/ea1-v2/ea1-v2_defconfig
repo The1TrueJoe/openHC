@@ -10,11 +10,9 @@
 # `script`+`bootlinux` autoscript takeover the ea3-v2 uses
 # (tools/ohc-ea-takeover.py) — see https://the1truejoe.github.io/openHC/ea/ea3/.
 BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1-v2"
-BR2_TARGET_GENERIC_ISSUE="openHC EA1 v2 (kernel-up)"
+BR2_TARGET_GENERIC_ISSUE="openHC EA1 v2"
 
 # wifi + emmc kernel sides, on top of the family trim
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/wifi.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/emmc.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea1-v2/linux/ea1-v2.fragment"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea1-v2/linux/ea1-v2.fragment"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea1-v2/rootfs-overlay"
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ea1-v2"
-BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"

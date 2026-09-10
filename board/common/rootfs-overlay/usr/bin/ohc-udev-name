@@ -1,0 +1,72 @@
+#!/bin/sh
+# Name one device for /dev/ohc. Called by udev; prints a leaf name, or exits 1
+# when this device is not ours.
+#
+#   ohc-udev-name lirc lirc3     -> ir/out4
+#   ohc-udev-name tty  ttyS1     -> serial/1
+#   ohc-udev-name tty  ttymxc4   -> radio/zigbee
+#   ohc-udev-name gpio gpiochip1 -> gpiochip
+#
+# It prints the WHOLE leaf path, so one udev rule and one exec cover a device
+# whatever it turns out to be.
+#
+# A helper rather than udev match expressions because both answers come from
+# somewhere that is not the device's own properties: the IR label is on the
+# PARENT rc device, and the serial numbering is board.env's declaration order.
+# Encoding either in a rules file would put a second copy of it in the image.
+kind=$1
+dev=$2
+[ -n "$dev" ] || exit 1
+
+case "$kind" in
+lirc)
+    # gpio-ohc-iomcu labels every node it registers. Anything else on the
+    # system — a USB IR dongle, an HDMI-CEC adapter — is not ours.
+    name=$(sed -n 's/^DEV_NAME=//p' "/sys/class/lirc/$dev/device/uevent" 2>/dev/null)
+    case "$name" in
+        "openHC IR "*) ;;
+        *) exit 1 ;;
+    esac
+    # "openHC IR out 3" -> out3;  "openHC IR front blaster" -> front-blaster
+    slug=$(echo "${name#openHC IR }" | tr "[:upper:] " "[:lower:]-")
+    case "$slug" in out-*) slug="out${slug#out-}" ;; esac
+    echo "ir/$slug"
+    ;;
+
+tty)
+    [ -r /opt/ohc/board.env ] || exit 1
+    . /opt/ohc/board.env
+    # OHC_SERIALS is dev:label:baud. The POSITION is the number the installer
+    # reads on the case, so it is also the name here.
+    n=0
+    for e in $OHC_SERIALS; do
+        n=$((n + 1))
+        [ "${e%%:*}" = "$dev" ] && { echo "serial/$n"; exit 0; }
+    done
+    # OHC_RADIOS is kind:dev — the SAME shape, deliberately. Here the kind is
+    # the name, because a board has at most one of each.
+    for e in $OHC_RADIOS; do
+        [ "${e#*:}" = "$dev" ] && { echo "radio/${e%%:*}"; exit 0; }
+    done
+    exit 1
+    ;;
+
+gpio)
+    # The chip carrying the relays and contacts. Its NUMBER moves with probe
+    # order; its label does not.
+    #
+    # Three ways to read the label because only one of them is guaranteed:
+    # /sys/class/gpio is the deprecated sysfs ABI and may be compiled out, the
+    # bus attribute is not on every kernel, and gpiodetect always works because
+    # it asks the chardev itself.
+    for f in "/sys/class/gpio/$dev/label" "/sys/bus/gpio/devices/$dev/label"; do
+        [ -r "$f" ] && { read -r l < "$f"; [ "$l" = "ohc-iomcu" ] && { echo gpiochip; exit 0; }; exit 1; }
+    done
+    gpiodetect 2>/dev/null | grep -q "^$dev \[ohc-iomcu\]" || exit 1
+    echo gpiochip
+    ;;
+
+*)
+    exit 1
+    ;;
+esac

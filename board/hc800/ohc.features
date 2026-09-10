@@ -1,0 +1,4 @@
+# The HC-800 has no family base — it is a PC, not a Control4 SoC board — so this
+# is its whole feature list.
+iomcu       # LM3S1162 on ttyS3: 4 relays, 4 contacts, 6 IR
+splash      # component/HDMI out via the THS8200, so there is a framebuffer

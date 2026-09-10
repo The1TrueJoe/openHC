@@ -2,7 +2,7 @@
 title: Control4's GPL drop
 description: What is in the published source, what compiles, what is redistributable, and the correction that cost weeks.
 sidebar:
-  order: 3
+  order: 5
 ---
 
 **Question:** can we build and distribute our own kernel image for these boards?

@@ -23,6 +23,27 @@
 # actually needs is forced =y here rather than inherited.
 CONFIG_MODULES=n
 
+# ── a built-in command line, for the one setting that must never be forgotten ─
+# The HC-800 gets its real boot line from whoever started it — GRUB's menu.lst,
+# or `kexec --append` — and neither of those lives in this repository. That is
+# fine for the console and the root device, which the launcher genuinely knows
+# better than we do. It is NOT fine for panic=.
+#
+# kernel.panic defaults to 0, which means "on a panic, stop forever". On a
+# sealed box with no serial cable attached, stopping forever is indistinguishable
+# from a dead unit and needs someone to walk over and pull the power. panic=10
+# prints, waits ten seconds for netconsole to get the trace out, and reboots —
+# into the vendor image, which answers SSH. Baking it in here makes surviving a
+# panic a property of the IMAGE, so it holds no matter how the kernel was
+# started or who typed the command.
+#
+# CMDLINE_EXTEND (x86's default when OVERRIDE is off): this string goes first
+# and the bootloader's is appended, and the later value of a repeated key wins —
+# so a launcher can still override panic= when it wants to.
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="panic=10"
+CONFIG_CMDLINE_EXTEND=y
+
 # ── serial: five 8250 UARTs, and ttyS4 is the one that gets lost ──────────
 # The UARTs are LPC/ISA-range and enumerate through PNPACPI (the live unit
 # reports them as PNP devices "00:02".."00:06"), so SERIAL_8250_PNP is load
@@ -68,10 +89,15 @@ CONFIG_VFAT_FS=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
 
-# ── wired: Realtek RTL8111/8168 (10ec:8168 at 02:00.0) ────────────────────
+# ── wired: Realtek RTL8111DL (10ec:8168 at 02:00.0) ───────────────────────
 # The vendor ships Realtek's out-of-tree r8168 8.043.02. Mainline's r8169 has
 # covered this device for years and is what we use — this is the reachability
 # path for bring-up, so it is builtin and not negotiable.
+#
+# r8169 asks for rtl_nic/rtl8168d-2.fw and we do not ship it, so the boot log
+# carries "Unable to load firmware ... (-2)". Measured on hardware: the link
+# still comes up at 1 Gbps full duplex without it. Add
+# BR2_PACKAGE_LINUX_FIRMWARE + _RTL_8168 if that ever proves to matter.
 CONFIG_ETHERNET=y
 CONFIG_NET_VENDOR_REALTEK=y
 CONFIG_R8169=y
@@ -88,27 +114,40 @@ CONFIG_USB_EHCI_PCI=y
 CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_STORAGE=y
 
-# ── Wi-Fi: RTL8192SU (0bda:8172) on staging r8712u ────────────────────────
-# The only driver for this part. Mainline's rtl8xxxu does NOT cover RTL8192SU,
-# so if drivers/staging/rtl8712 has been dropped by 7.1.8 then Wi-Fi is what
-# breaks — wired reachability is unaffected and bring-up continues.
+# ── Wi-Fi: no driver exists on this kernel ────────────────────────────────
+# This block used to set CONFIG_R8712U=y for the board's USB RTL8191SU
+# (0bda:8172), with a note saying "if drivers/staging/rtl8712 has been dropped
+# by 7.1.8 then Wi-Fi is what breaks". It has been dropped: the directory is
+# gone from mainline and the symbol does not exist in this kernel's Kconfig.
 #
-# It is a WIRELESS EXTENSIONS driver, not a cfg80211 one: it sets
-# netdev->wireless_handlers directly and registers no wiphy. The CFG80211
-# dependency in its Kconfig only exists because WIRELESS_EXT now lives behind
-# cfg80211. The practical consequence is in userspace — wpa_supplicant has to
-# drive it with -Dwext, not -Dnl80211.
+# That failed SILENTLY, which is the part worth remembering — Buildroot merges
+# fragments with merge_config.sh, and an unknown symbol is dropped with a
+# warning rather than an error. The build stayed green while the driver it named
+# was never built, and the only way to see it was to extract the config back out
+# of the finished bzImage (which is why CONFIG_IKCONFIG is on below).
 #
-# Firmware is rtlwifi/rtl8712u.bin, which comes from Buildroot's linux-firmware
-# (RTL_87XX). A builtin driver can still get it: the initramfs is unpacked in
-# populate_rootfs() (a rootfs_initcall), which runs before device probing, so
-# /lib/firmware is populated by the time request_firmware() is called.
-CONFIG_WLAN=y
-CONFIG_CFG80211=y
-CONFIG_WIRELESS_EXT=y
-CONFIG_STAGING=y
-CONFIG_R8712U=y
-CONFIG_FW_LOADER=y
+# Nothing else claims 0x8172: not rtl8xxxu, not rtw88/rtw89, not the rtlwifi USB
+# drivers. So WLAN/CFG80211/WIRELESS_EXT/STAGING are all off — there is no radio
+# to support, WIRELESS_EXT has nothing to select it, and leaving them on only
+# grows the kernel. The userspace was removed from hc800_defconfig to match.
+#
+# The hardware is still in the box and the vendor's 3.16 still drives it, so
+# this is a software gap, not a missing part. See hc800_defconfig for what to
+# turn back on the day a driver exists.
+# CONFIG_WLAN is not set
+#
+# WLAN=n only removes the DRIVER menu — it took out all 96 wireless driver
+# symbols (ATH*, B43, BRCM*, IPW*, RTL*) and left the 802.11 STACK behind,
+# because cfg80211/mac80211/rfkill live under NET/Wireless rather than under
+# WLAN. Verified by extracting the config back out of the built bzImage.
+#
+# A board with no radio has no use for a soft-MAC stack, a rate-control
+# algorithm and an rfkill subsystem, so they go too. If RFKILL turns out to be
+# selected by something we do want, merge_config will warn and it stays on —
+# harmless, just re-check this note.
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
+# CONFIG_RFKILL is not set
 
 # ── audio: ICH7 HD Audio + ALC888-VD ──────────────────────────────────────
 # 2 line out (pins 0x14 rear, 0x1b front), 1 line in (0x1a), coax S/PDIF out
@@ -132,8 +171,26 @@ CONFIG_LPC_ICH=y
 CONFIG_GPIOLIB=y
 CONFIG_GPIO_ICH=y
 CONFIG_GPIO_CDEV=y
+# The V1 chardev uAPI, and it is NOT optional for us.
+#
+# Buildroot 2024.02.9 pins libgpiod 1.6.4, and libgpiod 1.x speaks the V1 line
+# ioctls (GPIO_GET_LINEHANDLE_IOCTL / GPIOHANDLE_GET_LINE_VALUES_IOCTL).
+# Mainline now defaults CONFIG_GPIO_CDEV_V1 to off, so on the first boot every
+# tool failed with a misleading error:
+#
+#     gpioget: error reading GPIO values: Invalid argument
+#     gpioinfo: error creating line iterator: Invalid argument
+#
+# That reads like broken hardware or a driver that has not claimed its lines,
+# and it is neither — gpio_ich reserved both of its I/O regions fine
+# (0480-04af and 04b0-04bf in /proc/ioports) and gpiodetect worked, because
+# gpiodetect uses GPIO_GET_CHIPINFO_IOCTL which exists in both uAPI versions.
+# Only the V1 LINE ioctls were missing.
+#
+# Turn this off again the day the tools move to libgpiod 2.x.
+CONFIG_GPIO_CDEV_V1=y
 
-# SMBus. The ADV7511 HDMI transmitter (0x72) and THS8200 video DAC (0x21) live
+# SMBus. The ADV7513 HDMI transmitter (0x72) and THS8200 video DAC (0x21) live
 # here; the vendor instantiates them from its board file. We instantiate
 # nothing — this is on so the bus can be probed with i2c-tools when somebody
 # takes the video question seriously.
@@ -141,27 +198,147 @@ CONFIG_I2C=y
 CONFIG_I2C_I801=y
 CONFIG_I2C_CHARDEV=y
 
-# iTCO watchdog. The vendor runs /sbin/watchdog -t 10 against it, so it is
-# known good on this silicon. Needs LPC_ICH (above) for the NO_REBOOT bit.
+# --- working on this box with the lid on and no serial cable ---
+#
+# The HC-800 is a sealed appliance that is meant to sit in a rack, and every one
+# of the four settings below exists so that a box in that state can still be
+# debugged and, more importantly, can still RECOVER WITHOUT A HUMAN. Between
+# them, the only failure that needs someone in the room is loss of power.
+#
+# iTCO watchdog. The vendor runs /sbin/watchdog -t 10 against it, so it is known
+# good on this silicon. Needs LPC_ICH (above) for the NO_REBOOT bit.
+#
+# What makes it a recovery mechanism and not just a reset: our kernel is only
+# ever kexec'd, never installed, so GRUB's `default 1` is still the vendor image
+# — a watchdog reset lands on stock Control4, which answers SSH, and the box can
+# be re-launched from anywhere. `fallback 1` points at that same entry, so
+# repeated resets never escalate toward the factory-restore path.
 CONFIG_WATCHDOG=y
 CONFIG_ITCO_WDT=y
 
-# Atom package/core temperature. The vendor kernel registers no hwmon device at
-# all; coretemp is free and this is a fanless box in a rack.
+# netconsole: the kernel log over UDP. The `netconsole=` boot argument is the
+# only way to see the messages from before userspace exists, which is exactly
+# the window a serial cable was covering. Built IN, not a module — a module
+# loads too late to log the thing that stopped the module loading.
+CONFIG_NETCONSOLE=y
+
+# ... and the configfs half, which the arch defconfig does not turn on. This is
+# what usr/bin/ohc-netconsole drives: attach a log stream to a box that is
+# already up, from whatever machine you happen to be at, without rebuilding the
+# image or rebooting to change the address baked into the boot line.
+CONFIG_NETCONSOLE_DYNAMIC=y
+CONFIG_CONFIGFS_FS=y
+
+# sysrq, reachable through /proc/sysrq-trigger. The last resort when userspace
+# is too far gone to run `reboot` but sshd still answers: `echo b` resets the
+# board from inside the kernel, skipping every shutdown path that might be the
+# thing that is stuck.
+CONFIG_MAGIC_SYSRQ=y
+
+# Thermal. Two sources, because neither is sufficient alone.
+#
+# coretemp is the Atom's own digital sensor, but on this part the kernel logs
+# "Unable to read TjMax from CPU 0" and falls back to a default — a live box
+# reported 6 C and 10 C, which is not a temperature this room has ever been. So
+# treat its absolute values as suspect until TjMax is settled.
+#
+# w83627ehf drives the Winbond W83627UHG Super I/O sitting beside the UARTs. It
+# is the only part that can READ the board thermistors and the fan tachometer,
+# and the only one that can DRIVE the fan: it has a PWM output with a hardware
+# automatic mode, so the chip can regulate on its own with no fan daemon at all.
+# This board does have a fan.
 CONFIG_HWMON=y
 CONFIG_SENSORS_CORETEMP=y
+CONFIG_SENSORS_W83627EHF=y
+
+# ── front panel: six LEDs and the ID button ───────────────────────────────
+# The consumer drivers for what ohc-hc800.c registers. NONE of these are in the
+# x86_64 arch defconfig, and without them that driver registers two platform
+# devices that nothing binds — the build succeeds, /sys/class/leds stays empty,
+# and it looks like the GPIO map is wrong rather than the kernel config.
+#
+# The triggers are not decoration: the vendor drives c4::power from default-on
+# and the blue wifi channel from a blink trigger, and this keeps that behaviour
+# without a daemon.
+CONFIG_NEW_LEDS=y
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_GPIO=y
+CONFIG_LEDS_TRIGGERS=y
+CONFIG_LEDS_TRIGGER_DEFAULT_ON=y
+CONFIG_LEDS_TRIGGER_TIMER=y
+CONFIG_LEDS_TRIGGER_HEARTBEAT=y
+# The ID button. Polled, because the ICH line has no usable interrupt.
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_GPIO_POLLED=y
 
 # CMOS RTC — an ordinary PC RTC, so hwclock works with no I2C part to hunt for.
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_DRV_CMOS=y
 
-# ── no head ───────────────────────────────────────────────────────────────
-# openHC is headless on every board and the console is ttyS0. The GMA 3150 and
-# the ADV7511/THS8200 chain are left alone: DRM would pull in a large stack for
-# an output nobody uses. VGA_CONSOLE stays at its defconfig value so a monitor
-# on the internal header still shows a panic.
-# CONFIG_DRM is not set
-# CONFIG_FB is not set
+# ── i915 + fbdev emulation for the boot splash ────────────────────────────
+# CONFIRMED WORKING on hardware: the splash draws. Any note elsewhere calling
+# this board headless predates that.
+#
+# Cheap here because this is the board with no image-size ceiling: ea-common has
+# to fight CEFDK bootlinux's ~8.07 MB copy window, GRUB 0.97 does not, and sda3
+# has 165 MB free. MODULES=n above means builtin is the only option. Runtime
+# cost is nothing either — one 1280x720x32 frame is 3.6 MB, written at
+# 434 MB/s on the live unit, about 8 ms, once.
+#
+# Why the display comes up at all with no monitor attached: LVDS-1 reports
+# connected with a ZERO-byte EDID and exactly one mode, 1280x720, because the
+# timings come from the BIOS VBT rather than from a display. That LVDS port is
+# wired to the THS8200 component DAC (i2c-6 @0x21) and the ADV7513 HDMI
+# transmitter (@0x72). Mainline i915 parses the same VBT, so the mode should
+# come up here exactly as it does under the vendor's 3.16.
+#
+# NOTE: getting PIXELS OUT OF THE JACKS is a separate problem this does not
+# solve. The vendor configures the THS8200 in-kernel (ths8200.ko, GPL) and the
+# ADV7513 from USERSPACE (/control4/lib/libvidcfg.so, via ioserver). Mainline's
+# drm/bridge/adv7511 needs a DT bridge attachment and cannot attach to x86 i915,
+# so HDMI will need a userspace i2c configurator. Until then this lights the
+# pipe and draws into it; whether a TV sees it is unproven.
+CONFIG_DRM=y
+CONFIG_DRM_I915=y
+# UNVERIFIED on 7.1.8: i915 has carried gen2/gen3 (Pineview is gen3) for the
+# whole mainline era, but upstream has periodically discussed dropping the old
+# gens. If this kernel's i915 no longer probes 8086:a001 the symptom is a boot
+# with no /dev/fb0 and no "i915" line in dmesg -- check that first rather than
+# suspecting the fragment. There is no fallback driver; gma500 is Poulsbo, not
+# Pineview.
+
+# /dev/fb0 from a DRM driver needs the fbdev emulation layer, and the legacy
+# device node is its own symbol since 6.6: DRM_FBDEV_EMULATION selects FB_CORE,
+# NOT FB, and FB_DEVICE (which creates /dev/fbX) defaults to the value of FB.
+# Set all three rather than rely on that chain -- the failure mode is a working
+# framebuffer console with no node for splash to open, which looks like a
+# broken splash rather than a missing kconfig symbol.
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_FB=y
+CONFIG_FB_DEVICE=y
+
+# No fbcon, for the reason ea-common/linux/video.fragment records: the text
+# console clears the framebuffer when it takes the surface over, and that is
+# what ate the EA's first splash. The console is ttyS0 on this board and always
+# was. Flip this to =y temporarily if you want the kernel log on the TV while
+# debugging -- it and the splash cannot both have the screen.
+# CONFIG_FRAMEBUFFER_CONSOLE is not set
+
+# VGA_CONSOLE stays at its defconfig value so a monitor on the internal header
+# still shows a panic before i915 takes over ("Replacing VGA console driver").
+
+# ── read the config back off the running box ──────────────────────────────
+# The vendor kernel has /proc/config.gz and it has been worth its weight in this
+# port — every "does the vendor set X?" question was answered by reading it
+# instead of guessing. Ours had no equivalent, which bit immediately: the CI
+# artifact could not be checked for CONFIG_DRM_I915 because there was nothing
+# embedded in the bzImage to extract, so the evidence had to come from grepping
+# the build log for compiled object files.
+#
+# ~30 KB of gzipped config in the image, and the first person to debug this on
+# hardware can run `zcat /proc/config.gz | grep DRM` instead of asking CI.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
 
 # ── note on the stack protector ───────────────────────────────────────────
 # ea-common has to disable STACKPROTECTOR: musl + i386 + 7.1.8 disagree about

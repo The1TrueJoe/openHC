@@ -1,7 +1,8 @@
 # TEMPORARILY reduced to 'emmc' to get Home Assistant booting -- see
 # TEMPORARILY-DISABLED.md at the repo root for what was turned off and why.
-# Shared EA feature sets this board pulls in (board/ea-common/features/*.defconfig
-# and the matching linux/*.fragment). One word per feature, space separated.
+# Shared EA feature sets this board pulls in. One word per feature, space
+# separated. Each lives in board/ea-common/features/<name>/, holding both its
+# halves: defconfig (userspace) and linux.fragment (kernel).
 #   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
 #   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
 #   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2

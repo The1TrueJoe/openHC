@@ -1,0 +1,389 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "openHC IO over MQTT",
+    "version": "0.1.0",
+    "description": "The IO CONTROL surface of an openHC controller. Relays, contacts, IR, serial and front-panel LEDs.\n\nThis is deliberately **not** the whole API. Configuration is REST (see the OpenAPI document), and telemetry \u2014 temperatures, fans, CPU \u2014 is REST too, from `sysmond`, because it wants history and a retained topic cannot answer 'what did it do for the last hour'.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
+  },
+  "servers": {
+    "onboard": {
+      "host": "{host}:1883",
+      "protocol": "mqtt",
+      "description": "The broker iod serves itself. It can also bridge to an external broker instead \u2014 see the settings page.",
+      "variables": {
+        "host": {
+          "default": "openhc-<board>-<mac>.local"
+        }
+      }
+    },
+    "browser": {
+      "host": "{host}/mqtt",
+      "protocol": "ws",
+      "description": "The same broker over WebSocket, proxied by webd on port 80 so a page needs one origin.",
+      "variables": {
+        "host": {
+          "default": "openhc-<board>-<mac>.local"
+        }
+      }
+    }
+  },
+  "channels": {
+    "relayState": {
+      "address": "openhc/{box}/state/relay/{n}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Relay position (retained)",
+      "description": "`ON` or `OFF`. n counts from 1, matching the terminal marking."
+    },
+    "contactState": {
+      "address": "openhc/{box}/state/contact/{n}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Contact closure (retained)",
+      "description": "`ON` = CLOSED. Polled by iod; the driver caches it so many subscribers cost one UART round trip."
+    },
+    "ledState": {
+      "address": "openhc/{box}/state/led/{slug}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Front-panel LED brightness (retained)",
+      "description": "0..max_brightness. Addressed by NAME \u2014 `power`, `wifi-red` \u2014 because LEDs are not a numbered row."
+    },
+    "mcuLink": {
+      "address": "openhc/{box}/state/mcu/link",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Is the IO microcontroller answering (retained)",
+      "description": "ANSWERING, not merely present. A wedged part leaves the gpiochip registered."
+    },
+    "serialBaud": {
+      "address": "openhc/{box}/state/serial/{n}/baud",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Configured line rate (retained)",
+      "description": ""
+    },
+    "serialViewers": {
+      "address": "openhc/{box}/state/serial/{n}/viewers",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "How many clients hold this port open (retained)",
+      "description": "One shared session per port: every viewer sees the same stream."
+    },
+    "irRx": {
+      "address": "openhc/{box}/event/ir/front/rx",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/IrRx"
+        }
+      },
+      "summary": "A code the front receiver heard (NOT retained)",
+      "description": "Pronto, in the same form `ir/front/send` accepts \u2014 so a learned code can be sent straight back."
+    },
+    "serialRx": {
+      "address": "openhc/{box}/event/serial/{n}/rx",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/SerialRx"
+        }
+      },
+      "summary": "Bytes arriving on a user port (NOT retained)",
+      "description": ""
+    },
+    "relaySet": {
+      "address": "openhc/{box}/cmd/relay/{n}/set",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/RelayCmd"
+        }
+      },
+      "summary": "Drive a relay",
+      "description": "`ON`, `OFF` or `TOGGLE`. Idempotent: the firmware has no SET opcode, so iod reads before it toggles."
+    },
+    "ledSet": {
+      "address": "openhc/{box}/cmd/led/{slug}/set",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/LedCmd"
+        }
+      },
+      "summary": "Drive a front-panel LED",
+      "description": "`ON`, `OFF`, or a number for brightness. A LED under a kernel trigger has the trigger dropped first \u2014 asking for a level is asking for software control."
+    },
+    "irSend": {
+      "address": "openhc/{box}/cmd/ir/{port}/send",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Pronto"
+        }
+      },
+      "summary": "Transmit a Pronto code",
+      "description": "port is a rear jack number, or `front` for the internal blaster \u2014 which is NOT jack 7; it has no socket. Type 0000 (learned) only, and a carrier word of 0000 is refused because the firmware divides by it."
+    },
+    "serialWrite": {
+      "address": "openhc/{box}/cmd/serial/{n}/write",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Write bytes to a user port",
+      "description": ""
+    },
+    "serialSetBaud": {
+      "address": "openhc/{box}/cmd/serial/{n}/baud",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Change a port's line rate",
+      "description": ""
+    },
+    "mcuReset": {
+      "address": "openhc/{box}/cmd/mcu/reset",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Empty"
+        }
+      },
+      "summary": "Pulse the microcontroller's reset line",
+      "description": "Recovery for a wedged part. Tries both polarities and reports which worked. Note: on the HC-800 a wedged MCU has NOT been recoverable by reset \u2014 it needs a power cycle."
+    },
+    "raw": {
+      "address": "openhc/{box}/cmd/raw",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Any command, as JSON",
+      "description": "The escape hatch: the same enum the REST layer takes, e.g. `{\"op\":\"relay.set\",\"index\":0,\"on\":true}`."
+    }
+  },
+  "operations": {
+    "relayState": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/relayState"
+      },
+      "summary": "Relay position (retained)"
+    },
+    "contactState": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/contactState"
+      },
+      "summary": "Contact closure (retained)"
+    },
+    "ledState": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/ledState"
+      },
+      "summary": "Front-panel LED brightness (retained)"
+    },
+    "mcuLink": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/mcuLink"
+      },
+      "summary": "Is the IO microcontroller answering (retained)"
+    },
+    "serialBaud": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/serialBaud"
+      },
+      "summary": "Configured line rate (retained)"
+    },
+    "serialViewers": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/serialViewers"
+      },
+      "summary": "How many clients hold this port open (retained)"
+    },
+    "irRx": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/irRx"
+      },
+      "summary": "A code the front receiver heard (NOT retained)"
+    },
+    "serialRx": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/serialRx"
+      },
+      "summary": "Bytes arriving on a user port (NOT retained)"
+    },
+    "relaySet": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/relaySet"
+      },
+      "summary": "Drive a relay"
+    },
+    "ledSet": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/ledSet"
+      },
+      "summary": "Drive a front-panel LED"
+    },
+    "irSend": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/irSend"
+      },
+      "summary": "Transmit a Pronto code"
+    },
+    "serialWrite": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/serialWrite"
+      },
+      "summary": "Write bytes to a user port"
+    },
+    "serialSetBaud": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/serialSetBaud"
+      },
+      "summary": "Change a port's line rate"
+    },
+    "mcuReset": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/mcuReset"
+      },
+      "summary": "Pulse the microcontroller's reset line"
+    },
+    "raw": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/raw"
+      },
+      "summary": "Any command, as JSON"
+    }
+  },
+  "components": {
+    "messages": {
+      "OnOff": {
+        "title": "ON / OFF",
+        "payload": {
+          "type": "string",
+          "enum": [
+            "ON",
+            "OFF"
+          ]
+        }
+      },
+      "Number": {
+        "title": "A bare number",
+        "payload": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        }
+      },
+      "Text": {
+        "title": "Raw text",
+        "payload": {
+          "type": "string"
+        }
+      },
+      "Empty": {
+        "title": "No payload",
+        "payload": {
+          "type": "string",
+          "maxLength": 0
+        }
+      },
+      "Json": {
+        "title": "A command object",
+        "payload": {
+          "type": "object"
+        }
+      },
+      "RelayCmd": {
+        "title": "ON / OFF / TOGGLE",
+        "payload": {
+          "type": "string",
+          "enum": [
+            "ON",
+            "OFF",
+            "TOGGLE"
+          ]
+        }
+      },
+      "LedCmd": {
+        "title": "ON / OFF / level",
+        "payload": {
+          "type": "string",
+          "examples": [
+            "ON",
+            "OFF",
+            "128"
+          ]
+        }
+      },
+      "Pronto": {
+        "title": "Pronto hex",
+        "payload": {
+          "type": "string",
+          "examples": [
+            "0000 006D 0022 0002 0157 00AC 0016 0016"
+          ]
+        }
+      },
+      "IrRx": {
+        "title": "A received code",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "pronto": {
+              "type": "string"
+            },
+            "carrier_hz": {
+              "type": "integer"
+            },
+            "durations": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "SerialRx": {
+        "title": "Received bytes",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "b64": {
+              "type": "string",
+              "description": "base64, because a serial stream is not text"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -134,6 +134,40 @@ jobs:
         with:
           submodules: recursive
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/webd/ui/package-lock.json
+
+      # The daemons are cross-compiled and STAGED INTO THE ROOTFS OVERLAY before
+      # Buildroot runs, because that is where packages/build.sh puts them and
+      # where the image picks them up. Without this the overlay directory is
+      # empty and every image ships with no iod and no webd — the init scripts
+      # report "not installed" and the box boots with no IO server and no GUI.
+      # That was true of every image built before this step existed.
+      - name: Stage the openHC daemons into the rootfs overlay
+        run: |
+          set -euo pipefail
+          # Globs, so a future hc800-v2 or ca1-v2 does not fall through to the
+          # EA default and get silently cross-compiled for the wrong arch. This
+          # is only the C-shim compiler and its headers; which LINKER each
+          # target uses lives in packages/.cargo/config.toml, and build.sh
+          # refuses to run for a target that has no entry there.
+          case "${{ matrix.board }}" in
+            hc800*) target=x86_64-unknown-linux-musl;      cc=musl-gcc;                  apt="musl-tools" ;;
+            ca1*)   target=armv7-unknown-linux-musleabihf; cc=arm-linux-gnueabihf-gcc;   apt="gcc-arm-linux-gnueabihf libc6-dev-armhf-cross" ;;
+            ioxv1*) target=armv5te-unknown-linux-musleabi; cc=arm-linux-gnueabi-gcc;     apt="gcc-arm-linux-gnueabi libc6-dev-armel-cross" ;;
+            *)      target=i686-unknown-linux-musl;        cc=i686-linux-gnu-gcc;        apt="gcc-i686-linux-gnu libc6-dev-i386-cross" ;;
+          esac
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $apt
+          rustup target add "$target"
+          # ring compiles a few C shims; same reasoning as daemons.yml.
+          export "CC_$(echo "$target" | tr '-' '_')=$cc"
+          bash ./packages/build.sh "${{ matrix.board }}"
+          ls -l board/common/rootfs-overlay/opt/ohc/bin/
+
       # Same list as build/Dockerfile. If that changes, change it here too --
       # they are two copies of one fact, and CI is the one that fails loudly.
       - name: Install build dependencies
@@ -154,6 +188,34 @@ jobs:
           key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
           restore-keys: |
             dl-${{ env.BUILDROOT_REF }}-
+
+      # The expensive thing is the CROSS TOOLCHAIN, and it is identical on every
+      # run: host-gcc-initial and host-gcc-final are ~15 of the ~33 minutes, and
+      # nothing in this repo changes their config from one commit to the next.
+      # Caching dl/ above only saves the download, not a single compiled object.
+      #
+      # Safe to reuse because build/build.sh already defends the two ways an
+      # incremental Buildroot tree goes wrong:
+      #   * it WIPES $OUT when the resolved toolchain config changes, and again
+      #     when the on-disk compiler cannot do what .config claims;
+      #   * it runs `linux-dirclean` every time, so the kernel is always
+      #     re-extracted, re-patched and re-injected with our drivers — an
+      #     edit to board/*/kernel never rides on a stale stamp.
+      #
+      # Rolling key: the run id makes every run save a fresh entry, and
+      # restore-keys picks up the newest previous one.
+      # restore/save split rather than actions/cache, because the plain action
+      # does NOT save when the job fails — and a failed build is exactly when
+      # the toolchain is most worth keeping. A typo in a driver should cost one
+      # kernel rebuild, not another 15 minutes of gcc.
+      - name: Restore Buildroot output tree
+        id: outcache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/build/${{ matrix.board }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
+          restore-keys: |
+            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-
 
       - name: Fetch Buildroot
         run: |
@@ -203,7 +265,21 @@ jobs:
         id: bundle
         run: |
           bundle="openhc-${{ matrix.board }}-${{ steps.ver.outputs.version }}.zip"
-          ( cd output/images && zip -r -X "../../$bundle" . )
+          # build.sh writes to output/build/$BOARD/images, NOT output/images —
+          # it keeps a per-board output tree so switching boards does not force
+          # a full rebuild. This step looked in output/images and so had never
+          # produced an artifact for ANY board; every green build still ended
+          # here with "cd: output/images: No such file or directory".
+          imgdir="output/build/${{ matrix.board }}/images"
+          if [ ! -d "$imgdir" ]; then
+            echo "no images at $imgdir — build.sh layout changed?"
+            find output -maxdepth 4 -name images -type d 2>/dev/null
+            exit 1
+          fi
+          ls -l "$imgdir"
+          # Absolute destination: a relative one is interpreted from inside
+          # $imgdir, which is four levels down, not two.
+          ( cd "$imgdir" && zip -r -X "$GITHUB_WORKSPACE/$bundle" . )
           echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
           ls -l "$bundle"
 
@@ -216,6 +292,34 @@ jobs:
           path: ${{ steps.bundle.outputs.bundle }}
           retention-days: 14
           if-no-files-found: error
+
+      # Drop only what is genuinely rebuilt. That is a shorter list than it
+      # looks:
+      #
+      #   build/linux-*  yes — build.sh runs linux-dirclean every time, so the
+      #                  kernel is re-extracted, re-patched and re-injected with
+      #                  our drivers on every build regardless.
+      #   images/        yes — pure output, and already uploaded above.
+      #   target/        NO. This looked regenerable and is not: packages
+      #                  install INTO it, and their stamps say "installed", so a
+      #                  restored tree without it never refills it and the build
+      #                  dies at target-finalize with
+      #                  "sed: can't read .../target/etc/hosts".
+      #   staging/       NO, for the same reason.
+      - name: Trim the output tree before caching
+        if: always()
+        run: |
+          O=output/build/${{ matrix.board }}
+          [ -d "$O" ] || exit 0
+          rm -rf "$O"/build/linux-* "$O"/images
+          echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
+
+      - name: Save Buildroot output tree
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: output/build/${{ matrix.board }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.

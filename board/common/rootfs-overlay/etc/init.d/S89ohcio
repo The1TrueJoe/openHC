@@ -1,0 +1,41 @@
+#!/bin/sh
+# openHC IO server — SHARED (board/common).
+#
+# iod owns EVERY local IO on the controller: the user serial ports, IR out and
+# in, the relays and the contacts. Nothing else opens those devices — webd, the
+# config GUI, is a CLIENT of this over :7070. That single-owner rule is what
+# keeps one process on a UART that can only answer one question at a time.
+#
+# Starts before S90ohcweb so the GUI has something to talk to on first paint.
+# Board-agnostic: what differs between an HC-800, an EA3, an IO Extender and a
+# CA-1 is /opt/ohc/board.env and nothing else.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+# Site configuration — broker address, credentials, API token. Deliberately a
+# SEPARATE file from board.env: board.env describes the silicon and is the same
+# on every unit of a model, while this is per-installation and may hold secrets.
+[ -r /etc/openhc/iod.conf ] && . /etc/openhc/iod.conf
+
+IOD=/opt/ohc/bin/iod
+IOD_BIND="${IOD_BIND:-0.0.0.0:7070}"
+export IOD_BIND IOD_TOKEN \
+       IOD_MQTT_URL IOD_MQTT_USER IOD_MQTT_PASS IOD_MQTT_CA \
+       IOD_MQTT_CLIENT_CERT IOD_MQTT_CLIENT_KEY IOD_MQTT_PREFIX \
+       IOD_MQTT_CLIENT_ID IOD_MQTT_DISCOVERY
+
+start() {
+    [ -x "$IOD" ] || { echo "ohcio: $IOD not installed (run 'make iod BOARD=...')"; return 0; }
+    start-stop-daemon -S -q -b -m -p /var/run/iod.pid --exec "$IOD" \
+        && echo "ohcio: iod on $IOD_BIND${IOD_MQTT_URL:+, mqtt -> $IOD_MQTT_URL}"
+}
+
+stop() {
+    [ -f /var/run/iod.pid ] && start-stop-daemon -K -q -p /var/run/iod.pid
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

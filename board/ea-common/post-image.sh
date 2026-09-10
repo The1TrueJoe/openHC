@@ -36,16 +36,47 @@ bz="$IMAGES/bzImage"
 out="$IMAGES/openhc-$BOARD-kernel.img"
 [ -f "$bz" ] || { echo "post-image: no bzImage at $bz" >&2; exit 1; }
 
+# THE SIZE CEILING, CHECKED HERE RATHER THAN DISCOVERED ON HARDWARE.
+#
+# CEFDK's `bootlinux` copies the protected-mode kernel to 0x100000 while its own
+# loader sits at ~0x813000. A bzImage larger than the gap between them overruns
+# the loader mid-copy and the board does not come back — a failure that costs an
+# ID-button recovery on a unit that may not be on your desk.
+#
+# This is not a comfortable margin. Measured on the ea3-v2 build that introduced
+# this check: 7,193,600 bytes against a 7,417,856 byte window, i.e. 224 KB spare.
+# One driver's worth. A build that crosses the line has to fail LOUDLY, because
+# every other signal it gives is green.
+BOOTLINUX_WINDOW=7417856        # 0x813000 - 0x100000; mirrors image::BOOTLINUX_WINDOW
+bzsize=$(wc -c < "$bz")
+if [ "$bzsize" -gt "$BOOTLINUX_WINDOW" ]; then
+	echo "post-image: bzImage is $bzsize B, over CEFDK's $BOOTLINUX_WINDOW B bootlinux window" >&2
+	echo "  it would overwrite the loader mid-copy and the board would not boot." >&2
+	echo "  Trim board/ea-common/linux/common.fragment; that file exists for this." >&2
+	exit 1
+fi
+echo "post-image: bzImage $bzsize B, $((BOOTLINUX_WINDOW - bzsize)) B under the bootlinux window"
+if [ $((BOOTLINUX_WINDOW - bzsize)) -lt 262144 ]; then
+	echo "post-image: WARNING under 256 KB of headroom — one more driver may not fit" >&2
+fi
+
 # Container layout lives in the flasher so the build and the installer cannot
 # drift apart. Find it wherever this is running: the build container installs
 # it on PATH, a host build has it under flasher/target/.
 find_flasher() {
-	[ -n "${OHC_FLASH:-}" ] && { echo "$OHC_FLASH"; return; }
-	command -v ohc-flash 2>/dev/null && return
+	[ -n "${OHC_FLASH:-}" ] && { echo "$OHC_FLASH"; return 0; }
+	command -v ohc-flash 2>/dev/null && return 0
 	for p in "$EXT/../flasher/target/release/ohc-flash" \
 	         "$EXT/../flasher/target/debug/ohc-flash"; do
-		[ -x "$p" ] && { echo "$p"; return; }
+		[ -x "$p" ] && { echo "$p"; return 0; }
 	done
+	# EXPLICIT SUCCESS ON FINDING NOTHING, and this line is load bearing.
+	# Without it the function's status is the last failed `[ -x ]`, so
+	# `flash=$(find_flasher)` inherits 1 and `set -e` kills the build — which is
+	# the exact opposite of the "must NOT be able to fail the build" contract
+	# written immediately below, and it is how ea1-v1 died in CI: post-image
+	# aborted at this assignment, before it could print its own warning.
+	return 0
 }
 # The wrap is for the NETBOOT image only. It must NOT be able to fail the
 # build, because the two artifacts the installer actually needs -- the tiny
