@@ -1,22 +1,48 @@
 #!/bin/sh
 # openHC: route the DM355 IO pins from the (unused) camera/video pin-mux to GPIO.
 #
-# On the IO Extender the relays (GIO88-95), the contacts on GIO86/87, and the
-# front-panel data/link LEDs (GIO75/76) all share balls with the DM355 VPFE
-# (video-in) and VPBE (video-out) ports. U-Boot leaves those muxed to video, so
-# driving them as GPIO does NOTHING until the pin-mux is flipped. Per the DM355
-# TRM (sprufb3, System Module, 9.10.1/9.10.2):
-#   PINMUX0 (Video In):  bit10=YIN[7:0]=GIO[93:86], bit9=CIN[1:0]=GIO[95:94]
-#                        -> 0 selects GPIO (relays 88-95 + contacts 86/87)
-#   PINMUX1 (Video Out): bits13:12=COUT1=GIO75, bits11:10=COUT2=GIO76
-#                        -> 0 selects GPIO (data/link LEDs)
+# On the IO Extender the relays (GIO88-95), the contacts (GIO70/71 and GIO82-87)
+# and the front-panel data/link LEDs (GIO75/76) all share balls with the DM355
+# VPFE (video-in) and VPBE (video-out) ports. U-Boot leaves those muxed to
+# video, so driving them as GPIO does NOTHING until the pin-mux is flipped.
+#
+# The field layout is mainline's own dm355_pins[] table (arch/arm/mach-davinci/
+# dm355.c, last present in v6.1), read as MUX_CFG(soc, name, reg, bit, mask,
+# mode): the mode column is the value that selects the PERIPHERAL, so zero
+# selects GPIO. Every video field here is two bits wide with 01 = peripheral,
+# which is why the values below only ever clear bits.
+#
+#   PINMUX0 (Video In)                     PINMUX1 (Video Out)
+#     0-7  CINL_EN   EMIF address pins       0-7   COUTL_EN
+#     8-9  CINH_EN   GIO95:94  (relays)      8-15  COUTH_EN  incl. GIO75/76
+#     10   YIN_EN    GIO93:86  (relays       16    HVSYNC
+#                    + contacts 7/8)         18-19 FIELD -> GIO70 (contact2)
+#     11   CAM_HD  \
+#     12   CAM_VD   } GIO82-85 = contacts 3-6
+#     13   CAM_WEN  /
+#     14   PCLK    /
+#
 # PINMUX1[5:0] carries the PWM0/1/2 status/power LEDs, so it is left untouched.
 # (Proper fix is a DT pinctrl node; this early script is the bring-up stand-in.)
+#
+# CONFIRMED on hardware: the relays and the data/link LEDs.
+# NOT YET CONFIRMED: the contact bits below. They follow the same field layout
+# and the same reasoning, but nothing has read a contact through them yet.
+#
+# STILL UNRESOLVED: contact1 = GIO71. Mainline names bits 18-19 VOUT_FIELD_G70
+# — GIO70, i.e. contact2 — and no field in the table is identified as GIO71.
+# Settle it the way the relays were settled: sweep one PINMUX1 field at a time
+# with a contact closure held on terminal 1 and watch `gpioget contact1`.
 case "$1" in
   start|"")
-    devmem 0x01c40000 32 0x00007955
-    devmem 0x01c40004 32 0x0014416A
-    echo "pinmux: relays/LEDs routed to GPIO"
+    # 0x7F55 -> 0x0155: clear bit 10 (YIN, relays 88-93 + contacts 7/8),
+    # bit 9 (CINH, relays 94/95) and bits 11-14 (the camera control pins that
+    # carry contacts 3-6).
+    devmem 0x01c40000 32 0x00000155
+    # 0x14556A -> 0x11416A: clear bits 12 and 10 (COUT1/COUT2 = the data and
+    # link LEDs) and bits 18-19 (FIELD = GIO70 = contact2).
+    devmem 0x01c40004 32 0x0011416A
+    echo "pinmux: relays, contacts and front LEDs routed to GPIO"
     ;;
 esac
 exit 0

@@ -55,6 +55,26 @@ CONFIG_NETDEVICES=y
 CONFIG_NET_VENDOR_DAVICOM=y
 CONFIG_DM9000=y
 
+# --- front panel: two GPIO LEDs and two buttons ---
+# board-hammer.c registers data-led on GIO75, link-led on GIO76, id-btn on GIO9
+# and recovery-btn on GIO8. The device tree describes all four; these are the
+# consumer drivers, and without them the nodes bind to nothing, /sys/class/leds
+# stays empty and it looks like the GPIO map is wrong rather than the config.
+#
+# NOT the polled keyboard the HC-800 needs: GIO0-9 on the DM355 are wired
+# straight to their own AINTC lines, so these two buttons genuinely interrupt.
+CONFIG_NEW_LEDS=y
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_GPIO=y
+CONFIG_LEDS_TRIGGERS=y
+CONFIG_LEDS_TRIGGER_DEFAULT_ON=y
+CONFIG_LEDS_TRIGGER_TIMER=y
+CONFIG_LEDS_TRIGGER_HEARTBEAT=y
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_GPIO=y
+
 # --- GPIO: relays (88-95), contacts (71/70/82-87), buttons, LEDs ---
 CONFIG_GPIOLIB=y
 CONFIG_GPIO_DAVINCI=y

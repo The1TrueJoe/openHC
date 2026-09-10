@@ -12,10 +12,10 @@ forced). Boots via appended DTB; network brings up SSH.
 
 See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
- arch/arm/boot/dts/ti/davinci/Makefile         |  3 +
- arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 86 ++++++++++
- arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 +++++++++++++++++++
- 3 files changed, 149 insertions(+)
+ arch/arm/boot/dts/ti/davinci/Makefile         | 3 +++
+ arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 254 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 351 insertions(+)
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355.dtsi
 
@@ -35,19 +35,24 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,254 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
-+ * openHC bring-up board: console + 128 MB RAM + dm9000 Ethernet (for SSH).
-+ * NAND, the front-panel LEDs/PWM, relays/contacts GPIO and the FPGA UARTs/IR
-+ * are added once we are on the network. dm9000 facts from the vendor
-+ * board-hammer.c: 16-bit, no EEPROM, IRQ on GPIO1 (rising), reset on GPIO101.
++ * openHC bring-up board: console + 128 MB RAM + dm9000 Ethernet (for SSH),
++ * the relays/contacts/LEDs/buttons on SoC GPIO, and the FPGA that carries the
++ * four RS-232 ports and the eight IR outputs.
++ *
++ * Every address, GPIO and interrupt below is from Control4's own GPL board
++ * file, arch/arm/mach-davinci/board-hammer.c, in
++ * linux-davinci-2.6.28-rc8+patches.tar.gz — not inferred. NAND and the PWM
++ * front-panel LEDs are still to come.
 + */
 +
 +/dts-v1/;
 +
 +#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
 +#include <dt-bindings/interrupt-controller/irq.h>
 +#include "dm355.dtsi"
 +
@@ -63,6 +68,55 @@ index 0000000..a959552
 +	memory@80000000 {
 +		device_type = "memory";
 +		reg = <0x80000000 0x08000000>;	/* 128 MB */
++	};
++
++	/*
++	 * The two front-panel buttons. gpio-keys rather than a poll loop for the
++	 * same reason as on the HC-800: a key event is what every Linux tool
++	 * already knows how to consume.
++	 *
++	 * The vendor's c4button driver called these "id-btn" and "recovery-btn"
++	 * and gave them no keycodes; these are ours. Both are active-low, and
++	 * both sit on GIO0-9, which the DM355 wires straight to their own AINTC
++	 * lines — so these interrupt rather than poll.
++	 */
++	keys {
++		compatible = "gpio-keys";
++
++		key-id {
++			label = "id-btn";
++			gpios = <&gpio 9 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_F5>;
++			debounce-interval = <20>;
++		};
++
++		key-recovery {
++			label = "recovery-btn";
++			gpios = <&gpio 8 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++			debounce-interval = <20>;
++		};
++	};
++
++	/*
++	 * The two front-panel GPIO LEDs. The other indicators on this box are
++	 * PWM-driven (status orange, power blue/red on PWM0/1/2, which U-Boot
++	 * already mux/drives) and are not modelled here yet.
++	 */
++	leds {
++		compatible = "gpio-leds";
++
++		led-data {
++			label = "c4:data";
++			gpios = <&gpio 75 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led-link {
++			label = "c4:link";
++			gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
 +	};
 +};
 +
@@ -87,6 +141,116 @@ index 0000000..a959552
 +		davicom,no-eeprom;
 +		local-mac-address = [00 0f ff 18 21 9c];
 +	};
++
++	/*
++	 * THE FPGA, and why its children are children.
++	 *
++	 * The four rear RS-232 ports and the eight IR outputs are registers in a
++	 * Xilinx part on the same async EMIF CS1 window, 0x04000200 + 0x100. It
++	 * comes out of reset BLANK: U-Boot does not program it, the vendor's
++	 * c4fpga.ko does, by bit-banging a bitstream in over the slave-serial
++	 * pins below (MSB first, data on din, cclk low then high, twelve dummy
++	 * clocks at the end, then `done` must read high).
++	 *
++	 * So these registers do not answer until a bitstream is loaded, and an
++	 * ns16550a node probed at boot would autoconfigure against a blank part,
++	 * find no UART, and be gone before the loader ever ran. That is the whole
++	 * reason the ports are CHILDREN of the FPGA rather than siblings: the
++	 * openHC FPGA driver populates them only once `done` reads high, which is
++	 * the same ordering the vendor gets out of module dependencies.
++	 *
++	 * A board with no bitstream on it therefore has relays, contacts, LEDs
++	 * and buttons and nothing else — which is the truth, and is what the
++	 * kernel should report rather than four ttyS nodes that swallow bytes.
++	 */
++	fpga: fpga@4000200 {
++		compatible = "control4,iox-fpga";
++		reg = <0x04000200 0x100>;
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		/* The FPGA's own attention line, once it is running. */
++		interrupt-parent = <&gpio>;
++		interrupts = <2 IRQ_TYPE_EDGE_RISING>;
++
++		/* Xilinx slave-serial programming pins, from board-hammer.c. */
++		m2-gpios    = <&gpio 55 GPIO_ACTIVE_HIGH>;
++		m0-gpios    = <&gpio 57 GPIO_ACTIVE_HIGH>;
++		din-gpios   = <&gpio 58 GPIO_ACTIVE_HIGH>;
++		cclk-gpios  = <&gpio 96 GPIO_ACTIVE_HIGH>;
++		done-gpios  = <&gpio 97 GPIO_ACTIVE_HIGH>;
++		prog-gpios  = <&gpio 98 GPIO_ACTIVE_LOW>;
++		/*
++		 * initb is GIO7 — the SAME line the UARTs interrupt on. It is a
++		 * programming status pin while the bitstream goes in and the
++		 * serial interrupt afterwards, so the loader has to let go of it
++		 * before the UARTs are populated.
++		 */
++		initb-gpios = <&gpio 7 GPIO_ACTIVE_HIGH>;
++
++		/*
++		 * Four 16550As, one byte per register — reg-shift 0, NOT the
++		 * SoC UART's 2. They share one rising-edge interrupt on GIO7.
++		 *
++		 * clock-frequency is a PLACEHOLDER. The vendor's SoC ports run
++		 * at 27 MHz but these are clocked inside the FPGA and no GPL
++		 * source states the rate; read it off a vendor unit with
++		 * `setserial -a /dev/ttyS1` (baud_base = uartclk / 16) before
++		 * trusting any line rate here.
++		 */
++		serial1: serial@4000240 {
++			compatible = "ns16550a";
++			reg = <0x04000240 0x10>;
++			reg-shift = <0>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <27000000>;
++		};
++
++		serial2: serial@4000250 {
++			compatible = "ns16550a";
++			reg = <0x04000250 0x10>;
++			reg-shift = <0>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <27000000>;
++		};
++
++		serial3: serial@4000260 {
++			compatible = "ns16550a";
++			reg = <0x04000260 0x10>;
++			reg-shift = <0>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <27000000>;
++		};
++
++		serial4: serial@4000270 {
++			compatible = "ns16550a";
++			reg = <0x04000270 0x10>;
++			reg-shift = <0>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <27000000>;
++		};
++
++		/*
++		 * Eight IR emitters across TWO 16-byte blocks. The split is the
++		 * vendor's own — c4irout_fpga_resource declares exactly these
++		 * two windows — but how 32 bytes divide into eight outputs is
++		 * NOT known: c4irout.c is the one file missing from Control4's
++		 * GPL drop, so the register layout has to come off a unit.
++		 */
++		irout: irout@4000220 {
++			compatible = "control4,iox-irout";
++			reg = <0x04000220 0x10>, <0x04000230 0x10>;
++		};
++	};
 +};
 +
 +/*
@@ -105,22 +269,26 @@ index 0000000..a959552
 + * These pins share balls with the VPFE/VPBE video ports and do nothing until
 + * the pin-mux is flipped; see S01pinmux, which is itself a stand-in for a real
 + * pinctrl node.
++ *
++ * The FPGA's own lines are named too, so that a loader running from userspace
++ * during bring-up can `gpiofind fpga_prog` rather than carry its own copy of
++ * the numbers. Nothing claims them at boot.
 + */
 +&gpio {
 +	gpio-line-names =
-+		"", "dm9000_irq", "", "", "", "", "", "",	/* 0-7 */
-+		"", "", "", "", "", "", "", "",	/* 8-15 */
++		"", "dm9000_irq", "fpga_irq", "", "", "", "", "fpga_initb",	/* 0-7 */
++		"recovery_btn", "id_btn", "", "", "", "", "", "",	/* 8-15 */
 +		"", "", "", "", "", "", "", "",	/* 16-23 */
 +		"", "", "", "", "", "", "", "",	/* 24-31 */
 +		"", "", "", "", "", "", "", "",	/* 32-39 */
 +		"", "", "", "", "", "", "", "",	/* 40-47 */
-+		"", "", "", "", "", "", "", "",	/* 48-55 */
-+		"", "", "", "", "", "", "", "",	/* 56-63 */
++		"", "", "", "", "", "", "", "fpga_m2",	/* 48-55 */
++		"", "fpga_m0", "fpga_din", "", "", "", "", "",	/* 56-63 */
 +		"", "", "", "", "", "", "contact2", "contact1",	/* 64-71 */
 +		"", "", "", "led_data", "led_link", "", "", "",	/* 72-79 */
 +		"", "", "contact3", "contact4", "contact5", "contact6", "contact7", "contact8",	/* 80-87 */
 +		"relay1", "relay2", "relay3", "relay4", "relay5", "relay6", "relay7", "relay8",	/* 88-95 */
-+		"", "", "", "", "", "dm9000_reset", "", "";	/* 96-103 */
++		"fpga_cclk", "fpga_done", "fpga_prog", "", "", "dm9000_reset", "", "";	/* 96-103 */
 +};
 diff --git a/arch/arm/boot/dts/ti/davinci/dm355.dtsi b/arch/arm/boot/dts/ti/davinci/dm355.dtsi
 new file mode 100644
