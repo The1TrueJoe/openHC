@@ -255,19 +255,22 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     // `savedefault` into a boot-once. Only the default line changes; the two
     // vendor entries are appended past, never rewritten.
     let mut out = String::new();
-    let mut swapped = false;
+    let mut seen_default = false;
     for l in before.lines() {
-        if l.trim_start().starts_with("default") && !l.contains("saved") {
-            out.push_str("default\t\tsaved\n");
-            swapped = true;
+        if l.trim_start().starts_with("default") {
+            // Already `saved` on a re-run, or on a unit somebody set up by
+            // hand. Idempotent: leave it, do not treat it as a missing line.
+            seen_default = true;
+            out.push_str(if l.contains("saved") { l } else { "default\t\tsaved" });
+            out.push('\n');
         } else {
             out.push_str(l);
             out.push('\n');
         }
     }
-    if !swapped {
+    if !seen_default {
         let _ = ssh.run(&format!("umount {gm}"), false);
-        bail!("menu.lst has no `default` line to convert");
+        bail!("menu.lst has no `default` line at all — not the file this tool expects");
     }
     out.push_str(&hc::menu_entry());
 

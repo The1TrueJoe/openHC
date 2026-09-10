@@ -69,10 +69,14 @@ pub const CMDLINE: &str = "console=ttyS0,115200";
 /// comes back on Control4, which answers SSH. Booting openHC again is one
 /// deliberate command, never an accident, and a broken image costs a single
 /// reboot instead of an unattended loop.
+///
+/// `savedefault` comes before the explicit `boot`, which is the order the two
+/// vendor entries in this file already use — and the only order that works,
+/// since `boot` does not return.
 pub fn menu_entry() -> String {
     format!(
         "\ntitle\t\topenHC\nroot\t\t{GRUB_KERNEL_ROOT}\nkernel\t\t{KERNEL_FILE} {CMDLINE}\n\
-         initrd\t\t{INITRD_FILE}\nsavedefault\t{ENTRY_VENDOR}\n"
+         initrd\t\t{INITRD_FILE}\nsavedefault\t{ENTRY_VENDOR}\nboot\n"
     )
 }
 
