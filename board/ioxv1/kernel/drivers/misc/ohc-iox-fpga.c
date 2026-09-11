@@ -85,7 +85,6 @@ static void iox_fpga_clocks(struct iox_fpga *f, unsigned int n)
 static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 {
 	unsigned int settle;
-	bool saw_initb_low;
 	size_t i;
 
 	/* Mode pins select slave-serial. Held for the whole configuration. */
@@ -93,8 +92,14 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	gpiod_set_value(f->m0, 1);
 	gpiod_set_value(f->cclk, 0);
 
-	dev_info(f->dev, "before PROG_B: initb=%d done=%d\n",
-		 gpiod_get_value(f->initb), gpiod_get_value(f->done));
+	/*
+	 * INIT_B (GIO7) does NOT read back reliably on this board — gpiod, raw
+	 * devmem and the gpio chardev all disagree, because the pin is shared
+	 * with the FPGA UART interrupt. So it is logged for interest only and
+	 * never gated on; DONE (GIO97), which reads cleanly, is the real signal.
+	 */
+	dev_info(f->dev, "start: done=%d (initb unreliable on this board)\n",
+		 gpiod_get_value(f->done));
 
 	/*
 	 * Pulse PROG_B to clear the configuration memory. The descriptor is
@@ -106,55 +111,25 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	gpiod_set_value(f->prog, 1);
 
 	/*
-	 * THE diagnostic that matters. INIT_B is driven LOW by the part while it
-	 * clears configuration memory, so seeing it drop is proof that PROG_B
-	 * actually reached the FPGA. If it never drops, nothing downstream is
-	 * worth believing — the bitstream is fine and the pin is not.
+	 * Hold PROG_B asserted long enough to clear the configuration memory,
+	 * then release it. We do NOT wait on INIT_B here: on this board GIO7 is
+	 * shared between INIT_B and the FPGA UART interrupt and does not read
+	 * back the INIT_B line usefully (it reads 0 blank, and read 0 on the
+	 * vendor even with the part configured). So a fixed settle replaces the
+	 * INIT_B handshake — the same thing the vendor loader must do — and DONE
+	 * is the signal we actually trust, below.
 	 */
-	saw_initb_low = false;
-	for (settle = 0; settle < 200; settle++) {
-		if (gpiod_get_value(f->initb) == 0) {
-			saw_initb_low = true;
-			break;
-		}
-		udelay(10);
-	}
-	dev_info(f->dev, "PROG_B asserted: INIT_B %s\n",
-		 saw_initb_low ? "went LOW (the part saw it)"
-			       : "STAYED HIGH — PROG_B is not reaching the part");
-
 	udelay(500);
 	gpiod_set_value(f->prog, 0);
-
-	/*
-	 * INIT_B rises when the part has finished clearing and is ready for
-	 * data. Waiting for it rather than a fixed delay is what makes a
-	 * too-fast host safe, and a timeout here is the single most useful
-	 * failure to report: it means the part is not answering the mode/prog
-	 * pins at all, i.e. a wiring or polarity problem rather than a bad
-	 * bitstream.
-	 */
-	for (settle = 0; settle < 1000; settle++) {
-		if (gpiod_get_value(f->initb) > 0)
-			break;
-		usleep_range(100, 200);
-	}
-	if (gpiod_get_value(f->initb) <= 0) {
-		dev_err(f->dev, "INIT_B never rose after PROG_B — check the mode and prog pins\n");
-		return -ETIMEDOUT;
-	}
+	usleep_range(1000, 2000);	/* config-memory clear + INIT_B settle */
 
 	for (i = 0; i < len; i++) {
 		iox_fpga_byte(f, data[i]);
 		/*
-		 * INIT_B falling MID-STREAM is the part telling us the bitstream
-		 * failed its CRC. Say so, rather than clocking in another two
-		 * megabytes and reporting a bare "DONE never came".
+		 * No mid-stream INIT_B CRC check: INIT_B is not readable on this
+		 * board (see above). A CRC failure shows up as DONE never rising,
+		 * which we report below.
 		 */
-		if ((i & 0xffff) == 0xffff && gpiod_get_value(f->initb) == 0) {
-			dev_err(f->dev, "INIT_B fell at byte %zu — bitstream CRC error\n", i);
-			return -EIO;
-		}
 		if ((i & 0x3fff) == 0x3fff)
 			cond_resched();
 	}
@@ -173,10 +148,9 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	}
 	if (gpiod_get_value(f->done) <= 0) {
 		dev_err(f->dev,
-			"DONE never rose after %zu bytes (initb=%d, PROG_B %s)\n",
-			len, gpiod_get_value(f->initb),
-			saw_initb_low ? "was seen by the part"
-				      : "was NOT seen — suspect that first");
+			"DONE never rose after %zu bytes — wrong bitstream, or a "
+			"config pin (M2/M0/DIN/CCLK/PROG) not reaching the part\n",
+			len);
 		return -EIO;
 	}
 
