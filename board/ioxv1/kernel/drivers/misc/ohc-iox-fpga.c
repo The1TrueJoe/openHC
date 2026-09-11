@@ -119,9 +119,10 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 		 gpiod_get_value(f->done));
 
 	/*
-	 * Pulse PROG_B to clear the configuration memory. The descriptor is
-	 * active-low in the device tree, so a logical 1 here drives the pin low
-	 * — assert, hold, release.
+	 * Pulse PROG to clear the configuration memory. prog is ACTIVE_HIGH in
+	 * the device tree (verified: SoC pin HIGH = reset, LOW = released), so
+	 * logical 0 releases and logical 1 asserts reset. Release, brief assert,
+	 * release — ending released so data clocks into a ready part.
 	 */
 	gpiod_set_value(f->prog, 0);
 	udelay(20);
