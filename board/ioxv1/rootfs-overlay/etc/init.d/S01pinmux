@@ -46,10 +46,28 @@
 # selected MORE video, not less.
 case "$1" in
   start|"")
-    # 0x7F55 -> 0x0155: clear bit 10 (YIN, relays 88-93 + contacts 7/8),
-    # bit 9 (CINH, relays 94/95) and bits 11-14 (the camera control pins that
-    # carry contacts 3-6).
-    devmem 0x01c40000 32 0x00000155
+    # 0x7F55 -> 0x0015: clear bit 10 (YIN, relays 88-93 + contacts 7/8),
+    # bit 9 (CINH, relays 94/95), bits 11-14 (the camera control pins that
+    # carry contacts 3-6), and bits 6 and 8 — the FPGA's PROG_B and CCLK.
+    #
+    # Bits 6 and 8 were found by sweeping every mux bit on a live board while
+    # watching whether the pin FOLLOWS what the GPIO block drives (DM355
+    # IN_DATA reflects driven pins). Without them the FPGA loader clocks a
+    # perfect bitstream into pins that are wired to a video peripheral and
+    # reports "DONE never rose", which reads like a bad bitstream and is not.
+    #
+    #   bit 6 -> GIO98 = PROG_B      bit 8 -> GIO96 = CCLK
+    #
+    # Note these are per-PIN selects, not the 2-bit fields the video entries
+    # use: bits 8 and 9 act independently, which is why 0x0155 already had 9
+    # clear (relays 94/95) while 8 still held CCLK away from the GPIO block.
+    #
+    # STILL MISSING: M2 (GIO55), M0 (GIO57) and DIN (GIO58). They are not in
+    # PINMUX0 or PINMUX1 — directly tested, both cleared entirely, no effect —
+    # so they are somewhere in PINMUX2/3/4 and the sweep for them is unfinished.
+    # Until they are found the load cannot work, because the data pin is still
+    # disconnected.
+    devmem 0x01c40000 32 0x00000015
     # 0x14556A -> 0x13416A: clear bits 12 and 10 (COUT1/COUT2 = the data and
     # link LEDs) and bits 18-19 (FIELD = GIO70 = contact2), and SET bit 17
     # (undocumented, GIO71 = contact1).

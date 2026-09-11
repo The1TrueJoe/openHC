@@ -210,9 +210,28 @@ Known so far:
 
 | Pin | Signal | Mux |
 |---|---|---|
-| GIO98 | `PROG_B` | **PINMUX0 bit 6 CLEAR** (`VIN_CINL_EN` field [7:6]) |
-| GIO96 | `CCLK` | not in any single PINMUX0 CINL field — still being swept |
-| GIO55/57/58 | `M2`/`M0`/`DIN` | still being swept |
+| GIO98 | `PROG_B` | **PINMUX0 bit 6 CLEAR** |
+| GIO96 | `CCLK` | **PINMUX0 bit 8 CLEAR** |
+| GIO55/57/58 | `M2`/`M0`/`DIN` | **not found yet** — not in PINMUX0 or PINMUX1 (both cleared entirely, no effect), so somewhere in PINMUX2/4 |
+
+So `PINMUX0 = 0x00000015` frees PROG_B and CCLK together. Bits 8 and 9 act as
+independent per-pin selects rather than the 2-bit fields the video entries use,
+which is why `0x0155` already had bit 9 clear (relays 94/95) while bit 8 still
+held CCLK away from the GPIO block.
+
+:::danger[Sweep by CLEARING bits only]
+A sweep that tries both polarities **hung a board**. Setting a bit that was
+clear can route a pin to a peripheral something else is using; PINMUX3 is
+EMIF-adjacent here and the dm9000 Ethernet is on that same EMIF, so the kernel
+took a bus fault mid-sweep and the box dropped off the network with no console
+to explain it. Recovery was a power cycle and a netboot.
+
+Clearing is the safe direction: a mux field selects its peripheral with a
+non-zero value and the GPIO block with zero, so clearing can only ever
+disconnect a peripheral. Where a pin genuinely needs a bit SET — contact1/GIO71
+does — make that a single deliberate write with a way back, not one iteration
+of a 300-step loop.
+:::
 
 :::caution[`follows` only proves anything for pins the SoC drives]
 GIO97 (`DONE`) and GIO7 (`INIT_B`) are FPGA **outputs**. Driving them from the
