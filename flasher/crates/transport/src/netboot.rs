@@ -78,6 +78,12 @@ pub struct Config {
     /// The name to advertise, and the name it is staged under. May contain
     /// slashes: a stock IO Extender asks for `hammer/uImage`.
     pub bootfile: String,
+    /// Answer the DHCP, then REFUSE the transfer.
+    ///
+    /// For a bootloader whose netboot command retries forever rather than
+    /// failing over: a definitive TFTP error is what makes it give up and fall
+    /// through to whatever it was going to boot otherwise. `image` is ignored.
+    pub refuse: bool,
 }
 
 /// Parse `00:0f:ff:18:21:9c` (or `-` separated, or bare hex).
@@ -222,6 +228,12 @@ fn dhcp_thread(
 /// too — the box asks for the name we advertised, and it has to resolve.
 fn stage(cfg: &Config) -> io::Result<tempfile::TempDir> {
     let dir = tempfile::Builder::new().prefix("ohc-netboot-").tempdir()?;
+    // Refusing means serving a directory with nothing in it: tftpd answers any
+    // read request with "file not found", which is the error packet a looping
+    // bootloader needs before it will move on.
+    if cfg.refuse {
+        return Ok(dir);
+    }
     let rel = Path::new(cfg.bootfile.trim_start_matches('/'));
     let dest = dir.path().join(rel);
     if let Some(parent) = dest.parent() {
@@ -245,7 +257,7 @@ pub fn serve(
     stop: Arc<AtomicBool>,
     emit: impl Fn(Event) + Send + Sync + 'static,
 ) -> io::Result<()> {
-    if !cfg.image.is_file() {
+    if !cfg.refuse && !cfg.image.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("no image at {}", cfg.image.display()),
@@ -439,6 +451,7 @@ mod tests {
             netmask: Ipv4Addr::new(255, 255, 255, 0),
             image: PathBuf::from("/dev/null"),
             bootfile: "hammer/uImage".into(),
+            refuse: false,
         }
     }
 

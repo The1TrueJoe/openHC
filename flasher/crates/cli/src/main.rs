@@ -48,7 +48,7 @@ fn help() {
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            wrap <bzImage> <out> [--header FILE]\n\
                                     wrap a bzImage in a CEFDK container\n\
-           netboot --mac <MAC> --image <FILE> --client-ip <ADDR>\n\
+           netboot --mac <MAC> --image <FILE> --client-ip <ADDR> [--refuse]\n\
                    [--server-ip A] [--bootfile NAME] [--netmask M] [--minutes N]\n\
                                     answer ONE box's DHCP and TFTP it a kernel, for a\n\
                                     unit whose console is unreachable. Needs root.\n\n\
@@ -351,13 +351,18 @@ fn netboot(rest: &[String]) -> bool {
         eprintln!("  '{mac_s}' is not a MAC address");
         return false;
     };
-    let Some(image) = arg("--image").map(PathBuf::from) else {
-        eprintln!("  --image <FILE> is required (the kernel to serve)");
-        return false;
+    let refuse = rest.iter().any(|a| a == "--refuse");
+    let image = match arg("--image").map(PathBuf::from) {
+        Some(p) => p,
+        None if refuse => PathBuf::new(),
+        None => {
+            eprintln!("  --image <FILE> is required (the kernel to serve)");
+            return false;
+        }
     };
     // Checked HERE, not by serve(), so a typo does not first print
     // "POWER-CYCLE THE BOX NOW" and then admit it has nothing to serve.
-    if !image.is_file() {
+    if !refuse && !image.is_file() {
         eprintln!("  no image at {}", image.display());
         return false;
     }
@@ -402,7 +407,13 @@ fn netboot(rest: &[String]) -> bool {
     println!("  netboot: answering {} and nothing else", tp::netboot::format_mac(&mac));
     println!("    offering   {client_ip}  netmask {netmask}");
     println!("    serverip   {server_ip}  bootfile {bootfile}");
-    println!("    serving    {}", image.display());
+    if refuse {
+        println!("    serving    NOTHING — refusing the transfer on purpose, so a");
+        println!("               bootloader that retries forever gives up and boots");
+        println!("               whatever it would have booted without us");
+    } else {
+        println!("    serving    {}", image.display());
+    }
     println!("\n  POWER-CYCLE THE BOX NOW — listening for {minutes} minutes.\n");
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -427,7 +438,7 @@ fn netboot(rest: &[String]) -> bool {
     });
 
     let (ig, ak) = (ignored.clone(), acked.clone());
-    let cfg = tp::netboot::Config { mac, client_ip, server_ip, netmask, image, bootfile };
+    let cfg = tp::netboot::Config { mac, client_ip, server_ip, netmask, image, bootfile, refuse };
     let served = tp::netboot::serve(
         cfg,
         std::time::Duration::from_secs(minutes * 60),
