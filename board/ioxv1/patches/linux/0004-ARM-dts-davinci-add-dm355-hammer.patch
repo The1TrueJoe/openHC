@@ -13,9 +13,9 @@ forced). Boots via appended DTB; network brings up SSH.
 See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  arch/arm/boot/dts/ti/davinci/Makefile         | 3 +++
- arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 415 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 421 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 104 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 522 insertions(+)
+ 3 files changed, 528 insertions(+)
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355.dtsi
 
@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,415 @@
+@@ -0,0 +1,421 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
@@ -401,11 +401,17 @@ index 0000000..a959552
 +		};
 +
 +		/*
-+		 * Eight IR emitters across TWO 16-byte blocks. The split is the
-+		 * vendor's own — c4irout_fpga_resource declares exactly these
-+		 * two windows — but how 32 bytes divide into eight outputs is
-+		 * NOT known: c4irout.c is the one file missing from Control4's
-+		 * GPL drop, so the register layout has to come off a unit.
++		 * Eight IR emitters across TWO 16-byte blocks at 0x220 and 0x230.
++		 * c4irout.c was never in Control4's GPL drop, but the register
++		 * layout was recovered by disassembling the vendor c4irout.ko off
++		 * a live unit (see the openHC IR-register-map notes). Each block
++		 * is eight halfword registers; per emitter c4irout_config assigns
++		 * regA/B, a CONTROL word (bit15 = go, bit14 = mode, bit13 always
++		 * set, bits5-12 a select field), a carrier field ((v & 0x7f) << 9),
++		 * data and a count-1 register. c4irout_go fires by setting bit 15
++		 * of CONTROL; completion raises the shared IRQ on GIO7. The exact
++		 * carrier calibration still wants a live confirm once our own FPGA
++		 * driver can drive the block.
 +		 */
 +		irout: irout@4000220 {
 +			compatible = "control4,iox-irout";
