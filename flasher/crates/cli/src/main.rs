@@ -48,10 +48,12 @@ fn help() {
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            wrap <bzImage> <out> [--header FILE]\n\
                                     wrap a bzImage in a CEFDK container\n\
-           netboot --mac <MAC> --image <FILE> --client-ip <ADDR> [--refuse]\n\
-                   [--server-ip A] [--bootfile NAME] [--netmask M] [--minutes N]\n\
+           netboot --mac <MAC> --image <FILE> [--board NAME]\n\
+                   [--client-ip A] [--server-ip A] [--bootfile NAME] [--minutes N]\n\
                                     answer ONE box's DHCP and TFTP it a kernel, for a\n\
-                                    unit whose console is unreachable. Needs root.\n\n\
+                                    unit whose console is unreachable. Needs root.\n\
+                                    --board supplies the addresses a bootloader has\n\
+                                    hardcoded (ioxv1: serverip 192.168.0.10).\n\n\
          The GUI (`ohc-flasher`) is the primary front end for non-CLI users.\n"
     );
 }
@@ -352,6 +354,17 @@ fn netboot(rest: &[String]) -> bool {
         return false;
     };
     let refuse = rest.iter().any(|a| a == "--refuse");
+
+    // A board's bootloader may have its netboot addresses compiled in. Those
+    // are board facts and live in core; the flags below only override them.
+    let profile = arg("--board")
+        .as_deref()
+        .and_then(board::by_name)
+        .and_then(|b| b.netboot);
+    if let Some(p) = profile {
+        println!("  board profile: serverip {} (hardcoded in this board's U-Boot), \
+                  offering {}", p.server_ip, p.client_ip);
+    }
     let image = match arg("--image").map(PathBuf::from) {
         Some(p) => p,
         None if refuse => PathBuf::new(),
@@ -374,15 +387,16 @@ fn netboot(rest: &[String]) -> bool {
         }
     };
 
-    // No sensible default: the address to offer is the one the box already had,
-    // which the operator knows from the lease table or a capture and we do not.
-    let Some(client_raw) = arg("--client-ip") else {
-        eprintln!("  --client-ip <ADDR> is required — offer it the address it already had");
+    // Explicit flag wins; otherwise the board profile; otherwise ask.
+    let client_raw = arg("--client-ip")
+        .or_else(|| profile.map(|p| p.client_ip.to_string()));
+    let Some(client_raw) = client_raw else {
+        eprintln!("  --client-ip <ADDR> is required (or pass --board so the profile supplies it)");
         return false;
     };
     let Some(client_ip) = ipv4(&client_raw, "--client-ip") else { return false };
 
-    let server_ip = match arg("--server-ip") {
+    let server_ip = match arg("--server-ip").or_else(|| profile.map(|p| p.server_ip.to_string())) {
         Some(v) => match ipv4(&v, "--server-ip") { Some(a) => a, None => return false },
         // Ask the routing table which of our addresses faces that box, so the
         // common case needs no flag and a multi-homed host still gets it right.
@@ -395,13 +409,31 @@ fn netboot(rest: &[String]) -> bool {
         },
     };
 
+    // THE CHECK THAT SAVES AN EVENING. A bootloader with a hardcoded serverip
+    // ignores whatever the DHCP offer says and TFTPs to that address, so if
+    // this host does not hold it the request goes nowhere — and the only
+    // symptom is a box retrying forever with nothing in our log at all.
+    if tp::netboot::interface_holding(server_ip).is_none() {
+        eprintln!("  this machine does not hold {server_ip}, and this board's bootloader");
+        eprintln!("  will TFTP to exactly that address no matter what we offer it.");
+        eprintln!();
+        eprintln!("  add it first:");
+        #[cfg(target_os = "macos")]
+        eprintln!("    sudo ifconfig en0 alias {server_ip} 255.255.255.0");
+        #[cfg(not(target_os = "macos"))]
+        eprintln!("    sudo ip addr add {server_ip}/24 dev eth0");
+        return false;
+    }
+
     let netmask = match arg("--netmask") {
         Some(v) => match ipv4(&v, "--netmask") { Some(a) => a, None => return false },
         None => std::net::Ipv4Addr::new(255, 255, 255, 0),
     };
-    let bootfile = arg("--bootfile").unwrap_or_else(|| {
-        tp::netboot::default_bootfile(arg("--board").as_deref().unwrap_or("ioxv1"))
-    });
+    let bootfile = arg("--bootfile")
+        .or_else(|| profile.map(|p| p.bootfile.to_string()))
+        .unwrap_or_else(|| {
+            tp::netboot::default_bootfile(arg("--board").as_deref().unwrap_or("ioxv1"))
+        });
     let minutes: u64 = arg("--minutes").and_then(|v| v.parse().ok()).unwrap_or(10);
 
     println!("  netboot: answering {} and nothing else", tp::netboot::format_mac(&mac));

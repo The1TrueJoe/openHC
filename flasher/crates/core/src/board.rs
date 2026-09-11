@@ -44,6 +44,29 @@ pub struct Board {
     pub has_switch: bool,
     pub has_wifi: bool,
     pub notes: &'static str,
+    /// What this board's bootloader expects when it netboots, when it has
+    /// anything hardcoded at all.
+    pub netboot: Option<Netboot>,
+}
+
+/// A bootloader's built-in netboot expectations.
+///
+/// These are not defaults we chose — they are what the vendor's U-Boot has
+/// compiled or saved into it, so a netboot server has to match them exactly or
+/// the box never asks it for anything. Reading them off a unit costs a capture
+/// and a lot of confusion, so they belong here once they are known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Netboot {
+    /// The address the bootloader TFTPs from, regardless of what DHCP offered
+    /// it. The host has to actually hold this address.
+    pub server_ip: &'static str,
+    /// What to offer the board. Put it on the server's subnet: the IO
+    /// Extender's `tst` reaches its hardcoded server directly when they share
+    /// one, and via a gateway that may not exist when they do not.
+    pub client_ip: &'static str,
+    pub netmask: &'static str,
+    /// The path it asks for.
+    pub bootfile: &'static str,
 }
 
 impl Board {
@@ -67,6 +90,7 @@ pub const BOARDS: &[Board] = &[
         has_switch: false,
         has_wifi: true,
         notes: "fuse clear: an unsigned container at 0x400 boots, so no autoscript is needed.",
+        netboot: None,
     },
     Board {
         name: "ea1-v2",
@@ -78,6 +102,7 @@ pub const BOARDS: &[Board] = &[
         has_switch: false,
         has_wifi: true,
         notes: "ids not yet read off hardware; boot behaviour assumed to match v1 and NOT verified.",
+        netboot: None,
     },
     Board {
         name: "ea1-v2-poe",
@@ -89,6 +114,7 @@ pub const BOARDS: &[Board] = &[
         has_switch: true,
         has_wifi: false,
         notes: "CEFDK's own enum calls this board_ea1p = 5, which is not /proc/c4board/type.",
+        netboot: None,
     },
     Board {
         name: "ea3-v1",
@@ -100,6 +126,7 @@ pub const BOARDS: &[Board] = &[
         has_switch: true,
         has_wifi: true,
         notes: "",
+        netboot: None,
     },
     Board {
         name: "ea3-v2",
@@ -112,6 +139,7 @@ pub const BOARDS: &[Board] = &[
         has_wifi: false,
         notes: "secure-boot fuse BLOWN (measured): bootkernel rejects unsigned images, so this \
                 board must install via the autoscript + bootlinux path.",
+        netboot: None,
     },
     Board {
         name: "ca1",
@@ -124,6 +152,7 @@ pub const BOARDS: &[Board] = &[
         has_wifi: false,
         notes: "stock bootcmd already tries boot.scr on the vfat partition; dropping one takes \
                 over and deleting it reverts.",
+        netboot: None,
     },
     Board {
         name: "ioxv1",
@@ -135,6 +164,19 @@ pub const BOARDS: &[Board] = &[
         has_switch: false,
         has_wifi: false,
         notes: "",
+        // Read off a live unit with tcpdump: after taking a DHCP lease the
+        // board ARPs its gateway and sends
+        //     TFTP RRQ "hammer/uImage" to 192.168.0.10
+        // no matter what siaddr the offer carried. `tst` sets serverip itself,
+        // so the OFFER cannot redirect it — the host must BE 192.168.0.10.
+        // Offering the board an address on that same subnet is what keeps the
+        // request direct instead of routed through a gateway.
+        netboot: Some(Netboot {
+            server_ip: "192.168.0.10",
+            client_ip: "192.168.0.50",
+            netmask: "255.255.255.0",
+            bootfile: "hammer/uImage",
+        }),
     },
     Board {
         name: "hc800",
@@ -146,6 +188,7 @@ pub const BOARDS: &[Board] = &[
         has_switch: false,
         has_wifi: false,
         notes: "",
+        netboot: None,
     },
 ];
 

@@ -324,9 +324,14 @@ pub fn serve(
 
 /// Which interface holds `ip`, by name.
 ///
+/// Public because a front end needs to answer "does this machine actually hold
+/// the address the bootloader will TFTP to?" before it starts listening — a
+/// bootloader with a hardcoded serverip gives no other sign that it cannot
+/// reach us.
+///
 /// The DHCP socket has to be pinned to it, and the pinning APIs take a name (or
 /// an index derived from one) rather than an address.
-fn interface_holding(ip: Ipv4Addr) -> Option<String> {
+pub fn interface_holding(ip: Ipv4Addr) -> Option<String> {
     if_addrs::get_if_addrs()
         .ok()?
         .into_iter()
