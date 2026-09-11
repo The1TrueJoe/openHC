@@ -43,12 +43,24 @@
 
 #define IOX_FPGA_FW	"c4/iox-fpga.bin"
 
+/* Direct GPIO register bit-bang (matches the vendor c4fpga). */
+#define GPIO_PHYS	0x01c67000
+#define GPIO_SIZE	0x100
+#define DIN_SET		0x40
+#define DIN_CLR		0x44
+#define DIN_BIT		(1u << 26)	/* GIO58, bank1 */
+#define CCLK_SET	0x90
+#define CCLK_CLR	0x94
+#define CCLK_BIT	(1u << 0)	/* GIO96, bank3 */
+
+
 struct iox_fpga {
 	struct device		*dev;
 	struct gpio_desc	*m2, *m0, *din, *cclk, *prog;	/* out */
 	struct gpio_desc	*done, *initb;			/* in  */
 	bool			loaded;
 	bool			populated;
+	void __iomem		*gpio;	/* GPIO controller, for raw CCLK/DIN bit-bang */
 };
 
 /* ---- the wire protocol ------------------------------------------------- */
@@ -67,18 +79,23 @@ static void iox_fpga_byte(struct iox_fpga *f, u8 b)
 	int i;
 
 	for (i = 7; i >= 0; i--) {
-		gpiod_set_value(f->din, (b >> i) & 1);
-		gpiod_set_value(f->cclk, 0);
-		gpiod_set_value(f->cclk, 1);
+		/* DIN = bit, MSB first, via the raw SET/CLR registers. */
+		if ((b >> i) & 1)
+			writel(DIN_BIT, f->gpio + DIN_SET);
+		else
+			writel(DIN_BIT, f->gpio + DIN_CLR);
+		/* CCLK low then high; the FPGA samples DIN on the rising edge. */
+		writel(CCLK_BIT, f->gpio + CCLK_CLR);
+		writel(CCLK_BIT, f->gpio + CCLK_SET);
 	}
 }
 
 static void iox_fpga_clocks(struct iox_fpga *f, unsigned int n)
 {
-	gpiod_set_value(f->din, 1);
+	writel(DIN_BIT, f->gpio + DIN_SET);
 	while (n--) {
-		gpiod_set_value(f->cclk, 0);
-		gpiod_set_value(f->cclk, 1);
+		writel(CCLK_BIT, f->gpio + CCLK_CLR);
+		writel(CCLK_BIT, f->gpio + CCLK_SET);
 	}
 }
 
@@ -146,36 +163,32 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 			break;
 		iox_fpga_clocks(f, 8);
 	}
-	if (gpiod_get_value(f->done) <= 0) {
-		dev_err(f->dev,
-			"DONE never rose after %zu bytes — wrong bitstream, or a "
-			"config pin (M2/M0/DIN/CCLK/PROG) not reaching the part\n",
-			len);
-		return -EIO;
-	}
-
-	dev_info(f->dev, "FPGA configured from %zu bytes, DONE is high\n", len);
 
 	/*
-	 * A second, independent confirmation. On a live vendor unit the FPGA's
-	 * first register (base + 0x00) reads its firmware version — 0x0004 on
-	 * the bitstream we have. A configured part answers this; a blank one
-	 * floats the bus. DONE going high already says configuration finished,
-	 * but reading a sane version proves the register interface itself came
-	 * up, which is what the UARTs and IR block depend on. Non-fatal: some
-	 * bitstreams may not implement it, so a zero read is logged, not failed.
+	 * Judge success by the FPGA VERSION REGISTER, not the DONE pin. DONE and
+	 * INIT_B read inconsistently on this board, but a configured FPGA drives
+	 * its register bus and base+0 (== the node's reg[0], 0x04000200) reads a
+	 * small version number (0x0004 on our bitstream); a blank part floats the
+	 * bus to a repeating 0x02.. pattern.
 	 */
 	{
 		struct resource *r = platform_get_resource(
 			to_platform_device(f->dev), IORESOURCE_MEM, 0);
-		if (r) {
-			void __iomem *base = ioremap(r->start, resource_size(r));
-			if (base) {
-				u16 ver = readw(base);
-				iounmap(base);
-				dev_info(f->dev, "FPGA version register = 0x%04x\n", ver);
-			}
+		void __iomem *base = r ? ioremap(r->start, resource_size(r)) : NULL;
+		u16 ver = base ? readw(base) : 0xffff;
+
+		if (base)
+			iounmap(base);
+		dev_info(f->dev, "after load: version reg = 0x%04x, DONE pin = %d\n",
+			 ver, gpiod_get_value(f->done));
+		if (ver == 0x0000 || ver == 0xffff || (ver & 0xff) == 0x02) {
+			dev_err(f->dev,
+				"FPGA did not configure (version 0x%04x is a floating bus) "
+				"after %zu bytes\n", ver, len);
+			return -EIO;
 		}
+		dev_info(f->dev, "FPGA CONFIGURED — version 0x%04x, %zu bytes\n",
+			 ver, len);
 	}
 	return 0;
 }
@@ -363,19 +376,42 @@ static int iox_fpga_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	f->gpio = devm_ioremap(dev, GPIO_PHYS, GPIO_SIZE);
+	if (!f->gpio) {
+		dev_err(dev, "cannot map the GPIO controller for bit-bang\n");
+		return -ENOMEM;
+	}
+
 	platform_set_drvdata(pdev, f);
 
 	/*
-	 * If something already configured the part (a warm reboot, or U-Boot on
-	 * a unit whose environment does it), the children can come up now and
-	 * nobody has to write to sysfs at all.
+	 * If something already configured the part — vendor Linux loaded it and
+	 * we reached openHC by a warm path that never power-cycled or pulsed
+	 * PROG — the config SRAM is still live and the UARTs can come up now,
+	 * with NO firmware write and, crucially, without pulsing PROG (which
+	 * would wipe a working config). Detect it by the version register, not
+	 * the DONE pin: DONE reads unreliably on this board, but a configured
+	 * FPGA drives base+0 to a small version (0x0004), while a blank part
+	 * floats the bus to a repeating 0x02.. pattern.
 	 */
-	if (gpiod_get_value(f->done) > 0) {
-		dev_info(dev, "DONE is already high — the FPGA is configured\n");
-		f->loaded = true;
-		iox_fpga_populate(f);
-	} else {
-		dev_info(dev, "FPGA is blank; write a filename to sysfs 'firmware' to load one\n");
+	{
+		struct resource *r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		void __iomem *fb = r ? ioremap(r->start, resource_size(r)) : NULL;
+		u16 ver = fb ? readw(fb) : 0xffff;
+		bool configured = fb && ver != 0x0000 && ver != 0xffff &&
+				  (ver & 0xff) != 0x02;
+
+		if (fb)
+			iounmap(fb);
+		if (configured) {
+			dev_info(dev, "FPGA already configured (version 0x%04x) — populating without a reload\n",
+				 ver);
+			f->loaded = true;
+			iox_fpga_populate(f);
+		} else {
+			dev_info(dev, "FPGA is blank (version reg 0x%04x); write a filename to sysfs 'firmware' to load one\n",
+				 ver);
+		}
 	}
 	return 0;
 }
