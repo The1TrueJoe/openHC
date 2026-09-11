@@ -38,6 +38,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/io.h>
 #include <linux/sysfs.h>
 
 #define IOX_FPGA_FW	"c4/iox-fpga.bin"
@@ -84,12 +85,16 @@ static void iox_fpga_clocks(struct iox_fpga *f, unsigned int n)
 static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 {
 	unsigned int settle;
+	bool saw_initb_low;
 	size_t i;
 
 	/* Mode pins select slave-serial. Held for the whole configuration. */
 	gpiod_set_value(f->m2, 1);
 	gpiod_set_value(f->m0, 1);
 	gpiod_set_value(f->cclk, 0);
+
+	dev_info(f->dev, "before PROG_B: initb=%d done=%d\n",
+		 gpiod_get_value(f->initb), gpiod_get_value(f->done));
 
 	/*
 	 * Pulse PROG_B to clear the configuration memory. The descriptor is
@@ -99,6 +104,25 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	gpiod_set_value(f->prog, 0);
 	udelay(20);
 	gpiod_set_value(f->prog, 1);
+
+	/*
+	 * THE diagnostic that matters. INIT_B is driven LOW by the part while it
+	 * clears configuration memory, so seeing it drop is proof that PROG_B
+	 * actually reached the FPGA. If it never drops, nothing downstream is
+	 * worth believing — the bitstream is fine and the pin is not.
+	 */
+	saw_initb_low = false;
+	for (settle = 0; settle < 200; settle++) {
+		if (gpiod_get_value(f->initb) == 0) {
+			saw_initb_low = true;
+			break;
+		}
+		udelay(10);
+	}
+	dev_info(f->dev, "PROG_B asserted: INIT_B %s\n",
+		 saw_initb_low ? "went LOW (the part saw it)"
+			       : "STAYED HIGH — PROG_B is not reaching the part");
+
 	udelay(500);
 	gpiod_set_value(f->prog, 0);
 
@@ -148,8 +172,11 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 		iox_fpga_clocks(f, 8);
 	}
 	if (gpiod_get_value(f->done) <= 0) {
-		dev_err(f->dev, "DONE never rose after %zu bytes — wrong bitstream for this part?\n",
-			len);
+		dev_err(f->dev,
+			"DONE never rose after %zu bytes (initb=%d, PROG_B %s)\n",
+			len, gpiod_get_value(f->initb),
+			saw_initb_low ? "was seen by the part"
+				      : "was NOT seen — suspect that first");
 		return -EIO;
 	}
 
@@ -249,6 +276,48 @@ static ssize_t initb_show(struct device *dev, struct device_attribute *a, char *
 }
 static DEVICE_ATTR_RO(initb);
 
+/*
+ * Read the FPGA's register window through an UNCACHED mapping.
+ *
+ * This exists because userspace cannot answer the question. busybox devmem
+ * maps /dev/mem, and that mapping is cached: writing a byte dirties a cache
+ * line and reading it back hits that line, so every offset in the window looks
+ * like perfectly good storage even with no FPGA driving the bus at all. The
+ * giveaway was a fresh read of the same offsets returning a constant.
+ *
+ * ioremap gives a device mapping with no caching, so what comes back here is
+ * what the bus returned. A window of identical bytes means nothing is driving
+ * it; a 16550 that answers will show structure — LSR reading 0x60 when idle is
+ * the easiest thing to recognise.
+ */
+static ssize_t window_show(struct device *dev, struct device_attribute *a, char *buf)
+{
+	struct iox_fpga *f = dev_get_drvdata(dev);
+	struct resource *r;
+	void __iomem *base;
+	int len = 0, i;
+
+	r = platform_get_resource(to_platform_device(dev), IORESOURCE_MEM, 0);
+	if (!r)
+		return sysfs_emit(buf, "no reg resource\n");
+
+	base = ioremap(r->start, resource_size(r));
+	if (!base)
+		return sysfs_emit(buf, "ioremap failed\n");
+
+	for (i = 0; i < 0x100; i += 16) {
+		int j;
+
+		len += sysfs_emit_at(buf, len, "%04x:", i);
+		for (j = 0; j < 16; j++)
+			len += sysfs_emit_at(buf, len, " %02x", readb(base + i + j));
+		len += sysfs_emit_at(buf, len, "\n");
+	}
+	iounmap(base);
+	return len;
+}
+static DEVICE_ATTR_RO(window);
+
 static ssize_t loaded_show(struct device *dev, struct device_attribute *a, char *buf)
 {
 	struct iox_fpga *f = dev_get_drvdata(dev);
@@ -262,6 +331,7 @@ static struct attribute *iox_fpga_attrs[] = {
 	&dev_attr_done.attr,
 	&dev_attr_initb.attr,
 	&dev_attr_loaded.attr,
+	&dev_attr_window.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(iox_fpga);
