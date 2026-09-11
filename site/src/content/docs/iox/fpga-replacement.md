@@ -112,6 +112,30 @@ Spartan-3E means **Xilinx ISE 14.7** — the last version supporting the family.
 WebPACK is free and still downloadable, and runs on Linux. The open flows do not
 cover this part.
 
+## The interface contract is already known (the .ucf minus the balls)
+
+The one thing a `.ucf` needs that we cannot derive is which BALL each net lands
+on. Everything else — the net list and directions — is fully known, because the
+FPGA is an async-EMIF slave and the bus signals are fixed DM355 pins:
+
+| Net | Count | Dir | Notes |
+|---|---|---|---|
+| `EM_D[0:15]` | 16 | bidir | data bus, shared with the dm9000 |
+| `EM_A[..]` | ~8 | in | enough to address the 0x100 window (A2..A9) |
+| `EM_CE1` | 1 | in | chip enable for CS1 — the FPGA's select |
+| `EM_OE` / `EM_WE` | 2 | in | read / write strobes |
+| UART TX/RX | 8 | mixed | four ports, to the RS-232 transceivers |
+| UART RTS/CTS | 8 | mixed | flow control (AFE); optional |
+| IR drive | 8 | out | eight emitters |
+| IRQ | 1 | out | to DM355 GIO2 |
+| clock | 1 | in | source unidentified |
+
+That is ~54 signals against the VQ100's ~66 user I/O — it fits with ~12 to
+spare, which also sanity-checks the bitstream frame analysis (a mostly-full
+die). A boundary scan produces exactly the missing column: net → ball. So the
+FPGA project is not "reverse-engineer everything" — it is "write a known
+interface, then run one scan to place the pins."
+
 ## Do it in this order
 
 1. **Get the vendor bitstream loading first.** It is the reference
