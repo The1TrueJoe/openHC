@@ -59,6 +59,55 @@
 #define M0_BIT		(1u << 25)	/* GIO57, bank1 */
 #define PROG_BIT	(1u << 2)	/* GIO98, bank3 */
 
+/*
+ * The FPGA's functional/DCM reference clock.
+ *
+ * The vendor bitstream's COR sets LCK_cycle to wait-for-DCM-lock (0x31e5, not
+ * the NoWait default 0x3fe5), so the part's start-up state machine STALLS until
+ * its DCM locks and DONE never releases unless a reference clock is present.
+ * On this board that clock is the DM355 video encoder's digital LCD clock
+ * (VENC DCLK) — the SoC has no display but its VENC is used purely as a clock
+ * source wired to the FPGA. The vendor enables it in U-Boot (c4fpgaldr.c /
+ * davincifb.c enableDigitalOutput) before loading the part; openHC netboots
+ * straight past that, so the kernel loader must bring the clock up itself.
+ *
+ * openHC models clocks as a fixed reference and runs no davinci PSC driver, so
+ * nothing here gates the VPSS domain back off once we enable it — it just keeps
+ * running, which is exactly what the FPGA's UART logic needs.
+ *
+ * Register set + values are taken verbatim from the Control4 GPL U-Boot
+ * (uboot-video-fpga.patch: c4fpgaldr.c and davincifb.c enableDigitalOutput).
+ */
+#define PSC_PHYS	0x01c41000	/* Power & Sleep Controller */
+#define PSC_SIZE	0x1000
+#define PSC_MDCTL	0xa00		/* + 4*module */
+#define PSC_MDSTAT	0x800		/* + 4*module */
+#define PSC_PTCMD	0x120
+#define PSC_PTSTAT	0x128
+#define LPSC_VPSSMSTR	0		/* DM355 VPSS master LPSC */
+#define LPSC_VPSSSLV	1		/* DM355 VPSS slave  LPSC */
+#define PSC_MDCTL_ENABLE 0x23		/* NEXT=ENABLE(3) + LRSTZ(bit5) */
+#define PSC_MDSTAT_STATE 0x1f
+
+#define SYSMOD_PHYS	0x01c40000	/* system module (PINMUX + VPSS clk) */
+#define SYSMOD_SIZE	0x100
+#define VPSS_CLKCTL	0x44		/* 0x01c40044; vendor writes 0x0a */
+#define VPSS_CLKCTL_VAL	0x0a
+
+#define VENC_PHYS	0x01c72400	/* video encoder register block */
+#define VENC_SIZE	0x400		/* covers VPBE_PCR at 0x01c72784 too */
+#define VENC_VIDCTL	0x004		/* VLCKE = bit13 */
+#define VENC_DCLKCTL	0x064		/* DCKEC = bit11 */
+#define VENC_DCLKPTN0	0x068
+#define VENC_DCLKPTN0A	0x078
+#define VENC_DCLKHS	0x088
+#define VENC_DCLKHSA	0x08c
+#define VENC_OSDCLK0	0x12c
+#define VENC_OSDCLK1	0x130
+#define VPBE_PCR	0x384		/* 0x01c72784 within this mapping */
+#define VENC_VIDCTL_VLCKE	(1u << 13)
+#define VENC_DCLKCTL_DCKEC	(1u << 11)
+
 
 struct iox_fpga {
 	struct device		*dev;
@@ -103,6 +152,77 @@ static void iox_fpga_clocks(struct iox_fpga *f, unsigned int n)
 		writel(CCLK_BIT, f->gpio + CCLK_CLR);
 		writel(CCLK_BIT, f->gpio + CCLK_SET);
 	}
+}
+
+/* Bring one PSC module (ARM domain) up to the ENABLE state. */
+static void iox_psc_enable(struct device *dev, void __iomem *psc, unsigned int mod)
+{
+	unsigned int t;
+
+	/* NEXT state = ENABLE, matching the vendor's direct 0x23 module write. */
+	writel(PSC_MDCTL_ENABLE, psc + PSC_MDCTL + 4 * mod);
+	/* GO on the ARM power domain (bit 0). */
+	writel(readl(psc + PSC_PTCMD) | 1, psc + PSC_PTCMD);
+
+	for (t = 0; t < 10000; t++) {		/* transition to finish */
+		if (!(readl(psc + PSC_PTSTAT) & 1))
+			break;
+		udelay(1);
+	}
+	for (t = 0; t < 10000; t++) {		/* module to report ENABLE */
+		if ((readl(psc + PSC_MDSTAT + 4 * mod) & PSC_MDSTAT_STATE) == 3)
+			return;
+		udelay(1);
+	}
+	dev_warn(dev, "PSC module %u did not reach ENABLE (MDSTAT 0x%08x)\n",
+		 mod, readl(psc + PSC_MDSTAT + 4 * mod));
+}
+
+/*
+ * Start the FPGA's DCM reference clock (VENC DCLK). See the register-block
+ * comment above for why this is needed and where the values come from. Called
+ * once at probe; the clock then runs for as long as the board is powered.
+ */
+static void iox_fpga_enable_clock(struct device *dev)
+{
+	void __iomem *psc  = ioremap(PSC_PHYS, PSC_SIZE);
+	void __iomem *sys  = ioremap(SYSMOD_PHYS, SYSMOD_SIZE);
+	void __iomem *venc = ioremap(VENC_PHYS, VENC_SIZE);
+
+	if (!psc || !sys || !venc) {
+		dev_warn(dev, "FPGA clock: ioremap failed (psc=%p sys=%p venc=%p) — DONE may not release\n",
+			 psc, sys, venc);
+		goto out;
+	}
+
+	/* Power the VPSS master/slave domains that gate the VENC registers. */
+	iox_psc_enable(dev, psc, LPSC_VPSSMSTR);
+	iox_psc_enable(dev, psc, LPSC_VPSSSLV);
+
+	/* Route the VPSS clock (system module VPSS_CLKCTL). */
+	writel(VPSS_CLKCTL_VAL, sys + VPSS_CLKCTL);
+
+	/* VENC: full clock, enable the video clock output, drive DCLK. */
+	writel(0, venc + VPBE_PCR);
+	writel(VENC_VIDCTL_VLCKE, venc + VENC_VIDCTL);
+	writel(VENC_DCLKCTL_DCKEC, venc + VENC_DCLKCTL);
+	writel(1, venc + VENC_DCLKPTN0);	/* DCLK pattern: /2 square wave */
+	writel(2, venc + VENC_DCLKPTN0A);
+	writel(0, venc + VENC_DCLKHS);
+	writel(1, venc + VENC_DCLKHSA);
+	writel(0, venc + VENC_OSDCLK0);
+	writel(1, venc + VENC_OSDCLK1);
+
+	dev_info(dev, "FPGA clock (VENC DCLK) enabled: VPSS_CLKCTL=0x%02x VIDCTL=0x%04x DCLKCTL=0x%04x\n",
+		 readl(sys + VPSS_CLKCTL), readl(venc + VENC_VIDCTL),
+		 readl(venc + VENC_DCLKCTL));
+out:
+	if (venc)
+		iounmap(venc);
+	if (sys)
+		iounmap(sys);
+	if (psc)
+		iounmap(psc);
 }
 
 static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
@@ -377,6 +497,13 @@ static int iox_fpga_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, f);
+
+	/*
+	 * Start the FPGA's DCM reference clock before anything else: the vendor
+	 * bitstream stalls start-up until its DCM locks, so without this DONE
+	 * never releases no matter how clean the data path is.
+	 */
+	iox_fpga_enable_clock(dev);
 
 	/*
 	 * If something already configured the part — vendor Linux loaded it and

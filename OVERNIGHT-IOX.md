@@ -2,67 +2,77 @@
 
 ## Working now (webd + MQTT iod): 8 relays, 8 contacts, front LEDs, all end-to-end.
 
-## FPGA (serial + IR): the bitstream now LOADS cleanly. One step left.
+## FPGA (serial + IR): root cause CONFIRMED and the fix is WRITTEN. Needs a build + a hardware test.
 
-Huge progress this session. The FPGA now accepts the entire vendor bitstream
-with **zero CRC errors** — the hard part is solved. The remaining blocker is
-narrow and well-characterised.
+This session closed the loop on *why* the FPGA loaded cleanly but never
+finished starting up — and it was provable **offline**, from the vendor
+bitstream and vendor GPL source, without the board.
 
-### The bugs found and fixed (all real, all committed)
+### The chain, start to finish
 
-1. **Pin-mux** — `PINMUX0=0` (read off the vendor OS). Connects every config pin.
-2. **INIT_B gating** — removed; INIT_B on GIO7 reads via `gpioget` but was
-   mis-read by raw devmem (GIO0-9 are unbanked).
-3. **PROG polarity was INVERTED** — the real killer. On this board, driving
-   GIO98 **low RELEASES** the FPGA and **high holds it in reset** — backwards
-   from a textbook PROG_B. The DTS said `ACTIVE_LOW`, so the loader's pulse
-   ended with the part *held in reset*, clocking 169 KB into a chip that
-   couldn't listen. Now `ACTIVE_HIGH`.
-4. **gpiod vs direct registers** — the gpiod path didn't reproduce the proven
-   raw sequence, so the whole config-pin path (M2/M0/DIN/CCLK/PROG) is now
-   direct GPIO register writes, byte-identical to the sequence verified on
-   hardware.
+1. **The data path was already perfect** (last session): the whole 169 KB
+   bitstream clocks in with INIT_B high the entire time — zero CRC errors.
+2. **But DONE never released** and the FPGA register bus stayed floating
+   (version reg 0x0202 instead of 0x0004). Extra start-up clocks did nothing.
+3. **Why (confirmed by parsing the bitstream):** the vendor bitstream's COR
+   register is `0x000031e5`. Decoded, its **LCK_cycle field = 0**, i.e.
+   *wait for DCM lock at start-up phase C0* — versus the bitgen "NoWait"
+   default of `0x3fe5`. The only bits that differ are exactly the LCK_cycle
+   field (`0x0e00`). So the part's start-up state machine **parks at C0 until
+   its DCM locks**; DONE is scheduled for C7 and is never reached. No number of
+   CCLKs can move it — it's waiting on a *clock*, not on clocks-we-send.
+   (Parser: `/private/tmp/.../c4gpl/wk/parse_bitstream.py`.)
+4. **Which clock (confirmed from vendor GPL U-Boot):** the DM355 **video
+   encoder's digital LCD clock (VENC DCLK)**. The IOX has no display, but its
+   VENC is wired to the FPGA purely as a clock source. The vendor turns it on
+   *in U-Boot* before loading the part (`uboot-video-fpga.patch`:
+   `c4fpgaldr.c` + `davincifb.c` `enableDigitalOutput()`), then boots Linux
+   with the part already configured and the clock already running.
+5. **Why openHC misses it:** we netboot straight to `bootm` and load the FPGA
+   from the *kernel*, long after (and instead of) that U-Boot video init. The
+   clock is never started, the DCM never locks, DONE never releases.
 
-### Proof it's working
+### The fix (committed, in `ohc-iox-fpga.c`)
 
-After a full load: **INIT_B = 1** — the FPGA accepted all 169 KB with no CRC
-error. The data path (DIN/CCLK/PROG) is 100% correct. Verified independently by
-clocking the 128-byte header raw and watching INIT_B stay high through the
-IDCODE check.
+The kernel FPGA loader now starts the VENC DCLK itself, at probe, before
+loading — using the exact register set and values from the vendor U-Boot:
 
-### The one remaining thing: DONE won't release / startup won't complete
+- Power the **VPSS master/slave** PSC modules (LPSC 0 and 1, PSC @ 0x01c41000).
+- `VPSS_CLKCTL` (**0x01c40044**) = `0x0a`  ← the real VPSS clock control; note
+  this is *not* 0x01c70200, which earlier notes had wrong.
+- VENC: `VPBE_PCR`=0, `VIDCTL`=VLCKE(bit13), `DCLKCTL`=DCKEC(bit11), and the
+  DCLK pattern (`DCLKPTN0`=1, `DCLKPTN0A`=2, `DCLKHSA`=1), plus OSDCLK.
 
-INIT_B high (data good) but DONE stays low and the FPGA's register bus never
-activates (version reg floats at 0x0202 instead of 0x0004). Extra startup
-clocks (256+ over ~0.5s) don't release it. DONE is correctly a floating input
-(not driven low by the SoC). So the config data is accepted but the **startup
-sequence isn't completing**.
+openHC runs no davinci PSC clock driver, so nothing gates the domain back off —
+the clock just keeps running, which is what the FPGA's UART logic needs anyway.
 
-**Leading hypothesis — a missing functional clock, tied to "no video":**
-the FPGA likely needs a clock (the ~27 MHz used by the DM355 video/VPBE path)
-for its DCM to lock and startup to finish. openHC has that subsystem stripped:
-`VPSSCLKCTL (0x01c70200) = 0` and the VPSS PSC modules are disabled. The vendor
-kernel runs video, so the clock is present there and the FPGA configures. Same
-board, same bitstream — the difference is that clock.
+### To test (needs the user — hardware access)
 
-### How to settle it (next session)
+1. Push this branch; dispatch the ioxv1 image build in CI.
+2. Netboot the box with the new image (`ohc-flash netboot` **must run as root** —
+   TFTP binds port 69; that blocked the automated attempt this session).
+3. `dmesg | grep -i fpga` — expect "FPGA clock (VENC DCLK) enabled …" then,
+   after writing the firmware, **"FPGA CONFIGURED — version 0x0004"** and the
+   four `ttyS1..4` plus the IR block appearing.
 
-1. **Vendor-OS clock dump (cleanest, low risk).** Boot the vendor OS (unplug
-   Ethernet → power-cycle → NAND), where the FPGA works, and read
-   `VPSSCLKCTL`, the PSC MDSTAT states, and the PLL config. Diff against
-   openHC's (captured: VPSSCLKCTL=0, VPSS modules off). Whatever the vendor has
-   enabled that openHC doesn't is the FPGA's clock — then enable it in openHC.
-2. **Scope / JTAG.** Confirm whether a clock is present at the FPGA, and watch
-   DONE. Definitive.
+If DONE still doesn't release, the DCLK pattern/divider is the only remaining
+knob — the vendor's exact pattern is used, but the VENC pixel-clock source
+(VPSS_CLKCTL value / PLL) is the thing to scope next.
 
-I did NOT blind-poke the PLL/VPSS registers — a wrong write there can hang the
-SoC, and the payoff needs the vendor comparison to aim it correctly.
+### Note on the box right now
+
+It is sitting in a U-Boot **netboot retry loop** ("Retry count exceeded;
+starting again") — it never fell through to NAND. Ctrl-C over the console does
+not break this U-Boot's TFTP loop, and serving it an image needs root (port 69),
+so it needs either a power-cycle or a root `ohc-flash netboot` to move. Nothing
+was written to NAND or the bootloader.
 
 ## Bottom line
 
-We went from "nothing" to "the FPGA accepts the entire bitstream cleanly." Only
-the startup clock stands between here and live serial + IR. The IR driver is
-already written from the recovered register map; serial needs no new code.
+The FPGA mystery is solved end to end and the fix is in the tree. What's left is
+mechanical: build it, netboot it as root, and confirm DONE releases. Then serial
+(ttyS1-4) is free and the staged IR driver can be wired up.
 
-Staged build: `~/openhc-iox-netboot/` (kernel + zImage + dtb). Box last at
-10.0.0.113. Bitstream at `/private/tmp/.../c4gpl/nand/fpga_fw.bin`.
+Staged build inputs: `~/openhc-iox-netboot/`. Bitstream + vendor GPL source:
+`/private/tmp/.../c4gpl/` (bitstream `nand/fpga_fw.bin`, U-Boot loader
+`patches/uboot-video-fpga.patch`).
