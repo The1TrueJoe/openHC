@@ -206,38 +206,30 @@ devmem 0x01c67090 32 $((1<<2))          # drive high
 devmem 0x01c67098 32                    # IN: bit 2 set?  if not, it is muxed away
 ```
 
-Known so far:
+**SETTLED from the vendor OS** — booted the stock Control4 image (which has the
+FPGA working) and read the registers with its own `peeknpoke`:
 
-| Pin | Signal | Mux |
+| Register | Vendor value | What it does |
 |---|---|---|
-| GIO98 | `PROG_B` | **PINMUX0 bit 6 CLEAR** |
-| GIO96 | `CCLK` | **PINMUX0 bit 8 CLEAR** |
-| GIO55/57/58 | `M2`/`M0`/`DIN` | **not found yet** — not in PINMUX0 or PINMUX1 (both cleared entirely, no effect), so somewhere in PINMUX2/4 |
+| PINMUX0 | `0x00000000` | every video-in field cleared → relays, contacts 3–8, **and all five FPGA config pins** to GPIO |
+| PINMUX1 | `0x0012416a` | data/link LEDs + contacts 1–2 (bit 17 set, confirming the contact1 find; bit 16 clear) |
+| PINMUX2 | `0x00000804` | left at its boot value |
+| PINMUX3 | `0x11ffffff` | left at its boot value |
+| PINMUX4 | `0x00000000` | left at its boot value |
 
-So `PINMUX0 = 0x00000015` frees PROG_B and CCLK together. Bits 8 and 9 act as
-independent per-pin selects rather than the 2-bit fields the video entries use,
-which is why `0x0155` already had bit 9 clear (relays 94/95) while bit 8 still
-held CCLK away from the GPIO block.
+`PINMUX0 = 0` is the whole answer for the config pins. The sweeps missed
+M2/M0/DIN because they toggled one bit at a time while holding `0x15`, and each
+config pin needs its entire 2-bit CINL field cleared — `0x15` kept the low bit
+of three of those fields set the whole time. Zeroing the register clears all
+four fields together.
 
-:::danger[Sweep by CLEARING bits only]
-A sweep that tries both polarities **hung a board**. Setting a bit that was
-clear can route a pin to a peripheral something else is using; PINMUX3 is
-EMIF-adjacent here and the dm9000 Ethernet is on that same EMIF, so the kernel
-took a bus fault mid-sweep and the box dropped off the network with no console
-to explain it. Recovery was a power cycle and a netboot.
-
-Clearing is the safe direction: a mux field selects its peripheral with a
-non-zero value and the GPIO block with zero, so clearing can only ever
-disconnect a peripheral. Where a pin genuinely needs a bit SET — contact1/GIO71
-does — make that a single deliberate write with a way back, not one iteration
-of a 300-step loop.
-:::
-
-:::caution[`follows` only proves anything for pins the SoC drives]
-GIO97 (`DONE`) and GIO7 (`INIT_B`) are FPGA **outputs**. Driving them from the
-DM355 fights the FPGA, so a "does not follow" result there says nothing about
-the mux. Only M2, M0, DIN, CCLK and PROG_B can be tested this way.
-:::
+The GPIO banks on the live vendor system confirm what that buys: M2 (GIO55) and
+M0 (GIO57) driven high for slave-serial mode, CCLK (GIO96) an output, PROG_B
+(GIO98) an output, DONE (GIO97) reading **high** (the part is configured), and
+INIT_B (GIO7) readable. `/proc/iomem` shows `c4fpga` at `0x04000200`, `c4irout`
+at `0x220`/`0x230`, and four `c4serial` at `0x240`/`250`/`260`/`270` — every
+address in our device tree, validated against the vendor's own driver layout.
+`/proc/tty/driver/serial` lists all four as `16550A`, which confirms reg-shift 0.
 
 ### The bitstream is not the problem, and here is how to be sure
 

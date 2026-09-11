@@ -33,45 +33,37 @@
 # and nothing between them, so bit 17 reads as reserved. It is not: setting it
 # is what routes GIO71 to the GPIO block.
 #
-# Found by sweeping, on a live box, every bit of both pin-mux registers while
-# watching bit 7 of the GPIO IN register — after first proving the field was
-# not the problem by clearing PINMUX0 entirely and PINMUX1's whole video range
-# and getting GIO71=0 throughout. Sweeping is cheap here and worth remembering:
-# openHC on this board is RAM-only, nothing is flashed, so the worst a wrong
-# pin-mux write can cost is a power cycle.
+# AUTHORITATIVE: these are the vendor's own values, read with peeknpoke from a
+# running Control4 factory OS on this board while its FPGA was configured and
+# every port worked. No longer inferred — copied from the one system that is
+# known correct.
 #
-# Note the polarity trap that hid it. Every video field here is 2 bits with
-# 01 = peripheral, so clearing selects GPIO — but VOUT_HVSYNC at bit 16 is a
-# 1-bit field whose mode 0 IS the peripheral. Clearing "more" bits therefore
-# selected MORE video, not less.
+#   PINMUX0 = 0x00000000   PINMUX1 = 0x0012416a
+#   PINMUX2 = 0x00000804   PINMUX3 = 0x11ffffff   PINMUX4 = 0x00000000
+#
+# We write only the two registers we own the meaning of (0 and 1); the others
+# already hold their reset/boot values. The vendor GPIO banks confirmed what
+# PINMUX0=0 buys: m2(GIO55)/m0(GIO57) driven high for slave-serial mode, cclk
+# (GIO96) an output, prog(GIO98) an output, DONE(GIO97) reading HIGH (the part
+# is configured), and initb(GIO7) readable.
+#
+# Why the earlier sweeps missed M2/M0/DIN: they toggled one bit at a time while
+# holding PINMUX0 = 0x15, and each config pin needs its whole 2-bit CINL field
+# cleared. 0x15 kept the low bit of three of those fields set throughout, so no
+# single additional bit ever freed the pin. Zeroing the register clears all
+# four fields together, which is exactly what the vendor does.
 case "$1" in
   start|"")
-    # 0x7F55 -> 0x0015: clear bit 10 (YIN, relays 88-93 + contacts 7/8),
-    # bit 9 (CINH, relays 94/95), bits 11-14 (the camera control pins that
-    # carry contacts 3-6), and bits 6 and 8 — the FPGA's PROG_B and CCLK.
-    #
-    # Bits 6 and 8 were found by sweeping every mux bit on a live board while
-    # watching whether the pin FOLLOWS what the GPIO block drives (DM355
-    # IN_DATA reflects driven pins). Without them the FPGA loader clocks a
-    # perfect bitstream into pins that are wired to a video peripheral and
-    # reports "DONE never rose", which reads like a bad bitstream and is not.
-    #
-    #   bit 6 -> GIO98 = PROG_B      bit 8 -> GIO96 = CCLK
-    #
-    # Note these are per-PIN selects, not the 2-bit fields the video entries
-    # use: bits 8 and 9 act independently, which is why 0x0155 already had 9
-    # clear (relays 94/95) while 8 still held CCLK away from the GPIO block.
-    #
-    # STILL MISSING: M2 (GIO55), M0 (GIO57) and DIN (GIO58). They are not in
-    # PINMUX0 or PINMUX1 — directly tested, both cleared entirely, no effect —
-    # so they are somewhere in PINMUX2/3/4 and the sweep for them is unfinished.
-    # Until they are found the load cannot work, because the data pin is still
-    # disconnected.
-    devmem 0x01c40000 32 0x00000015
-    # 0x14556A -> 0x13416A: clear bits 12 and 10 (COUT1/COUT2 = the data and
-    # link LEDs) and bits 18-19 (FIELD = GIO70 = contact2), and SET bit 17
-    # (undocumented, GIO71 = contact1).
-    devmem 0x01c40004 32 0x0013416A
+    # PINMUX0 = 0, the vendor value. Clears every video-in field, which routes
+    # the relays (GIO88-95), contacts 3-8, and ALL the FPGA config pins
+    # (M2/M0/DIN/CCLK/PROG_B) to the GPIO block at once.
+    devmem 0x01c40000 32 0x00000000
+    # PINMUX1 = 0x0012416a, the vendor value. Routes the data/link LEDs and
+    # contacts 1 and 2 to GPIO. This is the vendor's own number: it differs from
+    # our earlier 0x0013416a only in bit 16 (VOUT_HVSYNC), which the vendor
+    # leaves 0 — and it confirms our contact1 discovery, since bit 17 is set
+    # here too.
+    devmem 0x01c40004 32 0x0012416A
     echo "pinmux: relays, contacts and front LEDs routed to GPIO"
     ;;
 esac
