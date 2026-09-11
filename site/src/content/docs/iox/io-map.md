@@ -187,6 +187,74 @@ Standard protocol: pulse PROG_B, wait for INIT_B, clock each bit on DIN/CCLK,
 wait for DONE. It can be a tiny kernel driver or a userspace libgpiod tool; the
 image `fpga_fw.bin` is on the stock NAND.
 
+### The config pins are muxed AWAY from GPIO by default
+
+This is the thing that makes the loader look broken when it is not. The
+slave-serial pins come out of reset routed to an SoC peripheral, so the GPIO
+block drives nothing and the FPGA never sees PROG_B. The symptom is a perfect
+bitstream clocked into a part that was never reset, reported as the thoroughly
+misleading `DONE never rose`.
+
+Diagnose it with the fact that **DM355 `IN_DATA` reflects pins that are being
+DRIVEN**, not only pins configured as inputs — so a pin that is correctly muxed
+reads back what you drive onto it, and one that is muxed away reads 0 forever:
+
+```sh
+# bank block = 0x10 + (gpio/32)*0x28 ; DIR +0x00, SET +0x08, CLR +0x0c, IN +0x10
+devmem 0x01c67088 32 $((d & ~(1<<2)))   # GIO98 -> output
+devmem 0x01c67090 32 $((1<<2))          # drive high
+devmem 0x01c67098 32                    # IN: bit 2 set?  if not, it is muxed away
+```
+
+Known so far:
+
+| Pin | Signal | Mux |
+|---|---|---|
+| GIO98 | `PROG_B` | **PINMUX0 bit 6 CLEAR** (`VIN_CINL_EN` field [7:6]) |
+| GIO96 | `CCLK` | not in any single PINMUX0 CINL field — still being swept |
+| GIO55/57/58 | `M2`/`M0`/`DIN` | still being swept |
+
+:::caution[`follows` only proves anything for pins the SoC drives]
+GIO97 (`DONE`) and GIO7 (`INIT_B`) are FPGA **outputs**. Driving them from the
+DM355 fights the FPGA, so a "does not follow" result there says nothing about
+the mux. Only M2, M0, DIN, CCLK and PROG_B can be tested this way.
+:::
+
+### The bitstream is not the problem, and here is how to be sure
+
+`fpga_fw.bin` lives at **`/control4/lib/fpga/fpga_fw.bin`** on the vendor root
+filesystem and is **169,216 bytes** — exactly the XC3S250E bitstream size from
+DS312. It is a headerless `.bin` (no ASCII `.bit` header), and its own
+configuration packets confirm every assumption the loader makes:
+
+```
+CMD    RCRC
+FLR    0x48
+COR    0x31e5   StartupClk=CCLK
+IDCODE 01c1a093 = XC3S250E
+CMD    SWITCH / FAR 0 / CMD WCFG
+FDRI + 42194 words of frame data
+```
+
+Two of those matter. `IDCODE 0x01c1a093` is the XC3S250E's JTAG IDCODE, so the
+file matches the part on the board. And **`StartupClk=CCLK`** means the start-up
+sequence runs on the clock a slave-serial load already provides — so `DONE`
+failing to rise can never be blamed on a clock-source mismatch.
+
+Decode it with the **Spartan-3 register map** (`CMD=4, COR=9, FLR=0xB,
+IDCODE=0xE`), not the Virtex one. The Virtex map is shifted and reads the IDCODE
+write as `CBC` and the CMD writes as `FDRO`, which looks like a corrupt file.
+
+:::danger[devmem cannot tell you whether the FPGA is alive]
+busybox `devmem` maps `/dev/mem`, and that mapping is **cached**. Writing a byte
+dirties a cache line and reading it back hits that line — so every offset in the
+FPGA window looks like working storage even with nothing driving the bus at all.
+The giveaway is that a *fresh* read of the same offsets returns a constant.
+
+Read the window from inside a driver through `ioremap` instead, which is
+uncached. `ohc-iox-fpga` exposes exactly that as its `window` sysfs attribute.
+:::
+
 **The loader does not have to be written from scratch — Control4 published it.**
 `cmd_c4fpga.c` and `c4fpgaldr.c` are in `u-boot-1.2.0.tgz+patches.tar.gz`
 (`patches/uboot-video-fpga.patch`), GPL, complete. That copy is for a different
