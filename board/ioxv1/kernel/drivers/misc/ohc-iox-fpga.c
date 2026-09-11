@@ -181,6 +181,28 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	}
 
 	dev_info(f->dev, "FPGA configured from %zu bytes, DONE is high\n", len);
+
+	/*
+	 * A second, independent confirmation. On a live vendor unit the FPGA's
+	 * first register (base + 0x00) reads its firmware version — 0x0004 on
+	 * the bitstream we have. A configured part answers this; a blank one
+	 * floats the bus. DONE going high already says configuration finished,
+	 * but reading a sane version proves the register interface itself came
+	 * up, which is what the UARTs and IR block depend on. Non-fatal: some
+	 * bitstreams may not implement it, so a zero read is logged, not failed.
+	 */
+	{
+		struct resource *r = platform_get_resource(
+			to_platform_device(f->dev), IORESOURCE_MEM, 0);
+		if (r) {
+			void __iomem *base = ioremap(r->start, resource_size(r));
+			if (base) {
+				u16 ver = readw(base);
+				iounmap(base);
+				dev_info(f->dev, "FPGA version register = 0x%04x\n", ver);
+			}
+		}
+	}
 	return 0;
 }
 

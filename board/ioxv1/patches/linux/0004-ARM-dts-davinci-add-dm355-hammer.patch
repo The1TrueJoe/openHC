@@ -14,8 +14,8 @@ See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
  arch/arm/boot/dts/ti/davinci/Makefile         | 3 +++
  arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 415 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 512 insertions(+)
+ arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 104 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 522 insertions(+)
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355.dtsi
 
@@ -456,7 +456,7 @@ new file mode 100644
 index 0000000..319a74d
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355.dtsi
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,104 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Device tree for the TI DaVinci DM355 SoC.
@@ -543,6 +543,21 @@ index 0000000..319a74d
 +			ti,davinci-gpio-unbanked = <0>;
 +			clocks = <&ref_clk_24m>;
 +			clock-names = "gpio";
++		};
++
++		/*
++		 * DM355 watchdog. The kernel fragment already sets
++		 * CONFIG_DAVINCI_WATCHDOG=y, but with no node the driver never
++		 * probes and /dev/watchdog does not exist — which is why the
++		 * pin-mux sweep had no safety net the night it hung the board.
++		 * With this, a userspace feeder turns a wedged kernel into a
++		 * self-reset instead of a dark box that needs someone to pull
++		 * the power. Same 24 MHz stand-in clock as everything else here.
++		 */
++		wdt: watchdog@1c21c00 {
++			compatible = "ti,davinci-wdt";
++			reg = <0x01c21c00 0x400>;
++			clocks = <&ref_clk_24m>;
 +		};
 +	};
 +};
