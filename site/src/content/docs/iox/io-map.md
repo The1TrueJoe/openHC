@@ -28,7 +28,7 @@ is two bits wide with `01` = peripheral:
 
 | Reg | Bits | Field | Carries |
 |---|---|---|---|
-| PINMUX0 | 0–7 | `VIN_CINL_EN` | EMIF address pins — **do not touch** |
+| PINMUX0 | 0–7 | `VIN_CINL_EN` | four 2-bit fields; bits 6–7 are **GIO98 = the FPGA's PROG_B** |
 | PINMUX0 | 8–9 | `VIN_CINH_EN` | GIO95:94 (relays 7–8) |
 | PINMUX0 | 10 | `VIN_YIN_EN` | GIO93:86 (relays 1–6, contacts 7–8) |
 | PINMUX0 | 11–14 | `VIN_CAM_HD`, `VIN_CAM_VD`, `VIN_CAM_WEN`, `VIN_PCLK` | GIO82–85 = contacts 3–6 (one bit each) |

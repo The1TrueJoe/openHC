@@ -13,7 +13,7 @@
 # which is why the values below only ever clear bits.
 #
 #   PINMUX0 (Video In)                     PINMUX1 (Video Out)
-#     0-7  CINL_EN   EMIF address pins       0-7   COUTL_EN
+#     0-7  CINL_EN   FPGA config pins        0-7   COUTL_EN
 #     8-9  CINH_EN   GIO95:94  (relays)      8-15  COUTH_EN  incl. GIO75/76
 #     10   YIN_EN    GIO93:86  (relays       16    HVSYNC
 #                    + contacts 7/8)         18-19 FIELD -> GIO70 (contact2)
