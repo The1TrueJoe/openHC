@@ -52,7 +52,7 @@ NETBOOT_ARGS = --board $(BOARD) \
                $(if $(OFFER_IP),--offer-ip $(OFFER_IP)) \
                $(if $(SERIAL_PORT),--serial-port $(SERIAL_PORT))
 
-.PHONY: help image mcu webd netboot probe serial flash verify selftest clean distclean
+.PHONY: help image mcu webd netboot probe serial gui discover flash verify selftest clean distclean
 
 help:
 	@echo "openHC — Control4 EA-series kernel-up build"
@@ -62,6 +62,9 @@ help:
 	@echo "  make mcu   [BOARD=ea1|ea3]   build the TM4C IO-MCU firmware (EA only)"
 	@echo "  make netboot                 serve $(IMAGE) to the target (EA CEFDK path)"
 	@echo "  make probe                   drop CEFDK to its shell (cookie, no kernel)"
+	@echo "  make gui                     run the installer GUI from this repo"
+	@echo "  make discover                list Control4 controllers on this network"
+	@echo "  make flash HOST=<ip> IMAGES=<dir|zip>   install openHC on a unit"
 	@echo "  make serial                  attach to the serial console"
 	@echo "  make clean                   remove build output (keeps downloads)"
 	@echo "  make distclean               remove everything generated"
@@ -157,20 +160,46 @@ probe:
 	@case "$(BOARD)" in ea*) : ;; *) echo "probe: CEFDK path is EA-only"; exit 1 ;; esac
 	$(PYTHON) -m flasher discover
 
-serial:
-	@$(PYTHON) -c "import serial" 2>/dev/null || { \
-	  echo "serial-console.py needs pyserial, and $(PYTHON) has none:"; \
-	  echo "    python3 -m venv .venv && .venv/bin/pip install pyserial"; exit 1; }
-	$(PYTHON) -m flasher --serial $(or $(SERIAL_PORT),/dev/ttyUSB0) --record openhc-console.log
+serial:                   ## attach to a serial console
+	@echo "The Rust flasher has no serial console; use a terminal program:"
+	@echo "    screen $(or $(SERIAL_PORT),/dev/ttyUSB0) 115200"
+	@echo "    picocom -b 115200 $(or $(SERIAL_PORT),/dev/ttyUSB0)"
+	@echo ""
+	@echo "On the HC-800 you do not need one at all — see"
+	@echo "    https://the1truejoe.github.io/openHC/shared/headless/"
+	@false
 
-flash:                    ## install openHC on a unit (TUI if no HOST=)
-	$(PYTHON) -m flasher $(if $(HOST),install $(HOST))
+# ---- the flasher -----------------------------------------------------------
+# These used to run `python3 -m flasher`, from before the installer was rewritten
+# in Rust. That module has not existed for some time, so every one of these
+# targets failed with "No module named flasher.__main__" — including `make
+# flash`, which is the first thing anyone would try.
+#
+# Built in release: a debug build of the GUI is slow enough on a network scan to
+# read as a hang, and the whole point of these targets is that someone can run
+# them without knowing the project.
+FLASHER_DIR = $(CURDIR)/flasher
+CARGO ?= cargo
 
-verify:                   ## post-install hardware check
-	$(PYTHON) -m flasher verify $(HOST)
+gui:                      ## run the installer GUI from this repo
+	@command -v $(CARGO) >/dev/null || { \
+	  echo "The flasher is a Rust program and cargo is not installed."; \
+	  echo "  Install Rust:  https://rustup.rs   (curl https://sh.rustup.rs -sSf | sh)"; \
+	  exit 1; }
+	@echo ">> building the GUI (first run takes a few minutes; after that it is seconds)"
+	$(CARGO) run --release --manifest-path $(FLASHER_DIR)/Cargo.toml -p ohc-flash-gui
+
+flash:                    ## install openHC on a unit: make flash HOST=<ip> IMAGES=<dir|zip>
+	@command -v $(CARGO) >/dev/null || { echo "needs Rust: https://rustup.rs"; exit 1; }
+	$(CARGO) run --release --manifest-path $(FLASHER_DIR)/Cargo.toml -p ohc-flash-cli -- \
+	  $(if $(HOST),install $(HOST) $(if $(IMAGES),--images $(IMAGES)),discover)
+
+discover:                 ## list the Control4 controllers on this network
+	@command -v $(CARGO) >/dev/null || { echo "needs Rust: https://rustup.rs"; exit 1; }
+	$(CARGO) run --release --manifest-path $(FLASHER_DIR)/Cargo.toml -p ohc-flash-cli -- discover
 
 selftest:                 ## flasher self-check (no hardware needed)
-	$(PYTHON) -m flasher.selftest
+	$(CARGO) test --manifest-path $(FLASHER_DIR)/Cargo.toml --workspace
 
 clean:
 	rm -rf output/build

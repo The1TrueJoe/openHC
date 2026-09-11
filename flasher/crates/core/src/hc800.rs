@@ -61,22 +61,36 @@ pub const CMDLINE: &str = "console=ttyS0,115200";
 
 /// The `menu.lst` entry for openHC.
 ///
-/// `savedefault 1` is the whole safety argument for a persistent install, and
-/// it is why this is worth doing at all rather than editing `default 2` by
-/// hand. GRUB Legacy executes it **before** handing control to the kernel, so
-/// every openHC boot immediately re-points the saved default back at the stock
-/// entry. A panic, a watchdog reset, a power cut — anything at all — therefore
-/// comes back on Control4, which answers SSH. Booting openHC again is one
-/// deliberate command, never an accident, and a broken image costs a single
-/// reboot instead of an unattended loop.
+/// `boot_once` decides the single most consequential thing about this install:
+/// whether openHC is what the box RUNS, or what the box can be asked to run.
 ///
-/// `savedefault` comes before the explicit `boot`, which is the order the two
-/// vendor entries in this file already use — and the only order that works,
-/// since `boot` does not return.
-pub fn menu_entry() -> String {
+/// **`false` (the default).** openHC is GRUB's default entry and every boot is
+/// openHC, so it survives a power cut with nothing to re-run. `fallback 1`
+/// still covers a kernel that will not load at all. What it does NOT cover is a
+/// kernel that loads and then panics: `panic=10` reboots into the same panic,
+/// which is a loop that needs the ID button to break. That is the trade, and it
+/// is why the network watchdog is off on this board — a dead uplink must not be
+/// able to start one.
+///
+/// **`true`.** The entry ends `savedefault 1`, which GRUB executes BEFORE
+/// handing over to the kernel, so every openHC boot immediately re-points the
+/// default back at Control4. Any reset at all then lands on a system that
+/// answers SSH, and a broken image costs one reboot instead of an unattended
+/// loop. The right mode for a box you cannot reach, and for a kernel you do not
+/// yet trust.
+///
+/// `savedefault` comes before the explicit `boot` in that mode, which is the
+/// order the two vendor entries in this file already use — and the only order
+/// that works, since `boot` does not return.
+pub fn menu_entry(boot_once: bool) -> String {
+    let save = if boot_once {
+        format!("savedefault\t{ENTRY_VENDOR}\n")
+    } else {
+        String::new()
+    };
     format!(
         "\ntitle\t\topenHC\nroot\t\t{GRUB_KERNEL_ROOT}\nkernel\t\t{KERNEL_FILE} {CMDLINE}\n\
-         initrd\t\t{INITRD_FILE}\nsavedefault\t{ENTRY_VENDOR}\nboot\n"
+         initrd\t\t{INITRD_FILE}\n{save}boot\n"
     )
 }
 

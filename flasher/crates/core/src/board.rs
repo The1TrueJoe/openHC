@@ -196,13 +196,22 @@ pub struct Identity {
     pub board: Option<&'static Board>,
     pub candidates: Vec<&'static Board>,
     pub running: Running,
+    /// What it is RUNNING, as a version string — Control4's OS version, or
+    /// openHC's build. Filled in by the transport once a login succeeds.
+    ///
+    /// NOT part of discovery, deliberately. SDDP announces a model, a type and
+    /// a driver, but no firmware version on any unit measured on a live system,
+    /// so a version can only come from asking the unit itself. On Control4 that
+    /// answer is `dpkg-query -W -f='${Version}' system-version`, which returns
+    /// e.g. `3.3.0.628678-res`.
+    pub version: Option<String>,
     /// Raw evidence, for display.
     pub raw: Vec<(String, String)>,
 }
 
 impl Identity {
     fn none(running: Running) -> Self {
-        Identity { board: None, candidates: vec![], running, raw: vec![] }
+        Identity { board: None, candidates: vec![], running, version: None, raw: vec![] }
     }
 
     /// True only when exactly one board matches — the precondition for an
@@ -240,7 +249,7 @@ pub fn from_c4board(name: Option<&str>, btype: Option<u8>, rev: Option<u8>) -> I
     // rarely matches a board name directly; fall through to type+revision.
     if let Some(n) = name {
         if let Some(b) = by_name(n) {
-            return Identity { board: Some(b), candidates: vec![b], running: Running::Stock, raw };
+            return Identity { board: Some(b), candidates: vec![b], running: Running::Stock, version: None, raw };
         }
     }
     let pool = btype.map(by_type).unwrap_or_default();
@@ -257,7 +266,7 @@ pub fn from_c4board(name: Option<&str>, btype: Option<u8>, rev: Option<u8>) -> I
         None
     };
     let candidates = if exact.len() == 1 { exact } else { pool };
-    Identity { board, candidates, running: Running::Stock, raw }
+    Identity { board, candidates, running: Running::Stock, version: None, raw }
 }
 
 /// Identify from a running openHC `/opt/ohc/board.env` (already parsed).
@@ -266,7 +275,7 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
     if let Some(name) = get("OHC_BOARD") {
         raw.push(("OHC_BOARD".into(), name.clone()));
         if let Some(b) = by_name(&name) {
-            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, raw };
+            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw };
         }
     }
     if let Some(model) = get("OHC_MODEL") {
@@ -277,7 +286,7 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
         // Without this a running openHC on an HC-800 came back unidentified,
         // and the flasher refused to touch the one board it is safest on.
         if let Some(b) = by_name(&model) {
-            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, raw };
+            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw };
         }
         // EA overlays carry only 1/3/5, i.e. the family and not the variant.
         let prefix = format!("ea{}", model.trim());
@@ -286,7 +295,7 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
             .filter(|b| b.family == Family::Ea && b.name.starts_with(&prefix))
             .collect();
         let board = if pool.len() == 1 { Some(pool[0]) } else { None };
-        return Identity { board, candidates: pool, running: Running::Openhc, raw };
+        return Identity { board, candidates: pool, running: Running::Openhc, version: None, raw };
     }
     Identity::none(Running::Openhc)
 }
@@ -316,8 +325,8 @@ pub fn from_dmi(vendor: Option<&str>, product: Option<&str>, running: Running) -
         _ => false,
     });
     match hit {
-        Some(b) => Identity { board: Some(b), candidates: vec![b], running, raw },
-        None => Identity { board: None, candidates: vec![], running, raw },
+        Some(b) => Identity { board: Some(b), candidates: vec![b], running, version: None, raw },
+        None => Identity { board: None, candidates: vec![], running, version: None, raw },
     }
 }
 

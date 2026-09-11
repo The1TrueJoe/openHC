@@ -43,7 +43,7 @@ mod tests {
 
     fn ident(name: &str, running: Running) -> Identity {
         let b = board::by_name(name).expect("board in the table");
-        Identity { board: Some(b), candidates: vec![b], running, raw: vec![] }
+        Identity { board: Some(b), candidates: vec![b], running, version: None, raw: vec![] }
     }
 
     #[test]
@@ -101,8 +101,8 @@ mod tests {
 
     // ---- the menu.lst entry: this text is the safety property ---------------
     #[test]
-    fn the_menu_entry_hands_the_default_back_before_it_boots() {
-        let e = hc800::menu_entry();
+    fn boot_once_hands_the_default_back_before_it_boots() {
+        let e = hc800::menu_entry(true);
         let sd = e.find("savedefault").expect("entry must savedefault");
         let bt = e.find("\nboot").expect("entry must end with boot");
         // savedefault BEFORE boot, because boot does not return.
@@ -111,7 +111,26 @@ mod tests {
         // it at ENTRY_OPENHC would make every reset a loop into the same fault.
         assert!(e.contains(&format!("savedefault\t{}", hc800::ENTRY_VENDOR)));
         assert!(!e.contains(&format!("savedefault\t{}", hc800::ENTRY_OPENHC)));
-        assert!(e.contains(hc800::KERNEL_FILE) && e.contains(hc800::INITRD_FILE));
+    }
+
+    #[test]
+    fn the_persistent_entry_does_not_save_anything() {
+        // A stray savedefault here would silently turn the default install back
+        // into a boot-once, and the symptom is "it went back to Control4" a
+        // reboot later — which reads as the install having failed.
+        let e = hc800::menu_entry(false);
+        assert!(!e.contains("savedefault"), "persistent entry must not savedefault:\n{e}");
+        assert!(e.trim_end().ends_with("boot"));
+    }
+
+    #[test]
+    fn both_modes_name_the_kernel_and_the_initramfs() {
+        for once in [true, false] {
+            let e = hc800::menu_entry(once);
+            assert!(e.contains(hc800::KERNEL_FILE), "mode boot_once={once}");
+            assert!(e.contains(hc800::INITRD_FILE), "mode boot_once={once}");
+            assert!(e.contains(hc800::GRUB_KERNEL_ROOT));
+        }
     }
 
     #[test]

@@ -155,6 +155,18 @@ struct Unit {
     hostname: Option<String>,
     running: Option<Running>,
     board: Option<&'static Board>,
+    /// Name and model as the unit ANNOUNCED them, over SDDP.
+    ///
+    /// These arrive with no credentials at all, which is the point: a
+    /// controller on OS 3.1 or later has no default root password, so the SSH
+    /// probe below learns nothing about it and the row used to sit there saying
+    /// "unknown". The unit had been telling us `Living-EA1 / C4-EA1` the whole
+    /// time and we were discarding it.
+    sddp_name: Option<String>,
+    sddp_model: Option<String>,
+    /// The OS version, once a login has read it. Control4 keeps it in a dpkg
+    /// package, not a file — see `probe::version_of`.
+    version: Option<String>,
     /// The probe has finished, whether or not it learned anything.
     probed: bool,
     /// Why it learned nothing.
@@ -168,11 +180,32 @@ impl Unit {
             return "checking…".into();
         }
         match self.running {
-            Some(r) => running_text(r).to_string(),
-            // No login, but SDDP proves it is a Control4 controller.
-            None if self.sddp => "Control4 (needs a password to read more)".into(),
+            // The version is the thing an installer actually wants to see: it
+            // says which Control4 OS this is, and therefore whether a default
+            // root password exists at all.
+            Some(r) => match &self.version {
+                Some(v) => format!("{} {v}", running_text(r)),
+                None => running_text(r).to_string(),
+            },
+            // No login. Say what the unit announced rather than "unknown" — on
+            // OS 3.1+ there is no password to be had, so this is not a step on
+            // the way to knowing more, it is as much as there is.
+            None if self.sddp_model.is_some() => format!(
+                "{} — announced over SDDP; no login (OS 3.1+ has no root password)",
+                self.sddp_model.clone().unwrap_or_default()
+            ),
+            None if self.sddp => "Control4 controller — no login yet".into(),
             None => self.note.clone().unwrap_or_else(|| "unknown".into()),
         }
+    }
+
+    /// The best name we have: what the unit calls itself over SDDP, else its
+    /// hostname from a login, else nothing.
+    fn display_name(&self) -> String {
+        self.sddp_name
+            .clone()
+            .or_else(|| self.hostname.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -648,6 +681,9 @@ impl App {
                             ip: f.ip.clone(),
                             mac: f.mac.clone(),
                             sddp: f.via.iter().any(|v| v == "sddp"),
+                            sddp_name: f.name.clone(),
+                            sddp_model: f.model.clone(),
+                            version: None,
                             hostname: None,
                             running: None,
                             board: None,
@@ -689,7 +725,7 @@ impl App {
             ui.label(RichText::new("Click the controller to install:").strong());
             ui.add_space(4.0);
             for u in &sh.found {
-                let mut label = format!("{:<16}{}", u.ip, u.hostname.clone().unwrap_or_default());
+                let mut label = format!("{:<16}{}", u.ip, u.display_name());
                 label.push('\n');
                 label.push_str(&u.firmware());
                 if let Some(b) = u.board {
@@ -875,6 +911,7 @@ impl App {
             board: Some(b),
             candidates: vec![b],
             running: conn.id.running,
+            version: None,
             raw: conn.id.raw.clone(),
         };
         let (chosen, rejected) = method::choose(&id, None);
@@ -1434,6 +1471,7 @@ fn probe_unit(s: &Arc<Mutex<Shared>>, ip: &str, passwords: &[String]) {
             Some(i) => {
                 u.running = Some(i.running);
                 u.board = i.board;
+                u.version = i.version.clone();
             }
             // Not a failure worth alarming anyone about: a stock unit with
             // changed credentials still installs once the user supplies them.
@@ -1458,6 +1496,7 @@ fn method_for(b: &'static ohc_flash_core::board::Board) -> Option<Method> {
         board: Some(b),
         candidates: vec![b],
         running: ohc_flash_core::board::Running::Stock,
+            version: None,
         raw: vec![],
     };
     method::choose(&id, None).0
@@ -1489,7 +1528,10 @@ fn run_install(
             return hc800::kexec(ssh, rel, None, p).map_err(|e| format!("{e:#}"));
         }
         Method::Grub => {
-            return hc800::install_grub(ssh, rel, p).map_err(|e| format!("{e:#}"));
+            // The GUI installs openHC as the DEFAULT. Boot-once is a
+            // bring-up mode for a box you cannot walk to, and that is not who
+            // is driving a window; the CLI has --boot-once for it.
+            return hc800::install_grub(ssh, rel, false, p).map_err(|e| format!("{e:#}"));
         }
         _ => {}
     }
@@ -1549,6 +1591,7 @@ fn gate(
                 board: Some(b),
                 candidates: vec![b],
                 running: id.running,
+            version: None,
                 raw: vec![],
             };
             match method::choose(&probe, None).0 {
@@ -1597,7 +1640,8 @@ mod tests {
 
     fn id_for(name: &str) -> Identity {
         let b = board::by_name(name).unwrap();
-        Identity { board: Some(b), candidates: vec![b], running: Running::Stock, raw: vec![] }
+        Identity { board: Some(b), candidates: vec![b], running: Running::Stock,
+            version: None, raw: vec![] }
     }
 
     /// The gate is the last thing between a user and a wrong write, so it gets
@@ -1680,7 +1724,8 @@ mod tests {
             g.conn = Some(Conn {
                 host: "10.0.0.9".into(),
                 ssh: tp::Ssh::new("10.0.0.9", "root", None),
-                id: Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, raw: vec![] },
+                id: Identity { board: Some(b), candidates: vec![b], running: Running::Openhc,
+            version: None, raw: vec![] },
                 installed_version: Some("old-dev".into()),
             });
             g.latest = Some(

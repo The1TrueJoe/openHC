@@ -39,9 +39,18 @@ impl std::fmt::Display for SshError {
             SshError::Command { host, cmd, code, msg } => {
                 write!(f, "{host}: `{cmd}` failed ({code}): {msg}")
             }
+            SshError::NoSshpass if cfg!(windows) => write!(
+                f,
+                "password auth on Windows needs PuTTY's `plink.exe` on PATH (winget install \
+                 PuTTY.PuTTY, or choco install putty). `sshpass` is a Unix-only program and has \
+                 no Windows build, so the OpenSSH client that ships with Windows cannot be given \
+                 a password non-interactively. The alternative is key auth: ssh-keygen, then put \
+                 the public key in the unit's authorized_keys."
+            ),
             SshError::NoSshpass => write!(
                 f,
-                "password auth needs `sshpass` on PATH (brew/apt install sshpass), or use a key"
+                "password auth needs `sshpass` on PATH (brew install sshpass, apt install \
+                 sshpass), or use a key"
             ),
             SshError::Spawn(m) => write!(f, "{m}"),
         }
@@ -66,6 +75,26 @@ impl Ssh {
     fn base(&self) -> Result<Command, SshError> {
         let mut c;
         if let Some(pw) = &self.password {
+            // WINDOWS HAS NO sshpass. It is a Unix program that drives a pty,
+            // and Windows' OpenSSH client has no way to be handed a password on
+            // the command line at all — which is why every password login
+            // failed there while the same build worked on a Mac.
+            //
+            // PuTTY's plink does take one (`-pw`), and it is the thing Windows
+            // users are most likely to already have, so it is the fallback.
+            // Its option spelling is entirely different from OpenSSH's, hence
+            // the separate argument list rather than a swapped binary name.
+            if cfg!(windows) {
+                if let Some(plink) = which("plink") {
+                    c = Command::new(plink);
+                    // -batch: never prompt, fail instead — a prompt here would
+                    // hang a GUI with no console attached to answer it.
+                    // -no-antispoof: keep the remote output clean for parsing.
+                    c.args(["-ssh", "-batch", "-no-antispoof", "-pw", pw, "-l", &self.user, &self.host]);
+                    return Ok(c);
+                }
+                return Err(SshError::NoSshpass);
+            }
             if which("sshpass").is_none() {
                 return Err(SshError::NoSshpass);
             }
@@ -194,8 +223,17 @@ fn spurious_refusal(status: &std::process::ExitStatus, stderr: &[u8]) -> bool {
 pub const CANDIDATE_LOGINS: &[(&str, Option<&str>)] = &[
     ("root", Some("openhc")),
     ("openhc", Some("openhc")),
-    ("root", Some("t0talc0ntr0l4!")), // stock Control4 (confirmed on an EA3)
-    ("root", None),                   // key auth
+    // Stock Control4, and ONLY UP TO OS 3.0.x. Control4 removed the default
+    // root password in OS 3.1.0; a controller on 3.1 or later has no password
+    // that will ever work here, no matter how many are tried. Confirmed both
+    // ways on hardware: it still works on an HC-800 running the 2.x-era image,
+    // and an EA-3 on 3.3.3 refuses it.
+    //
+    // So a refusal on a modern unit is not a wrong guess, it is the absence of
+    // a credential — which is why `first_working_login_with` reports that
+    // distinctly instead of saying "no password worked".
+    ("root", Some("t0talc0ntr0l4!")),
+    ("root", None), // key auth
 ];
 
 /// First login that answers, or None.
@@ -246,11 +284,32 @@ pub fn ssh_port_open(host: &str) -> bool {
         })
 }
 
-fn which(prog: &str) -> Option<()> {
+/// Find a program on PATH, returning where it is.
+///
+/// Returns the path rather than a bare "yes", because the Windows branch needs
+/// to actually run what it found. And it tries PATHEXT there: a bare "plink" is
+/// not a file on Windows, "plink.exe" is, so a Unix-shaped lookup finds nothing
+/// and reports the program as missing when it is installed.
+fn which(prog: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.BAT;.CMD".into())
+            .split(';')
+            .map(|e| e.to_ascii_lowercase())
+            .collect()
+    } else {
+        vec![]
+    };
     std::env::split_paths(&path).find_map(|dir| {
-        let p = dir.join(prog);
-        p.is_file().then_some(())
+        let direct = dir.join(prog);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        exts.iter().find_map(|e| {
+            let p = dir.join(format!("{prog}{e}"));
+            p.is_file().then_some(p)
+        })
     })
 }
 

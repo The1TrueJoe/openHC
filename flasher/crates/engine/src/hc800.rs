@@ -179,7 +179,7 @@ pub fn kexec(ssh: &Ssh, rel: &Release, netconsole: Option<(&str, u16)>, p: &Prog
 
 /// The persistent install. This is the only flow in the tool that writes the
 /// bootloader partition, so it checks before it does and reads back after.
-pub fn install_grub(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
+pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> Result<()> {
     let (kernel, initrd) = images(rel)?;
     let gm = "/mnt/ohc-grub";
     let km = "/mnt/ohc-kernel";
@@ -251,17 +251,25 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     ssh.run(&format!("cp {menu} {menu}.pre-openhc"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
     p.emit(Event::detail(format!("kept {menu}.pre-openhc")));
 
-    // `default N` -> `default saved`, which is what turns the entry's
-    // `savedefault` into a boot-once. Only the default line changes; the two
-    // vendor entries are appended past, never rewritten.
+    // The `default` line, which is the whole difference between the two modes:
+    //
+    //   boot-once  -> `default saved`, and the entry's `savedefault 1` hands it
+    //                 back to Control4 on every openHC boot.
+    //   persistent -> `default 2`, and openHC is simply what this box runs.
+    //
+    // Only that one line changes; the two vendor entries are appended past and
+    // never rewritten.
+    let want = if boot_once {
+        "default\t\tsaved".to_string()
+    } else {
+        format!("default\t\t{}", hc::ENTRY_OPENHC)
+    };
     let mut out = String::new();
     let mut seen_default = false;
     for l in before.lines() {
         if l.trim_start().starts_with("default") {
-            // Already `saved` on a re-run, or on a unit somebody set up by
-            // hand. Idempotent: leave it, do not treat it as a missing line.
             seen_default = true;
-            out.push_str(if l.contains("saved") { l } else { "default\t\tsaved" });
+            out.push_str(&want);
             out.push('\n');
         } else {
             out.push_str(l);
@@ -272,14 +280,22 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
         let _ = ssh.run(&format!("umount {gm}"), false);
         bail!("menu.lst has no `default` line at all — not the file this tool expects");
     }
-    out.push_str(&hc::menu_entry());
+    out.push_str(&hc::menu_entry(boot_once));
 
     ssh.put_stream(out.as_bytes(), &format!("cat > {menu}")).map_err(|e| anyhow::anyhow!("{e}"))?;
-    ssh.put_stream(
-        hc::default_file(hc::ENTRY_OPENHC).as_bytes(),
-        &format!("cat > {gm}/boot/grub/default"),
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if boot_once {
+        ssh.put_stream(
+            hc::default_file(hc::ENTRY_OPENHC).as_bytes(),
+            &format!("cat > {gm}/boot/grub/default"),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    } else {
+        // Only `default saved` reads this file, and we have just written
+        // `default N`. Leaving one behind — from an earlier --boot-once install,
+        // say — is a file that names an entry nothing consults, which is exactly
+        // the sort of thing someone later reads as the truth.
+        let _ = ssh.run(&format!("rm -f {gm}/boot/grub/default"), false);
+    }
 
     // Read back. A bootloader partition is the one place where "the write
     // returned success" is not good enough.
@@ -297,11 +313,21 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     p.emit(Event::detail(format!("menu.lst verified, {} bytes", after.len())));
     ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    p.emit(Event::resolved(format!(
-        "installed. The next boot runs openHC; every openHC boot then re-points the default at \
-         entry {} (Control4), so a reset of any kind returns to stock",
-        hc::ENTRY_VENDOR
-    )));
+    p.emit(Event::resolved(if boot_once {
+        format!(
+            "installed as a BOOT-ONCE. The next boot runs openHC; every openHC boot then \
+             re-points the default at entry {} (Control4), so a reset of any kind returns to stock",
+            hc::ENTRY_VENDOR
+        )
+    } else {
+        format!(
+            "installed as the DEFAULT. Every boot runs openHC, including after a power cut. \
+             `fallback {}` still catches a kernel that will not load; a kernel that loads and \
+             then panics will reboot into itself, and the ID button held at power-on is the way \
+             out of that",
+            hc::ENTRY_VENDOR
+        )
+    }));
     Ok(())
 }
 
@@ -440,6 +466,8 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
         .ok();
         p.emit(Event::detail(format!("`default saved` kept, saved -> entry {}", hc::ENTRY_VENDOR)));
     }
+    // `default saved` is gone with the entry, so the file it read is orphaned.
+    let _ = ssh.run(&format!("rm -f {gm}/boot/grub/default"), false);
     ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // The images last: menu.lst no longer names them, so deleting them now

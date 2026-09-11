@@ -13,13 +13,17 @@ fn main() -> ExitCode {
     let rest = &args[args.len().min(1)..];
     let ok = match cmd {
         "boards" => { boards(); true }
-        "discover" => discover(),
+        "discover" => discover(rest),
         "identify" => identify(rest),
         "plan" => plan(rest),
         "validate" => validate(rest),
         "install" => install(rest),
         "rootfs" => rootfs(rest),
         "boot" => boot(rest),
+        "sh" => shell(rest),
+        "push" => push(rest),
+        "log" => log(rest),
+        "reset" => reset(rest),
         "uninstall" => uninstall(rest),
         "wrap" => wrap(rest),
         "help" | "-h" | "--help" => { help(); true }
@@ -32,7 +36,9 @@ fn help() {
     println!(
         "openHC flasher (CLI)\n\n\
          usage: ohc-flash <command>\n\n\
-           discover                 find Control4 units on the network\n\
+           discover [--all]         find Control4 controllers on the network.\n\
+                                    --all also lists the non-Control4 devices\n\
+                                    announcing on the SDDP bus (TVs, amps, DVRs)\n\
            identify [HOST]          say what a unit is (auto-discovers if omitted)\n\
              \n\
            Any command taking [HOST] also accepts --password <pw> for a controller\n\
@@ -49,10 +55,19 @@ fn help() {
                                     the tiny boot-init instead).\n\
                                     HC-800: --method kexec (default) writes NOTHING and\n\
                                     runs openHC from RAM; --method grub installs it to\n\
-                                    the kernel partition so it survives a power cut.\n\
+                                    the kernel partition so it survives a power cut,\n\
+                                    and --boot-once makes that install hand the GRUB\n\
+                                    default back to Control4 as openHC starts (safer\n\
+                                    for a box you cannot reach).\n\
                                     --netconsole <ip>[:port] ships the boot log to you\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
+           sh <host> <command>      run a command on a unit\n\
+           push <host> <file>...    copy files into /tmp on a unit\n\
+           log [--port N]           listen for netconsole (run this BEFORE an install\n\
+                                    that passes --netconsole; the boot log cannot be\n\
+                                    recovered afterwards)\n\
+           reset [HOST]             sysrq-reboot, through the kernel rather than init\n\
            boot [HOST]              HC-800: re-enter an INSTALLED openHC. Every openHC\n\
                                     boot hands the GRUB default back to Control4, so\n\
                                     this is how you go back in after a reset\n\
@@ -73,16 +88,56 @@ fn boards() {
     }
 }
 
-fn discover() -> bool {
+fn discover(rest: &[String]) -> bool {
     println!("scanning...");
-    let found = tp::discover(true);
+    // The Control4-only rule lives in the transport, so this and the GUI cannot
+    // disagree about what counts as a controller.
+    let all = rest.iter().any(|a| a == "--all");
+    let found = if all { tp::discover_all(true) } else { tp::discover(true) };
     if found.is_empty() {
         println!("  nothing found. A freshly restored unit may not answer ICMP yet; \
-                  try again or pass the IP directly.");
+                  try again, pass the IP directly, or use --all to see every device \
+                  on the SDDP bus.");
         return false;
     }
+    // Columns sized to the data, so a fleet with long names does not wrap and a
+    // fleet without any does not leave a gutter.
+    let w = |pick: fn(&tp::Found) -> String| {
+        found.iter().map(|f| pick(f).chars().count()).max().unwrap_or(0)
+    };
+    let wn = w(|f| f.name.clone().unwrap_or_default()).max(4);
+    let wm = w(|f| f.model.clone().unwrap_or_default()).max(5);
+
+    println!(
+        "  {:<16} {:<17} {:<wn$} {:<wm$} {}",
+        "ADDRESS", "MAC", "NAME", "MODEL", "VIA"
+    );
     for f in &found {
-        println!("  {:<16} {:<18} {}", f.ip, f.mac.clone().unwrap_or_default(), f.via.join(","));
+        // A controller is what you can install onto; everything else on the
+        // SDDP bus is a device Control4 drives. Marking it saves the operator
+        // working it out from the type string.
+        let lead = if f.is_director { "*" } else { " " };
+        println!(
+            "{lead} {:<16} {:<17} {:<wn$} {:<wm$} {}",
+            f.ip,
+            f.mac.clone().unwrap_or_else(|| "-".into()),
+            f.name.clone().unwrap_or_else(|| "-".into()),
+            f.model.clone().unwrap_or_else(|| "-".into()),
+            f.via.join(","),
+        );
+    }
+    if found.iter().any(|f| f.is_director) {
+        println!("\n  * = answered as a Control4 controller");
+    }
+    if found.iter().any(|f| f.name.is_none()) {
+        // Say why a row is bare rather than leaving it looking like a failure.
+        for line in [
+            "Rows with no name were found by MAC alone. SDDP announcements are periodic —",
+            "one unit here advertises max-age 5000, about 80 minutes — and a controller with",
+            "Director disabled never announces at all. `identify <ip>` asks the unit directly.",
+        ] {
+            println!("  {line}");
+        }
     }
     true
 }
@@ -109,8 +164,18 @@ fn connect(rest: &[String]) -> Option<(String, tp::Ssh)> {
     match tp::first_working_login_with(&host, &extra) {
         Some(s) => Some((host, s)),
         None if tp::ssh_port_open(&host) => {
-            eprintln!("  {host} is reachable but no password worked — SSH password login may be \
-                       disabled or the root password is calculated; pass --password <pw> or use a key");
+            // NOT "no password worked". On OS 3.1.0 and later there IS no root
+            // password — Control4 removed it — so trying more of them is not the
+            // answer and saying "wrong password" sends people looking for one
+            // that does not exist. Measured both ways: the factory password
+            // still works on an HC-800 running the 2.x image, and an EA-3 on
+            // 3.3.3 refuses it.
+            eprintln!("  {host} answers on 22 but refused every login this tool knows.");
+            eprintln!("    On Control4 OS 3.1.0 and later there is no default root password at");
+            eprintln!("    all — it was removed, so no amount of guessing will work. Add an SSH");
+            eprintln!("    user with Composer's Network Tools, then pass --password <pw>, or");
+            eprintln!("    install a key and let this fall through to key auth.");
+            eprintln!("    On OS 3.0.x and earlier, root / t0talc0ntr0l4! is the factory login.");
             None
         }
         None => { eprintln!("  cannot reach {host} over SSH"); None }
@@ -121,6 +186,9 @@ fn identify(rest: &[String]) -> bool {
     let Some((host, ssh)) = connect(rest) else { return false };
     let id = tp::identify(&ssh);
     println!("  {host}: {}", id.describe());
+    if let Some(v) = &id.version {
+        println!("    running version {v}");
+    }
     for (k, v) in &id.raw { println!("    {k}: {}", v.trim()); }
     id.board.is_some()
 }
@@ -130,7 +198,8 @@ fn plan(rest: &[String]) -> bool {
         eprintln!("usage: ohc-flash plan <board> [method]"); return false
     };
     let Some(b) = board::by_name(name) else { eprintln!("unknown board '{name}'"); return false };
-    let id = ohc_flash_core::Identity { board: Some(b), candidates: vec![b], running: board::Running::Stock, raw: vec![] };
+    let id = ohc_flash_core::Identity { board: Some(b), candidates: vec![b], running: board::Running::Stock,
+            version: None, raw: vec![] };
     println!("  board:  {} ({})", b.name, b.desc);
 
     // Named method: show just that one. Otherwise show the preferred method and
@@ -310,6 +379,126 @@ fn boot(rest: &[String]) -> bool {
     true
 }
 
+/// `sh [HOST] <command>` — run something on a unit.
+///
+/// Folded in from what used to be tools/ohc-hc800, along with `push`, `log` and
+/// `reset`. That script grew during HC-800 bring-up, when the flasher had no
+/// support for the board at all, and by the time it did the two had become two
+/// implementations of the same discovery — which is not an abstract cost: the
+/// stale-ARP rule that keeps a dead address out of the results was fixed in the
+/// script and not here, so the same operator got different answers from the two
+/// tools on the same network.
+fn shell(rest: &[String]) -> bool {
+    // HOST is REQUIRED here, unlike the install commands. Those can guess,
+    // because a wrong guess only costs a refused connection; `sh` would
+    // otherwise have to decide whether a bare first argument is an address or
+    // the first word of the command, and every rule for that is a guess that
+    // eventually runs the wrong thing on the wrong box.
+    let args: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
+    if args.len() < 2 {
+        eprintln!("usage: ohc-flash sh <host> <command>");
+        return false;
+    }
+    let Some((_h, ssh)) = connect(rest) else { return false };
+    let command = args[1..].iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+    match ssh.run(&command, false) {
+        Ok(out) => {
+            print!("{out}");
+            true
+        }
+        Err(e) => {
+            eprintln!("  {e}");
+            false
+        }
+    }
+}
+
+/// `push [HOST] <file>...` — copy files into /tmp on a unit.
+fn push(rest: &[String]) -> bool {
+    // Same rule as `sh`: host first, then the files.
+    let args: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
+    if args.len() < 2 {
+        eprintln!("usage: ohc-flash push <host> <file>...");
+        return false;
+    }
+    for f in &args[1..] {
+        if !Path::new(f.as_str()).is_file() {
+            eprintln!("  no such file: {f}");
+            return false;
+        }
+    }
+    let Some((_h, ssh)) = connect(rest) else { return false };
+    for f in &args[1..] {
+        let Ok(data) = std::fs::read(f.as_str()) else {
+            eprintln!("  cannot read {f}");
+            return false;
+        };
+        let base = Path::new(f.as_str())
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if let Err(e) = ssh.put_stream(&data, &format!("cat > /tmp/{base}")) {
+            eprintln!("  {e}");
+            return false;
+        }
+        println!("  /tmp/{base}  {} B", data.len());
+    }
+    true
+}
+
+/// `log [--port N]` — listen for netconsole.
+///
+/// The boot log is the one thing that cannot be recovered afterwards: by the
+/// time a box is up, the messages explaining why it nearly wasn't are gone. Run
+/// this BEFORE an install that passes --netconsole.
+fn log(rest: &[String]) -> bool {
+    let port: u16 = rest
+        .windows(2)
+        .find(|w| w[0] == "--port")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(6666);
+    let sock = match std::net::UdpSocket::bind(("0.0.0.0", port)) {
+        Ok(s) => s,
+        Err(e) => {
+            // A second listener binds nothing and prints nothing, which looks
+            // exactly like a box that has stopped talking. Say so instead.
+            eprintln!("  cannot listen on udp/{port}: {e}");
+            return false;
+        }
+    };
+    eprintln!("  netconsole listener on udp/{port} — Ctrl-C to stop");
+    let mut buf = [0u8; 2048];
+    loop {
+        match sock.recv_from(&mut buf) {
+            Ok((n, _)) => {
+                print!("{}", String::from_utf8_lossy(&buf[..n]));
+                if !buf[..n].ends_with(b"\n") {
+                    println!();
+                }
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+            }
+            Err(e) => { eprintln!("  {e}"); return false }
+        }
+    }
+}
+
+/// `reset [HOST]` — sysrq reboot.
+///
+/// Goes through the kernel, not init, so it still works when userspace is too
+/// wedged to run `reboot`. On an HC-800 the unit comes back on stock Control4,
+/// because openHC hands the GRUB default back as it boots.
+fn reset(rest: &[String]) -> bool {
+    let Some((host, ssh)) = connect(rest) else { return false };
+    eprintln!("  sysrq-reboot on {host}");
+    // ONE attempt, no retry: the connection dying is the intended outcome, so
+    // retrying it just spends ssh timeouts before the operator learns anything.
+    let _ = ssh.run("echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger", false);
+    eprintln!("  sent. It takes a fresh DHCP lease, so find it by MAC: ohc-flash discover");
+    true
+}
+
 /// `uninstall [HOST]` — put an HC-800's boot chain back the way it shipped.
 fn uninstall(rest: &[String]) -> bool {
     let Some((_host, ssh)) = connect(rest) else { return false };
@@ -384,7 +573,7 @@ fn install(rest: &[String]) -> bool {
                 let nc = netconsole_arg(rest);
                 hc800::kexec(&ssh, &rel, nc.as_ref().map(|(i, p)| (i.as_str(), *p)), &p)
             }
-            _ => hc800::install_grub(&ssh, &rel, &p),
+            _ => hc800::install_grub(&ssh, &rel, rest.iter().any(|a| a == "--boot-once"), &p),
         };
         if let Err(e) = r { eprintln!("  {e:#}"); return false; }
         return true;

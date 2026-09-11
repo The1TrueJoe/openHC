@@ -9,7 +9,7 @@ pub mod sddp;
 pub mod probe;
 pub mod ssh;
 
-pub use discovery::{discover, Found};
+pub use discovery::{discover, discover_all, Found};
 pub use sddp::{search as sddp_search, SddpUnit};
 pub use probe::identify;
 pub use ssh::{first_working_login, first_working_login_with, ssh_port_open, wait_for_login, Ssh, SshError};

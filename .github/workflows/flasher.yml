@@ -101,6 +101,19 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "flasher version: $v"
 
+      # RUN THE TESTS ON EVERY PLATFORM, and Windows is the reason.
+      #
+      # The discovery layer shells out to `arp`, `ping` and `ifconfig`, and all
+      # three are spelled differently on Windows — different flags, and MACs
+      # printed with dashes instead of colons. Getting that wrong does not fail
+      # to compile, it produces an empty scan that looks exactly like a quiet
+      # network, which is precisely how it shipped broken. The parsers are pure
+      # and have fixtures of real output from each platform; running them HERE,
+      # on a Windows runner, is the only thing that actually proves the Windows
+      # path works. A build-only job never could.
+      - name: Test
+        run: cargo test --workspace
+
       # macOS: build each arch and lipo them into one universal binary.
       - name: Build (macOS universal)
         if: matrix.name == 'macos'
@@ -121,6 +134,19 @@ jobs:
         run: |
           cargo build --release -p ohc-flash-gui
           cp "target/release/ohc-flasher${{ matrix.ext }}" "ohc-flasher${{ matrix.ext }}"
+
+      # The CLI, which was never built here at all — while the README told
+      # people to download `ohc-flash` from a release and run it. Same workspace,
+      # same engine; it is a second binary because a GUI cannot be piped into
+      # anything.
+      - name: Build the CLI
+        env:
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cargo build --release -p ohc-flash-cli
+          cli="ohc-flash-${{ steps.ver.outputs.version }}-${{ matrix.name }}${{ matrix.ext }}"
+          cp "target/release/ohc-flash${{ matrix.ext }}" "$cli"
+          echo "CLI_ASSET=$cli" >> "$GITHUB_ENV"
 
       # macOS ships as a zipped .app bundle: it gives the binary its Finder/Dock
       # icon and a normal double-click launch (a bare Unix binary can carry
@@ -154,7 +180,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ohc-flasher-${{ matrix.name }}
-          path: flasher/${{ env.ASSET }}
+          path: |
+            flasher/${{ env.ASSET }}
+            flasher/${{ env.CLI_ASSET }}
           if-no-files-found: error
 
       # On a release, attach the binary/bundle to it.
@@ -162,4 +190,6 @@ jobs:
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ env.ASSET }}" --clobber
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${{ env.ASSET }}" "${{ env.CLI_ASSET }}" --clobber
