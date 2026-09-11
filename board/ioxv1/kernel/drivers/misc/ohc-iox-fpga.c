@@ -52,6 +52,12 @@
 #define CCLK_SET	0x90
 #define CCLK_CLR	0x94
 #define CCLK_BIT	(1u << 0)	/* GIO96, bank3 */
+#define B1_SET		0x40		/* bank1 (GIO32-63) SET */
+#define B3_SET		0x90		/* bank3 (GIO96-103) SET */
+#define B3_CLR		0x94		/* bank3 CLR */
+#define M2_BIT		(1u << 23)	/* GIO55, bank1 */
+#define M0_BIT		(1u << 25)	/* GIO57, bank1 */
+#define PROG_BIT	(1u << 2)	/* GIO98, bank3 */
 
 
 struct iox_fpga {
@@ -104,42 +110,29 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	unsigned int settle;
 	size_t i;
 
-	/* Mode pins select slave-serial. Held for the whole configuration. */
-	gpiod_set_value(f->m2, 1);
-	gpiod_set_value(f->m0, 1);
-	gpiod_set_value(f->cclk, 0);
+	/*
+	 * EVERYTHING through direct GPIO registers, replicating the raw sequence
+	 * proven on hardware. The gpiod path left the part unconfigured while the
+	 * identical register writes pass the FPGA's IDCODE check — so gpiod is out
+	 * of the config-pin path entirely. gpiod still OWNS these pins (requested
+	 * in probe, which set them to outputs); we just poke the SET/CLR
+	 * registers, which is what gpiod does underneath anyway.
+	 *
+	 * Mode pins select slave-serial: M2, M0 high. CCLK idles low.
+	 */
+	writel(M2_BIT | M0_BIT, f->gpio + B1_SET);
+	writel(CCLK_BIT, f->gpio + CCLK_CLR);
 
 	/*
-	 * INIT_B (GIO7) does NOT read back reliably on this board — gpiod, raw
-	 * devmem and the gpio chardev all disagree, because the pin is shared
-	 * with the FPGA UART interrupt. So it is logged for interest only and
-	 * never gated on; DONE (GIO97), which reads cleanly, is the real signal.
+	 * PROG pulse. Verified polarity: SoC pin HIGH = reset, LOW = released.
+	 * Assert reset (high), hold, release (low) — ending released so data
+	 * clocks into a ready part. INIT_B then rises; we do not gate on it
+	 * (it reads unreliably here) and judge success by the version register.
 	 */
-	dev_info(f->dev, "start: done=%d (initb unreliable on this board)\n",
-		 gpiod_get_value(f->done));
-
-	/*
-	 * Pulse PROG to clear the configuration memory. prog is ACTIVE_HIGH in
-	 * the device tree (verified: SoC pin HIGH = reset, LOW = released), so
-	 * logical 0 releases and logical 1 asserts reset. Release, brief assert,
-	 * release — ending released so data clocks into a ready part.
-	 */
-	gpiod_set_value(f->prog, 0);
-	udelay(20);
-	gpiod_set_value(f->prog, 1);
-
-	/*
-	 * Hold PROG_B asserted long enough to clear the configuration memory,
-	 * then release it. We do NOT wait on INIT_B here: on this board GIO7 is
-	 * shared between INIT_B and the FPGA UART interrupt and does not read
-	 * back the INIT_B line usefully (it reads 0 blank, and read 0 on the
-	 * vendor even with the part configured). So a fixed settle replaces the
-	 * INIT_B handshake — the same thing the vendor loader must do — and DONE
-	 * is the signal we actually trust, below.
-	 */
+	writel(PROG_BIT, f->gpio + B3_SET);	/* reset asserted */
 	udelay(500);
-	gpiod_set_value(f->prog, 0);
-	usleep_range(1000, 2000);	/* config-memory clear + INIT_B settle */
+	writel(PROG_BIT, f->gpio + B3_CLR);	/* released */
+	usleep_range(1000, 2000);		/* config-memory clear + INIT_B settle */
 
 	for (i = 0; i < len; i++) {
 		iox_fpga_byte(f, data[i]);
