@@ -154,75 +154,23 @@ static void iox_fpga_clocks(struct iox_fpga *f, unsigned int n)
 	}
 }
 
-/* Bring one PSC module (ARM domain) up to the ENABLE state. */
-static void iox_psc_enable(struct device *dev, void __iomem *psc, unsigned int mod)
+/*
+ * Wait for INIT_B to read high. After PROG_B is released the FPGA clears its
+ * configuration memory and raises INIT_B when it is ready for the bitstream;
+ * clocking data in before then loses the sync word and the part never
+ * configures (yet reports no CRC error, since it never synced). The vendor
+ * loader gates on INIT_B before every byte for the same reason.
+ */
+static bool iox_fpga_wait_initb(struct iox_fpga *f, unsigned int ms)
 {
 	unsigned int t;
 
-	/* NEXT state = ENABLE, matching the vendor's direct 0x23 module write. */
-	writel(PSC_MDCTL_ENABLE, psc + PSC_MDCTL + 4 * mod);
-	/* GO on the ARM power domain (bit 0). */
-	writel(readl(psc + PSC_PTCMD) | 1, psc + PSC_PTCMD);
-
-	for (t = 0; t < 10000; t++) {		/* transition to finish */
-		if (!(readl(psc + PSC_PTSTAT) & 1))
-			break;
-		udelay(1);
+	for (t = 0; t < ms * 10; t++) {
+		if (gpiod_get_value(f->initb) > 0)
+			return true;
+		usleep_range(100, 200);
 	}
-	for (t = 0; t < 10000; t++) {		/* module to report ENABLE */
-		if ((readl(psc + PSC_MDSTAT + 4 * mod) & PSC_MDSTAT_STATE) == 3)
-			return;
-		udelay(1);
-	}
-	dev_warn(dev, "PSC module %u did not reach ENABLE (MDSTAT 0x%08x)\n",
-		 mod, readl(psc + PSC_MDSTAT + 4 * mod));
-}
-
-/*
- * Start the FPGA's DCM reference clock (VENC DCLK). See the register-block
- * comment above for why this is needed and where the values come from. Called
- * once at probe; the clock then runs for as long as the board is powered.
- */
-static void iox_fpga_enable_clock(struct device *dev)
-{
-	void __iomem *psc  = ioremap(PSC_PHYS, PSC_SIZE);
-	void __iomem *sys  = ioremap(SYSMOD_PHYS, SYSMOD_SIZE);
-	void __iomem *venc = ioremap(VENC_PHYS, VENC_SIZE);
-
-	if (!psc || !sys || !venc) {
-		dev_warn(dev, "FPGA clock: ioremap failed (psc=%p sys=%p venc=%p) — DONE may not release\n",
-			 psc, sys, venc);
-		goto out;
-	}
-
-	/* Power the VPSS master/slave domains that gate the VENC registers. */
-	iox_psc_enable(dev, psc, LPSC_VPSSMSTR);
-	iox_psc_enable(dev, psc, LPSC_VPSSSLV);
-
-	/* Route the VPSS clock (system module VPSS_CLKCTL). */
-	writel(VPSS_CLKCTL_VAL, sys + VPSS_CLKCTL);
-
-	/* VENC: full clock, enable the video clock output, drive DCLK. */
-	writel(0, venc + VPBE_PCR);
-	writel(VENC_VIDCTL_VLCKE, venc + VENC_VIDCTL);
-	writel(VENC_DCLKCTL_DCKEC, venc + VENC_DCLKCTL);
-	writel(1, venc + VENC_DCLKPTN0);	/* DCLK pattern: /2 square wave */
-	writel(2, venc + VENC_DCLKPTN0A);
-	writel(0, venc + VENC_DCLKHS);
-	writel(1, venc + VENC_DCLKHSA);
-	writel(0, venc + VENC_OSDCLK0);
-	writel(1, venc + VENC_OSDCLK1);
-
-	dev_info(dev, "FPGA clock (VENC DCLK) enabled: VPSS_CLKCTL=0x%02x VIDCTL=0x%04x DCLKCTL=0x%04x\n",
-		 readl(sys + VPSS_CLKCTL), readl(venc + VENC_VIDCTL),
-		 readl(venc + VENC_DCLKCTL));
-out:
-	if (venc)
-		iounmap(venc);
-	if (sys)
-		iounmap(sys);
-	if (psc)
-		iounmap(psc);
+	return gpiod_get_value(f->initb) > 0;
 }
 
 static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
@@ -244,25 +192,41 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	writel(CCLK_BIT, f->gpio + CCLK_CLR);
 
 	/*
-	 * PROG pulse. Verified polarity: SoC pin HIGH = reset, LOW = released.
-	 * Assert reset (high), hold, release (low) — ending released so data
-	 * clocks into a ready part. INIT_B then rises; we do not gate on it
-	 * (it reads unreliably here) and judge success by the version register.
+	 * PROG pulse. Verified polarity: SoC pin HIGH = reset, LOW = released
+	 * (confirmed on hardware: INIT_B drops to 0 while PROG is high and rises
+	 * to 1 when it goes low). Assert reset, hold, release. The vendor loader
+	 * then waits ~5 ms for the configuration memory to clear before clocking,
+	 * so match that rather than the 1-2 ms used previously.
 	 */
 	writel(PROG_BIT, f->gpio + B3_SET);	/* reset asserted */
 	udelay(500);
 	writel(PROG_BIT, f->gpio + B3_CLR);	/* released */
-	usleep_range(1000, 2000);		/* config-memory clear + INIT_B settle */
+	msleep(5);				/* config-memory clear (vendor timing) */
+
+	/*
+	 * Do NOT clock until INIT_B is high: the part must be ready or the sync
+	 * word is lost and it never configures. INIT_B reads reliably here (via
+	 * gpiod) — the earlier "unreliable" note was wrong; it was the driver
+	 * fighting the pin, not the pin.
+	 */
+	if (!iox_fpga_wait_initb(f, 50))
+		dev_warn(f->dev, "INIT_B did not rise after PROG release\n");
 
 	for (i = 0; i < len; i++) {
 		iox_fpga_byte(f, data[i]);
 		/*
-		 * No mid-stream INIT_B CRC check: INIT_B is not readable on this
-		 * board (see above). A CRC failure shows up as DONE never rising,
-		 * which we report below.
+		 * Gate on INIT_B like the vendor: it drops and stays low on a
+		 * sync/CRC error, so a periodic check pinpoints a bad load instead
+		 * of silently clocking the rest into a halted config engine.
 		 */
-		if ((i & 0x3fff) == 0x3fff)
+		if ((i & 0xfff) == 0xfff) {
+			if (gpiod_get_value(f->initb) == 0) {
+				dev_err(f->dev, "INIT_B dropped at byte %zu of %zu — config/CRC error\n",
+					i, len);
+				return -EIO;
+			}
 			cond_resched();
+		}
 	}
 
 	/*
@@ -497,13 +461,6 @@ static int iox_fpga_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, f);
-
-	/*
-	 * Start the FPGA's DCM reference clock before anything else: the vendor
-	 * bitstream stalls start-up until its DCM locks, so without this DONE
-	 * never releases no matter how clean the data path is.
-	 */
-	iox_fpga_enable_clock(dev);
 
 	/*
 	 * If something already configured the part — vendor Linux loaded it and
