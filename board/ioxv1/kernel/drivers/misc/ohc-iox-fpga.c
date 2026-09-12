@@ -32,6 +32,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/irqflags.h>
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
@@ -176,6 +177,7 @@ static bool iox_fpga_wait_initb(struct iox_fpga *f, unsigned int ms)
 static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 {
 	unsigned int settle;
+	unsigned long flags;
 	size_t i;
 
 	/*
@@ -212,30 +214,32 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	if (!iox_fpga_wait_initb(f, 50))
 		dev_warn(f->dev, "INIT_B did not rise after PROG release\n");
 
-	for (i = 0; i < len; i++) {
+	/*
+	 * Clock the whole bitstream AND the start-up clocks with interrupts
+	 * disabled. This is the crux: the design's DCM locks to CCLK, and a DCM
+	 * needs a STABLE, gap-free reference to acquire lock. Under preemption or
+	 * an interrupt the bit-bang stalls for microseconds-to-milliseconds, CCLK
+	 * gaps, and the DCM never sustains lock — so start-up parks at the
+	 * lock-wait phase and DONE never releases, even though every byte clocked
+	 * in cleanly (INIT_B stays high). The vendor's tight kernel loop happens
+	 * to be regular enough; both a preemptible kernel path and a userspace
+	 * bit-bang fail identically. Holding IRQs off for the ~0.5 s of clocking
+	 * keeps CCLK uniform. Every SoC clock/mux/EMIF register is identical to
+	 * the working vendor OS — the only remaining variable was this regularity.
+	 */
+	local_irq_save(flags);
+	for (i = 0; i < len; i++)
 		iox_fpga_byte(f, data[i]);
-		/*
-		 * Gate on INIT_B like the vendor: it drops and stays low on a
-		 * sync/CRC error, so a periodic check pinpoints a bad load instead
-		 * of silently clocking the rest into a halted config engine.
-		 */
-		if ((i & 0xfff) == 0xfff) {
-			if (gpiod_get_value(f->initb) == 0) {
-				dev_err(f->dev, "INIT_B dropped at byte %zu of %zu — config/CRC error\n",
-					i, len);
-				return -EIO;
-			}
-			cond_resched();
-		}
-	}
+	iox_fpga_clocks(f, 512);	/* start-up clocks, still gap-free */
+	local_irq_restore(flags);
+
+	if (gpiod_get_value(f->initb) == 0)
+		dev_err(f->dev, "INIT_B low after clocking — config/CRC error\n");
 
 	/*
-	 * The start-up sequence needs clocks after the last data bit. The
-	 * vendor's loader sends twelve; the Xilinx datasheets ask for rather
-	 * more on some families, so this sends a generous number and then
-	 * keeps clocking while it waits for DONE.
+	 * A few more start-up clocks with IRQs on, in case DONE needs a moment
+	 * after lock. The bulk of start-up already happened gap-free above.
 	 */
-	iox_fpga_clocks(f, 64);
 	for (settle = 0; settle < 200; settle++) {
 		if (gpiod_get_value(f->done) > 0)
 			break;
