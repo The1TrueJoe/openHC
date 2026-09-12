@@ -1,73 +1,65 @@
 ---
-title: The FPGA start-up clock
-description: Why the bitstream loads cleanly but the FPGA never finishes starting up, and the DM355 VENC clock that fixes it.
+title: The FPGA startup problem
+description: The bitstream loads cleanly but the FPGA never finishes starting up. What's been ruled out, and why the next step is JTAG.
 sidebar:
   order: 5
 ---
 
 The bitstream loads with **zero CRC errors** — INIT_B stays high through all
-169 KB — and yet DONE never releases and the FPGA register bus stays floating
-(the version word reads `0x0202`, not the configured `0x0004`). Sending more
-start-up clocks changes nothing. This page explains why, because the answer is
-non-obvious and was provable entirely offline.
+169 KB (verified with an explicit per-byte INIT_B gate). But **DONE never
+releases** and the version register floats at `0x0202` (a configured part reads
+`0x0400`). The data is accepted; the **startup sequence never completes**.
 
-## The bitstream waits for a DCM to lock
+This page records what has been ruled out, so the investigation isn't repeated.
 
-A Spartan-3E finishes configuration by running a **start-up state machine** of
-eight phases (C0–C7). Where each event happens — DONE release, global write
-enable, global tristate — is baked into the bitstream's **COR** (Configuration
-Options Register).
+## Not the video/VENC clock
 
-Parsing the vendor bitstream (`fpga_fw.bin`), the COR is `0x000031e5`. Decoded:
+An earlier theory held that the FPGA's DCM needs the DM355 video encoder (VENC)
+clock, stripped along with video in openHC. **Disproven.** On the live vendor OS,
+where the FPGA works, `VPSS_CLKCTL` is `0` and the VENC block reads floating and
+unclocked — identical to openHC. The FPGA is configured there regardless. The
+"no video → no clock" correlation was a coincidence.
 
-| field       | value | meaning                                  |
-|-------------|-------|------------------------------------------|
-| LCK_cycle   | 0     | **wait for DCM lock at phase C0**        |
-| DONE_cycle  | 7     | release DONE at phase C7                 |
-| GTS_cycle   | 4     | global tristate at C4                    |
-| GWE_cycle   | 5     | global write enable at C5                |
+## Not the driver or the load sequence
 
-The bitgen "don't wait for lock" default is `0x3fe5`; the vendor image differs
-from it in exactly the LCK_cycle bits (`0x0e00`). So the state machine **parks
-at C0 until the design's DCM reports LOCKED**. DONE lives at C7, which is never
-reached. The CCLKs we keep sending can't help — the machine is waiting on a
-*reference clock into the DCM*, which comes from the board, not from us.
+A standalone **userspace bit-bang** (mmap `/dev/mem`, replicating the vendor's
+exact slave-serial sequence, bypassing the kernel driver) fails **identically**
+to the in-kernel loader. So the failure is not in the driver.
 
-## The clock is the DM355 video encoder
+The load sequence itself was disassembled from the vendor's `c4fpga.ko` and
+matched byte for byte: PROG polarity (high = reset, low = release — confirmed on
+hardware via INIT_B), M2/M0 high, DIN sampled on the rising CCLK edge, the GPIO
+SET/CLR register offsets, and the post-data startup clocks.
 
-The IO Extender has no display, but its DM355 **video encoder (VENC)** is wired
-to the FPGA purely as a clock source — the FPGA's DCM runs off the VENC digital
-LCD clock (**DCLK**).
+## Not any SoC register
 
-The vendor turns this on **in U-Boot**, before it loads the part, in the GPL
-sources `c4fpgaldr.c` / `davincifb.c` (`enableDigitalOutput()`). Then Linux
-boots with the FPGA already configured and the clock already ticking. openHC
-netboots straight to `bootm` and loads the FPGA from the *kernel* instead, so
-that U-Boot video init never runs and the DCM never sees a clock.
+openHC and the working vendor OS were compared register-for-register and are
+**identical**:
 
-## Enabling it from the kernel
+| block | result |
+|-------|--------|
+| system module 0x01c40000–0x70 | identical |
+| PLLC1 (0x01c40900) full | identical |
+| PLLC2 (0x01c40d00) full | identical |
+| PSC MDSTAT[0..41] | identical (incl. VPSS master/slave) |
+| PINMUX0–4 | identical |
+| async EMIF CS1 (`A2CR`, FPGA bus) | identical (`0x00a00505`) |
+| bitstream `fpga_fw.bin` | identical md5 |
 
-`ohc-iox-fpga` now starts the VENC DCLK at probe, with the vendor's exact
-register writes:
+## Not clocking regularity
 
-| register        | address       | value            | purpose                     |
-|-----------------|---------------|------------------|-----------------------------|
-| PSC MDCTL[0,1]  | `0x01c41a00`/`…a04` | ENABLE     | power VPSS master + slave   |
-| VPSS_CLKCTL     | `0x01c40044`  | `0x0a`           | route the VPSS clock        |
-| VPBE_PCR        | `0x01c72784`  | `0`              | full (undivided) clock      |
-| VENC_VIDCTL     | `0x01c72404`  | `0x2000` (VLCKE) | enable video clock output   |
-| VENC_DCLKCTL    | `0x01c72464`  | `0x0800` (DCKEC) | enable the digital clock    |
-| VENC_DCLKPTN0/0A| `0x01c72468`/`…78` | `1` / `2`   | DCLK pattern (≈ /2 square)   |
-| VENC_DCLKHSA    | `0x01c7248c`  | `1`              | DCLK pattern                |
-| VENC_OSDCLK0/1  | `0x01c7252c`/`…30` | `0` / `1`   | OSD clock                   |
+Clocking the entire stream with interrupts disabled (gap-free CCLK, to rule out
+a DCM losing its reference to preemption) did not help either.
 
-:::note[VPSS_CLKCTL is at 0x01c40044]
-Earlier bring-up notes had the VPSS clock control at `0x01c70200`; that was
-wrong. The register that matters is in the **system module** at `0x01c40044`,
-and the vendor writes `0x0a` to it.
-:::
+## What's left: the pins
 
-openHC runs no DaVinci PSC clock driver, so once the domain is enabled nothing
-gates it back off — the clock free-runs, which is what the FPGA's UART logic
-needs regardless. With the clock present, the DCM locks, the C0 stall clears,
-the machine advances to C7, and DONE releases.
+Same board, same bitstream, byte-identical register state, same sequence, clean
+data — yet the vendor completes startup (DONE high) and openHC does not. Every
+remotely-observable difference has been eliminated. The remaining unknowns are
+only visible with instrumentation: is the FPGA's DCM reference clock actually
+present, and what do DONE / INIT_B / CCLK do during startup?
+
+**The next step is JTAG or a scope on the J18 header** — compare the vendor and
+openHC at the FPGA pins during a load. Until then, serial (`ttyS1..4`) and the IR
+block stay offline; relays, contacts, LEDs, `webd` and MQTT `iod` are unaffected
+and working.
