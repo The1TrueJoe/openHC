@@ -1,82 +1,74 @@
-# IO Extender — overnight status
+# IO Extender — status (daytrip session)
 
-## Working: relays (8), contacts (8), front LEDs, webd, MQTT iod — all end-to-end.
-## FPGA (serial + IR): NOT working. Root cause narrowed to a hardware-level
-## startup step that needs JTAG/scope to resolve. Everything softwareaddressable
-## has been ruled out. Details below.
+## Working: relays (8), contacts (8), front LEDs, webd, MQTT iod — end-to-end.
+## FPGA (serial + IR): still not configuring. But the problem is now pinned down
+## HARD, several wrong theories were killed, and there's a clean on-demand
+## reference (vendor c4fpga.ko) for the final scope/JTAG step.
 
 ---
 
-## Autonomy set up tonight (reusable)
+## The single most important result
 
-- **Kasa "Bench" plug** power-cycles the IOX. Controlled with no cloud creds
-  (HS110, local): `~/openhc-iox-netboot/.venv/bin/python
-  ~/openhc-iox-netboot/kasa_ctl.py {on|off|cycle|status}`. (Not in git.)
-- **Persistent flasher supervisor** (`flash-supervisor.sh`, run once with sudo):
-  serves netboot without re-sudo. Control it with no sudo:
-  `echo openhc|vendor|off > /tmp/ohc-flash-ctl/mode`. Log at
-  `/tmp/ohc-flash-ctl/flasher.log`. NOTE: to serve a freshly-built image you
-  must toggle the mode (`off` then `openhc`) so the flasher re-opens the file —
-  a plain `cp` over the image is not picked up by the running flasher.
-- Booting the **vendor OS** (to read reference registers): `echo vendor > mode`,
-  power-cycle. It netboots `vendor-uImage`, mounts NAND root, comes up ~10.0.0.113,
-  SSH `root` / `t0talc0ntr0l4!` (legacy: `-o HostKeyAlgorithms=+ssh-rsa
-  -o KexAlgorithms=+diffie-hellman-group1-sha1`), tool is `peeknpoke`.
+I ran the vendor's own driver on demand as a clean A/B:
+1. My userspace loader ran on the **vendor OS** (drivers rmmod'd, nothing else
+   touching the part) → **FAILED** (blank 0x0202, DONE low).
+2. Then `insmod c4fpga.ko` on that same blank part → **CONFIGURED it (0x0400).**
 
-## The FPGA problem, precisely
+Same board, same kernel, same env, same blank FPGA — vendor driver succeeds,
+mine fails. So it is **not the environment and not boot-timing — it is purely a
+difference in the load technique/execution.**
 
-The bitstream loads with **zero CRC errors** — INIT_B stays high through all
-169 KB (now verified by an explicit per-byte INIT_B gate). But **DONE never
-releases** and the version register floats at `0x0202` (a configured part reads
-`0x0400`). So the data is accepted but the **start-up sequence never completes**.
+## What is DEFINITIVELY ruled out (do not re-chase)
 
-## What was DISPROVEN (don't re-chase these)
+- **Video/VENC clock** — wrong (vendor runs the FPGA with VPSS_CLKCTL=0). Removed.
+- **SoC registers** — openHC vs vendor are byte-identical: full system module,
+  PLLC1, PLLC2, all 42 PSC MDSTAT modules, PINMUX0-4, async-EMIF CS1 (0x00a00505).
+- **A disabled clock** — openHC's clock framework only knows `ref_clk_24m`; it
+  disables nothing on the DM355 clock tree (clk_summary confirmed).
+- **The driver** — a userspace /dev/mem bit-bang, a direct-`writel` kernel driver,
+  and a `gpiod`-DIN kernel driver (exact c4fpga.ko mirror) ALL fail identically.
+- **The bitstream** — md5-identical to the vendor's file.
+- **PROG polarity/timing** — verified at the pins (PROG high=reset→INIT_B 0,
+  low=release→INIT_B 1); 5 ms settle matched.
+- **CCLK regularity** — IRQ-off gap-free clocking didn't help.
+- **CCLK frequency** — swept 27 kHz … ~6 MHz, all fail.
+- **An extra GPIO / clock-enable pin** — live capture during c4fpga.ko's load
+  shows it drives only the same 7 config pins, no extra pin.
+- **Load-time pinmux** — the mux calls c4fpga.ko makes don't change PINMUX0-4
+  from the state my loader already uses (they're effectively no-ops here).
 
-1. **It is NOT the video/VENC clock.** Earlier theory (and the first commit) said
-   the FPGA's DCM needs the DM355 VENC clock. **Wrong** — proven on the live
-   vendor OS, where the FPGA works with `VPSS_CLKCTL = 0` and the VENC block
-   floating/unclocked, identical to openHC. That code was removed.
-2. **It is NOT the load sequence / driver.** A standalone **userspace bit-bang**
-   (mmap /dev/mem, vendor-exact sequence, bypassing the kernel driver entirely)
-   fails **identically**. So the driver is not at fault.
-3. **It is NOT the bitstream.** `fpga_fw.bin` md5 matches the vendor's file byte
-   for byte (`096f05cc…`).
-4. **It is NOT any SoC register.** openHC vs the working vendor OS were compared
-   register-for-register and are **identical**: the whole system module
-   (0x01c40000–70), PLLC1 and PLLC2 in full, all 42 PSC MDSTAT modules, PINMUX0–4,
-   and the async-EMIF CS1 timing (`A2CR = 0x00a00505`, where the FPGA lives).
-5. **It is NOT PROG polarity/timing.** Verified on hardware: PROG high → INIT_B=0
-   (reset), PROG low → INIT_B=1 (ready). Matches the vendor; 5 ms settle added.
-6. **It is NOT CCLK regularity / preemption.** Clocking the whole stream with
-   IRQs disabled (gap-free CCLK) did not help.
-7. **It is NOT VPSS PSC local-reset.** Deasserting LRST to match the vendor
-   (MDSTAT 0x1F03) did not help.
+## What's left
 
-## The remaining mystery
+The bitstream clocks in cleanly every time (INIT_B stays high = no CRC error),
+but DONE never releases (startup never completes). The vendor's exact same
+sequence completes startup. Every observable, reproducible difference has been
+eliminated, and three independent faithful re-implementations fail identically —
+so the remaining difference is at the electrical/pin-timing level, invisible to
+register/GPIO polling (too slow to catch the bit-bang) and not present in the
+load *logic*.
 
-Same board, same bitstream, byte-identical SoC register state, same load
-sequence, clean data — yet the vendor's `c4fpga.ko` completes start-up (DONE
-high, `0x0400`) and openHC does not (DONE low, `0x0202`). The vendor configures
-the part **in Linux** (`c4fpga.ko` + `request_firmware`), fresh from a cold
-power-cycle — so it is not a U-Boot/warm-state artifact.
+**Next step = scope / logic analyzer on J18** (or JTAG): capture CCLK, DIN, DONE
+and INIT_B during BOTH a vendor `insmod c4fpga.ko` load and an openHC load, and
+diff the waveforms. The vendor load is reproducible on demand (see below), so
+it's a clean side-by-side. Also worth pulling the actual **c4fpga.c GPL source**
+(update.control4.com/open_src) — the kernel loader source is NOT in the patch
+set I have (only the U-Boot loader), and a source line could show a detail the
+disassembly hid.
 
-Every remotely-observable difference has been eliminated. What's left is only
-visible at the pins: whether the FPGA's DCM reference clock is actually present
-and what DONE/INIT_B/CCLK do during start-up. **This is the JTAG/scope step.**
+## Reproducing / driving it (all set up, no sudo needed after the one supervisor)
 
-## Concrete next steps
+- Power-cycle: `~/openhc-iox-netboot/kasa_ctl.py cycle` (Kasa "Bench", local, no creds).
+- Netboot target: `echo openhc|vendor|off > /tmp/ohc-flash-ctl/mode`
+  (TOGGLE off→openhc to serve a freshly-built image).
+- Vendor OS: `mode=vendor` + cycle → 10.0.0.113, root/`t0talc0ntr0l4!`
+  (ssh legacy algs). FPGA loader on demand:
+  `rmmod`… then `insmod $(find /mnt/jffs2/modules -name c4fpga.ko)` → 0x0400.
+- openHC: `mode=openhc` + cycle → 192.168.0.50 (or 10.0.0.115), root/`openhc`.
+  Load: scp fpga_fw.bin to /lib/firmware/c4/iox-fpga.bin, `echo c4/iox-fpga.bin
+  > /sys/devices/platform/soc/4000200.fpga/firmware`, check `devmem 0x04000200 16`.
 
-1. **Scope or JTAG the FPGA** (J18 header): watch CCLK, DONE, INIT_B and hunt for
-   the DCM reference clock during a load. Compare vendor vs openHC at the pins.
-   This is the only way left to see what differs.
-2. Optional software check to fully close the premise: on the vendor OS, force
-   `c4fpga` to re-load the part in Linux (rmmod its dependents + c4fpga, insmod)
-   and confirm it reconfigures fresh — verifying the vendor really does a
-   cold-equivalent Linux load (I'm ~95% sure it does; this removes all doubt).
+## Box state
 
-## Where things are
-
-- Box: running openHC (netbooted), core IO working. FPGA blank.
-- Driver: `board/ioxv1/kernel/drivers/misc/ohc-iox-fpga.c` — vendor-faithful
-  loader (INIT_B gate, 5 ms PROG, tried IRQ-off). Loads cleanly; startup stalls.
-- Bitstream + vendor GPL source + tools: `/private/tmp/.../c4gpl/`.
+Left on **openHC** (192.168.0.50), core IO working, FPGA blank. Nothing written
+to NAND/bootloader. Commits pushed on `ioxv1-io` (driver + docs). Vendor OS is
+one `mode=vendor`+cycle away and its FPGA loader works on demand as reference.
