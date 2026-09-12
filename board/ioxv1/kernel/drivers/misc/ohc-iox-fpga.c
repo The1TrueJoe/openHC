@@ -135,11 +135,14 @@ static void iox_fpga_byte(struct iox_fpga *f, u8 b)
 	int i;
 
 	for (i = 7; i >= 0; i--) {
-		/* DIN = bit, MSB first, via the raw SET/CLR registers. */
-		if ((b >> i) & 1)
-			writel(DIN_BIT, f->gpio + DIN_SET);
-		else
-			writel(DIN_BIT, f->gpio + DIN_CLR);
+		/*
+		 * DIN via gpiod (like the vendor c4fpga.ko, which drives DIN with
+		 * gpio_set_value and only CCLK with raw registers). Every raw-register
+		 * and userspace /dev/mem variant clocked clean data (INIT_B high) but
+		 * never released DONE; the vendor's exact method is the last untried
+		 * difference, so mirror it precisely.
+		 */
+		gpiod_set_value(f->din, (b >> i) & 1);
 		/* CCLK low then high; the FPGA samples DIN on the rising edge. */
 		writel(CCLK_BIT, f->gpio + CCLK_CLR);
 		writel(CCLK_BIT, f->gpio + CCLK_SET);
@@ -177,7 +180,6 @@ static bool iox_fpga_wait_initb(struct iox_fpga *f, unsigned int ms)
 static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 {
 	unsigned int settle;
-	unsigned long flags;
 	size_t i;
 
 	/*
@@ -215,26 +217,22 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 		dev_warn(f->dev, "INIT_B did not rise after PROG release\n");
 
 	/*
-	 * Clock the whole bitstream AND the start-up clocks with interrupts
-	 * disabled. This is the crux: the design's DCM locks to CCLK, and a DCM
-	 * needs a STABLE, gap-free reference to acquire lock. Under preemption or
-	 * an interrupt the bit-bang stalls for microseconds-to-milliseconds, CCLK
-	 * gaps, and the DCM never sustains lock — so start-up parks at the
-	 * lock-wait phase and DONE never releases, even though every byte clocked
-	 * in cleanly (INIT_B stays high). The vendor's tight kernel loop happens
-	 * to be regular enough; both a preemptible kernel path and a userspace
-	 * bit-bang fail identically. Holding IRQs off for the ~0.5 s of clocking
-	 * keeps CCLK uniform. Every SoC clock/mux/EMIF register is identical to
-	 * the working vendor OS — the only remaining variable was this regularity.
+	 * Clock the bitstream, gating on INIT_B per byte exactly like the vendor
+	 * c4fpga.ko (IRQs on, DIN via gpiod, CCLK via raw registers). IRQ-off
+	 * clocking and userspace /dev/mem both failed identically, so this mirrors
+	 * the vendor's proven method as closely as possible.
 	 */
-	local_irq_save(flags);
-	for (i = 0; i < len; i++)
+	for (i = 0; i < len; i++) {
 		iox_fpga_byte(f, data[i]);
-	iox_fpga_clocks(f, 512);	/* start-up clocks, still gap-free */
-	local_irq_restore(flags);
-
-	if (gpiod_get_value(f->initb) == 0)
-		dev_err(f->dev, "INIT_B low after clocking — config/CRC error\n");
+		if ((i & 0xfff) == 0xfff) {
+			if (gpiod_get_value(f->initb) == 0) {
+				dev_err(f->dev, "INIT_B dropped at byte %zu of %zu — config/CRC error\n",
+					i, len);
+				return -EIO;
+			}
+			cond_resched();
+		}
+	}
 
 	/*
 	 * A few more start-up clocks with IRQs on, in case DONE needs a moment
