@@ -363,11 +363,11 @@ index 0000000..a959552
 +		 * Four 16550As, reg-shift 1: 8-bit regs in the low byte of each
 +		 * 16-bit EMIF word (IIR=0xc1, LSR=0x60 at reg<<1; scratch holds).
 +		 *
-+		 * clock-frequency is a PLACEHOLDER. The vendor's SoC ports run
-+		 * at 27 MHz but these are clocked inside the FPGA and no GPL
-+		 * source states the rate; read it off a vendor unit with
-+		 * `setserial -a /dev/ttyS1` (baud_base = uartclk / 16) before
-+		 * trusting any line rate here.
++		 * clock-frequency 50 MHz: the FPGA clocks these UARTs at 50 MHz —
++		 * uartclk 0x02FAF080 in the vendor's c4serial.ko, which hands it to
++		 * serial8250_register_port. base_baud = 50e6/16 = 3125000, so a
++		 * requested 115200 maps to divisor 27 -> 115740 baud (0.4% off).
++		 * (Earlier 27 MHz was a guess; this is the vendor's real value.)
 +		 */
 +		serial1: serial@4000240 {
 +			compatible = "ns16550a";
@@ -376,7 +376,7 @@ index 0000000..a959552
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
-+			clock-frequency = <27000000>;
++			clock-frequency = <50000000>;
 +		};
 +
 +		serial2: serial@4000250 {
@@ -386,7 +386,7 @@ index 0000000..a959552
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
-+			clock-frequency = <27000000>;
++			clock-frequency = <50000000>;
 +		};
 +
 +		serial3: serial@4000260 {
@@ -396,7 +396,7 @@ index 0000000..a959552
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
-+			clock-frequency = <27000000>;
++			clock-frequency = <50000000>;
 +		};
 +
 +		serial4: serial@4000270 {
@@ -406,7 +406,7 @@ index 0000000..a959552
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
-+			clock-frequency = <27000000>;
++			clock-frequency = <50000000>;
 +		};
 +
 +		/*
