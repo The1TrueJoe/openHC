@@ -94,12 +94,19 @@
 #define SYSMOD_SIZE	0x100
 #define PINMUX2		0x08		/* 0x01c40008 */
 /*
- * The vendor c4fpga.ko sets PINMUX2 bits 0 and 1 for the DURATION of the load
- * (davinci_dm355_mux_peripheral(8,0,1) / (8,1,1)) and clears them afterwards.
- * Those two bits mux the pins the FPGA's slave-serial CCLK/DIN ride on: without
- * them the config data never reaches the part and it never syncs (reads a
- * floating 0x0202). openHC's static pin-mux only ever holds the post-load value
- * (bits clear), which is why every load failed. Set for the load, restore after.
+ * PINMUX2 is the DM355 "Pin Mux 2 (AEMIF)" register (SPRUFB3 Table 9-6). Its
+ * low bits mux EMIF address lines against GPIO (0 = EMIF, 1 = GPIO):
+ *   bit 0 EM_A13_3 : 1 => GIO[64:57]  (M0 = GIO57, DIN = GIO58 live here)
+ *   bit 1 EM_A0_BA1: 1 => GIO[56:55]  (M2 = GIO55 lives here)
+ * So the FPGA slave-serial pins M2/M0/DIN are physically shared with EMIF
+ * address lines. The vendor c4fpga.ko sets both bits (dm355_mux_peripheral(
+ * 8,0,1)/(8,1,1)) for the DURATION of the load so it can bit-bang them as
+ * GPIO, then clears them (8,0,0)/(8,1,0) so the same pins revert to EM_A[] to
+ * ADDRESS the configured FPGA's registers (version @ CS1+0x200 needs EM_A[8]).
+ * openHC only ever held the post-load value (bits clear = EMIF), so DIN stayed
+ * wired to an address line and the config data never reached the part — it
+ * never synced (blank bus reads 0x0202). Set for the load, restore before any
+ * register read.
  */
 #define PINMUX2_LOAD_BITS 0x3
 
@@ -256,8 +263,11 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	}
 
 	/*
-	 * A few more start-up clocks with IRQs on, in case DONE needs a moment
-	 * after lock. The bulk of start-up already happened gap-free above.
+	 * A few more start-up clocks (CCLK is GIO96, unaffected by PINMUX2) until
+	 * DONE rises. DONE is GIO97, read via gpiod — independent of the EMIF pin
+	 * mux, so it is the reliable "configured" signal even while the config
+	 * pins are still muxed to GPIO. The board pulls DONE up (open-drain,
+	 * DriveDone=0 in our COR), so it goes high once start-up completes.
 	 */
 	for (settle = 0; settle < 200; settle++) {
 		if (gpiod_get_value(f->done) > 0)
@@ -266,34 +276,54 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 	}
 
 	/*
-	 * Judge success by the FPGA VERSION REGISTER, not the DONE pin. DONE and
-	 * INIT_B read inconsistently on this board, but a configured FPGA drives
-	 * its register bus and base+0 (== the node's reg[0], 0x04000200) reads a
-	 * small version number (0x0004 on our bitstream); a blank part floats the
-	 * bus to a repeating 0x02.. pattern.
+	 * Restore PINMUX2 to EMIF mode BEFORE touching the version register.
+	 * M2/M0/DIN (GIO55/57/58) share pins with EM_A[13:3]/EM_A0; while bits
+	 * 0,1 select GPIO for the load, those address lines are gone, so the
+	 * version at CS1 offset 0x200 is NOT addressable and readw() returns a
+	 * bogus/aliased value. The FPGA keeps its configuration across the switch
+	 * (the mode/DIN pins are don't-care once DONE is high). This is the reason
+	 * every prior "configured?" check read garbage.
+	 */
+	if (sys) {
+		writel(pm2save, sys + PINMUX2);
+		dev_info(f->dev, "PINMUX2 restored to %#010x for register access\n",
+			 readl(sys + PINMUX2));
+	}
+
+	/*
+	 * Now judge success. DONE (gpiod, above) is the primary signal; the FPGA
+	 * version register confirms it — a configured part drives base+0
+	 * (0x04000200) to a small version (0x0400 on our bitstream), a blank part
+	 * floats the bus to a repeating 0x02.. pattern.
 	 */
 	{
 		struct resource *r = platform_get_resource(
 			to_platform_device(f->dev), IORESOURCE_MEM, 0);
 		void __iomem *base = r ? ioremap(r->start, resource_size(r)) : NULL;
 		u16 ver = base ? readw(base) : 0xffff;
+		int done = gpiod_get_value(f->done);
 
 		if (base)
 			iounmap(base);
 		dev_info(f->dev, "after load: version reg = 0x%04x, DONE pin = %d\n",
-			 ver, gpiod_get_value(f->done));
+			 ver, done);
 		if (ver == 0x0000 || ver == 0xffff || (ver & 0xff) == 0x02) {
 			dev_err(f->dev,
-				"FPGA did not configure (version 0x%04x is a floating bus) "
-				"after %zu bytes\n", ver, len);
+				"FPGA did not configure (version 0x%04x float, DONE=%d) "
+				"after %zu bytes\n", ver, done, len);
 			ret = -EIO;
 		} else {
-			dev_info(f->dev, "FPGA CONFIGURED — version 0x%04x, %zu bytes\n",
-				 ver, len);
+			dev_info(f->dev, "FPGA CONFIGURED — version 0x%04x, DONE=%d, %zu bytes\n",
+				 ver, done, len);
 			ret = 0;
 		}
 	}
+	if (sys)
+		iounmap(sys);
+	return ret;
+
 restore:
+	/* Error path (INIT_B dropped mid-load): pinmux still in GPIO mode. */
 	if (sys) {
 		writel(pm2save, sys + PINMUX2);	/* revert CCLK/DIN pins post-load */
 		iounmap(sys);
