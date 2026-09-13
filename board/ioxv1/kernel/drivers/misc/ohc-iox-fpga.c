@@ -90,10 +90,18 @@
 #define PSC_MDCTL_ENABLE 0x23		/* NEXT=ENABLE(3) + LRSTZ(bit5) */
 #define PSC_MDSTAT_STATE 0x1f
 
-#define SYSMOD_PHYS	0x01c40000	/* system module (PINMUX + VPSS clk) */
+#define SYSMOD_PHYS	0x01c40000	/* system module (PINMUX registers) */
 #define SYSMOD_SIZE	0x100
-#define VPSS_CLKCTL	0x44		/* 0x01c40044; vendor writes 0x0a */
-#define VPSS_CLKCTL_VAL	0x0a
+#define PINMUX2		0x08		/* 0x01c40008 */
+/*
+ * The vendor c4fpga.ko sets PINMUX2 bits 0 and 1 for the DURATION of the load
+ * (davinci_dm355_mux_peripheral(8,0,1) / (8,1,1)) and clears them afterwards.
+ * Those two bits mux the pins the FPGA's slave-serial CCLK/DIN ride on: without
+ * them the config data never reaches the part and it never syncs (reads a
+ * floating 0x0202). openHC's static pin-mux only ever holds the post-load value
+ * (bits clear), which is why every load failed. Set for the load, restore after.
+ */
+#define PINMUX2_LOAD_BITS 0x3
 
 #define VENC_PHYS	0x01c72400	/* video encoder register block */
 #define VENC_SIZE	0x400		/* covers VPBE_PCR at 0x01c72784 too */
@@ -181,16 +189,28 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 {
 	unsigned int settle;
 	size_t i;
+	int ret = 0;
+	void __iomem *sys;
+	u32 pm2save = 0;
 
 	/*
-	 * EVERYTHING through direct GPIO registers, replicating the raw sequence
-	 * proven on hardware. The gpiod path left the part unconfigured while the
-	 * identical register writes pass the FPGA's IDCODE check — so gpiod is out
-	 * of the config-pin path entirely. gpiod still OWNS these pins (requested
-	 * in probe, which set them to outputs); we just poke the SET/CLR
-	 * registers, which is what gpiod does underneath anyway.
-	 *
-	 * Mode pins select slave-serial: M2, M0 high. CCLK idles low.
+	 * Mux CCLK/DIN for the load: set PINMUX2 bits 0,1 (see PINMUX2 comment).
+	 * This is THE fix — without it the config data never reaches the FPGA.
+	 */
+	sys = ioremap(SYSMOD_PHYS, SYSMOD_SIZE);
+	if (sys) {
+		pm2save = readl(sys + PINMUX2);
+		writel(pm2save | PINMUX2_LOAD_BITS, sys + PINMUX2);
+		dev_info(f->dev, "PINMUX2 %#010x -> %#010x for load\n",
+			 pm2save, readl(sys + PINMUX2));
+	} else {
+		dev_warn(f->dev, "could not map system module for PINMUX2\n");
+	}
+
+	/*
+	 * Config-pin bit-bang via direct GPIO registers (DIN also via gpiod, to
+	 * match the vendor c4fpga.ko). Mode pins select slave-serial: M2, M0 high;
+	 * CCLK idles low.
 	 */
 	writel(M2_BIT | M0_BIT, f->gpio + B1_SET);
 	writel(CCLK_BIT, f->gpio + CCLK_CLR);
@@ -228,7 +248,8 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 			if (gpiod_get_value(f->initb) == 0) {
 				dev_err(f->dev, "INIT_B dropped at byte %zu of %zu — config/CRC error\n",
 					i, len);
-				return -EIO;
+				ret = -EIO;
+				goto restore;
 			}
 			cond_resched();
 		}
@@ -265,12 +286,19 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 			dev_err(f->dev,
 				"FPGA did not configure (version 0x%04x is a floating bus) "
 				"after %zu bytes\n", ver, len);
-			return -EIO;
+			ret = -EIO;
+		} else {
+			dev_info(f->dev, "FPGA CONFIGURED — version 0x%04x, %zu bytes\n",
+				 ver, len);
+			ret = 0;
 		}
-		dev_info(f->dev, "FPGA CONFIGURED — version 0x%04x, %zu bytes\n",
-			 ver, len);
 	}
-	return 0;
+restore:
+	if (sys) {
+		writel(pm2save, sys + PINMUX2);	/* revert CCLK/DIN pins post-load */
+		iounmap(sys);
+	}
+	return ret;
 }
 
 /*
