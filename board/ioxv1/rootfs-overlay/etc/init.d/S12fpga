@@ -1,0 +1,64 @@
+#!/bin/sh
+# openHC IO Extender FPGA — load the bitstream that lights up the serial ports
+# and IR outputs. IOX only (board/ioxv1).
+#
+# The four RS-232 ports (ttyS1-4) and eight IR outputs are registers inside a
+# Xilinx Spartan-3E on async EMIF CS1. It comes out of reset BLANK, so until a
+# bitstream is bit-banged in over the slave-serial GPIOs those registers do not
+# answer and no ttyS1-4 exist. The ohc-iox-fpga driver does the load, but only
+# on an explicit trigger: its init runs before the rootfs is mounted, so a load
+# at probe would just fail request_firmware(). This script is that trigger.
+#
+# Runs EARLY — after S01pinmux (which routes the SoC IO to GPIO) and before iod
+# (S89) and webd (S90), which are clients of the ttyS ports the FPGA provides.
+#
+# The bitstream is PROPRIETARY and is not in the repo (see board/ioxv1/firmware/
+# fpga/README.md): the owner of the hardware already has it. If it is not on the
+# box this script says so plainly and the board simply comes up with relays,
+# contacts, LEDs and buttons (all native GPIO) and no serial/IR — which is the
+# truth, not a failure.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+FW="${OHC_FPGA_FIRMWARE:-/lib/firmware/c4/iox-fpga.bin}"
+
+start() {
+    # Only IOX-class boards carry this FPGA.
+    [ "$OHC_FPGA" = "xilinx-slave-serial" ] || {
+        echo "fpga: no slave-serial FPGA on this board"; return 0; }
+
+    # The driver exposes a 'firmware' sysfs attribute on the fpga platform node.
+    D=$(ls -d /sys/devices/platform/soc/*fpga* 2>/dev/null | head -1)
+    [ -n "$D" ] && [ -w "$D/firmware" ] || {
+        echo "fpga: ohc-iox-fpga driver not present (no firmware sysfs)"; return 1; }
+
+    # Already configured? (A warm restart of this script, or a driver that
+    # populated at probe.) 'done' reads the DONE pin via gpiod.
+    if [ "$(cat "$D/done" 2>/dev/null)" = "1" ] && [ "$(cat "$D/loaded" 2>/dev/null)" = "1" ]; then
+        echo "fpga: already configured"; return 0
+    fi
+
+    [ -f "$FW" ] || {
+        echo "fpga: no bitstream at $FW — serial ports and IR stay dark."
+        echo "fpga: drop the proprietary bitstream there (see board/ioxv1/firmware/fpga/README.md)."
+        return 0
+    }
+
+    # request_firmware() searches under /lib/firmware, so hand it the path with
+    # that prefix stripped (e.g. /lib/firmware/c4/iox-fpga.bin -> c4/iox-fpga.bin).
+    name=${FW#/lib/firmware/}
+
+    echo "fpga: loading $name"
+    if echo "$name" > "$D/firmware" 2>/dev/null; then
+        echo "fpga: configured (DONE=$(cat "$D/done" 2>/dev/null)) — ttyS1-4 and IR are live"
+    else
+        echo "fpga: load FAILED — see dmesg (INIT_B/DONE and the version register)"
+        return 1
+    fi
+}
+
+case "$1" in
+    start) start ;;
+    stop) : ;;                 # a configured FPGA stays configured; nothing to undo
+    restart) start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

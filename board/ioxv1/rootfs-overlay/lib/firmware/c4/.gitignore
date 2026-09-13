@@ -1,0 +1,7 @@
+# Proprietary Control4 FPGA bitstream — NOT in the repo. The owner of the
+# hardware already has it (see board/ioxv1/firmware/fpga/README.md). Drop
+# iox-fpga.bin in this directory to bake it into the image; it stays untracked.
+# This .gitignore keeps the directory itself present so /lib/firmware/c4 exists
+# in the built rootfs and the loader (S12fpga) has somewhere to find the file.
+*
+!.gitignore
