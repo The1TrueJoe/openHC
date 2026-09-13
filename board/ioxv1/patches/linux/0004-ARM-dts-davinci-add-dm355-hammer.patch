@@ -360,8 +360,8 @@ index 0000000..a959552
 +		initb-gpios = <&gpio 7 GPIO_ACTIVE_HIGH>;
 +
 +		/*
-+		 * Four 16550As, one byte per register — reg-shift 0, NOT the
-+		 * SoC UART's 2. They share one rising-edge interrupt on GIO7.
++		 * Four 16550As, reg-shift 1: 8-bit regs in the low byte of each
++		 * 16-bit EMIF word (IIR=0xc1, LSR=0x60 at reg<<1; scratch holds).
 +		 *
 +		 * clock-frequency is a PLACEHOLDER. The vendor's SoC ports run
 +		 * at 27 MHz but these are clocked inside the FPGA and no GPL
@@ -372,7 +372,7 @@ index 0000000..a959552
 +		serial1: serial@4000240 {
 +			compatible = "ns16550a";
 +			reg = <0x04000240 0x10>;
-+			reg-shift = <0>;
++			reg-shift = <1>;
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
@@ -382,7 +382,7 @@ index 0000000..a959552
 +		serial2: serial@4000250 {
 +			compatible = "ns16550a";
 +			reg = <0x04000250 0x10>;
-+			reg-shift = <0>;
++			reg-shift = <1>;
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
@@ -392,7 +392,7 @@ index 0000000..a959552
 +		serial3: serial@4000260 {
 +			compatible = "ns16550a";
 +			reg = <0x04000260 0x10>;
-+			reg-shift = <0>;
++			reg-shift = <1>;
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
@@ -402,7 +402,7 @@ index 0000000..a959552
 +		serial4: serial@4000270 {
 +			compatible = "ns16550a";
 +			reg = <0x04000270 0x10>;
-+			reg-shift = <0>;
++			reg-shift = <1>;
 +			reg-io-width = <1>;
 +			interrupt-parent = <&gpio>;
 +			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
