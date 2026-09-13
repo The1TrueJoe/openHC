@@ -54,14 +54,20 @@ was in software the whole time:
 ## Confirmed vs pending
 - **Confirmed:** FPGA configures every load; driver reports `FPGA CONFIGURED —
   version 0x0400, DONE=1`; `of_platform_populate` brings up the children; all
-  four UARTs register as 16550A; their divisor latches and status registers
-  read/write correctly at reg-shift 1 (LSR=0x60 idle on all four).
-- **Pending (needs physical access):** actual byte-level RS-232 TX/RX over the
-  jacks (internal MCR loopback isn't wired in the FPGA core, so a cable/scope is
-  needed to see bytes leave), and the true UART input clock — `clock-frequency`
-  is a 27 MHz placeholder; read `setserial -a /dev/ttyS1` baud_base off a vendor
-  unit for the real rate. IR (`ohc-iox-irout.c`) is staged but not built:
-  carrier calibration + jack map still need the live part.
+  four UARTs register as 16550A.
+- **Serial I/O confirmed on real RS-232.** With a USB-serial adapter on jack 4,
+  bytes sent from the host arrive on `ttyS4` cleanly at **115200** — the UART
+  receives and frames real RS-232 data. That also pinned the input clock: the
+  data was first garbled, and the vendor's `c4serial.ko` registers these ports
+  with `uartclk = 0x02FAF080` = **50 MHz**, not the 27 MHz that was guessed. The
+  device tree now carries `clock-frequency = <50000000>`; at 50 MHz a requested
+  115200 is divisor 27 → 115740 baud (0.4% off), and the link is clean.
+- **Pending:** the reverse direction (ttyS4 → host) read nothing on the one
+  cable tested — a physical-link matter, not software: the baud is right and the
+  UART MCR does not gate the transmitter (asserting DTR/RTS changed nothing), so
+  the port is proven good by the working direction; the cable likely carries
+  only host→box (try a null-modem). IR (`ohc-iox-irout.c`) is staged but not
+  built: carrier calibration + jack map still need the live part.
 
 ## How to load it (dev / netboot)
 ```
