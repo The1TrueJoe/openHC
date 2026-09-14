@@ -128,3 +128,13 @@ CONFIG_CC_OPTIMIZE_FOR_SIZE=y
 # All-builtin: no loadable modules (rootfs is a RAM initramfs, image is
 # self-contained). Simplifies the out-of-tree DM355 resurrection too.
 CONFIG_MODULES=n
+
+# --- IR output: rc-core / lirc, same as the HC-800/EA IO-MCU path ---
+# The FPGA's eight IR outputs are exposed as lirc TX devices by ohc-iox-irout,
+# one rc_dev per jack named "openHC IR out N" — exactly what iod's lirc.rs finds
+# and drives with the microsecond timings ir-ctl speaks. Output only (no RX on
+# this board, OHC_IR_IN=0), so RC_CORE + LIRC + RC_DEVICES is the whole need;
+# the protocol decoders are RX-side and omitted.
+CONFIG_RC_CORE=y
+CONFIG_LIRC=y
+CONFIG_RC_DEVICES=y

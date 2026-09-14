@@ -1,35 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Control4 IO Extender V1 ("hammer") — FPGA IR output, as rc-core devices.
+ * Control4 IO Extender V1 ("hammer") — FPGA IR output, as rc-core/lirc devices.
  *
- * Eight IR emitters live in two 16-byte register blocks inside the FPGA, at
- * EMIF offsets 0x20 and 0x30 from the FPGA base (physical 0x04000220 and
- * 0x04000230). This registers one rc_dev per emitter, NAMED "openHC IR out N",
- * so iod finds them with the exact same lookup it uses for the HC-800/EA family
- * (see packages/iod/src/ir.rs, emitter_name()). No openHC-side code changes:
- * an IO Extender's IR looks identical to any other board's from userspace.
+ * Each rear IR jack is registered as its own lirc TX device named "openHC IR
+ * out N" (1-based), exactly like the HC-800/EA IO-MCU path (gpio-ohc-iomcu.c) —
+ * so iod's lirc.rs finds and drives them with the microsecond timings ir-ctl
+ * speaks, with no board-specific API. Output only; this board has no IR RX.
  *
- * WHERE THIS COMES FROM. Control4 never published c4irout.c, so the register
- * layout below was recovered by disassembling the vendor c4irout.ko pulled off
- * a live unit. See the openHC "IR block register map" doc. What is CONFIRMED
- * from the binary:
+ * THE HARDWARE. Eight emitters live in two register blocks inside the FPGA at
+ * EMIF offsets 0x20 and 0x30 from the FPGA base (physical 0x04000220/0x230).
+ * Recovered by disassembling the vendor c4irout.ko + c4fpga.ko (Control4 never
+ * shipped c4irout.c) and confirmed on hardware. All registers are 16-bit (the
+ * whole FPGA is 8/16-bit in the low half of each EMIF word; see the UART
+ * reg-shift-1 note). Per block, offsets from the block base:
+ *   +0x02  timing    (vendor writes 0x017e)
+ *   +0x04  CONTROL   bit15 GO, bit14 MODE (fpga-handled), bit13 ENABLE,
+ *                    bits 4..12 select (which output jack)
+ *   +0x06  CARRIER   = (v & 0x7f) << 9   (a prescaler; v→Hz calibrated live)
+ *   +0x08  DATA FIFO write-only pulse/space stream
+ *   +0x0c  COUNT     (vendor writes config-1; 0xffff default)
+ *   0x3e (global)    (vendor writes 0)
  *
- *   - two blocks, 0x20 and 0x30, eight halfword registers each;
- *   - a CONTROL word where bit 15 = GO, bit 14 = a mode flag, bit 13 is always
- *     set, and bits 5..12 are a select field (c4irout_setup / c4irout_go);
- *   - a carrier register written as (val & 0x7f) << 9;
- *   - a count register written as (count - 1).
+ * FIFO ENCODING (from c4irout_write): each duration, in CARRIER PERIODS, is one
+ * word — mark (carrier on) = 0x8000 | (periods & 0x3fff), space = 0x4000 |
+ * (periods & 0x3fff). The train ends with 0xc000. Fire by setting GO in CONTROL.
+ * The FIFO must be filled at kernel speed: a slow userspace poke underruns it
+ * and nothing clean comes out, which is the whole reason this is a driver.
  *
- * What is NOT yet calibrated, because it needs the block driven on real
- * silicon (which needs the FPGA loaded, which is the thing this all unblocks):
- *
- *   - the exact carrier prescaler math (CARRIER_DIV below is a first guess);
- *   - which physical jack is block 0x20 vs 0x30, and how eight emitters map
- *     onto the two blocks via the CONTROL select field.
- *
- * Both are marked FIXME and are an afternoon on the bench, not a rewrite. The
- * driver is structured and registered correctly; only these constants are
- * provisional.
+ * BRING-UP KNOBS. The carrier prescaler→Hz curve and the select→jack map are the
+ * two values that need pinning against an IR learner. Until they are, sysfs
+ * exposes cal_carrier/cal_block/cal_select and a `send` that takes a raw
+ * pulse/space list in carrier periods, so the emit path can be exercised and
+ * measured directly; the lirc tx_ir path below uses the same emit primitive.
  */
 
 #include <linux/io.h>
@@ -37,95 +39,216 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/delay.h>
+#include <linux/sysfs.h>
+#include <linux/math64.h>
 #include <media/rc-core.h>
 
-/* Register offsets within a block, from c4irout_config's assignment. */
-#define IR_REG_CONTROL	0x14	/* CONTROL word: bit15 GO, bit14 mode, bits5-12 select */
-#define IR_REG_CARRIER	0x16	/* (val & 0x7f) << 9 */
-#define IR_REG_DATA	0x1a
-#define IR_REG_COUNT	0x1c	/* count - 1 */
-#define IR_CTRL_GO	0x8000
-#define IR_CTRL_ENABLE	0x2000	/* bit 13, always set by c4irout_setup */
+#define IR_EMITTERS	8
 
-/*
- * FIXME(calibration): the vendor writes carrier as (v & 0x7f) << 9, which is a
- * prescaler off some FPGA clock, not Hz. Until a known 38 kHz code is fired on
- * the vendor OS and the register read back, treat this as provisional.
- */
-#define IR_CARRIER_DEFAULT 38000
+/* Block bases within the mapped region (which starts at 0x04000220). */
+#define BLK0		0x00
+#define BLK1		0x10
+#define GLOBAL		0x1e		/* 0x0400023e, shared */
+
+/* Register offsets within a block. */
+#define IR_AUX0		0x00
+#define IR_TIMING	0x02
+#define IR_CONTROL	0x04
+#define IR_CARRIER	0x06
+#define IR_FIFO		0x08
+#define IR_AUX_A	0x0a
+#define IR_COUNT	0x0c
+
+#define CTRL_GO		0x8000
+#define CTRL_MODE	0x4000
+#define CTRL_ENABLE	0x2000
+#define CTRL_BUSY	0x0008
+#define CTRL_SEL_MASK	0x1ff0
+
+#define FIFO_MARK	0x8000
+#define FIFO_SPACE	0x4000
+#define FIFO_END	0xc000
+#define FIFO_DUR_MASK	0x3fff
+
+#define IR_MAX_WORDS	512
+#define IR_DEFAULT_HZ	38000
 
 struct iox_emitter {
+	struct iox_irout *ir;
 	struct rc_dev	*rc;
 	char		*name;
-	void __iomem	*block;	/* base + 0x20 or base + 0x30 */
-	u32		select;	/* CONTROL bits 5..12 for this emitter */
-	u32		carrier;
+	u32		block;		/* 0 or 1 */
+	u32		select;		/* CONTROL select field */
+	u32		carrier;	/* Hz, from s_tx_carrier */
 };
 
 struct iox_irout {
 	struct device		*dev;
-	void __iomem		*base;
-	struct iox_emitter	em[8];
-	int			n;
+	void __iomem		*base;	/* mapped at 0x04000220, both blocks */
+	struct iox_emitter	em[IR_EMITTERS];
+	int			nem;
+	/* bring-up calibration knobs (see sysfs) */
+	u32			cal_carrier;
+	u32			cal_block;
+	u32			cal_select;
 };
 
 /*
- * FIXME(map): eight emitters, two blocks. Provisional assumption — emitters
- * 0-3 on block 0x20, 4-7 on block 0x30, with the CONTROL select field carrying
- * the low index. Confirm against the vendor by firing each /dev/iroutN and
- * watching which jack lights.
+ * The one emit primitive. `dur` are durations already in CARRIER PERIODS,
+ * alternating mark/space with a mark first. Fills the FIFO at kernel speed and
+ * fires GO on the given block with the given select and raw carrier register.
  */
-static void iox_emitter_geometry(struct iox_irout *ir, int i,
-				 void __iomem **block, u32 *select)
+static void iox_ir_emit(struct iox_irout *ir, u32 block, u32 select,
+			u32 carrier_reg, const u16 *dur, int n)
 {
-	*block = ir->base + (i < 4 ? 0x20 : 0x30);
-	*select = (u32)(i & 3) << 5;
+	void __iomem *b = ir->base + (block ? BLK1 : BLK0);
+	u16 ctrl = CTRL_ENABLE | CTRL_MODE | (select & CTRL_SEL_MASK);
+	int i;
+
+	writew(0, b + IR_CONTROL);
+	writew(0x017e, b + IR_TIMING);
+	writew(0, b + IR_AUX0);
+	writew(ctrl, b + IR_CONTROL);
+	writew(carrier_reg & 0xffff, b + IR_CARRIER);
+	writew(0, ir->base + GLOBAL);
+	writew(0, b + IR_AUX_A);
+	writew(0xffff, b + IR_COUNT);
+
+	for (i = 0; i < n; i++) {
+		u16 w = dur[i] & FIFO_DUR_MASK;
+		w |= (i & 1) ? FIFO_SPACE : FIFO_MARK;
+		writew(w, b + IR_FIFO);
+	}
+	writew(FIFO_END, b + IR_FIFO);
+	writew(ctrl | CTRL_GO, b + IR_CONTROL);
+
+	for (i = 0; i < 4000; i++) {		/* best-effort wait for done */
+		if (!(readw(b + IR_CONTROL) & CTRL_BUSY))
+			break;
+		udelay(50);
+	}
+	dev_info(ir->dev, "emit blk%u sel%#x carrier=%#06x words=%d -> CONTROL=%#06x\n",
+		 block, select, carrier_reg, n, readw(b + IR_CONTROL));
+}
+
+/* ---- lirc TX (what iod drives) ----------------------------------------- */
+
+static int iox_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int count)
+{
+	struct iox_emitter *em = rcdev->priv;
+	struct iox_irout *ir = em->ir;
+	u32 hz = em->carrier ? em->carrier : IR_DEFAULT_HZ;
+	u32 carrier_reg = ir->cal_carrier;	/* until Hz→v is calibrated */
+	u16 *dur;
+	unsigned int i, n;
+
+	if (!count)
+		return 0;
+	n = min_t(unsigned int, count, IR_MAX_WORDS);
+	dur = kmalloc_array(n, sizeof(*dur), GFP_KERNEL);
+	if (!dur)
+		return -ENOMEM;
+
+	/* rc-core hands us microseconds (mark first). Convert to carrier periods:
+	 * periods = us * Hz / 1e6. div_u64 because the kernel links no libgcc. */
+	for (i = 0; i < n; i++) {
+		u32 p = div_u64((u64)txbuf[i] * hz, 1000000u);
+		dur[i] = p > FIFO_DUR_MASK ? FIFO_DUR_MASK : p;
+	}
+	iox_ir_emit(ir, em->block, em->select, carrier_reg, dur, n);
+	kfree(dur);
+	return n;
 }
 
 static int iox_tx_carrier(struct rc_dev *rcdev, u32 carrier)
 {
 	struct iox_emitter *em = rcdev->priv;
 
-	if (carrier == 0)
+	if (carrier < 1000)
 		return -EINVAL;
 	em->carrier = carrier;
 	return 0;
 }
 
-/*
- * Send a raw pulse/space train. rc-core hands us durations in microseconds;
- * the FPGA block wants its own encoding, which the vendor built from the
- * config registers. This lays down the CONTROL/carrier/count sequence the
- * disassembly showed and fires bit 15.
- *
- * FIXME(data path): the per-burst DATA encoding (how the us train becomes the
- * words written to IR_REG_DATA) is the one part not fully pinned from the
- * binary — c4irout_write's inner loop needs another pass. Structure is here;
- * the data marshalling is stubbed so this compiles and registers, and a wrong
- * send is a no-op rather than a wedge (unlike the MCU boards, a bad write here
- * cannot hang a shared microcontroller — the block is memory-mapped).
- */
-static int iox_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int count)
+/* ---- sysfs bring-up / calibration harness ------------------------------ */
+
+#define CAL_ATTR(field)							\
+static ssize_t field##_show(struct device *d, struct device_attribute *a,\
+			    char *buf)					\
+{									\
+	struct iox_irout *ir = dev_get_drvdata(d);			\
+	return sysfs_emit(buf, "%#x\n", ir->field);			\
+}									\
+static ssize_t field##_store(struct device *d, struct device_attribute *a,\
+			     const char *buf, size_t n)			\
+{									\
+	struct iox_irout *ir = dev_get_drvdata(d);			\
+	u32 v;								\
+	if (kstrtou32(buf, 0, &v))					\
+		return -EINVAL;						\
+	ir->field = v;							\
+	return n;							\
+}									\
+static DEVICE_ATTR_RW(field)
+
+CAL_ATTR(cal_carrier);
+CAL_ATTR(cal_block);
+CAL_ATTR(cal_select);
+
+/* Raw pulse/space list in carrier periods (mark first) on cal_block/select. */
+static ssize_t send_store(struct device *d, struct device_attribute *a,
+			  const char *buf, size_t n)
 {
-	struct iox_emitter *em = rcdev->priv;
-	u16 carrier_field = (u16)((em->carrier / 1000) & 0x7f) << 9;
-	u16 control;
+	struct iox_irout *ir = dev_get_drvdata(d);
+	u16 *dur;
+	int cnt = 0;
+	const char *p = buf;
 
-	writew(carrier_field, em->block + IR_REG_CARRIER);
-	writew((u16)(count ? count - 1 : 0), em->block + IR_REG_COUNT);
-
-	control = readw(em->block + IR_REG_CONTROL);
-	control &= ~0x1fc0;			/* clear the select field */
-	control |= IR_CTRL_ENABLE | em->select;
-
-	/* FIXME(data path): marshal txbuf into IR_REG_DATA here. */
-
-	writew(control, em->block + IR_REG_CONTROL);
-	writew(control | IR_CTRL_GO, em->block + IR_REG_CONTROL);
-
-	/* rc-core wants the number of samples it consumed. */
-	return count;
+	dur = kmalloc_array(IR_MAX_WORDS, sizeof(*dur), GFP_KERNEL);
+	if (!dur)
+		return -ENOMEM;
+	while (*p && cnt < IR_MAX_WORDS) {
+		unsigned int v;
+		int used;
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == ',')
+			p++;
+		if (!*p || sscanf(p, "%u%n", &v, &used) != 1)
+			break;
+		dur[cnt++] = (u16)v;
+		p += used;
+	}
+	if (cnt)
+		iox_ir_emit(ir, ir->cal_block, ir->cal_select, ir->cal_carrier,
+			    dur, cnt);
+	kfree(dur);
+	return n;
 }
+static DEVICE_ATTR_WO(send);
+
+static ssize_t regs_show(struct device *d, struct device_attribute *a, char *buf)
+{
+	struct iox_irout *ir = dev_get_drvdata(d);
+	int len = 0, o;
+
+	for (o = 0; o < 0x20; o += 2)
+		len += sysfs_emit_at(buf, len, "%04x=%04x%c", 0x220 + o,
+				     readw(ir->base + o), (o % 16 == 14) ? '\n' : ' ');
+	return len;
+}
+static DEVICE_ATTR_RO(regs);
+
+static struct attribute *iox_irout_attrs[] = {
+	&dev_attr_cal_carrier.attr,
+	&dev_attr_cal_block.attr,
+	&dev_attr_cal_select.attr,
+	&dev_attr_send.attr,
+	&dev_attr_regs.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(iox_irout);
+
+/* ---- probe ------------------------------------------------------------- */
 
 static int iox_register_emitter(struct iox_irout *ir, int i)
 {
@@ -133,12 +256,16 @@ static int iox_register_emitter(struct iox_irout *ir, int i)
 	struct rc_dev *rc;
 	int ret;
 
+	em->ir = ir;
+	em->carrier = IR_DEFAULT_HZ;
+	/* PROVISIONAL map (block/select per jack) — corrected once the live
+	 * select→jack calibration is in; the cal_* sysfs path is what pins it. */
+	em->block = (i < 4) ? 0 : 1;
+	em->select = 0x200;
+
 	em->name = kasprintf(GFP_KERNEL, "openHC IR out %d", i + 1);
 	if (!em->name)
 		return -ENOMEM;
-
-	iox_emitter_geometry(ir, i, &em->block, &em->select);
-	em->carrier = IR_CARRIER_DEFAULT;
 
 	rc = rc_allocate_device(RC_DRIVER_IR_RAW_TX);
 	if (!rc) {
@@ -174,43 +301,26 @@ static int iox_irout_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	ir->dev = &pdev->dev;
 
-	/*
-	 * reg[0] is the 0x220 window; the two IR blocks sit at base and
-	 * base+0x10 of a mapping that covers both. Map from the FPGA base so
-	 * the 0x20/0x30 offsets above are literal.
-	 */
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);	/* 0x04000220 */
 	if (!r)
 		return -EINVAL;
-	/* Back up to the FPGA base so IR_REG_* offsets (0x20/0x30 based) hold. */
-	ir->base = devm_ioremap(&pdev->dev, r->start - 0x20, 0x40);
+	ir->base = devm_ioremap(&pdev->dev, r->start, 0x20);	/* both blocks + 0x3e */
 	if (!ir->base)
 		return -ENOMEM;
 
-	for (i = 0; i < 8; i++) {
-		if (iox_register_emitter(ir, i) == 0)
-			ir->n++;
-	}
+	ir->cal_carrier = 0x3400;	/* provisional; calibrate via sysfs + learner */
+	ir->cal_block = 0;
+	ir->cal_select = 0x200;
 	platform_set_drvdata(pdev, ir);
-	dev_info(&pdev->dev, "registered %d IR emitters (openHC IR out 1..%d)\n",
-		 ir->n, ir->n);
+
+	for (i = 0; i < IR_EMITTERS; i++)
+		if (iox_register_emitter(ir, i) == 0)
+			ir->nem++;
+
 	dev_info(&pdev->dev,
-		 "NOTE: carrier and per-jack mapping are provisional — see FIXMEs\n");
-	return ir->n ? 0 : -ENODEV;
-}
-
-static int iox_irout_remove(struct platform_device *pdev)
-{
-	struct iox_irout *ir = platform_get_drvdata(pdev);
-	int i;
-
-	for (i = 0; i < 8; i++) {
-		if (ir->em[i].rc) {
-			rc_unregister_device(ir->em[i].rc);
-			kfree(ir->em[i].name);
-		}
-	}
-	return 0;
+		 "IR out: %d lirc emitters; sysfs cal_carrier/cal_block/cal_select/send/regs\n",
+		 ir->nem);
+	return ir->nem ? 0 : -ENODEV;
 }
 
 static const struct of_device_id iox_irout_of_match[] = {
@@ -223,9 +333,9 @@ static struct platform_driver iox_irout_driver = {
 	.driver = {
 		.name		= "ohc-iox-irout",
 		.of_match_table	= iox_irout_of_match,
+		.dev_groups	= iox_irout_groups,
 	},
-	.probe	= iox_irout_probe,
-	.remove	= iox_irout_remove,
+	.probe = iox_irout_probe,
 };
 module_platform_driver(iox_irout_driver);
 

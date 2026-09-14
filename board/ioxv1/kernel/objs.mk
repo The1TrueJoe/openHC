@@ -10,3 +10,7 @@
 # every line of it drives a Xilinx part wired to seven specific DM355 GPIOs,
 # and the compatible it binds exists in exactly one device tree.
 drivers/misc/Makefile|obj-y += ohc-iox-fpga.o
+# IR output is rc-core/lirc (CONFIG_RC_CORE, enabled in ioxv1.fragment), so gate
+# it the same way board/common gates gpio-ohc-iomcu: obj-y would try to link it
+# even with rc-core off and fail. One lirc TX device per jack, driven by iod.
+drivers/misc/Makefile|obj-$(CONFIG_RC_CORE) += ohc-iox-irout.o
