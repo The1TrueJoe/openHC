@@ -62,12 +62,14 @@ was in software the whole time:
   with `uartclk = 0x02FAF080` = **50 MHz**, not the 27 MHz that was guessed. The
   device tree now carries `clock-frequency = <50000000>`; at 50 MHz a requested
   115200 is divisor 27 → 115740 baud (0.4% off), and the link is clean.
-- **Pending:** the reverse direction (ttyS4 → host) read nothing on the one
-  cable tested — a physical-link matter, not software: the baud is right and the
-  UART MCR does not gate the transmitter (asserting DTR/RTS changed nothing), so
-  the port is proven good by the working direction; the cable likely carries
-  only host→box (try a null-modem). IR (`ohc-iox-irout.c`) is staged but not
-  built: carrier calibration + jack map still need the live part.
+- **ttyS4 proven bidirectional.** An external TX↔RX jumper on jack 4 loops
+  `ttyS4` back to itself cleanly (sent `IOX-LOOP-NN...`, read it straight back),
+  and the USB adapter self-loops too — so both the IOX TX and RX pins drive and
+  read correctly. The one earlier failure (ttyS4 → host reading nothing) was the
+  host cable carrying only one direction; a full 3-wire null-modem (cross 2↔3,
+  GND 5↔5) fixes it. Nothing in openHC was at fault.
+- **Pending:** IR (`ohc-iox-irout.c`) is staged but not built — carrier
+  calibration + jack map still need the live part.
 
 ## How to load it (dev / netboot)
 ```
