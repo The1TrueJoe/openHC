@@ -68,8 +68,38 @@ was in software the whole time:
   read correctly. The one earlier failure (ttyS4 → host reading nothing) was the
   host cable carrying only one direction; a full 3-wire null-modem (cross 2↔3,
   GND 5↔5) fixes it. Nothing in openHC was at fault.
-- **Pending:** IR (`ohc-iox-irout.c`) is staged but not built — carrier
-  calibration + jack map still need the live part.
+## IR output — driver built & emitting; verification blocked on the emitter
+`ohc-iox-irout.c` is now a real **rc-core / lirc TX driver** (8 devices named
+`openHC IR out N`, exactly what `iod`'s `lirc.rs` finds — same path as the
+HC-800), plus a sysfs calibration harness (`cal_carrier`/`cal_block`/`cal_select`
+/`send`/`regs`) at `/sys/.../4000220.irout`. `RC_CORE`/`LIRC` are enabled in the
+kernel fragment; it's wired via `objs.mk`.
+
+The full IR protocol was recovered from the vendor `c4irout.ko`/`c4fpga.ko` and
+the emit now **completes exactly like the vendor** (CONTROL settles to 0x2200,
+GO clears):
+- Two 16-bit blocks (0x220/0x230): +0x02 timing (0x017e), +0x04 CONTROL, +0x06
+  CARRIER = `(v&0x7f)<<9` (v≤64), +0x08 write-only DATA FIFO, +0x0c COUNT.
+- CONTROL = `ENABLE(0x2000) | select` — **no mode bit** (0x4000 wedges it).
+- FIFO encoding: mark = `0x8000|d`, space = `d` (no flag), high word (d>0x3fff)
+  = `0x4000|(d>>14)`, terminator `0xc000`. Fill at kernel speed.
+- Carrier is set by ioctl `_IOW('Z',0x46,u32)` on the vendor; the driver writes
+  the reg directly.
+
+**Why it's not yet confirmed radiating:** the GC-IRL learner (on OUT 1) captured
+nothing from *my* emit — but it also captured **nothing from the vendor's own
+`/dev/irout0`/`irout1`** (carrier set, register-identical), while it learns a
+hand-held remote fine. So the FPGA is emitting; the **emitter→learner physical
+path** is the blocker (bumped/misaligned/weak emitter after the serial-cable
+session, or its jack isn't the one the default select 0x200 drives). This is
+hardware, not the driver — the driver matches the vendor register-for-register.
+
+**Morning steps to finish IR:** (1) re-seat/re-aim the IR emitter on OUT 1 over
+the GC-IRL window (or point it at a real device / a scope on the jack); (2) with
+a working detector, sweep `cal_carrier` via the harness to read the frequency and
+pin v→Hz, and sweep `cal_block`/`cal_select` to find OUT 1's routing —
+`/private/tmp/.../scratchpad/cal_*.sh` and the vendor `ir_send` tool are ready;
+(3) bake the carrier `Hz→v` and the per-jack block/select map into the driver.
 
 ## How to load it (dev / netboot)
 ```
