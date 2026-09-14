@@ -66,8 +66,17 @@
 #define CTRL_BUSY	0x0008
 #define CTRL_SEL_MASK	0x1ff0
 
+/*
+ * FIFO word encoding (from c4irout_write, corrected):
+ *   mark  low word  = 0x8000 | (d & 0x3fff)   (carrier ON, bit15 = mark)
+ *   space low word  =          (d & 0x3fff)   (carrier OFF, no flag)
+ *   high word       = 0x4000 | ((d >> 14) & 0x3fff)   (only if d > 0x3fff;
+ *                     upper bits, emitted BEFORE the low word, mark or space)
+ *   terminator      = 0xc000
+ * 0x4000 is the extended-duration marker, NOT a space flag — that was the bug.
+ */
 #define FIFO_MARK	0x8000
-#define FIFO_SPACE	0x4000
+#define FIFO_HIGH	0x4000
 #define FIFO_END	0xc000
 #define FIFO_DUR_MASK	0x3fff
 
@@ -120,9 +129,12 @@ static void iox_ir_emit(struct iox_irout *ir, u32 block, u32 select,
 	writew(0xffff, b + IR_COUNT);
 
 	for (i = 0; i < n; i++) {
-		u16 w = dur[i] & FIFO_DUR_MASK;
-		w |= (i & 1) ? FIFO_SPACE : FIFO_MARK;
-		writew(w, b + IR_FIFO);
+		u16 d = dur[i];
+		bool mark = !(i & 1);		/* even = mark (pulse), odd = space */
+
+		if (d > FIFO_DUR_MASK)		/* long duration: high word first */
+			writew(FIFO_HIGH | ((d >> 14) & FIFO_DUR_MASK), b + IR_FIFO);
+		writew((mark ? FIFO_MARK : 0) | (d & FIFO_DUR_MASK), b + IR_FIFO);
 	}
 	writew(FIFO_END, b + IR_FIFO);
 	writew(ctrl | CTRL_GO, b + IR_CONTROL);
@@ -158,7 +170,8 @@ static int iox_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 	 * periods = us * Hz / 1e6. div_u64 because the kernel links no libgcc. */
 	for (i = 0; i < n; i++) {
 		u32 p = div_u64((u64)txbuf[i] * hz, 1000000u);
-		dur[i] = p > FIFO_DUR_MASK ? FIFO_DUR_MASK : p;
+		/* u16 range; iox_ir_emit splits >0x3fff into a high word. */
+		dur[i] = p > 0xffff ? 0xffff : p;
 	}
 	iox_ir_emit(ir, em->block, em->select, carrier_reg, dur, n);
 	kfree(dur);
