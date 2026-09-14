@@ -104,6 +104,26 @@ struct iox_irout {
 };
 
 /*
+ * Carrier register from a frequency. HYPOTHESIS (UNVERIFIED — calibrate against
+ * an IR learner or a scope): the FPGA clocks the carrier off ~50 MHz and the
+ * CARRIER reg = (v & 0x7f) << 9 is a /512 prescaler, so v ≈ 50e6/(512*Hz) =
+ * IR_CARRIER_NUM/Hz. If a measurement disagrees this one constant is the fix.
+ * v is clamped to 1..64 (the vendor ioctl caps config[0x38] at 64). Overridable
+ * live via the cal_carrier sysfs knob (raw reg value; 0 = use this formula).
+ */
+#define IR_CARRIER_NUM	97656u
+static u16 iox_carrier_reg(u32 hz)
+{
+	u32 v = hz ? (IR_CARRIER_NUM + hz / 2) / hz : 3;
+
+	if (v < 1)
+		v = 1;
+	else if (v > 64)
+		v = 64;
+	return (u16)((v & 0x7f) << 9);
+}
+
+/*
  * The one emit primitive. `dur` are durations already in CARRIER PERIODS,
  * alternating mark/space with a mark first. Fills the FIFO at kernel speed and
  * fires GO on the given block with the given select and raw carrier register.
@@ -155,7 +175,8 @@ static int iox_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 	struct iox_emitter *em = rcdev->priv;
 	struct iox_irout *ir = em->ir;
 	u32 hz = em->carrier ? em->carrier : IR_DEFAULT_HZ;
-	u32 carrier_reg = ir->cal_carrier;	/* until Hz→v is calibrated */
+	/* cal_carrier (sysfs) overrides when set; else derive the reg from Hz. */
+	u32 carrier_reg = ir->cal_carrier ? ir->cal_carrier : iox_carrier_reg(hz);
 	u16 *dur;
 	unsigned int i, n;
 
@@ -236,7 +257,9 @@ static ssize_t send_store(struct device *d, struct device_attribute *a,
 		p += used;
 	}
 	if (cnt)
-		iox_ir_emit(ir, ir->cal_block, ir->cal_select, ir->cal_carrier,
+		iox_ir_emit(ir, ir->cal_block, ir->cal_select,
+			    ir->cal_carrier ? ir->cal_carrier
+					    : iox_carrier_reg(IR_DEFAULT_HZ),
 			    dur, cnt);
 	kfree(dur);
 	return n;
@@ -325,7 +348,7 @@ static int iox_irout_probe(struct platform_device *pdev)
 	if (!ir->base)
 		return -ENOMEM;
 
-	ir->cal_carrier = 0x3400;	/* provisional; calibrate via sysfs + learner */
+	ir->cal_carrier = 0;		/* 0 = derive carrier reg from Hz (see iox_carrier_reg) */
 	ir->cal_block = 0;
 	ir->cal_select = 0x200;
 	platform_set_drvdata(pdev, ir);
