@@ -103,7 +103,11 @@ static void iox_ir_emit(struct iox_irout *ir, u32 block, u32 select,
 			u32 carrier_reg, const u16 *dur, int n)
 {
 	void __iomem *b = ir->base + (block ? BLK1 : BLK0);
-	u16 ctrl = CTRL_ENABLE | CTRL_MODE | (select & CTRL_SEL_MASK);
+	/* CONTROL = ENABLE | select. NO mode bit (0x4000): the vendor's own emit
+	 * leaves CONTROL at 0x2200 (enable + select 0x200), and setting the mode
+	 * bit wedges the block busy. Confirmed by watching a real /dev/irout0
+	 * write on the stock OS. */
+	u16 ctrl = CTRL_ENABLE | (select & CTRL_SEL_MASK);
 	int i;
 
 	writew(0, b + IR_CONTROL);
