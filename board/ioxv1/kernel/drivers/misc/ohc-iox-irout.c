@@ -139,7 +139,12 @@ static void iox_ir_emit(struct iox_irout *ir, u32 block, u32 select,
 	u16 ctrl = CTRL_ENABLE | (select & CTRL_SEL_MASK);
 	int i;
 
-	writew(0, b + IR_CONTROL);
+	/* c4irout_fpga_irout_reset(): pulse CONTROL bit0 high then low to reset
+	 * the IR engine and FIFO read pointer. The vendor does this before every
+	 * emit; without it the read pointer drifts after the first emit and the
+	 * engine never reaches the terminator, so BUSY/GO stay stuck. */
+	writew(readw(b + IR_CONTROL) | 0x0001, b + IR_CONTROL);
+	writew(readw(b + IR_CONTROL) & ~0x0001, b + IR_CONTROL);
 	writew(0x017e, b + IR_TIMING);
 	writew(0, b + IR_AUX0);
 	writew(ctrl, b + IR_CONTROL);
