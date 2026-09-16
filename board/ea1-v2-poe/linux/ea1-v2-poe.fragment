@@ -4,4 +4,6 @@
 # CONFIG_WLAN is not set
 # CONFIG_CFG80211 is not set
 # CONFIG_MAC80211 is not set
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"
+# pci=routeirq enables the CE5300 UART interrupt link (LUAR/GSI 38) so the IO-MCU
+# on ttyS1 can take an RX interrupt — see board/ea-common/linux/common.fragment.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
