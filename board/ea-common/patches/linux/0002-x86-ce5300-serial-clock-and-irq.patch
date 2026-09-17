@@ -18,11 +18,21 @@ drop (intel_kernel_patches/00178086 and 00999901), which makes the same change:
    8250_pci's pbn_ce4100_1_115200 sets .base_baud = 921600 -- so only the
    legacy SERIAL_PORT_DFNS path is wrong.
 
-2. The declared ISA IRQs 4 and 3 are not routed on this SoC, so the ports came
-   up with "irq = 0". A port with no interrupt still transmits, which is why
-   the console appeared to work, but it never takes an RX interrupt: reading
-   from it blocks forever and returns nothing. Anything attached to ttyS1..3 is
-   therefore invisible. Control4 declares IRQ 38 for all four.
+2. The interrupt. Control4's kernel declares IRQ 38 (a routed GSI, not the
+   legacy ISA 4/3) for all four ports, and on the stock 3.12 kernel it fires --
+   /proc/interrupts shows "38: ... serial" climbing and ttyS1 carries the
+   IO-MCU (tx/rx both non-zero). On this kernel the same declaration registers
+   but never fires: /proc/interrupts pins IRQ 38 at 0 across a full TX attempt,
+   so an RX interrupt never arrives, reads block, and the IO-MCU is invisible
+   (tx counts up, rx stays 0). The GSI routing that stock's platform code sets
+   up is not reproduced here, and chasing it (pci=routeirq, DETECT_IRQ off, MADT
+   overrides) did not make the line fire. So drive these ports timer-polled
+   instead: declare irq 0, which makes serial8250 arm serial8250_timeout() and
+   service the port from a timer. RX works directly (the IIR does report
+   received-data). TX needs one more fix -- see patch 0010 -- because the GEN3
+   block never reflects THRE in the IIR. Polling is more than fast enough for a
+   control microcontroller, and it does not depend on an interrupt this SoC will
+   not deliver under openHC.
 
 Scope: applied only to the EA family (board/ea-common/patches), which is the
 only openHC target with this SoC.
@@ -48,9 +58,9 @@ Author: Joseph Telaak <joseph@telaak.dev>
 -	{ .uart = 0,	BASE_BAUD,	0x2F8,	3,	STD_COMX_FLAGS	}, /* ttyS1 */	\
 -	{ .uart = 0,	BASE_BAUD,	0x3E8,	4,	STD_COMX_FLAGS	}, /* ttyS2 */	\
 -	{ .uart = 0,	BASE_BAUD,	0x2E8,	3,	STD_COM4_FLAGS	}, /* ttyS3 */
-+	{ .uart = 0,	BASE_BAUD,	0x3F8,	38,	STD_COMX_FLAGS	}, /* ttyS0 */	\
-+	{ .uart = 0,	BASE_BAUD,	0x2F8,	38,	STD_COMX_FLAGS	}, /* ttyS1 */	\
-+	{ .uart = 0,	BASE_BAUD,	0x3E8,	38,	STD_COMX_FLAGS	}, /* ttyS2 */	\
-+	{ .uart = 0,	BASE_BAUD,	0x2E8,	38,	STD_COM4_FLAGS	}, /* ttyS3 */
++	{ .uart = 0,	BASE_BAUD,	0x3F8,	0,	STD_COMX_FLAGS	}, /* ttyS0 */	\
++	{ .uart = 0,	BASE_BAUD,	0x2F8,	0,	STD_COMX_FLAGS	}, /* ttyS1 */	\
++	{ .uart = 0,	BASE_BAUD,	0x3E8,	0,	STD_COMX_FLAGS	}, /* ttyS2 */	\
++	{ .uart = 0,	BASE_BAUD,	0x2E8,	0,	STD_COM4_FLAGS	}, /* ttyS3 */
  
  #endif /* _ASM_X86_SERIAL_H */

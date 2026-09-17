@@ -27,18 +27,24 @@ CONFIG_SERIAL_8250_CONSOLE=y
 # Dropping back to 4 slots makes 2e66 fail ENOSPC like stock, leaving the legacy
 # 0x2f8 path -- the one that actually reaches the Tiva -- intact.
 #
-# The other half was the interrupt: these legacy ports came up `irq = 0` (TX ok,
-# never an RX interrupt). Their real line is the ACPI link LUAR = GSI 38 (stock:
-# `ACPI: PCI Interrupt Link [LUAR] enabled at IRQ 38`). patch 0002 already DECLARES
-# IRQ 38; DETECT_IRQ (below) is what was auto-probing it back to 0, and pci=routeirq
-# on the command line is what gets LUAR actually ENABLED so GSI 38 is requestable.
+# The other half was the interrupt, and this is where openHC and stock diverge.
+# Stock declares IRQ 38 (ACPI link LUAR = GSI 38) and it FIRES: /proc/interrupts
+# shows "38: ... serial" climbing and ttyS1 carries the tm4c (tx AND rx non-zero).
+# On this kernel the same declaration registers but NEVER fires -- measured, IRQ 38
+# stays 0 across a full transmit -- so an RX interrupt never arrives and the IO-MCU
+# stays invisible. The GSI routing stock's platform code performs is not reproduced
+# here; pci=routeirq + declaring IRQ 38 was not enough to make the line fire. So the
+# ports are run TIMER-POLLED instead: patch 0002 declares irq 0, serial8250 arms
+# serial8250_timeout(), and patch 0010 lets the poll drive TX as well as RX from the
+# LSR (the GEN3 block does not reflect THRE in the IIR). Polling is plenty for a
+# control microcontroller and does not depend on an interrupt this SoC will not
+# deliver under openHC.
 CONFIG_SERIAL_8250_NR_UARTS=4
 CONFIG_SERIAL_8250_RUNTIME_UARTS=4
 # The mainline i386 defconfig sets DETECT_IRQ, whose STD_COMX_FLAGS add
-# UPF_AUTO_IRQ -- the 8250 then runs the legacy ISA IRQ auto-probe over the
-# declared IRQ 38, finds nothing (ISA 3/4 are unrouted on this SoC) and latches
-# irq=0. Turn it off so patch 0002's declared IRQ 38 stands and ttyS1 can take an
-# RX interrupt (which is how gpio-ohc-iomcu hears the IO-MCU's reply).
+# UPF_AUTO_IRQ -- the 8250 would then run the legacy ISA IRQ auto-probe. With the
+# ports declared irq 0 (patch 0002, polled) that probe must NOT run and reassign a
+# line; turn it off so irq 0 stands and the timer-poll path is taken.
 # CONFIG_SERIAL_8250_DETECT_IRQ is not set
 CONFIG_CMDLINE_BOOL=y
 CONFIG_CMDLINE_EXTEND=y

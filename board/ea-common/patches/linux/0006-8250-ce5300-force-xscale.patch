@@ -3,10 +3,13 @@
 The three SoC UARTs on the Intel CE5300 (EA family) are an XScale/PXA block --
 Control4's kernel renames PORT_XSCALE's uart_config to "GEN3_serial" -- and the
 IO microcontroller (relays, contacts, IR, combo-serial) hangs off ttyS1 at legacy
-I/O 0x2F8. An XScale port only works with UART_CAP_UUE: the UART Unit Enable bit
-(IER b6) that gates whether the block drives its pins at all. Without it the port
-transmits into a dead pad and never receives -- exactly what the IO-MCU did (tx
-counted, rx=0 forever, so gpio-ohc-iomcu never registered a gpiochip/lirc).
+I/O 0x2F8. A GEN3/XScale port is meant to run with UART_CAP_UUE (the UART Unit
+Enable bit, IER b6) and UART_CAP_RTOIE, matching stock's "GEN3_serial" config and
+its put_poll_char, which forces UUE on. Getting the type right is a prerequisite:
+it is also what patch 0010's poll-TX fix keys on (port->type == PORT_XSCALE). The
+actual TX/RX bring-up -- why tx counted while rx stayed 0 -- is the polled-vs-IRQ
+story in patches 0002 and 0010; this patch just makes the ports the XScale part
+they physically are.
 
 autoconfig_16550a can find an XScale part by toggling IER b6, but two things stop
 it here: (1) this kernel disables CONFIG_SERIAL_8250_16550A_VARIANTS, so the
