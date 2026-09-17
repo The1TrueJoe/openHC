@@ -64,11 +64,22 @@ pub const MFH_SCRIPT_LEN: usize = 0x800;
 /// globals that say where the image is and that there is no ramdisk. Recovered
 /// from the working takeover; not derivable from anything public.
 pub const KERNEL_ADDR: u64 = 0x6000000;
+/// RAM address the initramfs is staged at (the `tftp get`/`emmc rd` destination
+/// for rootfs.cpio.gz). Well clear of the kernel at 0x6000000.
+pub const RAMDISK_ADDR: u64 = 0x4000000;
 pub const G_KBASE: u64 = 0xc90a4; // ord4 <this> = KERNEL_ADDR
-pub const G_RD_FLAG: u64 = 0x837560; // ord4 <this> = 0 -> no ramdisk
+pub const G_RD_FLAG: u64 = 0x837560; // ord4 <this> = 0 -> no ramdisk, 1 -> ramdisk present
+pub const G_RD_ADDR: u64 = 0x837564; // ord4 <this> = RAMDISK_ADDR (when G_RD_FLAG = 1)
+pub const G_RD_SIZE: u64 = 0x837568; // ord4 <this> = initramfs length in bytes
 
 pub const DEFAULT_CMDLINE: &str =
     "console=ttyS0,115200 pci=realloc,nocrs root=/dev/mmcblk0p1 rootwait rw";
+
+/// Command line for a pure-RAM boot off an initramfs: no `root=`, the rootfs IS
+/// the ramdisk. `routeirq` is carried because the EA's SoC UARTs need it, and
+/// `nocrs` because CEFDK's E820 does not describe the PCI host-bridge windows.
+pub const RAMBOOT_CMDLINE: &str =
+    "console=ttyS0,115200 pci=realloc,nocrs,routeirq rw";
 
 /// The five commands that boot our kernel from raw eMMC.
 ///
@@ -82,6 +93,42 @@ pub fn autoscript_for(kernel_off: u64, kernel_len: u64, cmdline: &str) -> Vec<St
         "cache flush".into(),
         format!("ord4 {G_KBASE:#x} = {KERNEL_ADDR:#x}"),
         format!("ord4 {G_RD_FLAG:#x} = 0x0"),
+        format!("bootlinux \"{cmdline}\""),
+    ]
+}
+
+/// The CEFDK shell commands that netboot openHC into RAM: pull the kernel and
+/// initramfs over TFTP, then boot the initramfs directly (no `root=`).
+///
+/// This is the sibling of [`autoscript_for`] for the bring-up loop: same RAM
+/// staging and same `ord4` globals, but the images come from the network at the
+/// unlocked manufacturing shell instead of from eMMC, and there is a ramdisk, so
+/// `G_RD_FLAG` is 1 and `G_RD_ADDR`/`G_RD_SIZE` describe it. The size is the
+/// exact initramfs byte count: bootlinux hands it to the kernel as the ramdisk
+/// length, and the kernel's gzip/cpio reader needs the whole image (unlike a
+/// bzImage, it has no self-describing end the loader can find).
+///
+/// `box_ip` is the address CEFDK should take for the transfer (the BOOTP offer);
+/// the mask/gateway match the point-to-point bring-up link. `cache flush` is as
+/// mandatory here as in [`autoscript_for`] — the TFTP load DMAs into RAM without
+/// invalidating the CPU cache.
+pub fn ramboot_tftp_for(
+    server_ip: &str,
+    box_ip: &str,
+    kernel_name: &str,
+    initrd_name: &str,
+    initrd_len: u64,
+    cmdline: &str,
+) -> Vec<String> {
+    vec![
+        format!("ip set {box_ip} 255.255.255.0 0.0.0.0"),
+        format!("tftp get {server_ip} {KERNEL_ADDR:#x} {kernel_name}"),
+        format!("tftp get {server_ip} {RAMDISK_ADDR:#x} {initrd_name}"),
+        "cache flush".into(),
+        format!("ord4 {G_KBASE:#x} = {KERNEL_ADDR:#x}"),
+        format!("ord4 {G_RD_FLAG:#x} = 0x1"),
+        format!("ord4 {G_RD_ADDR:#x} = {RAMDISK_ADDR:#x}"),
+        format!("ord4 {G_RD_SIZE:#x} = {initrd_len:#x}"),
         format!("bootlinux \"{cmdline}\""),
     ]
 }

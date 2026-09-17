@@ -10,3 +10,13 @@ license.workspace = true
 # dropped in later without touching the engine.
 [dependencies]
 ohc-flash-core = { workspace = true }
+# The EA netboot bring-up drives CEFDK's serial console. `serialport` is the
+# cross-platform (macOS/Linux/Windows) way to open a UART; kept behind our own
+# `Serial` type so a different backend could replace it like ssh.rs plans for.
+# default-features off drops serialport's udev-based port ENUMERATION, which we
+# do not use (netboot is given the device path explicitly) — and with it the
+# Linux libudev/pkg-config build dependency, so this links on the flasher CI
+# Linux runner (which installs xcb/xkb/wayland/ssl but not libudev) with nothing
+# extra. Opening a port by path still works on all three platforms. The
+# TFTP/BOOTP responders are plain std::net + threads.
+serialport = { version = "4", default-features = false }
