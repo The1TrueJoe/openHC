@@ -1,9 +1,9 @@
-x86: CE5300 serial — real UART clock, the routed IRQ, and the XScale UART type
+x86: CE5300 serial — real UART clock and the routed IRQ
 
 The CE5300's UART is clocked at 14.7456 MHz, not the 1.8432 MHz that
-arch/x86/include/asm/serial.h assumes for legacy COM ports. Three things follow,
-all found in Control4's GPL kernel drop (intel_kernel_patches/00178086, 00999901
-and 00178030), which makes the same changes:
+arch/x86/include/asm/serial.h assumes for legacy COM ports. Two things follow,
+and both were measured on an EA3 before this was found in Control4's GPL kernel
+drop (intel_kernel_patches/00178086 and 00999901), which makes the same change:
 
 1. BASE_BAUD is 8x too small, so every divisor is 8x too small and the port
    transmits 8x too fast. Ask for console=ttyS0,115200 and the wire runs at
@@ -23,22 +23,6 @@ and 00178030), which makes the same changes:
    the console appeared to work, but it never takes an RX interrupt: reading
    from it blocks forever and returns nothing. Anything attached to ttyS1..3 is
    therefore invisible. Control4 declares IRQ 38 for all four.
-
-3. These are NOT plain 16550A parts — the SoC's own UART block is an XScale/PXA
-   variant. Control4's 8250 patch renames PORT_XSCALE's config to "GEN3_serial",
-   and its whole point is UART_CAP_UUE: the UART Unit Enable bit (IER bit 6) that
-   must be set for the block to drive its pins, plus UART_CAP_RTOIE for the
-   receiver-timeout interrupt a short reply needs. A stock EA1 enumerates
-   ttyS0/1/3 as GEN3_serial and ttyS2 (the 8051 PIC at 0x3E8) as a plain 8250.
-   Generic autoconfig only detects "16550A", never sets UUE, and the IO-MCU on
-   ttyS1 stays deaf — it transmits (the shift register empties) but the part
-   never clocks its pins and never receives. Declare the three GEN3 ports as
-   PORT_XSCALE with UPF_FIXED_TYPE so the driver latches uart_config[PORT_XSCALE]
-   (UUE|RTOIE|FIFO) at config time instead of probing (a runtime `setserial uart
-   XScale` does NOT do this — capabilities are only read from the type at
-   config_port time). PORT_XSCALE / UPF_FIXED_TYPE resolve where SERIAL_PORT_DFNS
-   is expanded (8250_core.c, which includes serial_core.h), so no new #include
-   is needed. ttyS2 stays autoconfig, matching stock.
 
 Scope: applied only to the EA family (board/ea-common/patches), which is the
 only openHC target with this SoC.
@@ -64,9 +48,9 @@ Author: Joseph Telaak <joseph@telaak.dev>
 -	{ .uart = 0,	BASE_BAUD,	0x2F8,	3,	STD_COMX_FLAGS	}, /* ttyS1 */	\
 -	{ .uart = 0,	BASE_BAUD,	0x3E8,	4,	STD_COMX_FLAGS	}, /* ttyS2 */	\
 -	{ .uart = 0,	BASE_BAUD,	0x2E8,	3,	STD_COM4_FLAGS	}, /* ttyS3 */
-+	{ .uart = PORT_XSCALE,	BASE_BAUD,	0x3F8,	38,	STD_COMX_FLAGS | UPF_FIXED_TYPE	}, /* ttyS0 GEN3 */	\
-+	{ .uart = PORT_XSCALE,	BASE_BAUD,	0x2F8,	38,	STD_COMX_FLAGS | UPF_FIXED_TYPE	}, /* ttyS1 GEN3 (IO-MCU) */	\
-+	{ .uart = 0,		BASE_BAUD,	0x3E8,	38,	STD_COMX_FLAGS			}, /* ttyS2 8051 PIC, plain 8250 */	\
-+	{ .uart = PORT_XSCALE,	BASE_BAUD,	0x2E8,	38,	STD_COM4_FLAGS | UPF_FIXED_TYPE	}, /* ttyS3 GEN3 */
++	{ .uart = 0,	BASE_BAUD,	0x3F8,	38,	STD_COMX_FLAGS	}, /* ttyS0 */	\
++	{ .uart = 0,	BASE_BAUD,	0x2F8,	38,	STD_COMX_FLAGS	}, /* ttyS1 */	\
++	{ .uart = 0,	BASE_BAUD,	0x3E8,	38,	STD_COMX_FLAGS	}, /* ttyS2 */	\
++	{ .uart = 0,	BASE_BAUD,	0x2E8,	38,	STD_COM4_FLAGS	}, /* ttyS3 */
  
  #endif /* _ASM_X86_SERIAL_H */
