@@ -1,0 +1,58 @@
+8250: CE5300 GEN3 UARTs are XScale — force the type so UUE is set
+
+The three SoC UARTs on the Intel CE5300 (EA family) are an XScale/PXA block --
+Control4's kernel renames PORT_XSCALE's uart_config to "GEN3_serial" -- and the
+IO microcontroller (relays, contacts, IR, combo-serial) hangs off ttyS1 at legacy
+I/O 0x2F8. An XScale port only works with UART_CAP_UUE: the UART Unit Enable bit
+(IER b6) that gates whether the block drives its pins at all. Without it the port
+transmits into a dead pad and never receives -- exactly what the IO-MCU did (tx
+counted, rx=0 forever, so gpio-ohc-iomcu never registered a gpiochip/lirc).
+
+autoconfig_16550a already knows how to find an XScale part -- it toggles IER b6
+and, if the bit sticks, sets PORT_XSCALE + UART_CAP_UUE|UART_CAP_RTOIE. On a stock
+CE5300 (3.12) that probe succeeds and ttyS0/1/3 come up as GEN3_serial. On this
+kernel it does NOT: when autoconfig runs the block is not clocked yet, the UUE bit
+does not latch, and all three fall through to plain 16550A. (The same bit is
+writable once the port is opened -- measured on hardware -- so it is a probe timing
+problem, not missing silicon.)
+
+Rather than fight the probe timing, force the type for the three fixed SoC I/O
+bases (0x3F8 console, 0x2F8 IO-MCU, 0x2E8) and leave the UUE bit enabled. This
+keeps them as normal I/O-mapped ISA ports -- declaring PORT_XSCALE + UPF_FIXED_TYPE
+in SERIAL_PORT_DFNS instead makes serial8250_isa_init_ports drop them and the 2e66
+PCI UARTs steal the ttyS numbers. The 8051 power PIC at 0x3E8 is a genuine 8250 and
+is deliberately not matched, matching stock's /proc/tty/driver/serial. Pairs with
+patch 0002 (clock + IRQ 38).
+
+Scope: EA family only (board/ea-common/patches).
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/tty/serial/8250/8250_port.c
++++ b/drivers/tty/serial/8250/8250_port.c
+@@ -1021,6 +1021,25 @@
+ 	}
+ 
+ 	/*
++	 * Intel CE5300 (EA family): three of the legacy I/O UARTs are the SoC's
++	 * own XScale/PXA block -- "GEN3_serial" in Control4's kernel -- with the
++	 * IO microcontroller on ttyS1 (0x2F8). They MUST run with UART_CAP_UUE
++	 * (the Unit Enable bit) or the block never drives its pins, plus
++	 * UART_CAP_RTOIE so a short reply's rx-timeout interrupt fires. The generic
++	 * UUE probe just below is unreliable here: at early autoconfig the unit is
++	 * not clocked yet, the bit does not latch, and the port falls through to a
++	 * plain 16550A -- a deaf IO-MCU. Force the type by the fixed SoC I/O bases;
++	 * the 8051 PIC at 0x3E8 is a genuine 8250 and is deliberately not matched.
++	 */
++	if (up->port.iobase == 0x3F8 || up->port.iobase == 0x2F8 ||
++	    up->port.iobase == 0x2E8) {
++		up->port.type = PORT_XSCALE;
++		up->capabilities |= UART_CAP_UUE | UART_CAP_RTOIE;
++		serial_out(up, UART_IER, UART_IER_UUE);
++		return;
++	}
++
++	/*
+ 	 * Try writing and reading the UART_IER_UUE bit (b6).
+ 	 * If it works, this is probably one of the Xscale platform's
+ 	 * internal UARTs.
