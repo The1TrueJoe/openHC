@@ -1,0 +1,49 @@
+8250: CE5300 GEN3 UART needs DMA_SELECT + a 64-byte FIFO in the port config
+
+The last piece of the IO-MCU bring-up. Everything else is in place — the ports
+run polled (0002), forced to PORT_XSCALE with UUE (0006), TX driven from the LSR
+(0010), and the shadowing PCI UART is gone (0011) — yet ttyS1 still transmitted
+into silence: the FIFO loaded, LSR read empty, but nothing reached the tm4c
+(proven with a known-good emitter->GC-IRL rig that captures 35/35 from stock and
+0 from openHC).
+
+The difference is the PORT_XSCALE port config itself. Mainline gives it a 32-byte
+FIFO and fcr = ENABLE_FIFO | R_TRIG_10. Control4's kernel (intel_kernel_patches/
+00178030) renames the same PORT_XSCALE to "GEN3_serial" and sets a 64-byte FIFO
+AND UART_FCR_DMA_SELECT. On this SoC's UART block that FCR bit is not cosmetic —
+it is what makes the transmitter actually drive its pin. The console (ttyS0)
+escaped the problem only because CEFDK had already set its FCR up before Linux;
+ttyS1 is configured by Linux from the mainline table, so it never got DMA_SELECT.
+
+Bring the PORT_XSCALE config in line with stock's GEN3 values. Applies to every
+port forced to XScale here, which is what stock does too.
+
+Scope: EA family only (board/ea-common/patches). Pairs with 0002/0006/0010/0011.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/tty/serial/8250/8250_port.c
++++ b/drivers/tty/serial/8250/8250_port.c
+@@ -146,9 +146,19 @@
+ 	},
+ 	[PORT_XSCALE] = {
+ 		.name		= "XScale",
+-		.fifo_size	= 32,
+-		.tx_loadsz	= 32,
+-		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_10,
++		/*
++		 * Intel CE5300 (EA family): Control4's kernel calls PORT_XSCALE
++		 * "GEN3_serial" and gives it a 64-byte FIFO and, crucially,
++		 * UART_FCR_DMA_SELECT. On this SoC's UART block that bit is what
++		 * makes the transmitter actually drive the pin; without it the FIFO
++		 * loads and LSR reads empty but nothing reaches the wire (the IO-MCU
++		 * on ttyS1 stays silent, rx=0). The console (ttyS0) escaped this
++		 * because CEFDK set its FCR up; ttyS1 is configured by Linux. Match
++		 * stock's GEN3 values. EA-only patch dir.
++		 */
++		.fifo_size	= 64,
++		.tx_loadsz	= 64,
++		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_DMA_SELECT | UART_FCR_R_TRIG_10,
+ 		.flags		= UART_CAP_FIFO | UART_CAP_UUE | UART_CAP_RTOIE,
+ 	},
+ 	[PORT_OCTEON] = {
