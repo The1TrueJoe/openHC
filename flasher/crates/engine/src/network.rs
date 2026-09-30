@@ -94,8 +94,25 @@ pub fn stage1_ram_installer(
 
     guard_partitions(ssh, p)?;
 
-    // 1. kernel container -> slot 0x400, then the length word.
+    // Validate BOTH images fit their eMMC slots BEFORE writing anything. Writing
+    // first and checking after (as this did) leaves a box with a half-written
+    // boot region — the stock kernel container at 0x400 already clobbered — when
+    // the second image turns out to be oversize, which then needs a factory
+    // button press to recover. The autoscript reads the whole slot regardless,
+    // so the slot, not the image size, is the real ceiling.
     let blob = image::container(kernel, None).map_err(anyhow::Error::msg)?;
+    if blob.len() as u64 > KERNEL_SLOT {
+        bail!("kernel container {} B exceeds its eMMC slot ({KERNEL_SLOT} B)", blob.len());
+    }
+    if initrd.len() as u64 > INITRD_SLOT {
+        bail!(
+            "initrd {} B exceeds its eMMC slot ({INITRD_SLOT} B) — nothing written; \
+             the RAM-installer initramfs is too large for this layout",
+            initrd.len()
+        );
+    }
+
+    // 1. kernel container -> slot 0x400, then the length word.
     p.emit(Event::step(format!(
         "kernel container {} B -> eMMC {:#x} (factory-restore-revertible slot)",
         blob.len(),
@@ -111,15 +128,6 @@ pub fn stage1_ram_installer(
         initrd.len()
     )));
     dd_to_emmc(ssh, initrd, INITRD_EMMC_OFF)?;
-
-    // The images must physically fit their eMMC slots; the autoscript reads the
-    // whole slot regardless, which is what keeps later in-place updates possible.
-    if blob.len() as u64 > KERNEL_SLOT {
-        bail!("kernel container {} B exceeds its eMMC slot ({KERNEL_SLOT} B)", blob.len());
-    }
-    if initrd.len() as u64 > INITRD_SLOT {
-        bail!("initrd {} B exceeds its eMMC slot ({INITRD_SLOT} B)", initrd.len());
-    }
 
     // 3. RAM-boot autoscript (no root=p1; the initramfs is the root).
     let script = ram_autoscript(blob.len() as u64, initrd.len() as u64);
