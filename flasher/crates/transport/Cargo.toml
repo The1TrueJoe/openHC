@@ -20,3 +20,7 @@ ohc-flash-core = { workspace = true }
 # extra. Opening a port by path still works on all three platforms. The
 # TFTP/BOOTP responders are plain std::net + threads.
 serialport = { version = "4", default-features = false }
+# Pure-Rust hashing for the MAC-derived stock root password (authderive.rs).
+# No system libraries, so it links on every flasher CI runner unchanged.
+sha2 = { version = "0.10", default-features = false }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }

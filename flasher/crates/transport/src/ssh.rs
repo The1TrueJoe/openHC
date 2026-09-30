@@ -205,12 +205,17 @@ pub fn first_working_login(host: &str) -> Option<Ssh> {
 
 /// Like [`first_working_login`], but tries caller-supplied passwords first.
 ///
-/// This is how the "calculated" or dealer-set root password is handled: newer
-/// Control4 firmware derives root's password from the unit's MAC (an algorithm
-/// Control4 has never published and this tool will not guess), and a dealer may
-/// have set an arbitrary one. Rather than ship a wrong guess that silently fails
-/// to authenticate, the front end asks the operator for it and passes it here,
-/// ahead of the known factory and openHC logins.
+/// Newer Control4 firmware (OS 3.1.0+) derives root's password from the unit's
+/// MAC, and a dealer may also have set an arbitrary one. The order here is:
+///
+/// 1. any caller-supplied passwords (a dealer-set one the operator knows);
+/// 2. the MAC-derived stock password, computed automatically from the ARP table
+///    so an unattended takeover needs no operator input (see [`authderive`]);
+/// 3. the known factory and openHC logins.
+///
+/// A wrong derived guess simply fails and falls through, so this never blocks a
+/// box it cannot open — it only removes the hand-typed password on the common
+/// case where the box still has its MAC-derived default.
 pub fn first_working_login_with(host: &str, passwords: &[String]) -> Option<Ssh> {
     // The calculated/dealer password is root's; try each given one as root.
     for pw in passwords {
@@ -222,6 +227,13 @@ pub fn first_working_login_with(host: &str, passwords: &[String]) -> Option<Ssh>
             return Some(s);
         }
     }
+    // The MAC-derived stock root password, resolved with no operator input.
+    if let Some(pw) = derived_root_pw_for(host) {
+        let s = Ssh::new(host, "root", Some(pw));
+        if s.ok() {
+            return Some(s);
+        }
+    }
     for (user, pw) in CANDIDATE_LOGINS {
         let s = Ssh::new(host, *user, pw.map(String::from));
         if s.ok() {
@@ -229,6 +241,18 @@ pub fn first_working_login_with(host: &str, passwords: &[String]) -> Option<Ssh>
         }
     }
     None
+}
+
+/// The MAC-derived stock root password for `host`, if its MAC is in the ARP
+/// table and belongs to Control4's OUI. Returns `None` when the MAC is unknown
+/// (nothing to derive from) or is not a Control4 unit (do not try it elsewhere).
+fn derived_root_pw_for(host: &str) -> Option<String> {
+    let mac = crate::discovery::arp_table().get(host).cloned()?;
+    let m = mac.to_ascii_lowercase();
+    if !(m.starts_with("00:0f:ff") || m.starts_with("0:f:ff")) {
+        return None;
+    }
+    crate::authderive::derive_root_pw(&mac)
 }
 
 /// Is TCP 22 open on the host? Distinguishes "unreachable" from "reachable but

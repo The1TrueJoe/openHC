@@ -5,6 +5,7 @@
 //! a pure-Rust SSH client can replace the system-`ssh` wrapper later without
 //! the engine changing.
 
+pub mod authderive;
 pub mod bootp;
 pub mod discovery;
 pub mod probe;
