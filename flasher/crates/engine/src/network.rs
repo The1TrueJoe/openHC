@@ -21,8 +21,8 @@
 //! On a secure-boot part the autoscript is mandatory (bootlinux bypasses the
 //! blown fuse); on a clear-fuse part it is harmless and keeps one code path.
 
-use anyhow::{bail, Context, Result};
-use ohc_flash_core::{cefdk, image};
+use anyhow::{anyhow, bail, Context, Result};
+use ohc_flash_core::{cefdk, image, mfh};
 use ohc_flash_transport::ssh::Ssh;
 
 use crate::event::{Event, Progress};
@@ -512,4 +512,160 @@ mod tests {
         // The image that would have re-bricked the box now fits.
         assert!(6_482_404 < INITRD_SLOT, "the oversize initrd fits the padded slot");
     }
+}
+
+// ===========================================================================
+// No-serial RAM-boot install (2026-09-30) — the VERIFIED path. Kernel+initrd go
+// in the eMMC USER partition gap; a CEFDK `script` autoscript (created with the
+// correct SHA-256 table hash) reads them with `emmc rd_up` and `bootlinux`es.
+// Proven end to end on an EA1: converts a stock box to openHC over SSH, no serial.
+
+/// Raw bzImage location in the eMMC user partition (Linux /dev/mmcblk0 offset).
+const RB_KERNEL_OFF: u64 = 0x800000;
+/// initrd location in the eMMC user partition.
+const RB_INITRD_OFF: u64 = 0x1000000;
+
+fn round_up(n: u64, a: u64) -> u64 {
+    n.div_ceil(a) * a
+}
+
+/// Read one 64 KiB SPI-NOR erase block at `off` into memory.
+fn read_mtd_block(ssh: &Ssh, off: u64) -> Result<Vec<u8>> {
+    let blk = off / 0x10000;
+    let b64 = ssh
+        .run(&format!("dd if={MTD} bs=65536 skip={blk} count=1 2>/dev/null | base64"), true)
+        .with_context(|| format!("reading mtd0 block {off:#x}"))?;
+    let raw = b64_decode(&b64).ok_or_else(|| anyhow!("bad base64 reading mtd0 {off:#x}"))?;
+    if raw.len() != 0x10000 {
+        bail!("mtd0 block {off:#x} read back {} bytes, expected 0x10000", raw.len());
+    }
+    Ok(raw)
+}
+
+/// Erase and rewrite one 64 KiB SPI-NOR block, then verify it read back exactly.
+fn write_mtd_block(ssh: &Ssh, off: u64, data: &[u8]) -> Result<()> {
+    if data.len() != 0x10000 {
+        bail!("mtd0 block write needs exactly 0x10000 bytes, got {}", data.len());
+    }
+    let blk = off / 0x10000;
+    ssh.put_stream(
+        data,
+        &format!(
+            "flash_erase {MTD} {off:#x} 1 >/dev/null 2>&1; \
+             dd of={MTD} bs=65536 seek={blk} count=1 conv=notrunc 2>/dev/null; sync"
+        ),
+    )
+    .with_context(|| format!("writing mtd0 block {off:#x}"))?;
+    let back = read_mtd_block(ssh, off)?;
+    if back != data {
+        bail!("mtd0 block {off:#x} verify failed — the write did not take");
+    }
+    Ok(())
+}
+
+/// The whole no-serial conversion, over SSH into a running stock (or openHC) box
+/// with mtd0 access.
+pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
+    let kernel = rel.get("bzImage").context("release has no bzImage")?;
+    let initrd = rel.get("rootfs.cpio.gz").context("release has no rootfs.cpio.gz")?;
+    let klen = kernel.len() as u64;
+    let ilen = initrd.len() as u64;
+
+    // Both images must fit the gap below p1, and the kernel below the initrd.
+    if RB_INITRD_OFF + round_up(ilen, 0x1000) > cefdk::P1_START {
+        bail!("initrd ({ilen} B) would run into p1 at {:#x}", cefdk::P1_START);
+    }
+    if RB_KERNEL_OFF + round_up(klen, 0x1000) > RB_INITRD_OFF {
+        bail!("kernel ({klen} B) would run into the initrd at {RB_INITRD_OFF:#x}");
+    }
+    if !has_mtd(ssh) {
+        bail!("{MTD} not present — this system has no SPI-NOR access; boot stock and retry");
+    }
+
+    // 1. kernel + initrd -> eMMC USER partition (Linux offsets; 0x400 stock kernel
+    //    is left intact as a clean fallback).
+    p.emit(Event::step(format!("kernel {klen} B -> eMMC {RB_KERNEL_OFF:#x} (user partition)")));
+    dd_to_emmc(ssh, kernel, RB_KERNEL_OFF)?;
+    p.emit(Event::step(format!("initrd {ilen} B -> eMMC {RB_INITRD_OFF:#x}")));
+    dd_to_emmc(ssh, initrd, RB_INITRD_OFF)?;
+
+    // 2. Build the autoscript that reads them with `emmc rd_up` and boots.
+    let script = cefdk::ramboot_autoscript_rd_up(
+        RB_KERNEL_OFF,
+        round_up(klen, 0x1000),
+        RB_INITRD_OFF,
+        round_up(ilen, 0x1000) + 0x1000,
+        ilen,
+        cefdk::RAMBOOT_CMDLINE,
+    );
+    let mut blob: Vec<u8> = Vec::new();
+    for line in &script {
+        blob.extend_from_slice(line.as_bytes());
+        blob.push(0);
+    }
+    let content_off = mfh::EA_CONTENT_OFF as u64;
+    // 3. Read the three SPI-NOR blocks we will change and edit them in memory.
+    let table_blk_off = mfh::TABLE_OFF as u64; // 0x80000
+    let content_blk_off = content_off & !0xffff; // 0x90000
+    let params_blk_off = cefdk::SCRIPT_ENABLE_OFF & !0xffff; // 0xa0000
+    let mut table_blk = read_mtd_block(ssh, table_blk_off)?;
+    let mut content_blk = read_mtd_block(ssh, content_blk_off)?;
+    let mut params_blk = read_mtd_block(ssh, params_blk_off)?;
+
+    if (blob.len() as u64) > (0xa0f08 - content_off) {
+        bail!("autoscript {} B does not fit the free region before cefdk_params", blob.len());
+    }
+    // 4. script content into its block
+    let cpos = (content_off - content_blk_off) as usize;
+    content_blk[cpos..cpos + blob.len()].copy_from_slice(&blob);
+    // 5. append the type-12/script MFH item + recompute the SHA-256 (kernel is the
+    //    prior last item on the EA family).
+    mfh::append_script(&mut table_blk[0..0x200], mfh::EA_CONTENT_OFF, blob.len() as u32, mfh::TYPE_KERNEL)
+        .map_err(anyhow::Error::msg)?;
+    // 6. enable byte (do NOT set it until content+table are written)
+    let epos = (cefdk::SCRIPT_ENABLE_OFF - params_blk_off) as usize;
+    params_blk[epos] = 0x00;
+
+    // 7. Write in a safe order: content, then table (activates a valid slot),
+    //    then the enable byte last.
+    p.emit(Event::step("SPI-NOR: script content".into()));
+    write_mtd_block(ssh, content_blk_off, &content_blk)?;
+    p.emit(Event::step("SPI-NOR: MFH table (+SHA-256)".into()));
+    write_mtd_block(ssh, table_blk_off, &table_blk)?;
+    p.emit(Event::step("SPI-NOR: enable autoscript".into()));
+    write_mtd_block(ssh, params_blk_off, &params_blk)?;
+
+    p.emit(Event::resolved("no-serial install complete — rebooting into openHC".into()));
+    let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
+    Ok(())
+}
+
+/// Minimal standard-base64 decoder for `read_mtd_block`.
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    let mut acc = 0u32;
+    let mut n = 0;
+    for &c in s.as_bytes() {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        let v = val(c)?;
+        acc = (acc << 6) | v;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((acc >> n) as u8);
+        }
+    }
+    Some(out)
 }

@@ -419,34 +419,27 @@ fn install(rest: &[String]) -> bool {
         println!("\n  done — the box is rebooting; first boot self-installs p1 and pivots.");
         return true;
     }
-    if let Err(e) = network::stage1_ram_installer(&ssh, &rel, board.secure_boot, &p) {
-        eprintln!("  stage 1 failed: {e:#}");
+    // The proven no-serial conversion: kernel+initrd into the eMMC user-partition
+    // gap, a CEFDK `script` autoscript created over SSH with the correct SHA-256
+    // table hash (see engine::network::install_ramboot / core::mfh), enable it,
+    // reboot. The stock kernel at eMMC 0x400 is left as a clean fallback.
+    if let Err(e) = network::install_ramboot(&ssh, &rel, &p) {
+        eprintln!("  install failed: {e:#}");
         return false;
     }
-    println!("\n  stage 1 done — the box is rebooting into the RAM installer.");
     if rest.iter().any(|a| a == "--no-wait") {
-        println!("  when it is back (same IP), run:");
-        println!("    ohc-flash rootfs {host} --images {}", images.display());
+        println!("\n  done — the box is rebooting into openHC (RAM). Give it ~90s.");
         return true;
     }
-
-    // Finish the job: wait for the RAM-booted openHC and run stage 2 itself.
-    // Leaving the box in RAM and telling the user to run a second command is how
-    // a half-installed unit gets forgotten about.
-    println!("  waiting up to 300s for the box to come back in RAM...");
-    let ssh2 = match tp::wait_for_login(&host, 300) {
-        Some(s) => { println!("  — up"); s }
+    println!("  waiting up to 300s for openHC to come up...");
+    match tp::wait_for_login(&host, 300) {
+        Some(_) => println!("\n  done — openHC is up at {host}."),
         None => {
-            eprintln!("  the box did not come back within 300s. When it is up, run:");
-            eprintln!("    ohc-flash rootfs {host} --images {}", images.display());
+            eprintln!("  no SSH within 300s. It may still be booting, or came up on a \
+                       different address — watch the serial console or rescan.");
             return false;
         }
-    };
-    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, &p) {
-        eprintln!("  stage 2 failed: {e:#}");
-        return false;
     }
-    println!("\n  done — the box is rebooting into openHC on p1.");
     true
 }
 
