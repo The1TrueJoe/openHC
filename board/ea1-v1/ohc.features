@@ -4,4 +4,8 @@
 #   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
 #   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
 #   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
-wifi
+#
+# emmc is required for the NETWORK (SSH) install: it builds rootfs.ext2.gz and
+# the sdhci-pci/ext4 kernel side, so ohc-flash can write p1 and boot from it
+# with no serial console. Without it ea1-v1 is netboot-only (needs serial).
+wifi emmc
