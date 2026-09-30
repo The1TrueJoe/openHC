@@ -14,4 +14,11 @@
 # unassigned, and this is the combination proven to bring up wlan0 there.
 # Do NOT copy it to another board without checking that board's E820 — see
 # the EA3 fragment for a case where `nocrs` actively breaks the NIC.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"
+#
+# pci=routeirq forces ACPI _PRT routing for every PCI device, which is what gets
+# the CE5300 UART's interrupt link (ACPI LUAR = GSI 38) actually ENABLED. Without
+# it LUAR stays merely "configured" and request_irq(38) fails, so ttyS1 (the
+# IO-MCU port) never takes an RX interrupt and the tm4c looks dead. Confirmed on
+# an EA1: with routeirq, `ACPI: \_SB_.LUAR: Enabled at IRQ 38` and ttyS1 registers
+# on irq 38. See board/ea-common/linux/common.fragment for the full story.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"

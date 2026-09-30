@@ -1,0 +1,50 @@
+8250_pci: EA — do not claim the CE5300 UART1 PCI function (0x2e66)
+
+The Intel CE5300 (EA family) exposes its UART1 TWO ways: as the legacy 0x2F8 I/O
+port declared in arch/x86/include/asm/serial.h, and as a PCI function 0x8086:2e66
+(BAR0 MMIO 0xdffe0200). Mainline 8250_pci matches 0x2e66 through its CE4100 entry
+(PCI_DEVICE_ID_INTEL_CE4100_UART) and, on bind, pci_enable_device() + the
+ce4100 setup switch UART1 to PCI/MMIO decode. That kills the legacy 0x2F8 path —
+the one the Control4 IO microcontroller (tm4c on ttyS1) is wired to. The symptom
+is exact and was chased for a long time: the port transmits (tx counts, the FIFO
+empties) but nothing reaches the microcontroller (rx stays 0 forever, so
+gpio-ohc-iomcu never registers a gpiochip/lirc/rc). Registration of the PCI port
+also fails ENOSPC once NR_UARTS is 4, but that is AFTER the enable that does the
+damage, so capping the UART count was not enough — the function still bound.
+Unbinding at runtime does not undo it: the decode switch is latched at boot.
+
+Stock's kernel drives only the legacy ports (its /proc/tty/driver/serial shows
+0x3F8/0x2F8/0x3E8/0x2E8 and no PCI serial port), and that path reaches the tm4c
+(tx and rx both non-zero). So match stock: drop the PCI match for 0x2e66 so the
+SoC keeps UART1 on legacy 0x2F8 decode and openHC's writes reach the IO-MCU.
+
+Scope: EA family only (board/ea-common/patches), the only openHC target on this
+SoC. Pairs with 0002 (legacy ports, polled) and 0006 (PORT_XSCALE).
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/tty/serial/8250/8250_pci.c
++++ b/drivers/tty/serial/8250/8250_pci.c
+@@ -6153,10 +6153,18 @@
+ 		0xA000, 0x1000,
+ 		0, 0, pbn_b0_1_115200 },
+ 
+-	/* Intel CE4100 */
+-	{	PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CE4100_UART,
+-		PCI_ANY_ID,  PCI_ANY_ID, 0, 0,
+-		pbn_ce4100_1_115200 },
++	/*
++	 * Intel CE4100 UART (0x2e66) is intentionally NOT matched on the EA
++	 * family. The CE5300 exposes its UART1 BOTH as this PCI function
++	 * (MMIO) and as the legacy 0x2F8 I/O port that the Control4 IO-MCU is
++	 * wired to. If 8250_pci binds and enables this function it switches
++	 * UART1 to PCI decode and the legacy 0x2F8 path goes dead -- writes are
++	 * counted but never reach the microcontroller (tx climbs, rx stays 0,
++	 * gpio-ohc-iomcu never gets a reply). Stock drives only the legacy
++	 * ports (see arch/x86 serial.h), so we must not let this PCI entry
++	 * claim the same block. EA-only: this patch dir is applied to the EA
++	 * family, the only openHC target with this SoC.
++	 */
+ 
+ 	/*
+ 	 * Cronyx Omega PCI

@@ -1,8 +1,8 @@
 //! Thin CLI over the flasher crates. The same engine the GUI drives — this is
 //! for power users and scripts.
 
-use ohc_flash_core::{board, image, method, Method};
-use ohc_flash_engine::{hc800, network, Progress, Release};
+use ohc_flash_core::{board, cefdk, image, method, Method};
+use ohc_flash_engine::{hc800, netboot, network, Progress, Release};
 use ohc_flash_transport as tp;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,6 +19,7 @@ fn main() -> ExitCode {
         "validate" => validate(rest),
         "install" => install(rest),
         "rootfs" => rootfs(rest),
+        "netboot" => netboot_cmd(rest),
         "boot" => boot(rest),
         "uninstall" => uninstall(rest),
         "wrap" => wrap(rest),
@@ -53,6 +54,13 @@ fn help() {
                                     --netconsole <ip>[:port] ships the boot log to you\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
+           netboot --serial <dev> --mac <aa:bb:..> [--images <dir|zip>]\n\
+                   [--server-ip <ip>] [--box-ip <ip>] [--cmdline <str>] [--no-wait]\n\
+                                    EA bring-up: netboot openHC into RAM from CEFDK's\n\
+                                    manufacturing shell — answers BOOTP with the C4 cookie,\n\
+                                    serves the images over TFTP, and drives the serial\n\
+                                    console. Writes NOTHING to the box. Needs sudo (binds\n\
+                                    :67/:69) and the ID button held through a power cycle.\n\
            boot [HOST]              HC-800: re-enter an INSTALLED openHC. Every openHC\n\
                                     boot hands the GRUB default back to Control4, so\n\
                                     this is how you go back in after a reset\n\
@@ -440,6 +448,45 @@ fn install(rest: &[String]) -> bool {
     }
     println!("\n  done — the box is rebooting into openHC on p1.");
     true
+}
+
+/// `netboot` — the EA bring-up loop: boot openHC into RAM from CEFDK's
+/// manufacturing shell without writing anything to the box.
+///
+/// Unlike the other subcommands this one does NOT connect over SSH first: the
+/// box is in the CEFDK bootloader with no OS, reachable only over serial. It
+/// binds the privileged BOOTP/TFTP ports, so it must be run under sudo.
+fn netboot_cmd(rest: &[String]) -> bool {
+    let flag = |name: &str| rest.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
+
+    let Some(serial) = flag("--serial") else {
+        eprintln!("  netboot needs --serial <dev> (the CEFDK console, e.g. /dev/tty.usbserial-XXXX)");
+        return false;
+    };
+    let Some(mac) = flag("--mac") else {
+        eprintln!("  netboot needs --mac <aa:bb:cc:dd:ee:ff> (the target's, so only it is answered)");
+        return false;
+    };
+    // The server IP is this host on the bring-up link; there is no safe default
+    // (a machine has several addresses), so require it rather than guess wrong.
+    let Some(server_ip) = flag("--server-ip") else {
+        eprintln!("  netboot needs --server-ip <ip> (this host's address on the link to the EA)");
+        return false;
+    };
+    let box_ip = flag("--box-ip").unwrap_or_else(|| "10.0.0.200".into());
+    let cmdline = flag("--cmdline").unwrap_or_else(|| cefdk::RAMBOOT_CMDLINE.to_string());
+    let wait = !rest.iter().any(|a| a == "--no-wait");
+
+    let images = images_arg(rest);
+    let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
+
+    println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
+    println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    let p = Progress::stdout();
+    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, wait, &p) {
+        Ok(()) => { println!("\n  done — openHC was netbooted into RAM."); true }
+        Err(e) => { eprintln!("  netboot failed: {e:#}"); false }
+    }
 }
 
 fn rootfs(rest: &[String]) -> bool {

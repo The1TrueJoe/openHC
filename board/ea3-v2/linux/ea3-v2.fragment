@@ -121,7 +121,9 @@
 # EA-3 v2 ONLY. The 199M@1M figure describes THIS board's map; a board whose
 # CEFDK hands out a different split needs its own numbers, and a memmap past
 # the end of real DRAM is unrecoverable remotely.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
+# pci=routeirq enables the CE5300 UART interrupt link (LUAR/GSI 38) so the IO-MCU
+# on ttyS1 can take an RX interrupt — see board/ea-common/linux/common.fragment.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
 
 # --- RAM: CEFDK hides 90% of it -------------------------------------------
 #

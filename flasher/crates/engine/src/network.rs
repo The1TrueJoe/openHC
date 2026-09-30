@@ -32,12 +32,13 @@ use crate::release::Release;
 /// still well below the 0xc00000 region where Linux/CEFDK addressing diverges,
 /// and below p1. Sector-aligned.
 const INITRD_EMMC_OFF: u64 = 0x800000; // 8 MiB
-/// RAM staging addresses, from the proven takeover.
+/// RAM staging addresses and the CEFDK ramdisk globals, from the proven
+/// takeover. Canonical in `core::cefdk` (shared with the TFTP netboot path);
+/// aliased here so this flow reads the same as it always did.
 const RAM_KERNEL: u64 = cefdk::KERNEL_ADDR; // 0x6000000
-const RAM_INITRD: u64 = 0x4000000;
-/// CEFDK globals that describe the ramdisk to bootlinux.
-const G_RD_ADDR: u64 = 0x837564;
-const G_RD_SIZE: u64 = 0x837568;
+const RAM_INITRD: u64 = cefdk::RAMDISK_ADDR; // 0x4000000
+const G_RD_ADDR: u64 = cefdk::G_RD_ADDR;
+const G_RD_SIZE: u64 = cefdk::G_RD_SIZE;
 
 const MTD: &str = "/dev/mtd0";
 

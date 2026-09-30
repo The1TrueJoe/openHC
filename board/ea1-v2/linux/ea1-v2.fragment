@@ -2,4 +2,6 @@
 # pci=realloc,nocrs as on every CE5300 EA board (the ACPI _CRS omits the
 # 0xc0000000-0xdfffffff MMIO space; without nocrs the bus-01 bridge window
 # cannot be claimed and the kernel hangs before userspace).
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs"
+# pci=routeirq enables the CE5300 UART interrupt link (LUAR/GSI 38) so the IO-MCU
+# on ttyS1 can take an RX interrupt — see board/ea-common/linux/common.fragment.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"

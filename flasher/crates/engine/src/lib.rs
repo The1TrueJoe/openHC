@@ -8,11 +8,13 @@
 pub mod event;
 pub mod hc800;
 pub mod mfgmode;
+pub mod netboot;
 pub mod network;
 pub mod updates;
 pub mod release;
 
 pub use event::{Event, Progress};
 pub use mfgmode::{MfgWatch, Stage};
+pub use netboot::netboot;
 pub use release::Release;
 pub use updates::{GhRelease, latest_release};

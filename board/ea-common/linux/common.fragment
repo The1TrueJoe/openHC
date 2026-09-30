@@ -4,31 +4,48 @@
 # SSH in and drop the tether. Storage (eMMC) and wired Ethernet used out-of-tree
 # vendor drivers and are not attempted here.
 
-# --- serial console (CEFDK's port) ---
+# --- serial console + IO-MCU port (CE5300 GEN3 UARTs) ---
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
-# 8 slots, not 4, or the REAL UARTs never register.
+# Keep ONLY the four LEGACY ISA ports (0x3f8/0x2f8/0x3e8/0x2e8 from
+# SERIAL_PORT_DFNS) and let the CE5300's PCI serial function (8086:2e66) fail to
+# register -- exactly what stock Control4 does.
 #
-# The CE5300 puts its UARTs on a PCI function (8086:2e66) with THREE BARs --
-# 0xdffe0200, 0xdffe0300, 0xdffe0b00. Linux saw none of them:
+# The story (measured against a live stock EA1, 2026-09-16): stock's
+# /proc/tty/driver/serial has the IO microcontroller (TI tm4c1231d5) on
+# `ttyS1 ... port:000002F8 ... GEN3_serial` and it works (rx counts climb, and it
+# answers the firmware-version query with "1.0.36"). Stock ALSO logs
+# `Couldn't register serial port 0000:01:0b.0: -28` -- the 2e66 PCI UARTs never
+# register there because the four legacy slots are full, and stock is fine on the
+# legacy ports alone.
 #
-#     serial 0000:01:0b.0: Couldn't register serial port 0, irq 25,
-#                          type 3, error -28
+# We previously raised NR_UARTS to 8 so 2e66 WOULD register (as ttyS4/ttyS5 on
+# MMIO). That was the bug: with the 2e66 function bound, writes/reads on the
+# LEGACY 0x2f8 stopped reaching the tm4c (tx counted, rx=0 forever), so the IO-MCU
+# looked dead and no gpiochip/lirc/rc ever appeared. The generic 8250 works on
+# 0x3f8 (the console, which CEFDK set up) but the 2e66 binding shadows 0x2f8.
+# Dropping back to 4 slots makes 2e66 fail ENOSPC like stock, leaving the legacy
+# 0x2f8 path -- the one that actually reaches the Tiva -- intact.
 #
-# -28 is ENOSPC. Not a hardware fault and not a resource conflict: the 8250 core
-# has only NR_UARTS slots, and the four LEGACY ISA declarations
-# (0x3f8/0x2f8/0x3e8/0x2e8, from SERIAL_PORT_DFNS) had already taken all four.
-# The PCI ports -- the ones with a real IRQ (25), which can actually take an RX
-# interrupt -- were pushed out.
-#
-# This is why every hunt for the Zigbee radio on ttyS1..3 came back empty. Those
-# are the legacy declarations; they enumerate with `irq = 0`, and a port with no
-# IRQ transmits fine but never receives. The radio was never on them.
-#
-# RUNTIME_UARTS must be raised as well -- it is what the core honours at probe
-# time, and leaving it at 4 reproduces the same ENOSPC.
-CONFIG_SERIAL_8250_NR_UARTS=8
-CONFIG_SERIAL_8250_RUNTIME_UARTS=8
+# The other half was the interrupt, and this is where openHC and stock diverge.
+# Stock declares IRQ 38 (ACPI link LUAR = GSI 38) and it FIRES: /proc/interrupts
+# shows "38: ... serial" climbing and ttyS1 carries the tm4c (tx AND rx non-zero).
+# On this kernel the same declaration registers but NEVER fires -- measured, IRQ 38
+# stays 0 across a full transmit -- so an RX interrupt never arrives and the IO-MCU
+# stays invisible. The GSI routing stock's platform code performs is not reproduced
+# here; pci=routeirq + declaring IRQ 38 was not enough to make the line fire. So the
+# ports are run TIMER-POLLED instead: patch 0002 declares irq 0, serial8250 arms
+# serial8250_timeout(), and patch 0010 lets the poll drive TX as well as RX from the
+# LSR (the GEN3 block does not reflect THRE in the IIR). Polling is plenty for a
+# control microcontroller and does not depend on an interrupt this SoC will not
+# deliver under openHC.
+CONFIG_SERIAL_8250_NR_UARTS=4
+CONFIG_SERIAL_8250_RUNTIME_UARTS=4
+# The mainline i386 defconfig sets DETECT_IRQ, whose STD_COMX_FLAGS add
+# UPF_AUTO_IRQ -- the 8250 would then run the legacy ISA IRQ auto-probe. With the
+# ports declared irq 0 (patch 0002, polled) that probe must NOT run and reassign a
+# line; turn it off so irq 0 stands and the timer-poll path is taken.
+# CONFIG_SERIAL_8250_DETECT_IRQ is not set
 CONFIG_CMDLINE_BOOL=y
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_CMDLINE itself is PER-BOARD — see each board's fragment. It used to
