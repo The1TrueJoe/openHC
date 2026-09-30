@@ -195,3 +195,40 @@ pub fn parse_autoscript(blob: &[u8]) -> Vec<String> {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// No-serial autoscript (2026-09-30): the VERIFIED recipe that boots openHC from
+// the eMMC gap with no serial. Two corrections over the older RAM-installer:
+//   1. read with `emmc rd_up` (eMMC USER partition = Linux /dev/mmcblk0 offsets),
+//      NOT `emmc rd` (Boot+User, offset shifted by the 2 MB boot partitions).
+//   2. the kernel is a RAW bzImage in the gap, so linuxKernelBase points at it
+//      directly (no +0x580 container header).
+// See `mfh::append_script` for the item creation, and SCRIPT_ENABLE_OFF below.
+
+/// Byte offset in SPI-NOR of the autoscript enable flag, inside `cefdk_params`
+/// (item at 0xa0f08, +0x14). 0x00 = autoscript runs (`script on`); 0x01 = off.
+pub const SCRIPT_ENABLE_OFF: u64 = 0xa0f1c;
+
+/// The autoscript that RAM-boots openHC from the eMMC USER-partition gap. Reads
+/// the raw bzImage and the initramfs, then `bootlinux`. Offsets are Linux
+/// `/dev/mmcblk0` byte offsets (what `emmc rd_up` uses). `initrd_len` MUST be the
+/// exact byte count (a cpio.gz does not self-describe its end).
+pub fn ramboot_autoscript_rd_up(
+    kernel_off: u64,
+    kernel_read: u64,
+    initrd_off: u64,
+    initrd_read: u64,
+    initrd_len: u64,
+    cmdline: &str,
+) -> Vec<String> {
+    vec![
+        format!("emmc rd_up {kernel_off:#x} {KERNEL_ADDR:#x} {kernel_read:#x}"),
+        format!("emmc rd_up {initrd_off:#x} {RAMDISK_ADDR:#x} {initrd_read:#x}"),
+        "cache flush".into(),
+        format!("ord4 {G_KBASE:#x} = {KERNEL_ADDR:#x}"),
+        format!("ord4 {G_RD_FLAG:#x} = 0x1"),
+        format!("ord4 {G_RD_ADDR:#x} = {RAMDISK_ADDR:#x}"),
+        format!("ord4 {G_RD_SIZE:#x} = {initrd_len:#x}"),
+        format!("bootlinux \"{cmdline}\""),
+    ]
+}
