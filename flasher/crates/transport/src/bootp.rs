@@ -128,14 +128,33 @@ fn serve_loop(
         }
         announce(format!("bootp: request from {}", mac_str(&req.mac)));
         let reply = build_cookie_reply(&req.xid, &req.mac, offer_ip, server_ip);
-        // The client listens for the reply on :68 and has no address yet, so
-        // broadcast it.
-        match sock.send_to(&reply, (Ipv4Addr::BROADCAST, 68)) {
-            Ok(_) => announce(format!(
-                "bootp: answered {} with C4_COOKIE (offer {offer_ip}, server {server_ip})",
+        // The client has no address yet, so the reply must be broadcast. Send it
+        // to the SUBNET-DIRECTED broadcast of the server's network (e.g.
+        // 10.0.0.255), NOT the limited 255.255.255.255: on a multi-homed host
+        // the limited broadcast egresses whatever interface the default route
+        // picks, which on a laptop with several NICs/aliases is usually NOT the
+        // one facing the box — so CEFDK never sees our cookie, uses the real
+        // DHCP server's reply, and takes its normal boot. Routing to the
+        // server's own subnet broadcast forces the packet out the right
+        // interface. (This is the documented macOS wrinkle in ea/bootloader-access.)
+        //
+        // On a live LAN the real DHCP server is also answering; CEFDK does 12
+        // BOOTP rounds and we cannot know which reply it latches, so send a few
+        // times per request to dominate the window rather than send once.
+        let dst = subnet_broadcast(server_ip);
+        let mut sent = false;
+        for _ in 0..4 {
+            if sock.send_to(&reply, (dst, 68)).is_ok() {
+                sent = true;
+            }
+        }
+        if sent {
+            announce(format!(
+                "bootp: answered {} with C4_COOKIE (offer {offer_ip}, server {server_ip}, via {dst})",
                 mac_str(&req.mac)
-            )),
-            Err(e) => announce(format!("bootp: reply send failed: {e}")),
+            ));
+        } else {
+            announce("bootp: reply send failed on every attempt".to_string());
         }
     }
 }
@@ -220,6 +239,17 @@ fn mac_str(mac: &[u8; 6]) -> String {
     mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
 }
 
+/// The subnet-directed broadcast for `server_ip`, assuming the /24 these boxes
+/// live on (the EA's own BOOTP reports a 255.255.255.0 mask, and residential
+/// Control4 installs are /24). Sending the reply here — rather than the limited
+/// 255.255.255.255 — is what pins it to the interface facing the box on a
+/// multi-homed host. A non-/24 deployment would need the real mask; that has not
+/// been seen in the field, so it is a documented assumption rather than a knob.
+pub fn subnet_broadcast(server_ip: Ipv4Addr) -> Ipv4Addr {
+    let o = server_ip.octets();
+    Ipv4Addr::new(o[0], o[1], o[2], 255)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +311,15 @@ mod tests {
     fn a_bogus_boot_filename_is_set_so_autofetch_fails() {
         let p = sample_reply();
         assert_eq!(&p[108..108 + BOGUS_BOOTFILE.len()], BOGUS_BOOTFILE);
+    }
+
+    #[test]
+    fn subnet_broadcast_is_the_slash24_directed_broadcast() {
+        // The fix for the multi-homed-host wrong-interface bug: replies go to
+        // the server's own /24 broadcast, not 255.255.255.255.
+        assert_eq!(subnet_broadcast(Ipv4Addr::new(10, 0, 0, 106)), Ipv4Addr::new(10, 0, 0, 255));
+        assert_eq!(subnet_broadcast(Ipv4Addr::new(192, 168, 1, 50)), Ipv4Addr::new(192, 168, 1, 255));
+        assert_ne!(subnet_broadcast(Ipv4Addr::new(10, 0, 0, 106)), Ipv4Addr::BROADCAST);
     }
 
     #[test]

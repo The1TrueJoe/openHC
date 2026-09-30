@@ -60,6 +60,32 @@ pub const MFH_SCRIPT_OFF: u64 = 0x91000;
 /// Size of that entry.
 pub const MFH_SCRIPT_LEN: usize = 0x800;
 
+// ---- MFH item table structure (recovered from an EA1 mtd0 dump, 2026-09-30) ----
+//
+// CAUTION: `MFH_SCRIPT_OFF` above is only valid on a box that ALREADY HAS a
+// script slot (an EA3 that has had `script on` run once). A virgin EA1 does NOT:
+// its 0x91000 holds a `splash` item, and it has no `script` item at all, so
+// blindly writing the autoscript to 0x91000 there clobbers a live item and CEFDK
+// never runs it. Creating the slot over SSH means adding a real MFH item of type
+// `script`; the constants below are what that needs. The SAFE way to make the
+// slot is still CEFDK's own `script on` at the manufacturing shell (firmware
+// writes the MFH correctly) — the ID-button path — until an over-SSH creator is
+// proven against a `script on` before/after diff. A wrong MFH write BRICKS: the
+// factory button does not restore mtd0.
+//
+/// SPI-NOR offset of the primary MFH item table (header, then 32-byte items).
+pub const MFH_TABLE_OFF: u64 = 0x80000;
+/// Bytes per MFH item: `[flags u32, addr u32, len u32, 0, 0, 0, type u32, 0]`.
+pub const MFH_ITEM_SIZE: usize = 32;
+/// `flags` value marking an item valid; `0xffffffff` in `type` marks it deleted.
+pub const MFH_FLAG_VALID: u32 = 0x8000_0000;
+/// The `type` value for the autorun script item, i.e. what `script on` creates.
+/// Recovered from CEFDK's own type-name enum in the `bootloader` region
+/// (index 12 = "script"; cross-checked against bootloader=3, cefdk_s3=16,
+/// cefdk_s2h=18 which match this unit's items). Verify against a live `script on`
+/// diff before writing it.
+pub const MFH_TYPE_SCRIPT: u32 = 12;
+
 /// RAM address the kernel is staged at before `bootlinux`, and the two CEFDK
 /// globals that say where the image is and that there is no ramdisk. Recovered
 /// from the working takeover; not derivable from anything public.
