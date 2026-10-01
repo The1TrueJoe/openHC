@@ -1,0 +1,25 @@
+# openHC feature: zigbee — the shared userspace to run an EM35x Zigbee NCP and
+# bridge it into the rest of the world over MQTT. Enabled on every board that has
+# a radio (ca1, the EA family, hc800); NOT on the IO Extender, which has none.
+#
+# This is the TRANSPORT-AGNOSTIC half. WHICH port the NCP is on is per-board
+# (board.env OHC_ZIGBEE_TTY / OHC_RADIOS): a CP2104 USB bridge on the EA
+# (/dev/ttyUSB0), a native UART on the ca1 (ttymxc4) and hc800 (ttyS4). The
+# kernel side of the USB bridge is this feature's linux.fragment.
+#
+# Node.js is the runtime: ohc-zigbee (the NCP bring-up daemon) is node, and the
+# radio stack that publishes to MQTT — zigbee2mqtt — runs on it. npm so that
+# stack can be installed on-target (it is not vendored).
+BR2_PACKAGE_NODEJS=y
+BR2_PACKAGE_NODEJS_NPM=y
+
+# Node's V8 needs the C++ runtime. Harmless where the toolchain already has it.
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_INSTALL_LIBSTDCPP=y
+
+# NOTE on the broker: openHC's IO already speaks MQTT (iod, a rumqttc client), and
+# zigbee2mqtt publishes to a broker too. Buildroot 2024.02.9's mosquitto package
+# is currently broken (its bundled patch no longer applies to the upstream
+# tarball), so a broker is NOT enabled here — a board either points these clients
+# at an off-box broker or enables one once the package is fixed. Tracked, not
+# solved, here.

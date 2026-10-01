@@ -69,10 +69,11 @@ CONFIG_RD_GZIP=y
 CONFIG_KERNEL_XZ=y
 # CONFIG_KERNEL_GZIP is not set
 CONFIG_CC_OPTIMIZE_FOR_SIZE=y
-# USB: enabled across openHC. The EA family carries three EHCI controllers
-# (PCI 192e:0101, a TransDimension/TDI core) and the Zigbee EM357 NCP hangs off a
-# CP2104 USB-serial (10c4:ea60 -> /dev/ttyUSB0), so USB + cp210x are what make the
-# radio reachable. Two things beyond the defaults are load-bearing:
+# USB HOST: the EA family carries three EHCI controllers (PCI 192e:0101, a
+# TransDimension/TDI core). This is the EA's USB HARDWARE and stays here; the
+# USB-SERIAL side (cp210x) that the Zigbee NCP needs lives in the shared 'zigbee'
+# feature (board/common/features/zigbee), so a board only pulls it in when it has
+# a radio. Two things beyond the defaults are load-bearing:
 #   * patch 0014 sets ehci->has_hostpc for this core, without which every port
 #     dies at probe with "can't setup: -110" (reset handshake timeout).
 #   * that quirk also sets hcd->has_tt=1 (the controller has an embedded
@@ -85,9 +86,6 @@ CONFIG_USB_EHCI_HCD=y
 CONFIG_USB_EHCI_PCI=y
 CONFIG_USB_EHCI_ROOT_HUB_TT=y
 CONFIG_USB_EHCI_TT_NEWSCHED=y
-CONFIG_USB_ACM=y
-CONFIG_USB_SERIAL=y
-CONFIG_USB_SERIAL_CP210X=y
 # CONFIG_SCSI is not set
 # CONFIG_ATA is not set
 # CONFIG_MMC is not set
