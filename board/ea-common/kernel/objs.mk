@@ -20,11 +20,15 @@ drivers/gpio/Makefile|obj-y += gpio-ea-board.o
 drivers/pwm/Makefile|obj-y += pwm-ce5300.o
 drivers/leds/Makefile|obj-y += leds-ea-board.o
 drivers/spi/Makefile|obj-y += spi-ea-b53-board.o
-# Declares the boot SPI-NOR flash on the same controller (CS 0) so openHC gets a
-# /dev/mtd0 -- what lets it rewrite its own CEFDK autoscript (clean in-place
-# kernel installs) and restore stock from software. Unconditional; the switch is
-# gated, the flash is always there.
-drivers/spi/Makefile|obj-y += spi-ea-flash-board.o
+# NOTE on the boot SPI-NOR / an /dev/mtd0: the boot flash is NOT on this pxa2xx
+# SSP (8086:2e6a) -- that is the general-purpose SPI the switch rides. It is on a
+# DEDICATED controller, PCI 01:17.0 "FLASH memory [0501]" 8086:08a0, which has no
+# mainline driver (Control4 drove it with a bespoke ce5xx_spi_flash + nmyx25).
+# An earlier spi-ea-flash-board.c that hung spi-nor off the SSP only produced
+# "SPI transfer failed: -5" because nothing answers on that CS -- removed. Giving
+# openHC an MTD means porting a driver for 08a0; it is a separate effort and is
+# NOT required for booting the full kernel, which the S00kexec bootstrap already
+# does without touching flash.
 
 # --- audio (ASoC lives outside drivers/; the hook mirrors sound/ too) ---
 # The codec goes in the existing codecs/ dir. The platform + machine drivers get
