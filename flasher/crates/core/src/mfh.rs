@@ -92,6 +92,54 @@ pub fn append_script(
     Ok(count)
 }
 
+/// Remove the trailing `script` item this module's [`append_script`] added,
+/// returning the table to stock: zero the script entry (the last item), clear the
+/// now-last item's real type back to the terminator 0, decrement the count and
+/// recompute the SHA-256. The exact inverse of `append_script`, so
+/// `remove_script(append_script(clean)) == clean` byte-for-byte — which is what
+/// makes a software return-to-stock safe: CEFDK then boots the stock kernel item
+/// again, exactly as it did before openHC was installed.
+///
+/// Refuses unless the last item actually looks like our script (valid flag, type
+/// 0 terminator, pointing into the EA user-content region) so it can never strip
+/// a legitimate stock item. Returns the new count.
+pub fn remove_script(tbl: &mut [u8]) -> Result<usize, String> {
+    if tbl.len() < 0x200 {
+        return Err("table region must be at least 0x200 bytes".into());
+    }
+    let count = rd32(tbl, COUNT_OFF) as usize;
+    if count < 2 {
+        return Err("MFH table has no appended item to remove".into());
+    }
+    let script = HDR_LEN + (count - 1) * ITEM_LEN;
+    // Guard: only ever remove OUR script entry, never a stock item. Ours is a
+    // valid, type-0 item pointing into the EA user-content window (0x90000..
+    // 0xa0000, where append_script places it) and is small — the stock kernel
+    // item also reads type 0 as the terminator, but lives far outside that window
+    // and is megabytes long.
+    let sflags = rd32(tbl, script + 0x00);
+    let soff = rd32(tbl, script + 0x04);
+    let ssize = rd32(tbl, script + 0x08);
+    let stype = rd32(tbl, script + 0x18);
+    if sflags != FLAG_VALID
+        || stype != TYPE_SCRIPT
+        || !(0x9_0000..0xa_0000).contains(&soff)
+        || ssize >= 0x1000
+    {
+        return Err("last MFH item is not an openHC script entry — refusing".into());
+    }
+    for b in &mut tbl[script..script + ITEM_LEN] {
+        *b = 0;
+    }
+    // The item that is now last becomes the terminator: its type reads 0 again.
+    let last = HDR_LEN + (count - 2) * ITEM_LEN;
+    wr32(tbl, last + 0x18, 0);
+    wr32(tbl, COUNT_OFF, (count - 1) as u32);
+    let digest = Sha256::digest(&tbl[0..HASH_OFF]);
+    tbl[HASH_OFF..HASH_OFF + 32].copy_from_slice(&digest);
+    Ok(count - 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +183,26 @@ mod tests {
         let mut t = clean();
         append_script(&mut t, EA_CONTENT_OFF, 241, TYPE_KERNEL).unwrap();
         assert_eq!(&Sha256::digest(&t[0..HASH_OFF])[..], &t[HASH_OFF..HASH_OFF + 32]);
+    }
+
+    #[test]
+    fn remove_script_is_the_exact_inverse_of_append() {
+        // append then remove must reproduce the clean table byte-for-byte,
+        // including the integrity hash — the guarantee return-to-stock relies on.
+        let orig = clean();
+        let mut t = orig.clone();
+        append_script(&mut t, EA_CONTENT_OFF, 0x100, TYPE_KERNEL).unwrap();
+        assert_ne!(t, orig, "append must change the table");
+        let n = remove_script(&mut t).unwrap();
+        assert_eq!(n, 12);
+        assert_eq!(t, orig, "remove_script must restore the clean table exactly");
+    }
+
+    #[test]
+    fn remove_script_refuses_a_clean_table() {
+        // A table with no appended script (last item is the stock kernel) must be
+        // left untouched — never strip a legitimate stock item.
+        let mut t = clean();
+        assert!(remove_script(&mut t).is_err());
     }
 }
