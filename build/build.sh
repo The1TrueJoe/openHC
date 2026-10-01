@@ -457,11 +457,19 @@ mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
 #
 # <pkg>-rebuild handles both: it depends on -clean-for-rebuild, which drops the
 # build and install stamps as well as the rsync one. Discovered by listing
-# packages/, so a new package is covered without anyone knowing this exists.
+# BOTH the top-level packages/ AND the board-local board/*/packages/ trees, so a
+# new package in either is covered without anyone knowing this exists.
+#
+# The board-local glob is NOT optional: iomcu-attach, splash, sgx545-* and
+# webview all live under board/*/packages/, and leaving them out is exactly how
+# an edited iomcu-attach.c (the IO-MCU bring-up) shipped the previous binary from
+# a cached output tree even though the source was right -- the two examples named
+# just above (ohc-splash, sgx545-um) are themselves board packages this loop
+# used to miss.
 #
 # Same shape as the linux-dirclean above: a cached step that silently ignores
 # changed input.
-for _mk in "$REPO"/packages/*/*.mk; do
+for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk; do
     [ -e "$_mk" ] || continue
     _pkg=$(basename "$(dirname "$_mk")")
     # only if this build selects it, else make has no such target
