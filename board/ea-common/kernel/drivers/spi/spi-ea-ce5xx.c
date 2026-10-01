@@ -277,20 +277,27 @@ static int ce5xx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct spi_controller *ctlr;
 	struct ce5xx_spi *c;
 	struct spi_device *flash;
-	void __iomem * const *iomap;
+	resource_size_t r0, l0, r1, l1;
 	int ret;
 
-	ret = pcim_enable_device(pdev);
-	if (ret)
-		return ret;
-
-	/* Map BAR0 (CSR) and BAR1 (64 MiB window); both device-managed. */
-	ret = pcim_iomap_regions(pdev, BIT(0) | BIT(1), "spi-ea-ce5xx");
-	if (ret)
-		return ret;
-	iomap = pcim_iomap_table(pdev);
-	if (!iomap)
-		return -ENOMEM;
+	/*
+	 * Do NOT pci_enable_device()/pci_request_regions() here. The EA boots with
+	 * pci=nocrs, under which the PCI core leaves this device's BARs
+	 * IORESOURCE_UNSET, so pci_enable_device() refuses with
+	 * "BAR 0 ...: not claimed; can't enable device" (-EINVAL). CEFDK has
+	 * already turned on the device's memory decode (PCI command MEM=1) and the
+	 * registers read back fine, and we only ever do MMIO (no DMA), so map the
+	 * BAR physical ranges straight through devm_ioremap -- exactly what Intel's
+	 * vendor driver did when it ignored pci_request_region()'s return value.
+	 */
+	r0 = pci_resource_start(pdev, 0);
+	l0 = pci_resource_len(pdev, 0);
+	r1 = pci_resource_start(pdev, 1);
+	l1 = pci_resource_len(pdev, 1);
+	if (!r0 || !r1) {
+		dev_err(&pdev->dev, "flash BARs not assigned by firmware\n");
+		return -ENODEV;
+	}
 
 	ctlr = devm_spi_alloc_host(&pdev->dev, sizeof(*c));
 	if (!ctlr)
@@ -299,8 +306,10 @@ static int ce5xx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	c = spi_controller_get_devdata(ctlr);
 	c->ctlr = ctlr;
 	c->pdev = pdev;
-	c->regs = iomap[0];
-	c->mem = iomap[1];
+	c->regs = devm_ioremap(&pdev->dev, r0, l0);
+	c->mem = devm_ioremap(&pdev->dev, r1, l1);
+	if (!c->regs || !c->mem)
+		return -ENOMEM;
 
 	/* The SPI I/O unit is powered down by BIOS on some SKUs; without it the
 	 * controller cannot talk to the flash at all, so fail loudly here. */
