@@ -92,19 +92,21 @@ BR2_PACKAGE_DNSMASQ=y
 
 # --- mDNS identity: avahi (no D-Bus, light), matching the other boards ---
 
-# --- rear RS-232/485 port exposed over the network (RFC2217/telnet-com-port) ---
-# ser2net's own S50ser2net init script ships with the package; it just needs a
-# config, which lives in rootfs-overlay/etc/ser2net/ser2net.yaml. Direction
-# stays whatever the DTS gpio-hogs set at boot (RS-232 today) — runtime mode
-# switching needs those hogs converted to a real consumer first (see the DTS).
-BR2_PACKAGE_SER2NET=y
+# --- rear RS-232/485 port ---
+# No ser2net: the rear combo port (ttymxc2) is now owned by iod, like every
+# other serial/IO resource on the box. iod gives it one shared session and
+# bridges it over MQTT (openhc/box/.../serial/<n>/...) and the in-UI web xterm,
+# so the redundant raw-TCP/RFC2217 layer is gone. It is declared in board.env's
+# OHC_SERIALS, not here. Direction (RS-232 vs RS-485) is still fixed at boot by
+# the gpio-hogs in the DTS — switching it at runtime needs those hogs converted
+# to a real consumer first (see the DTS).
 
 # Mosquitto is OFF: Buildroot 2024.02.9's package fails to apply its own bundled
 # patch against the tarball mosquitto.org currently serves. A package/upstream
 # mismatch, not a local config issue. Revisit when a broker is actually needed.
 # BR2_PACKAGE_MOSQUITTO=y
 
-# C++ toolchain — needed by Node.js and ser2net's gensio C++ bindings.
+# C++ toolchain — needed by Node.js (V8).
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
 # --- Node.js: runtime for zigbee2mqtt / zwave-js-server ---
