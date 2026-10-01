@@ -427,19 +427,27 @@ fn install(rest: &[String]) -> bool {
         eprintln!("  install failed: {e:#}");
         return false;
     }
-    if rest.iter().any(|a| a == "--no-wait") {
+    if rest.iter().any(|a| a == "--ram-only") || rest.iter().any(|a| a == "--no-wait") {
         println!("\n  done — the box is rebooting into openHC (RAM). Give it ~90s.");
         return true;
     }
-    println!("  waiting up to 300s for openHC to come up...");
-    match tp::wait_for_login(&host, 300) {
-        Some(_) => println!("\n  done — openHC is up at {host}."),
+    // Stage 2: once openHC is RAM-booted, write the real rootfs to p1. The same
+    // RAM-boot autoscript then pivots to p1 on the next reboot (/init checks for
+    // /etc/openhc-release), so persistence needs no autoscript rewrite.
+    println!("  waiting up to 300s for openHC (RAM) to come up...");
+    let ssh2 = match tp::wait_for_login(&host, 300) {
+        Some(s) => { println!("  — up; writing the persistent rootfs to p1"); s }
         None => {
-            eprintln!("  no SSH within 300s. It may still be booting, or came up on a \
-                       different address — watch the serial console or rescan.");
+            eprintln!("  no SSH within 300s. When openHC is up, run:  ohc-flash rootfs {host} --images {}", images.display());
             return false;
         }
+    };
+    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, &p) {
+        eprintln!("  stage 2 (p1) failed: {e:#}");
+        eprintln!("  openHC still auto-boots from RAM; p1 persistence is not set up.");
+        return false;
     }
+    println!("\n  done — rebooting into openHC on p1 (persistent).");
     true
 }
 
