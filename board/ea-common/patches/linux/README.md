@@ -150,6 +150,24 @@ than no sound card at all. Register map in `https://the1truejoe.github.io/openHC
 
 ---
 
+### 0014 — EHCI CE5300/CE2600 host-controller bring-up
+
+The EA's three USB controllers (PCI 192e:0101, a TransDimension/TDI core, rev 07)
+all die at probe with `can't setup: -110` — ehci_setup()'s reset handshake times
+out — so there is no USB at all. The silicon is fine (registers read back sanely;
+a hand-poked HCRESET completes). The core is an OTG part with Moorestown-style
+per-port HOSTPC registers, and until `ehci->has_hostpc` is set the driver uses the
+wrong register path and the controller never enters host mode. Patch folds Intel's
+GPL `CONFIG_GEN3_USB` quirk (has_hostpc for device 0x0101 rev >= 6, plus
+`has_tdi_phy_lpm = 0` for its LPM-less PHY) into the existing `PCI_VENDOR_ID_TDI`
+case. has_hostpc also fixes PORTSC line-status decoding, which is what lets a
+full-speed device — the EM357 Zigbee module's CP2104 on 01:0d.2 — enumerate. Needs
+`CONFIG_USB_EHCI_ROOT_HUB_TT` (common.fragment) because has_tt=1 and there is no
+companion controller. **Upstreamable** on its own; kept as a patch because it edits
+`drivers/usb/host/ehci-pci.c`.
+
+---
+
 ## Per-driver notes — `board/ea-common/kernel/drivers/`
 
 These are plain `.c` files copied into the kernel tree by
