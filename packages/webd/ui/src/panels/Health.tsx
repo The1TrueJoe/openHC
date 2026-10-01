@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Activity } from 'lucide-react';
 import { rest, type Telemetry } from '../api';
 
 /* Board health, polled from sysmond over REST.
@@ -34,8 +35,11 @@ export function HealthSection() {
   const warm = (c: number) => (c >= 70 ? 'text-alarm' : c >= 55 ? 'text-warm' : 'text-live');
 
   return (
-    <section>
-      <h2 className="mb-3 text-sm font-medium">Health</h2>
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <Activity size={15} className="text-muted" />
+        Health
+      </h2>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {t.series.map((s, i) => {
           const v = val(i);
@@ -86,7 +90,7 @@ function fmtUptime(s: number) {
 
 function Stat({ label, sub, value, tone }: { label: string; sub: string; value: string; tone: string }) {
   return (
-    <div className="hair rounded-xl border bg-panel p-4">
+    <div className="hair rounded-xl border bg-raised p-4">
       <div className="text-xs text-muted">{label}</div>
       <div className={`mt-1 text-2xl font-semibold tabular-nums ${tone}`}>{value}</div>
       {sub && <div className="mt-0.5 text-xs text-muted">{sub}</div>}

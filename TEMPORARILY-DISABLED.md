@@ -14,9 +14,11 @@ Now:  emmc
   have never been built for x86_64, and the platform driver is probe-only
   anyway (enable_pcm=0), so it can contribute nothing right now except size and
   a compile risk.
-* **sgx** — already removed earlier in the session (WPE WebKit dominated build
-  time). Also note the SGX userspace blobs are 32-bit only, so it cannot work on
-  x86_64 without i386 multiarch.
+* **gpu (sgx)** — PowerVR SGX545. Disabled here only because WPE WebKit
+  dominated build time. **It is NOT unworkable — it has since been brought up on
+  the EA3.** The earlier "32-bit blobs cannot run on x86_64" claim is
+  superseded; the GPU works on EA3 (mechanism to be recorded). Re-enable per
+  board as needed.
 
 ## Why size matters here — now MEASURED, and it is worse than assumed
 
@@ -46,8 +48,9 @@ PCI, ACPI.
 `audio` has a second blocker regardless of size: `ce5300-i2s.c` reading TX
 register 0x2004 HANGS the SoC, so `dump_regs` must stay off.
 
-`sgx` has a third: its userspace blobs are 32-bit only, so it cannot work on
-x86_64 without i386 multiarch.
+`gpu (sgx)`: the SGX545 userspace was 32-bit, which was thought to rule it out
+on x86_64 — but it has since been brought up on the EA3, so that is no longer a
+blocker. Re-enable deliberately, per board.
 
 If a genuinely large kernel is ever unavoidable, the escape hatch is a small
 bootstrap kernel that `kexec`s the real one from p1 — kexec has no such limit.

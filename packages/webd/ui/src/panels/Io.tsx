@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Zap, CircleDot, Circle, Radio } from 'lucide-react';
+import { Zap, CircleDot, Circle, Radio, Rss } from 'lucide-react';
 import { io, panel, type Capabilities } from '../api';
 import { SerialSection } from './Serial';
 import { useIoState } from '../App';
@@ -31,14 +31,7 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
   }
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight">IO</h1>
-        <p className="text-sm text-muted">
-          {caps.backend === 'mcu' ? 'Behind the IO microcontroller' : 'Native GPIO'}
-        </p>
-      </header>
-
+    <div className="space-y-4">
       {!linkUp && (
         <div className="rounded-lg border border-alarm/30 bg-alarm/5 px-4 py-3 text-sm text-alarm">
           The IO microcontroller stopped answering. Readings below are stale.
@@ -46,8 +39,11 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
       )}
 
       {caps.contacts && (
-        <section>
-          <h2 className="mb-3 text-sm font-medium">Contacts</h2>
+        <section className="hair rounded-xl border bg-panel p-4">
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+            <CircleDot size={15} className="text-muted" />
+            Contacts
+          </h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: caps.contacts.count }, (_, i) => {
               const on = state.contact?.[panel(i)];
@@ -55,7 +51,7 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
                 <div
                   key={i}
                   className={`hair flex items-center gap-3 rounded-xl border p-3 transition ${
-                    on ? 'border-live/40 bg-live/10' : 'bg-panel'
+                    on ? 'border-live/40 bg-live/10' : 'bg-raised'
                   }`}
                 >
                   {on ? <CircleDot size={18} className="text-live" /> : <Circle size={18} className="text-muted" />}
@@ -73,8 +69,11 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
       )}
 
       {caps.relays && (
-        <section>
-          <h2 className="mb-3 text-sm font-medium">Relays</h2>
+        <section className="hair rounded-xl border bg-panel p-4">
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+            <Zap size={15} className="text-muted" />
+            Relays
+          </h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: caps.relays.count }, (_, i) => {
               const on = state.relay?.[panel(i)];
@@ -84,7 +83,7 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
                   onClick={() => setRelay(i, !on)}
                   disabled={busy !== null || !linkUp}
                   className={`hair flex items-center gap-3 rounded-xl border p-3 text-left transition disabled:opacity-40 ${
-                    on ? 'border-warm/50 bg-warm/10' : 'bg-panel hover:border-accent/40'
+                    on ? 'border-warm/50 bg-warm/10' : 'bg-raised hover:border-accent/40'
                   }`}
                 >
                   <Zap size={18} className={on ? 'text-warm' : 'text-muted'} />
@@ -146,76 +145,72 @@ function IrSection({ caps }: { caps: Capabilities }) {
   }
 
   return (
-    <section>
-      <h2 className="mb-3 text-sm font-medium">Infrared</h2>
-      <div className="hair rounded-xl border bg-panel p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          {Array.from({ length: caps.ir!.out }, (_, i) => (
-            <button
-              key={i}
-              onClick={() => setPort(i)}
-              title={node(`openHC IR out ${i + 1}`) ?? undefined}
-              className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                port === i ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
-              }`}
-            >
-              Out {i + 1}
-            </button>
-          ))}
-          {/* The blaster is an internal emitter behind the front panel, not a
-              seventh socket. Naming it stops anyone hunting for the jack. */}
-          {caps.ir!.blaster > 0 && (
-            <button
-              onClick={() => setPort(null)}
-              className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                port === null ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
-              }`}
-              title={
-                'Internal emitter on the front panel — same place as the receiver' +
-                (node('openHC IR front blaster') ? ` (${node('openHC IR front blaster')})` : '')
-              }
-            >
-              Front
-            </button>
-          )}
-        </div>
-        <textarea
-          value={pronto}
-          onChange={(e) => setPronto(e.target.value)}
-          rows={3}
-          spellCheck={false}
-          className="hair w-full rounded-lg border bg-raised p-3 font-mono text-xs text-ink outline-none focus:border-accent/50"
-        />
-        <div className="mt-2 flex flex-wrap items-center gap-3">
-          <button onClick={send} className="rounded-lg bg-accent/20 px-4 py-2 text-sm transition hover:bg-accent/30">
-            Send
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <Rss size={15} className="text-muted" />
+        Infrared
+      </h2>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {Array.from({ length: caps.ir!.out }, (_, i) => (
+          <button
+            key={i}
+            onClick={() => setPort(i)}
+            title={node(`openHC IR out ${i + 1}`) ?? undefined}
+            className={`rounded-lg px-3 py-1.5 text-sm transition ${
+              port === i ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
+            }`}
+          >
+            Out {i + 1}
           </button>
+        ))}
+        {/* The blaster is an internal emitter behind the front panel, not a
+            seventh socket. Naming it stops anyone hunting for the jack. */}
+        {caps.ir!.blaster > 0 && (
+          <button
+            onClick={() => setPort(null)}
+            className={`rounded-lg px-3 py-1.5 text-sm transition ${
+              port === null ? 'bg-accent/20 text-ink' : 'shade text-muted hover:text-ink'
+            }`}
+            title={
+              'Internal emitter on the front panel — same place as the receiver' +
+              (node('openHC IR front blaster') ? ` (${node('openHC IR front blaster')})` : '')
+            }
+          >
+            Front
+          </button>
+        )}
+      </div>
+      <textarea
+        value={pronto}
+        onChange={(e) => setPronto(e.target.value)}
+        rows={3}
+        spellCheck={false}
+        className="hair w-full rounded-lg border bg-raised p-3 font-mono text-xs text-ink outline-none focus:border-accent/50"
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <button onClick={send} className="rounded-lg bg-accent/20 px-4 py-2 text-sm transition hover:bg-accent/30">
+          Send
+        </button>
+        <span className="text-xs text-muted">
+          Pronto hex, type <code>0000</code> only. Durations are carrier periods.
+        </span>
+        {/* Say where this actually goes. Each emitter is a separate device,
+            so the same code can be sent without this page. */}
+        {caps.ir?.via === 'lirc' && (
           <span className="text-xs text-muted">
-            Pronto hex, type <code>0000</code> only. Durations are carrier periods.
+            via <code>{node(port === null ? 'openHC IR front blaster' : `openHC IR out ${port + 1}`) ?? 'lirc'}</code>
           </span>
-          {/* Say where this actually goes. Each emitter is a separate device,
-              so the same code can be sent without this page. */}
-          {caps.ir?.via === 'lirc' && (
-            <span className="text-xs text-muted">
-              via <code>{node(port === null ? 'openHC IR front blaster' : `openHC IR out ${port + 1}`) ?? 'lirc'}</code>
-            </span>
-          )}
-          {note && <span className={`text-xs ${note === 'sent' ? 'text-live' : 'text-alarm'}`}>{note}</span>}
-        </div>
+        )}
+        {note && <span className={`text-xs ${note === 'sent' ? 'text-live' : 'text-alarm'}`}>{note}</span>}
       </div>
 
-      {caps.ir?.receiver ? (
-        <div className="hair mt-3 rounded-xl border bg-panel p-4">
+      {caps.ir?.receiver && (
+        <div className="hair mt-4 rounded-xl border bg-raised p-3">
           <div className="mb-2 flex items-center gap-2 text-sm font-medium">
             <Radio size={15} className={heard.length ? 'text-live' : 'text-muted'} />
             Receiver
           </div>
-          {heard.length === 0 ? (
-            <p className="text-xs text-muted">
-              Listening on <code>{node('openHC IR front receiver') ?? 'the front receiver'}</code>.
-              Point a remote at the front of the controller.
-            </p>
-          ) : (
+          {heard.length > 0 && (
             <ul className="space-y-1">
               {heard.map((h, i) => (
                 <li key={i} className="flex items-baseline gap-3">
@@ -230,7 +225,7 @@ function IrSection({ caps }: { caps: Capabilities }) {
             </ul>
           )}
         </div>
-      ) : null}
+      )}
     </section>
   );
 }

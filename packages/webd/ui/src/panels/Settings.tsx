@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Lock, AlertTriangle, Server, Share2 } from 'lucide-react';
+import { Check, Lock, AlertTriangle, Server, Share2, Hash } from 'lucide-react';
 import { rest, type ConfigDoc, type MqttWrite } from '../api';
 
 /** Fields the environment has pinned cannot be edited here: a restart would
@@ -59,14 +59,7 @@ export function SettingsPanel() {
   const base = `${form.prefix ?? doc.mqtt.prefix}/${form.client_id ?? doc.mqtt.client_id}`;
 
   return (
-    <div className="max-w-2xl space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted">
-          IO control is MQTT. These are the same topics Home Assistant or a script would use.
-        </p>
-      </header>
-
+    <div className="max-w-2xl space-y-4">
       {/* Serving is what the config GUI itself talks to, so it is first and it
           is explicit about what turning it off costs. */}
       <section className="hair rounded-xl border bg-panel p-4">
@@ -143,7 +136,10 @@ export function SettingsPanel() {
       </section>
 
       <section className="hair rounded-xl border bg-panel p-4">
-        <h2 className="mb-3 text-sm font-medium">Topics</h2>
+        <div className="mb-3 flex items-center gap-2">
+          <Hash size={16} className="text-accent" />
+          <h2 className="text-sm font-medium">Topics</h2>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={<>Prefix {pinned('prefix') && <Pinned />}</>}>
             <Text value={form.prefix ?? ''} disabled={pinned('prefix')} onChange={(v) => set('prefix', v)} />
