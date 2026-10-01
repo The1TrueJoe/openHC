@@ -20,6 +20,11 @@ drivers/gpio/Makefile|obj-y += gpio-ea-board.o
 drivers/pwm/Makefile|obj-y += pwm-ce5300.o
 drivers/leds/Makefile|obj-y += leds-ea-board.o
 drivers/spi/Makefile|obj-y += spi-ea-b53-board.o
+# Declares the boot SPI-NOR flash on the same controller (CS 0) so openHC gets a
+# /dev/mtd0 -- what lets it rewrite its own CEFDK autoscript (clean in-place
+# kernel installs) and restore stock from software. Unconditional; the switch is
+# gated, the flash is always there.
+drivers/spi/Makefile|obj-y += spi-ea-flash-board.o
 
 # --- audio (ASoC lives outside drivers/; the hook mirrors sound/ too) ---
 # The codec goes in the existing codecs/ dir. The platform + machine drivers get

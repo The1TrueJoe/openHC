@@ -49,6 +49,14 @@ BR2_TARGET_ROOTFS_CPIO_GZIP=y
 # --- on-target debugging ---
 BR2_PACKAGE_PCIUTILS=y
 
+# --- kexec: bootstrap the full kernel past CEFDK's fixed-size autoscript slot ---
+# The autoscript can only load a kernel that fits its frozen read size, so the
+# full openHC kernel (i2c/fan, the boot SPI-NOR for /dev/mtd0) is staged on p1
+# and started with kexec by /etc/init.d/S00kexec. Same mechanism the HC-800
+# already uses to update itself. ZLIB because our bzImage is gzip-compressed.
+BR2_PACKAGE_KEXEC=y
+BR2_PACKAGE_KEXEC_ZLIB=y
+
 # --- C library: glibc, not the shared musl default ---
 # The EA family runs Intel's PowerVR DDK userspace (packages/sgx545-um) for 3D,
 # and those blobs are glibc-linked — a musl system cannot load them at all.
