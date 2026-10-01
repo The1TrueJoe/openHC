@@ -271,8 +271,11 @@ CONFIG_GPIO_SYSFS_LEGACY=y
 CONFIG_GPIO_CDEV=y
 CONFIG_GPIO_CDEV_V1=y
 
-# I2C: i2c-pxa (REGS_CE4100 variant) behind PCI 8086:2e68. Enumerates only with
-# the i2c-pxa-pci "no DT" patch (patches/linux/0001). COMMON_CLK MUST stay off:
+# I2C: i2c-pxa (REGS_CE4100 variant) behind PCI 8086:2e68. Needs TWO patches to
+# exist on this x86_64 kernel: 0001 enumerates it without a device tree, and
+# 0013 widens I2C_PXA/I2C_PXA_PCI from X86_32 to X86 so the CONFIG_I2C_PXA=y
+# below is not silently dropped -- without 0013 there is no i2c bus at all (no
+# LM75/fan, no DS1339 RTC, no codec). Older COMMON_CLK note:
 # i2c-pxa's devm_clk_get() returns an error (not the NULL stub) once HAVE_CLK is
 # on, and probe fails with "failed to get the clk".
 CONFIG_I2C=y
