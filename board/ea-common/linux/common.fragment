@@ -375,12 +375,15 @@ CONFIG_PWM_SYSFS=y
 # SLOT instead of a fixed count, which removes the script's ceiling for good
 # and leaves bootlinux's 7,417,856 as the only remaining wall.
 #
-# The SPI master is already driven here -- spi-pxa2xx-pci binds the CE4100 port
-# that this SoC also exposes, and it is what the BCM53125 hangs off. The flash
-# is the other chip select.
+# The boot flash is NOT on the pxa2xx SSP (8086:2e6a) the BCM switch rides, as
+# once assumed -- proven on an EA1: an spi-nor hung off that SSP only answered
+# "SPI transfer failed: -5". It sits on its own block, PCI 01:17.0 8086:08a0
+# ("FLASH memory"), driven by ea-common/kernel/drivers/spi/spi-ea-ce5xx.c (a
+# spi-mem port of Intel's ce5xx_spi_flash). That driver instantiates the chip,
+# so spi-nor below autodetects the S25FL127S and /dev/mtd0 appears.
 #
-# BACK UP mtd0 BEFORE WRITING TO IT. A bad autoscript costs the button and the
-# CEFDK shell to recover.
+# BACK UP mtd0 BEFORE WRITING TO IT. A bad MFH/autoscript costs the button and
+# the CEFDK shell to recover.
 # SPI first: MTD_SPI_NOR is worthless without a master, and kconfig drops it
 # SILENTLY if SPI is off -- which is exactly what happened on the first attempt.
 # The build came out with CONFIG_MTD=y, CONFIG_MTD_BLOCK=y and no MTD_SPI_NOR at

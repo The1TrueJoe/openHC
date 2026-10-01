@@ -20,15 +20,14 @@ drivers/gpio/Makefile|obj-y += gpio-ea-board.o
 drivers/pwm/Makefile|obj-y += pwm-ce5300.o
 drivers/leds/Makefile|obj-y += leds-ea-board.o
 drivers/spi/Makefile|obj-y += spi-ea-b53-board.o
-# NOTE on the boot SPI-NOR / an /dev/mtd0: the boot flash is NOT on this pxa2xx
-# SSP (8086:2e6a) -- that is the general-purpose SPI the switch rides. It is on a
-# DEDICATED controller, PCI 01:17.0 "FLASH memory [0501]" 8086:08a0, which has no
-# mainline driver (Control4 drove it with a bespoke ce5xx_spi_flash + nmyx25).
-# An earlier spi-ea-flash-board.c that hung spi-nor off the SSP only produced
-# "SPI transfer failed: -5" because nothing answers on that CS -- removed. Giving
-# openHC an MTD means porting a driver for 08a0; it is a separate effort and is
-# NOT required for booting the full kernel, which the S00kexec bootstrap already
-# does without touching flash.
+# Boot SPI-NOR controller: the boot flash is NOT on the pxa2xx SSP (8086:2e6a,
+# the general-purpose SPI the switch rides). It is on a DEDICATED block, PCI
+# 01:17.0 "FLASH memory [0501]" 8086:08a0, which has no mainline driver. This is
+# a spi-mem port of Intel's out-of-tree ce5xx_spi_flash; it registers the master
+# AND instantiates the chip (modalias spi-nor), so in-tree spi-nor autodetects
+# the S25FL127S and openHC gets /dev/mtd0 -- what a software stock-restore and an
+# in-place autoscript rewrite need. Unconditional; the flash is always present.
+drivers/spi/Makefile|obj-y += spi-ea-ce5xx.o
 
 # --- audio (ASoC lives outside drivers/; the hook mirrors sound/ too) ---
 # The codec goes in the existing codecs/ dir. The platform + machine drivers get

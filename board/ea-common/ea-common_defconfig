@@ -49,6 +49,11 @@ BR2_TARGET_ROOTFS_CPIO_GZIP=y
 # --- on-target debugging ---
 BR2_PACKAGE_PCIUTILS=y
 
+# --- MTD tools: read/erase/write the boot SPI-NOR (/dev/mtd0) ---
+# flash_erase, flashcp, mtd_debug and friends are how openHC backs up, rewrites
+# and restores the CEFDK MFH/autoscript once spi-ea-ce5xx gives it an MTD.
+BR2_PACKAGE_MTD=y
+
 # --- kexec: bootstrap the full kernel past CEFDK's fixed-size autoscript slot ---
 # The autoscript can only load a kernel that fits its frozen read size, so the
 # full openHC kernel (i2c/fan, the boot SPI-NOR for /dev/mtd0) is staged on p1
