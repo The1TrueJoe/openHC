@@ -57,8 +57,9 @@ boot() {
   start_one mdns-watch "$BIN/ohc-mdns" --watch
   hw_bringup                         # LM75 + report gpio/pwm/i2c driver state
   [ -x "$BIN/ohc-fand" ] && start_one fand "$BIN/ohc-fand"
-  # EM357 NCP: run the app and hold the port open so the radio owner finds a live NCP.
-  [ -x "$BIN/ohc-zigbee" ] && start_one zigbee "$BIN/ohc-zigbee"
+  # Zigbee NCP bring-up is now its own shared service (init.d/S91ohczigbee +
+  # the 'zigbee' feature's ohc-zigbee package), so every radio board gets it, not
+  # just the EA. Not started here any more.
   # --- still to adapt to kernel-up sysfs ---
   # [ -x "$BIN/ohc-io" ]    && "$BIN/ohc-io"        # Tiva IO MCU (ttyS1 + gpio7)
   # [ -x "$BIN/ohc-led" ]   && "$BIN/ohc-led" boot
@@ -66,7 +67,7 @@ boot() {
 
 case "$1" in
   boot|start) boot ;;
-  stop)  stop_one zigbee; stop_one mdns-watch; "$BIN/ohc-mdns" --stop 2>/dev/null ;;
+  stop)  stop_one mdns-watch; "$BIN/ohc-mdns" --stop 2>/dev/null ;;
   status) "$BIN/ohc-mdns" --status; "$BIN/ohc-tz" --status ;;
   tz)    shift; "$BIN/ohc-tz" "$@" ;;
   mdns)  "$BIN/ohc-mdns" ;;

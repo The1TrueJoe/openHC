@@ -1,0 +1,3 @@
+# Crates this feature adds to the board's package build (packages/build.sh).
+# "<crate> <binary>"; binary defaults to the crate name.
+zigbee ohc-zigbee

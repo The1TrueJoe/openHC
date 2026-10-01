@@ -54,15 +54,54 @@ pick_cargo() {
 CARGO="$(pick_cargo)"
 export RUSTC="$(dirname "$CARGO")/rustc"
 
+# --- which crates this board actually gets --------------------------------------
+# CORE daemons ship on every board. FEATURE daemons ship only where the board's
+# ohc.features enables the owning feature — the same gate build/build.sh uses for
+# kernel config and Buildroot packages, extended to our Rust crates, so an IO
+# Extender does not carry the Zigbee binary and a CA-1 does not carry audio.
+#
+# A feature owns a crate by dropping a `packages` file in its feature directory,
+# one "<crate> <binary>" per line (binary defaults to the crate name). The family
+# base and feature search mirror build/build.sh: ea* -> ea-common, nothing else.
+case "$BOARD" in
+  ea*) FAM="$REPO/board/ea-common" ;;
+  *)   FAM="" ;;
+esac
+FEATURES=""
+for ff in ${FAM:+"$FAM/ohc.features"} "$REPO/board/$BOARD/ohc.features"; do
+  [ -f "$ff" ] && FEATURES="$FEATURES $(sed 's/#.*//' "$ff" | tr '\n' ' ')"
+done
+FEATURES=$(printf '%s\n' $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+
+feature_dir() {
+  for d in "$REPO/board/common/features/$1" ${FAM:+"$FAM/features/$1"} "$REPO/board/$BOARD/features/$1"; do
+    [ -d "$d" ] && { echo "$d"; return 0; }
+  done
+  return 1
+}
+
+CRATES="iod webd portal sysmond"   # core
+BINS="iod webd portal sysmond"
+for f in $FEATURES; do
+  d=$(feature_dir "$f") || continue
+  [ -f "$d/packages" ] || continue
+  while read -r crate bin _rest; do
+    case "$crate" in ''|\#*) continue ;; esac
+    CRATES="$CRATES $crate"
+    BINS="$BINS ${bin:-$crate}"
+    echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})"
+  done < "$d/packages"
+done
+
 echo ">> UI (must build before cargo — build.rs embeds ui/dist)"
 ( cd "$HERE/webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )
 
-echo ">> iod + webd + portal + sysmond for $BOARD ($TARGET)"
-( cd "$HERE" && "$CARGO" build --release -p iod -p webd -p portal -p sysmond --target "$TARGET" )
+echo ">> crates for $BOARD ($TARGET): $CRATES"
+( cd "$HERE" && "$CARGO" build --release $(for c in $CRATES; do printf ' -p %s' "$c"; done) --target "$TARGET" )
 
 DEST="$REPO/board/common/rootfs-overlay/opt/ohc/bin"
 mkdir -p "$DEST"
-for bin in iod webd portal sysmond; do
+for bin in $BINS; do
     install -m 0755 "$HERE/target/$TARGET/release/$bin" "$DEST/$bin"
     echo ">> staged $DEST/$bin ($(du -h "$DEST/$bin" | cut -f1))"
 done

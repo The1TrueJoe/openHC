@@ -1,0 +1,13 @@
+[package]
+name = "zigbee"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC Zigbee NCP bring-up — runs the EM35x application out of its serial bootloader and holds the port so the radio stack finds a live NCP."
+
+[dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "ohc-zigbee"
+path = "src/main.rs"

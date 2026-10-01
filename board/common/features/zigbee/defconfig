@@ -7,9 +7,12 @@
 # (/dev/ttyUSB0), a native UART on the ca1 (ttymxc4) and hc800 (ttyS4). The
 # kernel side of the USB bridge is this feature's linux.fragment.
 #
-# Node.js is the runtime: ohc-zigbee (the NCP bring-up daemon) is node, and the
-# radio stack that publishes to MQTT — zigbee2mqtt — runs on it. npm so that
-# stack can be installed on-target (it is not vendored).
+# The NCP BRING-UP (run the app out of the bootloader, hold the port) is the
+# feature's own Rust package `zigbee` -> /opt/ohc/bin/ohc-zigbee, staged by
+# packages/build.sh only for boards that enable this feature (see features/
+# zigbee/packages). Node.js here is for the BRIDGE: zigbee2mqtt, the stack that
+# turns EZSP into MQTT, is a node app installed on-target (not vendored), so the
+# runtime + npm ship with the feature.
 BR2_PACKAGE_NODEJS=y
 BR2_PACKAGE_NODEJS_NPM=y
 
