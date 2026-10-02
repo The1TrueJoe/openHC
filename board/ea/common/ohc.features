@@ -3,7 +3,8 @@
 iomcu       # relays/contacts/IR behind the IO microcontroller
 splash      # boot splash on the display
 display     # the CEFDK framebuffer handed to Linux as simplefb (/dev/fb0)
-sgx         # PowerVR SGX545 GPU + WPE WebKit — every EA is the same CE5310/HDMI
+sgx         # PowerVR SGX545 GPU kernel driver — every EA is the same CE5310/HDMI
+wpe         # the on-screen UI: DDK GLES blobs (fetched at build) + WPE WebKit
 emmc        # persistent ext4 rootfs on the eMMC
 zigbee      # EM357 NCP on a CP2104 USB bridge (/dev/ttyUSB0); node + cp210x
 audio       # ALSA + Spotify Connect + AirPlay userspace (needs an output: DSP on

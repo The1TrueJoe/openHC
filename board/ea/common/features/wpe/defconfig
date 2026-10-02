@@ -3,15 +3,11 @@
 # This is the PROPRIETARY userspace half of 3D: Intel/Imagination's DDK 1.7 EGL +
 # GLES2 blobs, plus WPE WebKit rendering through them onto the HDMI display. The
 # kernel driver (the `sgx` feature, CONFIG_SGX545_CE) gives /dev/dri; this is what
-# actually draws. Split out from `sgx` on purpose:
-#
-#   * it pulls non-GPL binary blobs (sgx545-um, fetched at build), which the plain
-#     kernel-driver build does not need and most openHC builds do not want; and
-#   * none of the 3D path has run on hardware yet (the driver has never loaded).
-#
-# So it is NOT enabled by any board's ohc.features — add the word `wpe` to a
-# board to turn it on once the stack is proven. `sgx` (the driver) stays fleet-EA;
-# this is the opt-in UI on top.
+# actually draws. Split out from `sgx` so the clean kernel driver and the
+# proprietary UI stack are separable, but enabled fleet-EA alongside it (every EA
+# has the HDMI display) via board/ea/common/ohc.features. The blobs (sgx545-um)
+# are FETCHED at build, not vendored. NB: the 3D path has not run on hardware yet
+# (the driver has never loaded) — treat it as unproven.
 
 # Userspace: EGL + GLES2 from the DDK. Must be the SAME DDK version as the driver
 # — the driver checks on connect and refuses a mismatch.
