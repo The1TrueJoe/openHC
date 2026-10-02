@@ -1,7 +1,7 @@
 # openHC — settings shared by EVERY board (EA1/EA3 variants, CA1, HC800, IOXv1).
 #
 # NOT a standalone defconfig. build/build.sh prepends this to the family base
-# (ea-common for the EA boards) and the board's own <board>_defconfig, then feeds
+# (ea/common for the EA boards) and the board's own <board>_defconfig, then feeds
 # the concatenation to Buildroot. Kconfig takes the LAST assignment of a symbol,
 # so a family or board file overrides anything here just by appearing after it.
 #

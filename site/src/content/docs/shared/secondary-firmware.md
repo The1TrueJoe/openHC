@@ -9,7 +9,7 @@ The main SoC isn't the only processor on these boards. Each controller carries
 one or more auxiliary chips running their own firmware, and they differ by model.
 
 ```
-board/ea-common/firmware/
+board/ea/common/firmware/
   io-mcu/tm4c1231d5/   EA1 / EA3 / EA5  — TI Tiva, Cortex-M4F      (implemented)
   dsp/adau1451/        EA3 / EA5        — Analog Devices SigmaDSP  (placeholder)
 board/hc800/firmware/

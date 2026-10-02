@@ -2,7 +2,7 @@
 #
 # Draw the openHC banner on the video output as early as possible.
 #
-# SHARED across boards (board/common). It lived in ea-common until the HC-800
+# SHARED across boards (board/common). It lived in ea/common until the HC-800
 # became the second user; nothing in it was ever CE5300-specific except one
 # error string, because splash asks the framebuffer for its own geometry
 # (FBIOGET_[VF]SCREENINFO) rather than being told.

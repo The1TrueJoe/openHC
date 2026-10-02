@@ -36,6 +36,23 @@ WIFI="${OHC_WIFI_IFACE:-}"
 OHC_WIFI_DRIVER="${OHC_WIFI_DRIVER:-nl80211}"
 OHC_WIFI_MODULE="${OHC_WIFI_MODULE-ath9k}"
 OHC_WIFI_AP_CAPABLE="${OHC_WIFI_AP_CAPABLE:-1}"
+# WHEN to raise the setup AP + captive portal on an unconfigured box. ONE knob,
+# two values:
+#   no-carrier  (default, and today's behaviour) — raise it automatically as
+#               soon as there is no wired network and no saved Wi-Fi. Zero-touch:
+#               an installer powers the box with nothing plugged in and the
+#               setup SSID simply appears. The cost is that a box deliberately
+#               run headless/offline also broadcasts an open AP until it is
+#               configured, which some sites consider an unwanted attack surface.
+#   id-button   — do NOT raise it on no-carrier; wait for a deliberate press of
+#               the front ID button. No open AP ever appears on its own, at the
+#               cost of zero-touch setup (someone must physically press it).
+# Default preserves current behaviour. The id-button path is intentionally NOT
+# wired to hardware here — the button plumbing differs per board (HC-800 front
+# panel gpio-keys vs the EA/CA ID button) and is not verified in this script, so
+# flipping this to id-button today just SUPPRESSES the automatic AP. Wire the
+# actual press handler where this knob is read in start() before relying on it.
+OHC_AP_TRIGGER="${OHC_AP_TRIGGER:-no-carrier}"
 AP_ADDR="10.42.0.1"
 AP_PORT="8080"                     # the setup portal's own port (webd keeps :80)
 STA_CONF="/etc/wpa_supplicant/wpa_supplicant-${WIFI}.conf"
@@ -134,7 +151,7 @@ start_ap() {
 
 # Load the radio driver, then wait for its interface to appear.
 #
-# ath9k/mac80211/cfg80211 are MODULES (see ea-common/features/wifi/linux.fragment: built
+# ath9k/mac80211/cfg80211 are MODULES (see ea/common/features/wifi/linux.fragment: built
 # in, they overrun CEFDK's 7,417,856-byte kernel window and the box does not
 # boot). Nothing loads them automatically here -- there is no udev, and mdev
 # does not autoload from a PCI modalias -- so the interface simply would not
@@ -184,6 +201,14 @@ start() {
         # needs to know the box is reachable over Ethernet only.
         echo "Wi-Fi: $WIFI is station-only ($OHC_WIFI_DRIVER) — no setup AP on this board."
         echo "Wi-Fi: put credentials in $STA_CONF and re-run this script."
+        return 0
+    fi
+    # The single no-carrier-vs-ID-button switch (see OHC_AP_TRIGGER above). The
+    # automatic path is everything below; the id-button path is a deliberate
+    # opt-out that suppresses it until a real button handler raises the AP.
+    if [ "$OHC_AP_TRIGGER" = id-button ]; then
+        echo "Wi-Fi: OHC_AP_TRIGGER=id-button — not raising the setup AP automatically."
+        echo "Wi-Fi: press the ID button to start setup (handler not yet wired on this board)."
         return 0
     fi
     scan_networks

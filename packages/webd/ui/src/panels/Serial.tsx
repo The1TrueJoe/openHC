@@ -15,8 +15,11 @@ export function SerialSection({ caps }: { caps: Capabilities }) {
   if (!ports.length) return null;
 
   return (
-    <section>
-      <h2 className="mb-3 text-sm font-medium">Serial</h2>
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <Plug size={15} className="text-muted" />
+        Serial
+      </h2>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {ports.map((p, i) => {
           const live = state.serial?.[panel(i)];
@@ -25,7 +28,7 @@ export function SerialSection({ caps }: { caps: Capabilities }) {
             <button
               key={i}
               onClick={() => setOpen(i)}
-              className="hair flex items-center gap-3 rounded-xl border bg-panel p-3 text-left transition hover:border-accent/40"
+              className="hair flex items-center gap-3 rounded-xl border bg-raised p-3 text-left transition hover:border-accent/40"
             >
               <Plug size={18} className="shrink-0 text-muted" />
               <div className="min-w-0 flex-1">

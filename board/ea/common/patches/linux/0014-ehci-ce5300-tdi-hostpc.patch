@@ -1,0 +1,54 @@
+usb: ehci — bring up the CE5300/CE2600 TransDimension host controller
+
+Every USB port on the EA is dead under mainline: all three EHCI controllers
+(PCI 192e:0101, a TransDimension/TDI core, rev 07) fail at probe with
+
+    ehci-pci 0000:01:0d.0: can't setup: -110
+    ehci-pci 0000:01:0d.0: probe with driver ehci-pci failed with error -110
+
+-110 is -ETIMEDOUT: ehci_setup()'s reset handshake never completes. The silicon
+is fine -- post-failure its registers read back sanely (CAPLENGTH 0x30, HCIVERSION
+0x0110, one port with power control) and a hand-poked HCRESET clears immediately
+and leaves USBCMD at the 0x00080000 reset default. What is missing is host-mode
+bring-up: this core is an OTG part with Moorestown-style per-port HOSTPC
+registers, and until ehci->has_hostpc is set the driver drives it through the
+wrong register path, it never enters host mode, and the reset times out.
+
+Intel's GPL CE5300 BSP handles exactly this under CONFIG_GEN3_USB: for device
+0x0101 rev >= 6 it sets has_hostpc, and (separately) clears has_tdi_phy_lpm
+because the PHY has no usable link-power-management. This folds both into the
+existing PCI_VENDOR_ID_TDI quirk. has_hostpc also fixes PORTSC line-status
+decoding (ehci.h uses bit 25 vs 26 depending on it), which is what lets a
+connected device -- e.g. the EM357 Zigbee module's CP2104 bridge on controller
+01:0d.2 -- actually enumerate instead of sitting with CCS=0.
+
+Without this there is no /dev/ttyUSB*, so neither the Zigbee radio nor any other
+USB peripheral can come up.
+---
+--- a/drivers/usb/host/ehci-pci.c
++++ b/drivers/usb/host/ehci-pci.c
+@@ -145,8 +145,23 @@
+ 			hcd->has_tt = 1;
+ 		break;
+ 	case PCI_VENDOR_ID_TDI:
+-		if (pdev->device == PCI_DEVICE_ID_TDI_EHCI)
++		if (pdev->device == PCI_DEVICE_ID_TDI_EHCI) {
+ 			hcd->has_tt = 1;
++			/*
++			 * openHC: the TransDimension EHCI on the Intel CE5300/
++			 * CE2600 (Control4 EA, 192e:0101 rev >= 6) is an OTG core
++			 * with Moorestown-style per-port HOSTPC registers. Without
++			 * has_hostpc it never enters host mode and ehci_setup()'s
++			 * reset handshake times out (-110), killing every USB port.
++			 * Its PHY also has no working LPM. Both quirks come from
++			 * Intel's GPL CE5300 BSP (the CONFIG_GEN3_USB ehci-pci
++			 * changes) -- see board/ea/common/patches/linux/README.md.
++			 */
++			if (pdev->revision >= 0x6) {
++				ehci->has_hostpc = 1;
++				ehci->has_tdi_phy_lpm = 0;
++			}
++		}
+ 		break;
+ 	case PCI_VENDOR_ID_AMD:
+ 		/* AMD PLL quirk */

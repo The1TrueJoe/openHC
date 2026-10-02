@@ -65,7 +65,7 @@ Two details that are easy to get wrong:
   busybox writes the magic `V` on `SIGTERM`, which tells the driver the close was
   deliberate. Killing it any other way leaves a 30 second fuse burning.
 - `kexec -e` jumps straight into the new kernel and runs **no** shutdown script,
-  so the handover has to stop the watchdog explicitly. `ohc-hc800 boot` does.
+  so the handover has to stop the watchdog explicitly. `ohc-flash` does.
   (The new kernel's `iTCO_wdt` probe also stops the timer, so this is belt and
   braces — but a 30 second fuse across a kexec is not a thing to leave to one
   mechanism.)
@@ -89,12 +89,15 @@ magic `V` is written, the chip keeps counting, and the board resets. Verified on
 the unit — the kernel logs `watchdog: watchdog0: watchdog did not stop!` and the
 board is gone within the timeout.
 
-It is **off by default** and the HC-800 opts in with `OHC_NET_WATCHDOG=1`, for
-the same reason `panic=` is scoped to this board: a reset only helps if it lands
-somewhere *different*. Here it lands on the untouched vendor image, which
-answers SSH. On a board where openHC is what is installed, the identical reset
+It is **off everywhere, including the HC-800**, and that is the point: a reset
+only helps if it lands somewhere *different*. It landed somewhere different while
+openHC was a boot-once; now that openHC is the default entry, the identical reset
 boots the identical image into the identical dead network ten minutes later,
-forever — a reboot loop, not a safety net.
+forever — a reboot loop, not a safety net. A router reboot would be enough to
+start one.
+
+`OHC_NET_WATCHDOG=1` turns it on, and is worth it only on a board where a reset
+genuinely lands elsewhere — i.e. alongside `--boot-once`.
 
 It will not arm until the uplink has had carrier **and** an address at least
 once, so a board still bringing its network up — or one that has no network at
@@ -124,7 +127,7 @@ netconsole=6665@<box>/eth0,6666@<you>/<your-mac>
 ```
 
 Built in, not a module: a module loads too late to log the thing that stopped the
-module loading. Listen with `ohc-hc800 log`.
+module loading. Listen with `ohc-flash log`.
 
 **It does not lose the early boot.** netconsole registers as a console with
 `CON_PRINTBUFFER`, so when it comes up at around 6.9 s the kernel replays
@@ -148,7 +151,7 @@ routing, which is exactly what lets it keep logging from inside a panic.
 
 ### sysrq, for when userspace is too far gone to run `reboot`
 
-`CONFIG_MAGIC_SYSRQ`, reachable at `/proc/sysrq-trigger`. `ohc-hc800 reset`
+`CONFIG_MAGIC_SYSRQ`, reachable at `/proc/sysrq-trigger`. `ohc-flash reset`
 writes `b` to it: the reset happens inside the kernel, skipping every shutdown
 path that might be the thing that is stuck.
 
@@ -168,40 +171,38 @@ loop:
 | **ARP sweep for the MAC** | either OS is running | ~3 s |
 
 The MAC is the one identifier that survives the reset, so it is what the tooling
-keys on. `ohc-hc800` learns it the first time it finds the box and caches it, so
-it configures itself after one successful `find`.
+keys on, and `ohc-flash discover` reports it. Note that it **probes before it
+believes**: an ARP entry for an address the unit has since given up is listed by
+neither tool, because a dead address that looks live is worse than no answer.
 
 ## The tool
 
-`tools/ohc-hc800` is the loop, with the discovery and the two root passwords
-already handled:
-
-The flasher is the other half of this, and the two have different jobs:
-`ohc-hc800` is the ad-hoc tool for a box you are working on; `ohc-flash` is the
-installer.
+`ohc-flash` is the whole loop — finding a unit, driving it, installing on it and
+taking it back off:
 
 ```bash
+ohc-flash discover                                  # every Control4 unit that answers
 ohc-flash identify 10.0.0.111                       # what is it, and how sure are we
 ohc-flash plan hc800                                # both methods, and what each writes
-ohc-flash install HOST --images DIR --method kexec  # run it from RAM, writes nothing
-ohc-flash install HOST --images DIR --method grub   # persistent
+
+ohc-flash log                                       # netconsole listener — start this FIRST
+ohc-flash install HOST --images DIR --method kexec --netconsole 10.0.0.105
+ohc-flash install HOST --images DIR --method grub   # persistent: openHC every boot
+ohc-flash install HOST --images DIR --method grub --boot-once   # ... one boot only
 ohc-flash boot HOST                                 # re-enter an installed openHC
 ohc-flash uninstall HOST                            # put the boot chain back
+
+ohc-flash sh HOST 'dmesg | tail -30'                # run something
+ohc-flash push HOST file...                         # copy into /tmp
+ohc-flash reset HOST                                # sysrq-reboot, back to stock
 ```
 
-```bash
-tools/ohc-hc800 find                    # where is it, and which OS booted
-tools/ohc-hc800 sh 'dmesg | tail -30'   # run something
-tools/ohc-hc800 log                     # netconsole listener
-tools/ohc-hc800 boot output/build/hc800/images
-tools/ohc-hc800 reset                   # back to stock
-```
-
-Seed it once, if mDNS is not available to you:
-
-```bash
-OHC_HOST=10.0.0.111 tools/ohc-hc800 find
-```
+There used to be a `tools/ohc-hc800` shell script beside this. It grew during
+bring-up, when the flasher knew nothing about the board, and it was folded in
+once the flasher did — because the two had become two implementations of the
+same discovery, and only one of them had learned not to trust a stale ARP entry.
+Two tools disagreeing about which address a box is at is the exact failure this
+page exists to prevent.
 
 :::caution[About one auth in ten is refused]
 Measured on a healthy box: 47 identical `sshpass` runs produced 5
@@ -212,20 +213,20 @@ images.
 
 A tool that treats a refusal as authoritative will call the box unreachable
 roughly every tenth command, which is exactly what sends you looking for the
-serial cable again. `ohc-hc800` retries; anything you write yourself should too.
+serial cable again. `ohc-flash` retries; anything you write yourself should too.
 The real cure is **public-key auth**, which never touches that prompt — worth
 adding a key to the image if you find yourself scripting against it a lot.
 :::
 
 ## Deploying a new build
 
-Nothing in this changes: CI builds the image, you fetch the bundle, `boot` pushes
-it and kexecs. No partition is written at any point.
+Nothing in this changes: CI builds the image, you fetch the bundle, the kexec
+method pushes it and starts it. No partition is written at any point.
 
 ```bash
 gh run download <run-id> -n openhc-hc800 -D /tmp/img && unzip -o /tmp/img/*.zip -d /tmp/img
-tools/ohc-hc800 log &                   # in another shell
-tools/ohc-hc800 boot /tmp/img
+ohc-flash log &                         # in another shell, BEFORE the install
+ohc-flash install <host> --images /tmp/img --method kexec --netconsole <your-ip>
 ```
 
 The one case that still needs a file from elsewhere: kexec'ing **from the vendor
@@ -240,10 +241,10 @@ Run on the unit on 2026-09-10, with the serial cable idle throughout:
 | Step | What happened |
 |---|---|
 | `ohc-flash install --method kexec --netconsole` | staged 25 MB, resolved the listener's MAC from the box, kexec'd — **679 log lines captured, from `[0.000000]`** |
-| `ohc-hc800 reset` on openHC at `.111` | netconsole caught `sysrq: Resetting`, connection dropped |
+| sysrq-reboot on openHC at `.111` | netconsole caught `sysrq: Resetting`, connection dropped |
 | board resets, GRUB `default 1` | vendor image answering SSH ~2 min later — **at `.112`, not `.111`** |
-| `ohc-hc800 find` | located it by MAC and reported `running=vendor (Control4 stock)`, kernel `3.16.38-8.260.24` |
-| `ohc-hc800 boot <dir>` | pushed the static kexec + 24 MB of image, `kexec -l`, `kexec -e` |
+| find it again | located by MAC, reported `running=vendor (Control4 stock)`, kernel `3.16.38-8.260.24` |
+| kexec from the vendor image | pushed the static kexec + 24 MB of image, `kexec -l`, `kexec -e` |
 | openHC back | at `.111` again, **685 lines of boot log captured over the network** |
 
 Both DHCP addresses came up inside one hour, which is the whole argument for
@@ -263,32 +264,54 @@ above: openHC becomes what the box boots, so a panic reboots into the same
 panic and the network watchdog resets into the same dead network. A safety net
 turns into a loop.
 
-Instead the openHC entry ends with `savedefault 1`, and `default` becomes
-`saved`. GRUB executes that **before** handing over to the kernel, so every
-openHC boot immediately re-points the default back at Control4:
+There are therefore two modes, and the choice is the whole decision.
+
+### The default: openHC is what the box runs
+
+`default 2`, and openHC boots every time — including after a power cut, with
+nothing to re-run. `fallback 1` still catches a kernel that will not load.
+
+What it does not catch is a kernel that loads and then panics: `panic=10`
+reboots into the same panic. So **the network watchdog is off on this board**
+(`OHC_NET_WATCHDOG=0`) and `panic_on_oops` is not set — both of those turn a
+survivable fault into a loop once openHC is the thing that boots. The hardware
+watchdog stays armed for a genuinely hung kernel, which is what it is for.
+
+Holding the ID button at power-on boots entry 0 regardless of `default`, which
+is the way out of a loop.
+
+### `--boot-once`: openHC is what the box can be *asked* to run
+
+For a unit you cannot walk to, or a kernel you do not yet trust. The entry ends
+with `savedefault 1` and `default` becomes `saved`. GRUB executes that **before**
+handing over to the kernel, so every openHC boot immediately re-points the
+default back at Control4:
 
 ```
-default         saved            <- was `default 1`
+default         saved            <- `default 2` in the persistent mode
 ...
 title           openHC
 root            (hd0,2)
 kernel          /boot/openhc-bzImage console=ttyS0,115200
 initrd          /boot/openhc-initrd.gz
-savedefault     1                <- hands the default back, before booting
+savedefault     1                <- boot-once only; absent by default
 boot
 ```
 
-openHC is therefore always exactly **one** boot. Anything at all — panic,
-watchdog, power cut, `reset` — comes back on stock, which answers SSH. Going
-back in is `ohc-flash boot`, which sets one byte and reboots; the images are
-already on disk.
+openHC is then always exactly **one** boot. Anything at all — panic, watchdog,
+power cut, `reset` — comes back on stock, which answers SSH. Going back in is
+`ohc-flash boot`, which sets one byte and reboots; the images are already on
+disk.
+
+The cost is that every reboot needs that command, which is friction you do not
+want once the kernel is trusted — hence the default above.
 
 Measured on the unit, in this order:
 
 | | |
 |---|---|
 | probe `default saved` with saved = the stock entry | booted stock — GRUB reads `/boot/grub/default` correctly on this stage2 |
-| `ohc-flash install --method grub` | 169536 KB free on `sda3`, wrote 25628 KB, `menu.lst verified, 596 bytes` |
+| `ohc-flash install --method grub --boot-once` | 169536 KB free on `sda3`, wrote 25628 KB, `menu.lst verified, 596 bytes` |
 | reboot | **openHC from disk**, `panic=10 console=ttyS0,115200`, no kexec |
 | read `/boot/grub/default` | already `1` — `savedefault` fired during that boot |
 | reboot again | stock Control4 |

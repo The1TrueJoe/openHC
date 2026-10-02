@@ -1,0 +1,46 @@
+#!/bin/sh
+# S00kexec — hand off from the CEFDK-booted BOOTSTRAP kernel to the full openHC
+# kernel staged on p1.
+#
+# WHY. CEFDK's autoscript reads a FIXED number of bytes for the kernel (the slot
+# size frozen at install time), so it can only boot a kernel that fits. A larger
+# openHC kernel -- one carrying drivers the bootstrap lacks (the i2c/fan stack,
+# the boot SPI-NOR for /dev/mtd0) -- is staged at /boot/bzImage and started with
+# kexec, which has no size limit. This runs FIRST, before any service, so the
+# handoff happens on a near-bare system.
+#
+# SAFETY. It only kexecs when BOTH an explicit enable flag and the staged kernel
+# are present, and NEVER twice: the kexec'd kernel carries ohc_kexec=1 on its
+# command line, which makes this script skip. So a bad staged kernel cannot
+# wedge the box in a kexec loop -- delete /boot/ohc-kexec.enable (or the staged
+# kernel) and it boots the bootstrap kernel normally, which is exactly how you
+# recover. Enable it only after a manual `kexec -l … ; kexec -e` has been shown
+# to boot the staged kernel cleanly.
+[ "$1" = start ] || exit 0
+
+# Earliest script: make sure the pseudo-filesystems we read are mounted.
+mount -t proc  proc /proc 2>/dev/null
+mount -t sysfs sys  /sys  2>/dev/null
+
+# Already the kexec'd kernel -> do not hand off again.
+case " $(cat /proc/cmdline 2>/dev/null) " in
+	*" ohc_kexec="*) exit 0 ;;
+esac
+
+KERNEL=/boot/bzImage
+[ -f /boot/ohc-kexec.enable ] || exit 0
+[ -f "$KERNEL" ]              || exit 0
+command -v kexec >/dev/null 2>&1 || { echo "S00kexec: no kexec tool" >&2; exit 0; }
+
+# Boot the staged kernel directly on p1 (no initramfs -- it has mmc+ext4
+# built in). ohc_kexec=1 is both the re-entry guard above and the marker the
+# rest of the system can test to know it is the real kernel.
+CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1"
+
+echo "S00kexec: handing off to the staged kernel ($KERNEL)"
+if kexec -l "$KERNEL" --command-line="$CMDLINE"; then
+	sync
+	kexec -e      # does not return on success
+fi
+echo "S00kexec: kexec failed; continuing on the bootstrap kernel" >&2
+exit 0

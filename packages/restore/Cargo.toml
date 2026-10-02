@@ -1,0 +1,14 @@
+[package]
+name = "restore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC return-to-stock — reverse the one MFH item the install added (via /dev/mtd0) and hand p1 back to CEFDK's own recovery kernel."
+
+[dependencies]
+libc = "0.2"
+sha2 = "0.10"
+
+[[bin]]
+name = "ohc-restore"
+path = "src/main.rs"

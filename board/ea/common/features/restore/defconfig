@@ -1,0 +1,5 @@
+# openHC feature: restore — software return-to-stock for the CEFDK (EA) boards.
+# The work is the ohc-restore Rust package (features/restore/packages); it edits
+# the MFH over /dev/mtd0 and, for a full restore, kexecs p2's recovery kernel, so
+# it needs kexec. MTD itself is in ea/common/linux/common.fragment already.
+BR2_PACKAGE_KEXEC=y

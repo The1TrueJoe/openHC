@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
 use ohc_flash_core::board::Running;
+use ohc_flash_core::board::Family;
 use ohc_flash_core::{board, image, method, Board, Identity, Method};
 use ohc_flash_engine::{hc800, network, updates, Event, GhRelease, Progress, Release};
 use ohc_flash_transport as tp;
@@ -155,6 +156,18 @@ struct Unit {
     hostname: Option<String>,
     running: Option<Running>,
     board: Option<&'static Board>,
+    /// Name and model as the unit ANNOUNCED them, over SDDP.
+    ///
+    /// These arrive with no credentials at all, which is the point: a
+    /// controller on OS 3.1 or later has no default root password, so the SSH
+    /// probe below learns nothing about it and the row used to sit there saying
+    /// "unknown". The unit had been telling us `Living-EA1 / C4-EA1` the whole
+    /// time and we were discarding it.
+    sddp_name: Option<String>,
+    sddp_model: Option<String>,
+    /// The OS version, once a login has read it. Control4 keeps it in a dpkg
+    /// package, not a file — see `probe::version_of`.
+    version: Option<String>,
     /// The probe has finished, whether or not it learned anything.
     probed: bool,
     /// Why it learned nothing.
@@ -168,11 +181,32 @@ impl Unit {
             return "checking…".into();
         }
         match self.running {
-            Some(r) => running_text(r).to_string(),
-            // No login, but SDDP proves it is a Control4 controller.
-            None if self.sddp => "Control4 (needs a password to read more)".into(),
+            // The version is the thing an installer actually wants to see: it
+            // says which Control4 OS this is, and therefore whether a default
+            // root password exists at all.
+            Some(r) => match &self.version {
+                Some(v) => format!("{} {v}", running_text(r)),
+                None => running_text(r).to_string(),
+            },
+            // No login. Say what the unit announced rather than "unknown" — on
+            // OS 3.1+ there is no password to be had, so this is not a step on
+            // the way to knowing more, it is as much as there is.
+            None if self.sddp_model.is_some() => format!(
+                "{} — announced over SDDP; no login (OS 3.1+ has no root password)",
+                self.sddp_model.clone().unwrap_or_default()
+            ),
+            None if self.sddp => "Control4 controller — no login yet".into(),
             None => self.note.clone().unwrap_or_else(|| "unknown".into()),
         }
+    }
+
+    /// The best name we have: what the unit calls itself over SDDP, else its
+    /// hostname from a login, else nothing.
+    fn display_name(&self) -> String {
+        self.sddp_name
+            .clone()
+            .or_else(|| self.hostname.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -190,6 +224,9 @@ struct Conn {
 struct RelInfo {
     source: String,
     kernel_len: u64,
+    /// This release is for the HC-800, which has no CEFDK size window — so the
+    /// "spare" figure the EA path shows would be a meaningless negative number.
+    hc800: bool,
     problems: Vec<String>,
     names: Vec<String>,
 }
@@ -317,6 +354,12 @@ struct App {
     forced: Option<&'static Board>,
     details: bool,
     self_install: bool,
+    /// Has the first automatic scan been kicked off?
+    ///
+    /// Opening the app onto a "Scan the network" button and nothing else makes
+    /// the user's first act a decision they have no information for. There is
+    /// exactly one thing to do on this screen, so do it.
+    auto_scanned: bool,
 }
 
 impl Default for App {
@@ -331,6 +374,7 @@ impl Default for App {
             forced: None,
             details: false,
             self_install: false,
+            auto_scanned: false,
         }
     }
 }
@@ -375,6 +419,16 @@ impl App {
         // so button handlers can still clone the Arc to spawn work.
         let shared = Arc::clone(&self.shared);
         let sh = &mut *shared.lock().unwrap();
+
+        // Start scanning the moment the window opens. The first screen has one
+        // action on it and no information the user could use to decide against
+        // it, so making them click is a step that exists only to be taken.
+        // Guarded by a flag rather than "is the list empty", which would restart
+        // the scan every frame on a network with nothing on it.
+        if !self.auto_scanned {
+            self.auto_scanned = true;
+            self.scan(sh, &shared);
+        }
 
         // Repaint while work is in flight; otherwise egui sleeps until input and
         // the log (or a background fetch) would sit frozen.
@@ -621,57 +675,68 @@ impl App {
 // -------------------------------------------------------------------- the steps
 
 impl App {
+    /// Scan the network and then ask each unit what it is.
+    ///
+    /// Split out of the button handler so the window can start one on its
+    /// first frame — see `render`.
+    fn scan(&mut self, sh: &mut Shared, shared: &Arc<Mutex<Shared>>) {
+        sh.found.clear();
+        sh.scanned = false;
+        sh.push(Lvl::Step, "scanning the local network for Control4 hardware".into());
+        let password = self.password.clone();
+        spawn(sh, shared, "Scanning… this takes about half a minute", move |s| {
+            let found = tp::discover(true);
+            {
+                let mut g = s.lock().unwrap();
+                g.push(
+                    Lvl::Step,
+                    format!("found {} unit(s); asking each what it is", found.len()),
+                );
+                g.found = found
+                    .iter()
+                    .map(|f| Unit {
+                        ip: f.ip.clone(),
+                        mac: f.mac.clone(),
+                        sddp: f.via.iter().any(|v| v == "sddp"),
+                        sddp_name: f.name.clone(),
+                        sddp_model: f.model.clone(),
+                        version: None,
+                        hostname: None,
+                        running: None,
+                        board: None,
+                        probed: false,
+                        note: None,
+                    })
+                    .collect();
+                g.scanned = true;
+            }
+            // One probe per unit, in parallel. A unit that refuses every
+            // login burns the full SSH timeout, and one slow box must not
+            // hold up the rest of the list.
+            let probes: Vec<_> = found
+                .into_iter()
+                .map(|f| {
+                    let s = Arc::clone(s);
+                    let pw = extra_passwords(&password);
+                    std::thread::spawn(move || probe_unit(&s, &f.ip, &pw))
+                })
+                .collect();
+            for h in probes {
+                let _ = h.join();
+            }
+        });
+    }
+
     fn step_find(&mut self, ui: &mut egui::Ui, sh: &mut Shared, shared: &Arc<Mutex<Shared>>) {
         ui.heading("Find your controller");
         ui.label("Plug the controller into the same network as this computer and turn it on.");
         ui.add_space(10.0);
 
         if ui
-            .add_enabled(sh.busy.is_none(), egui::Button::new("Scan the network"))
+            .add_enabled(sh.busy.is_none(), egui::Button::new("Scan again"))
             .clicked()
         {
-            sh.found.clear();
-            sh.scanned = false;
-            sh.push(Lvl::Step, "scanning the local network for Control4 hardware".into());
-            let password = self.password.clone();
-            spawn(sh, shared, "Scanning… this takes about half a minute", move |s| {
-                let found = tp::discover(true);
-                {
-                    let mut g = s.lock().unwrap();
-                    g.push(
-                        Lvl::Step,
-                        format!("found {} unit(s); asking each what it is", found.len()),
-                    );
-                    g.found = found
-                        .iter()
-                        .map(|f| Unit {
-                            ip: f.ip.clone(),
-                            mac: f.mac.clone(),
-                            sddp: f.via.iter().any(|v| v == "sddp"),
-                            hostname: None,
-                            running: None,
-                            board: None,
-                            probed: false,
-                            note: None,
-                        })
-                        .collect();
-                    g.scanned = true;
-                }
-                // One probe per unit, in parallel. A unit that refuses every
-                // login burns the full SSH timeout, and one slow box must not
-                // hold up the rest of the list.
-                let probes: Vec<_> = found
-                    .into_iter()
-                    .map(|f| {
-                        let s = Arc::clone(s);
-                                let pw = extra_passwords(&password);
-                        std::thread::spawn(move || probe_unit(&s, &f.ip, &pw))
-                    })
-                    .collect();
-                for h in probes {
-                    let _ = h.join();
-                }
-            });
+            self.scan(sh, shared);
         }
 
         ui.add_space(8.0);
@@ -689,7 +754,7 @@ impl App {
             ui.label(RichText::new("Click the controller to install:").strong());
             ui.add_space(4.0);
             for u in &sh.found {
-                let mut label = format!("{:<16}{}", u.ip, u.hostname.clone().unwrap_or_default());
+                let mut label = format!("{:<16}{}", u.ip, u.display_name());
                 label.push('\n');
                 label.push_str(&u.firmware());
                 if let Some(b) = u.board {
@@ -795,6 +860,17 @@ impl App {
                 ui.label(running_text(conn.id.running));
                 ui.end_row();
 
+                // The Control4 OS version, for a unit that is still on stock.
+                // It decides whether a default root password exists at all
+                // (removed in 3.1.0), so it is the single most useful fact on
+                // this screen for anyone who cannot log in.
+                if conn.id.running != Running::Openhc {
+                    if let Some(v) = &conn.id.version {
+                        ui.label(RichText::new("Control4 OS").weak());
+                        ui.monospace(v);
+                        ui.end_row();
+                    }
+                }
                 if let Some(v) = &installed {
                     ui.label(RichText::new("openHC version").weak());
                     ui.monospace(v);
@@ -875,6 +951,7 @@ impl App {
             board: Some(b),
             candidates: vec![b],
             running: conn.id.running,
+            version: None,
             raw: conn.id.raw.clone(),
         };
         let (chosen, rejected) = method::choose(&id, None);
@@ -1015,15 +1092,21 @@ impl App {
         };
 
         if info.problems.is_empty() {
-            let head = image::headroom(info.kernel_len);
-            ui.label(
-                RichText::new(format!(
+            // The "spare" figure is the room left under CEFDK's copy window, and
+            // that window only exists on the EA family. The HC-800 boots from
+            // GRUB with no such limit, so quoting a headroom there is noise at
+            // best and a scary negative number at worst.
+            let msg = if info.hc800 {
+                format!("✓ Ready — kernel {}, initramfs present", fmt_bytes(info.kernel_len))
+            } else {
+                let head = image::headroom(info.kernel_len);
+                format!(
                     "✓ Ready — kernel {} ({} spare), root filesystem present",
                     fmt_bytes(info.kernel_len),
                     fmt_bytes(head.max(0) as u64),
-                ))
-                .color(OK),
-            );
+                )
+            };
+            ui.label(RichText::new(msg).color(OK));
         } else {
             for p in &info.problems {
                 ui.label(RichText::new(format!("✗ {p}")).color(BAD));
@@ -1104,11 +1187,39 @@ impl App {
             Some(Phase::Done) => {
                 ui.heading(RichText::new("Done").color(OK));
                 ui.add_space(8.0);
-                ui.label("The controller is restarting into openHC. Give it a minute.");
+                ui.label(
+                    "openHC is installed and the controller is restarting. Give it about a \
+                     minute to come up.",
+                );
+                ui.add_space(6.0);
+                // The single most useful thing to say here, learned the hard
+                // way: the controller takes a NEW DHCP lease when it reboots, so
+                // its address usually changes. Telling someone to reopen the old
+                // one is how a good install looks like a failure. Point them at
+                // finding it afresh and at the on-device dashboard.
+                ui.label(
+                    RichText::new(
+                        "Its address may change on reboot — find it again below rather than \
+                         reusing the old one. Once it is up, open its web dashboard in a browser \
+                         to manage it.",
+                    )
+                    .weak(),
+                );
                 ui.add_space(12.0);
-                if ui.button("Install another").clicked() {
-                    self.reset(sh);
-                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(sh.busy.is_none(), egui::Button::new("Find it again"))
+                        .clicked()
+                    {
+                        // Straight back to a fresh scan — the loop a user
+                        // actually wants after an install, not a blank Find
+                        // screen they have to re-drive.
+                        self.reset(sh);
+                    }
+                    if ui.button("Install another").clicked() {
+                        self.reset(sh);
+                    }
+                });
             }
             Some(Phase::Failed) => {
                 ui.heading(RichText::new("Install failed").color(BAD));
@@ -1186,12 +1297,23 @@ impl App {
             let Some(ssh) = tp::first_working_login_with(&host, &passwords) else {
                 // Reachable-but-rejected is a different problem, and a different
                 // fix, from a box that is not answering at all.
+                // NAME THE LIKELY CAUSE. The old text blamed "a dealer-updated
+                // controller" with "a calculated root password", which is rare
+                // and unactionable. The common case is neither: Control4
+                // REMOVED the default root password in OS 3.1.0, so on any
+                // reasonably current controller there is nothing to guess and
+                // no amount of retrying will help. Measured both ways — the
+                // factory password still works on an HC-800 on the 2.x image,
+                // and an EA-3 on 3.3.3 refuses it.
                 let msg = if tp::ssh_port_open(&host) {
                     format!(
-                        "Reached {host}, but none of the passwords worked. A dealer-updated \
-                         controller can have a calculated root password or SSH password login \
-                         switched off. Enter the root password below and try again, or use the \
-                         ohc-flash command line with an SSH key."
+                        "{host} answered, but refused every login.\n\n\
+                         Control4 OS 3.1.0 and later have no default root password — it was \
+                         removed, so there is nothing to guess. Add an SSH user with Composer's \
+                         Network Tools and enter it below, or use an SSH key with the ohc-flash \
+                         command line.\n\n\
+                         On OS 3.0.x and earlier the factory login is root / t0talc0ntr0l4!, \
+                         which this already tried."
                     )
                 } else {
                     format!(
@@ -1220,6 +1342,13 @@ impl App {
 
     fn load_release(&mut self, sh: &mut Shared, shared: &Arc<Mutex<Shared>>) {
         let path = PathBuf::from(self.images.trim());
+        // Which board this release is FOR decides how it is judged: an HC-800
+        // release legitimately has no rootfs.ext2 and a kernel far past the EA
+        // size window, so validating it by the EA rules reports two problems
+        // that are not problems and blocks a good release. Same split the CLI's
+        // `validate` makes; kept here rather than in one shared place only
+        // because the GUI reads the board off live connection state.
+        let family = self.board(sh).map(|b| b.family);
         sh.rel = None;
         sh.rel_info = None;
         sh.rel_error = None;
@@ -1232,16 +1361,28 @@ impl App {
                     g.rel_error = Some(format!("{e:#}"));
                 }
                 Ok(rel) => {
-                    let head = rel.get("bzImage").map(|b| &b[..b.len().min(0x400)]);
-                    let klen = rel.get("bzImage").map(|b| b.len() as u64).unwrap_or(0);
-                    let problems =
-                        image::ea_problems(head, klen, rel.has("rootfs.ext2"), true);
+                    // HC-800 bundles carry the kernel under a prefixed name and
+                    // no bzImage; fall back to it so the size and magic checks
+                    // see the real kernel rather than nothing.
+                    let kern = rel
+                        .get("openhc-hc800-kernel.img")
+                        .or_else(|| rel.get("bzImage"));
+                    let head = kern.map(|b| &b[..b.len().min(0x400)]);
+                    let klen = kern.map(|b| b.len() as u64).unwrap_or(0);
+                    let hc = matches!(family, Some(Family::Hc));
+                    let problems = if hc {
+                        let initrd = rel.has("rootfs.cpio.gz") || rel.has("openhc-initrd.gz");
+                        image::hc_problems(head, klen, initrd)
+                    } else {
+                        image::ea_problems(head, klen, rel.has("rootfs.ext2"), true)
+                    };
                     let mut names: Vec<String> =
                         rel.names().into_iter().map(str::to_string).collect();
                     names.sort();
                     let info = RelInfo {
                         source: rel.source.clone(),
                         kernel_len: klen,
+                        hc800: hc,
                         problems,
                         names,
                     };
@@ -1374,6 +1515,10 @@ impl App {
         sh.log.clear();
         self.forced = None;
         self.step = Step::Find;
+        // Returning to Find always means a fresh look — a different unit for
+        // "Install another", a new DHCP lease for "Find it again". Re-arm the
+        // launch scan so the list is never stale on arrival.
+        self.auto_scanned = false;
     }
 }
 
@@ -1434,6 +1579,7 @@ fn probe_unit(s: &Arc<Mutex<Shared>>, ip: &str, passwords: &[String]) {
             Some(i) => {
                 u.running = Some(i.running);
                 u.board = i.board;
+                u.version = i.version.clone();
             }
             // Not a failure worth alarming anyone about: a stock unit with
             // changed credentials still installs once the user supplies them.
@@ -1458,6 +1604,7 @@ fn method_for(b: &'static ohc_flash_core::board::Board) -> Option<Method> {
         board: Some(b),
         candidates: vec![b],
         running: ohc_flash_core::board::Running::Stock,
+            version: None,
         raw: vec![],
     };
     method::choose(&id, None).0
@@ -1489,7 +1636,10 @@ fn run_install(
             return hc800::kexec(ssh, rel, None, p).map_err(|e| format!("{e:#}"));
         }
         Method::Grub => {
-            return hc800::install_grub(ssh, rel, p).map_err(|e| format!("{e:#}"));
+            // The GUI installs openHC as the DEFAULT. Boot-once is a
+            // bring-up mode for a box you cannot walk to, and that is not who
+            // is driving a window; the CLI has --boot-once for it.
+            return hc800::install_grub(ssh, rel, false, p).map_err(|e| format!("{e:#}"));
         }
         _ => {}
     }
@@ -1549,6 +1699,7 @@ fn gate(
                 board: Some(b),
                 candidates: vec![b],
                 running: id.running,
+            version: None,
                 raw: vec![],
             };
             match method::choose(&probe, None).0 {
@@ -1597,7 +1748,8 @@ mod tests {
 
     fn id_for(name: &str) -> Identity {
         let b = board::by_name(name).unwrap();
-        Identity { board: Some(b), candidates: vec![b], running: Running::Stock, raw: vec![] }
+        Identity { board: Some(b), candidates: vec![b], running: Running::Stock,
+            version: None, raw: vec![] }
     }
 
     /// The gate is the last thing between a user and a wrong write, so it gets
@@ -1620,6 +1772,7 @@ mod tests {
         let bad = RelInfo {
             source: "x".into(),
             kernel_len: 0,
+            hc800: false,
             problems: vec!["no bzImage".into()],
             names: vec![],
         };
@@ -1656,6 +1809,11 @@ mod tests {
             ..Default::default()
         };
         let mut app = App::default();
+        // Opt out of the launch auto-scan. This test is about layout, and the
+        // scan spawns a live network sweep and flips `busy`, which would both
+        // do real I/O from a unit test and render every later screen in the
+        // busy state rather than the clean one being checked.
+        app.auto_scanned = true;
         let mut pass = |app: &mut App| ctx.run_ui(input(), |ui| app.render(ui)).textures_delta.clear();
         for step in Step::ALL {
             app.step = step;
@@ -1680,7 +1838,8 @@ mod tests {
             g.conn = Some(Conn {
                 host: "10.0.0.9".into(),
                 ssh: tp::Ssh::new("10.0.0.9", "root", None),
-                id: Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, raw: vec![] },
+                id: Identity { board: Some(b), candidates: vec![b], running: Running::Openhc,
+            version: None, raw: vec![] },
                 installed_version: Some("old-dev".into()),
             });
             g.latest = Some(

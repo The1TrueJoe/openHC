@@ -1,0 +1,46 @@
+i2c: pxa — build the CE5300 I2C on x86_64 (not just X86_32)
+
+openHC runs a 64-bit kernel (CEFDK's bootlinux starts a bzImage in long mode),
+but drivers/i2c/busses/Kconfig gates both the driver and its PCI glue on X86_32:
+
+    I2C_PXA      depends on ... || (X86_32 && PCI && OF) || ...
+    I2C_PXA_PCI  def_bool I2C_PXA && X86_32 && PCI && OF
+
+So on x86_64 CONFIG_I2C_PXA=y is dropped in silence — the symbol's dependency is
+unmet, exactly the "assignment to an unavailable symbol vanishes" trap — and
+i2c-pxa-pci is never compiled. The result is NO i2c bus at all: the CE5300's
+four I2C controllers (PCI 8086:2e68) never enumerate, and that takes with it the
+LM75 heatsink sensor (so ohc-fand finds no hwmon and exits, leaving the fan
+stopped and uncontrolled), the DS1339 RTC, and the ADAU1451 audio codec. On the
+live EA1 this showed as an empty /sys/bus/i2c and no /sys/class/hwmon.
+
+The X86_32 restriction is historical: the only in-tree user was the 32-bit
+CE4100/Sodaville. The CE5300 is the same I2C block reached over the same PCI
+function, and patch 0001 already makes i2c-pxa-pci enumerate WITHOUT a device
+tree (it hands each BAR to a platform device when of_node is NULL), so the OF
+dependency is not needed either. Widen both to X86 and drop OF.
+
+Scope: EA family only (board/ea/common/patches), the only openHC target on this
+SoC. Pairs with 0001 (enumerate without DT).
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/i2c/busses/Kconfig
++++ b/drivers/i2c/busses/Kconfig
+@@ -1029,14 +1029,14 @@
+ 
+ config I2C_PXA
+ 	tristate "Intel PXA2XX I2C adapter"
+-	depends on ARCH_PXA || ARCH_MMP || ARCH_MVEBU || (X86_32 && PCI && OF) || COMPILE_TEST
++	depends on ARCH_PXA || ARCH_MMP || ARCH_MVEBU || (X86 && PCI) || COMPILE_TEST
+ 	help
+ 	  If you have devices in the PXA I2C bus, say yes to this option.
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called i2c-pxa.
+ 
+ config I2C_PXA_PCI
+-	def_bool I2C_PXA && X86_32 && PCI && OF
++	def_bool I2C_PXA && X86 && PCI
+ 
+ config I2C_PXA_SLAVE
+ 	bool "Intel PXA2XX I2C Slave comms support"

@@ -7,7 +7,7 @@
 # see the rationale at the top of hc800.fragment: self-contained image, no
 # depmod, no load ordering, no .ko in the initrd). obj-m here would expand to
 # nothing and the driver would silently not exist, which is exactly the trap
-# documented in ea-common/kernel/objs.mk.
+# documented in ea/common/kernel/objs.mk.
 #
 # Built-in does not cost configurability: module_param entries still appear
 # under /sys/module/gpio_ohc_iomcu/parameters/, and the ones that describe the

@@ -8,3 +8,5 @@ license.workspace = true
 # trusts to be correct, so it stays easy to read and to test in isolation.
 [dependencies]
 serde = { workspace = true }
+# SHA-256 for the MFH item-table integrity hash the CEFDK mask ROM verifies.
+sha2 = { version = "0.10", default-features = false }

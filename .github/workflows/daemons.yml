@@ -100,10 +100,11 @@ jobs:
         run: cargo test -p iod
 
       # portal too — it is in the artifact, and `cargo check` would not have
-      # produced a binary for it.
+      # produced a binary for it. The portal binary now lives in the `wifi`
+      # crate (merged with the shared Wi-Fi lib), so build that crate to get it.
       - name: Build iod + portal for ${{ matrix.board }}
         working-directory: packages
-        run: cargo build --release -p iod -p portal --target ${{ matrix.target }}
+        run: cargo build --release -p iod -p wifi --target ${{ matrix.target }}
 
       - uses: actions/setup-node@v4
         with:

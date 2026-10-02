@@ -60,15 +60,52 @@ pub const MFH_SCRIPT_OFF: u64 = 0x91000;
 /// Size of that entry.
 pub const MFH_SCRIPT_LEN: usize = 0x800;
 
+// ---- MFH item table structure (recovered from an EA1 mtd0 dump, 2026-09-30) ----
+//
+// CAUTION: `MFH_SCRIPT_OFF` above is only valid on a box that ALREADY HAS a
+// script slot (an EA3 that has had `script on` run once). A virgin EA1 does NOT:
+// its 0x91000 holds a `splash` item, and it has no `script` item at all, so
+// blindly writing the autoscript to 0x91000 there clobbers a live item and CEFDK
+// never runs it. Creating the slot over SSH means adding a real MFH item of type
+// `script`; the constants below are what that needs. The SAFE way to make the
+// slot is still CEFDK's own `script on` at the manufacturing shell (firmware
+// writes the MFH correctly) — the ID-button path — until an over-SSH creator is
+// proven against a `script on` before/after diff. A wrong MFH write BRICKS: the
+// factory button does not restore mtd0.
+//
+/// SPI-NOR offset of the primary MFH item table (header, then 32-byte items).
+pub const MFH_TABLE_OFF: u64 = 0x80000;
+/// Bytes per MFH item: `[flags u32, addr u32, len u32, 0, 0, 0, type u32, 0]`.
+pub const MFH_ITEM_SIZE: usize = 32;
+/// `flags` value marking an item valid; `0xffffffff` in `type` marks it deleted.
+pub const MFH_FLAG_VALID: u32 = 0x8000_0000;
+/// The `type` value for the autorun script item, i.e. what `script on` creates.
+/// Recovered from CEFDK's own type-name enum in the `bootloader` region
+/// (index 12 = "script"; cross-checked against bootloader=3, cefdk_s3=16,
+/// cefdk_s2h=18 which match this unit's items). Verify against a live `script on`
+/// diff before writing it.
+pub const MFH_TYPE_SCRIPT: u32 = 12;
+
 /// RAM address the kernel is staged at before `bootlinux`, and the two CEFDK
 /// globals that say where the image is and that there is no ramdisk. Recovered
 /// from the working takeover; not derivable from anything public.
 pub const KERNEL_ADDR: u64 = 0x6000000;
+/// RAM address the initramfs is staged at (the `tftp get`/`emmc rd` destination
+/// for rootfs.cpio.gz). Well clear of the kernel at 0x6000000.
+pub const RAMDISK_ADDR: u64 = 0x4000000;
 pub const G_KBASE: u64 = 0xc90a4; // ord4 <this> = KERNEL_ADDR
-pub const G_RD_FLAG: u64 = 0x837560; // ord4 <this> = 0 -> no ramdisk
+pub const G_RD_FLAG: u64 = 0x837560; // ord4 <this> = 0 -> no ramdisk, 1 -> ramdisk present
+pub const G_RD_ADDR: u64 = 0x837564; // ord4 <this> = RAMDISK_ADDR (when G_RD_FLAG = 1)
+pub const G_RD_SIZE: u64 = 0x837568; // ord4 <this> = initramfs length in bytes
 
 pub const DEFAULT_CMDLINE: &str =
     "console=ttyS0,115200 pci=realloc,nocrs root=/dev/mmcblk0p1 rootwait rw";
+
+/// Command line for a pure-RAM boot off an initramfs: no `root=`, the rootfs IS
+/// the ramdisk. `routeirq` is carried because the EA's SoC UARTs need it, and
+/// `nocrs` because CEFDK's E820 does not describe the PCI host-bridge windows.
+pub const RAMBOOT_CMDLINE: &str =
+    "console=ttyS0,115200 pci=realloc,nocrs,routeirq rw";
 
 /// The five commands that boot our kernel from raw eMMC.
 ///
@@ -82,6 +119,42 @@ pub fn autoscript_for(kernel_off: u64, kernel_len: u64, cmdline: &str) -> Vec<St
         "cache flush".into(),
         format!("ord4 {G_KBASE:#x} = {KERNEL_ADDR:#x}"),
         format!("ord4 {G_RD_FLAG:#x} = 0x0"),
+        format!("bootlinux \"{cmdline}\""),
+    ]
+}
+
+/// The CEFDK shell commands that netboot openHC into RAM: pull the kernel and
+/// initramfs over TFTP, then boot the initramfs directly (no `root=`).
+///
+/// This is the sibling of [`autoscript_for`] for the bring-up loop: same RAM
+/// staging and same `ord4` globals, but the images come from the network at the
+/// unlocked manufacturing shell instead of from eMMC, and there is a ramdisk, so
+/// `G_RD_FLAG` is 1 and `G_RD_ADDR`/`G_RD_SIZE` describe it. The size is the
+/// exact initramfs byte count: bootlinux hands it to the kernel as the ramdisk
+/// length, and the kernel's gzip/cpio reader needs the whole image (unlike a
+/// bzImage, it has no self-describing end the loader can find).
+///
+/// `box_ip` is the address CEFDK should take for the transfer (the BOOTP offer);
+/// the mask/gateway match the point-to-point bring-up link. `cache flush` is as
+/// mandatory here as in [`autoscript_for`] — the TFTP load DMAs into RAM without
+/// invalidating the CPU cache.
+pub fn ramboot_tftp_for(
+    server_ip: &str,
+    box_ip: &str,
+    kernel_name: &str,
+    initrd_name: &str,
+    initrd_len: u64,
+    cmdline: &str,
+) -> Vec<String> {
+    vec![
+        format!("ip set {box_ip} 255.255.255.0 0.0.0.0"),
+        format!("tftp get {server_ip} {KERNEL_ADDR:#x} {kernel_name}"),
+        format!("tftp get {server_ip} {RAMDISK_ADDR:#x} {initrd_name}"),
+        "cache flush".into(),
+        format!("ord4 {G_KBASE:#x} = {KERNEL_ADDR:#x}"),
+        format!("ord4 {G_RD_FLAG:#x} = 0x1"),
+        format!("ord4 {G_RD_ADDR:#x} = {RAMDISK_ADDR:#x}"),
+        format!("ord4 {G_RD_SIZE:#x} = {initrd_len:#x}"),
         format!("bootlinux \"{cmdline}\""),
     ]
 }
@@ -121,4 +194,41 @@ pub fn parse_autoscript(blob: &[u8]) -> Vec<String> {
         out.push(String::from_utf8_lossy(&chunk).into_owned());
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// No-serial autoscript (2026-09-30): the VERIFIED recipe that boots openHC from
+// the eMMC gap with no serial. Two corrections over the older RAM-installer:
+//   1. read with `emmc rd_up` (eMMC USER partition = Linux /dev/mmcblk0 offsets),
+//      NOT `emmc rd` (Boot+User, offset shifted by the 2 MB boot partitions).
+//   2. the kernel is a RAW bzImage in the gap, so linuxKernelBase points at it
+//      directly (no +0x580 container header).
+// See `mfh::append_script` for the item creation, and SCRIPT_ENABLE_OFF below.
+
+/// Byte offset in SPI-NOR of the autoscript enable flag, inside `cefdk_params`
+/// (item at 0xa0f08, +0x14). 0x00 = autoscript runs (`script on`); 0x01 = off.
+pub const SCRIPT_ENABLE_OFF: u64 = 0xa0f1c;
+
+/// The autoscript that RAM-boots openHC from the eMMC USER-partition gap. Reads
+/// the raw bzImage and the initramfs, then `bootlinux`. Offsets are Linux
+/// `/dev/mmcblk0` byte offsets (what `emmc rd_up` uses). `initrd_len` MUST be the
+/// exact byte count (a cpio.gz does not self-describe its end).
+pub fn ramboot_autoscript_rd_up(
+    kernel_off: u64,
+    kernel_read: u64,
+    initrd_off: u64,
+    initrd_read: u64,
+    initrd_len: u64,
+    cmdline: &str,
+) -> Vec<String> {
+    vec![
+        format!("emmc rd_up {kernel_off:#x} {KERNEL_ADDR:#x} {kernel_read:#x}"),
+        format!("emmc rd_up {initrd_off:#x} {RAMDISK_ADDR:#x} {initrd_read:#x}"),
+        "cache flush".into(),
+        format!("ord4 {G_KBASE:#x} = {KERNEL_ADDR:#x}"),
+        format!("ord4 {G_RD_FLAG:#x} = 0x1"),
+        format!("ord4 {G_RD_ADDR:#x} = {RAMDISK_ADDR:#x}"),
+        format!("ord4 {G_RD_SIZE:#x} = {initrd_len:#x}"),
+        format!("bootlinux \"{cmdline}\""),
+    ]
 }

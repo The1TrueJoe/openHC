@@ -158,6 +158,17 @@ export const rest = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mqtt }),
     }),
+
+  /** Return-to-stock. `available` is false on boards with no CEFDK/MFH (the UI
+   *  then shows nothing); `openhc` true means the install's MFH item is present
+   *  and a restore would do something. */
+  restoreStatus: () =>
+    j<{ available: boolean; openhc?: boolean; detail?: string; reason?: string }>(
+      `${HTTP}/api/system/restore`,
+    ),
+  /** DESTRUCTIVE, one-way: the controller reboots to stock. */
+  restoreStock: () =>
+    j<{ started: boolean; note?: string }>(`${HTTP}/api/system/restore/stock`, { method: 'POST' }),
 };
 
 /** `ON`/`OFF` become booleans, digits become numbers, everything else stays a

@@ -135,7 +135,7 @@ So the recipe for a custom kernel is: build a bzImage, prepend the 0x580-byte
 container header, write it at raw offset `0x400`, and write the new total size
 as a **big-endian u32** at `0x200`.
 
-`board/ea-common/post-image.sh` does the wrapping. Note that
+`board/ea/common/post-image.sh` does the wrapping. Note that
 [on a secure-boot part this path is rejected](/ea/secure-boot/) and the
 kernel goes in a different place entirely.
 

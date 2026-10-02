@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Cpu } from 'lucide-react';
 import { rest, type Capabilities, type McuInfo } from '../api';
 
 export function OverviewPanel({ caps }: { caps: Capabilities }) {
@@ -8,12 +9,7 @@ export function OverviewPanel({ caps }: { caps: Capabilities }) {
   }, [caps]);
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight">{caps.board}</h1>
-        <p className="text-sm text-muted">{caps.hostname}</p>
-      </header>
-
+    <div className="space-y-4">
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {caps.ir && <Stat label="IR outputs" value={caps.ir.total} sub={irSub(caps)} />}
         {caps.relays && <Stat label="Relays" value={caps.relays.count} />}
@@ -23,7 +19,10 @@ export function OverviewPanel({ caps }: { caps: Capabilities }) {
 
       {mcu && (
         <section className="hair rounded-xl border bg-panel p-4">
-          <h2 className="mb-3 text-sm font-medium">IO microcontroller</h2>
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+            <Cpu size={15} className="text-muted" />
+            IO microcontroller
+          </h2>
           <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <Row k="Part" v={mcu.part ?? 'unknown'} />
             <Row k="Port" v={mcu.tty ? `${mcu.tty} @ ${mcu.baud}` : 'unknown'} />
