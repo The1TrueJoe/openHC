@@ -1,0 +1,78 @@
+#!/bin/sh
+# openHC — hardware "return to stock" button watcher (EA / CEFDK boards).
+#
+# Holding the front ID button for OHC_RESTORE_BUTTON_HOLD seconds runs
+# `ohc-restore stock` — openHC's software return-to-stock. This exists because
+# the native CEFDK button recovery is not dependable on every EA unit: an EA1
+# with the boot fuse blown does not rewrite mtd0 from the button, so the physical
+# gesture is offered in software instead. The front ID button is a bare SoC GPIO
+# (gpio-ea-board deliberately leaves line 32 to us, unclaimed), so this polls it
+# with libgpiod rather than reading an input device.
+#
+# FAIL-SAFE: the watcher only ARMS after it has seen the line in its released
+# state at least once. A stuck or mis-polarised line therefore reads "pressed"
+# forever and never arms — it can never wipe a box at boot. Get the polarity
+# wrong and the button simply does nothing; it never does the wrong thing.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+
+RESTORE=/opt/ohc/bin/ohc-restore
+: "${OHC_RESTORE_BUTTON_HOLD:=10}"
+: "${OHC_RESTORE_BUTTON_ACTIVE:=low}"
+
+# OHC_RESTORE_BUTTON is "chip offset", e.g. "gpiochip0 32". Empty = no button.
+# shellcheck disable=SC2086
+set -- $OHC_RESTORE_BUTTON
+CHIP=$1; OFFSET=$2
+[ -n "$CHIP" ] && [ -n "$OFFSET" ] || { echo "restore-button: no OHC_RESTORE_BUTTON configured"; exit 0; }
+[ -x "$RESTORE" ] || { echo "restore-button: $RESTORE not installed"; exit 0; }
+command -v gpioget >/dev/null 2>&1 || { echo "restore-button: gpioget (libgpiod) missing"; exit 0; }
+
+# active-low (the EA default: pull-up, pressed pulls to 0) vs active-high.
+if [ "$OHC_RESTORE_BUTTON_ACTIVE" = high ]; then PRESSED=1; else PRESSED=0; fi
+
+# Best-effort arming feedback on a /sys/class/leds entry (OHC_RESTORE_BUTTON_LED).
+led() {
+    [ -n "$OHC_RESTORE_BUTTON_LED" ] || return 0
+    d=/sys/class/leds/$OHC_RESTORE_BUTTON_LED
+    [ -w "$d/brightness" ] || return 0
+    # Writing brightness drops a kernel trigger; take control the first time.
+    [ -w "$d/trigger" ] && echo none > "$d/trigger" 2>/dev/null
+    if [ "$1" = 1 ]; then
+        { cat "$d/max_brightness" 2>/dev/null || echo 1; } > "$d/brightness" 2>/dev/null
+    else
+        echo 0 > "$d/brightness" 2>/dev/null
+    fi
+}
+
+echo "restore-button: watching $CHIP line $OFFSET (hold ${OHC_RESTORE_BUTTON_HOLD}s, active-${OHC_RESTORE_BUTTON_ACTIVE})"
+armed=0
+held=0
+warned=0
+while :; do
+    v=$(gpioget "$CHIP" "$OFFSET" 2>/dev/null)
+    if [ -z "$v" ]; then
+        # Read failed (line busy, chip gone) — treat as not-pressed, keep calm.
+        [ "$held" -gt 0 ] && led 0
+        held=0
+    elif [ "$v" != "$PRESSED" ]; then
+        armed=1                         # a clean released reading: safe to watch
+        [ "$held" -gt 0 ] && led 0
+        held=0
+    elif [ "$armed" = 1 ]; then
+        held=$((held + 1))
+        if [ $((held % 2)) -eq 0 ]; then led 1; else led 0; fi   # blink while arming
+        if [ "$held" -ge "$OHC_RESTORE_BUTTON_HOLD" ]; then
+            led 1
+            echo "restore-button: held ${held}s — returning to stock"
+            logger -t ohc-restore-button "button held ${held}s; running ohc-restore stock" 2>/dev/null
+            "$RESTORE" stock            # reverts the MFH and recovery-kexecs; reboots
+            held=0; armed=0; led 0      # if it returns, require a fresh release
+        fi
+    elif [ "$warned" = 0 ]; then
+        # Pressed before we ever saw it released: stuck button or wrong polarity.
+        # Refuse to arm and say why, once.
+        echo "restore-button: line reads pressed at startup — not arming (check polarity/OHC_RESTORE_BUTTON_ACTIVE)"
+        warned=1
+    fi
+    sleep 1
+done
