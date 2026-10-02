@@ -4,17 +4,25 @@
 #   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
 #   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
 #   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
-wifi emmc
+#   audio  - CE5300 I2S + ADAU1451 codec, ALSA, AirPlay (shairport-sync)
+#            and Spotify Connect (librespot)
+wifi emmc switch audio
 
-# TEMPORARILY reduced from `wifi emmc switch audio` (2026-08-31), same reason as
-# ea3-v2 -- see TEMPORARILY-DISABLED.md at the repo root.
+# RE-ENABLED (was `wifi emmc` while Home Assistant was brought up). This is the
+# full EA-3 v1 feature set: it has the radio, the BCM53125 switch and the EA-3
+# audio hardware.
 #
-# `switch` and `audio` are both written =y and would overrun CEFDK's
-# 7,417,856-byte bootlinux window, which an x86_64 kernel already fills to
-# 7,037,952. An oversized kernel is TRUNCATED silently and simply does not boot.
-# Bring them back as modules (=m), not built in.
+# !!! SIZE: `switch` and `audio` are written =y in their feature fragments, and
+# an x86_64 EA-3 kernel already fills ~7,037,952 of CEFDK's 7,417,856-byte
+# bootlinux window (see git history / the old TEMPORARILY-DISABLED.md). =y
+# switch+audio very likely OVERRUNS it, and an oversized bzImage is TRUNCATED
+# silently and does not boot. The documented fix is to carry them as MODULES
+# (=m) on the p1 rootfs — NOT done here because the switch's SPI/b53 drivers and
+# the ASoC drivers are injected obj-y via board/ea/common/kernel/objs.mk and the
+# switch board glue is built-in, so =m needs load-ordering + build/boot proof
+# that cannot be done without a build. MEASURE the bzImage before trusting a boot.
+# `audio` additionally has never been built for x86_64 (compile risk) and its
+# platform driver is probe-only (enable_pcm=0; reading TX reg 0x2004 hangs the SoC).
 #
-# `wifi` is KEPT, because this is the EA-3 variant that has a radio and the AP +
-# captive portal is how an unplugged unit is set up. It is affordable now only
-# because the wifi feature's linux.fragment builds ath9k/mac80211/cfg80211 as
-# MODULES; as =y they were about a megabyte and did not fit either.
+# `wifi` stays affordable only because its fragment builds ath9k/mac80211/cfg80211
+# as MODULES; as =y they were ~1 MB and did not fit either.
