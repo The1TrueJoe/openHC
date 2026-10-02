@@ -1,0 +1,29 @@
+# openHC feature: wpe — the on-screen GPU UI stack for the EA display.
+#
+# This is the PROPRIETARY userspace half of 3D: Intel/Imagination's DDK 1.7 EGL +
+# GLES2 blobs, plus WPE WebKit rendering through them onto the HDMI display. The
+# kernel driver (the `sgx` feature, CONFIG_SGX545_CE) gives /dev/dri; this is what
+# actually draws. Split out from `sgx` on purpose:
+#
+#   * it pulls non-GPL binary blobs (sgx545-um, fetched at build), which the plain
+#     kernel-driver build does not need and most openHC builds do not want; and
+#   * none of the 3D path has run on hardware yet (the driver has never loaded).
+#
+# So it is NOT enabled by any board's ohc.features — add the word `wpe` to a
+# board to turn it on once the stack is proven. `sgx` (the driver) stays fleet-EA;
+# this is the opt-in UI on top.
+
+# Userspace: EGL + GLES2 from the DDK. Must be the SAME DDK version as the driver
+# — the driver checks on connect and refuses a mismatch.
+BR2_PACKAGE_SGX545_UM=y
+
+# WPE WebKit: browser engine rendering through EGL/GLES with no X/window system.
+# Needs board/buildroot-patches/0001-wpewebkit-do-not-require-wpebackend-fdo.patch
+# — Buildroot wires WPE to the Wayland backend, which this DDK cannot provide.
+BR2_PACKAGE_WPEWEBKIT=y
+
+# ...the libwpe backend it loads at runtime to reach the display (stock is Wayland).
+BR2_PACKAGE_WPEBACKEND_PVR=y
+
+# ...and the surface that puts a page on screen (WebKit built ENABLE_MINIBROWSER=OFF).
+BR2_PACKAGE_WEBVIEW=y
