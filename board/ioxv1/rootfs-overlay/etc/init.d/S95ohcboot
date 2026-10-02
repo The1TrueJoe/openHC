@@ -1,0 +1,48 @@
+#!/bin/sh
+# Tell U-Boot this openHC boot was good. IO Extender NAND install only.
+#
+# The install (`ohc-flash install`) makes U-Boot count openHC boot attempts
+# in its environment: `ohcboot` bumps ohc_try 0->1->2->3 and saves it BEFORE
+# booting us, and at 3 it runs the untouched stock `oldbootcmd` instead. So a
+# kernel that panics (panic=10), hangs (the hardware watchdog U-Boot arms) or
+# comes up deaf three times in a row lands the box back on stock Control4, with
+# no serial console and nobody touching it. This script is the other half: once
+# the uplink has carrier and an address, it puts ohc_try back to 0.
+#
+# "Up" means reachable, not merely booted. A box with userspace running and no
+# network is, from the next room, the same as a hung one, so if the uplink is not
+# up within five minutes this reboots and lets the count go on climbing.
+#
+# A netboot never sets ohc_try, so on a netbooted box this does nothing.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+UPLINK="${OHC_UPLINK_IFACE:-eth0}"
+LIMIT=300
+
+reachable() {
+    [ "$(cat "/sys/class/net/$UPLINK/carrier" 2>/dev/null)" = 1 ] || return 1
+    ip -4 addr show "$UPLINK" 2>/dev/null | grep -q "inet "
+}
+
+confirm() {
+    t=0
+    while [ "$t" -lt "$LIMIT" ]; do
+        if reachable; then
+            fw_setenv ohc_try 0 && logger -t ohcboot "boot confirmed, ohc_try cleared"
+            return 0
+        fi
+        sleep 5; t=$((t + 5))
+    done
+    logger -t ohcboot "$UPLINK not up after ${LIMIT}s; rebooting to count this attempt"
+    reboot
+}
+
+case "$1" in
+    start)
+        try=$(fw_printenv -n ohc_try 2>/dev/null) || exit 0
+        [ "$try" = 0 ] && exit 0
+        echo "ohcboot: NAND boot attempt $try; confirming once $UPLINK is up"
+        confirm >/dev/null 2>&1 &
+        ;;
+    stop) : ;;
+    *) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac

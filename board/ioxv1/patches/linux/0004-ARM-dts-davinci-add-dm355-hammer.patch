@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,467 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
@@ -249,13 +249,16 @@ index 0000000..a959552
 +				 * of board-hammer.c. Several partitions overlap
 +				 * deliberately — that is how Control4 wrote it.
 +				 *
-+				 * EVERY ONE IS READ-ONLY. This is somebody's
-+				 * only IO Extender and this chip holds both
-+				 * root filesystems, both kernels and the
-+				 * recovery pair. We want to read ONE file out
-+				 * of it; a writable mtd node is one typo away
++				 * EVERY STOCK PARTITION IS READ-ONLY. This chip
++				 * holds both stock systems and the recovery
++				 * pair; a writable node there is one typo away
 +				 * from an unbootable box with a console that
-+				 * cannot be typed into.
++				 * cannot be typed into. Writable are only the
++				 * two U-Boot environments (fw_setenv, for the
++				 * openHC boot-attempt counter) and "openhc",
++				 * the top half of the chip that stock never
++				 * partitioned. It stops 512 KiB short of the
++				 * end, where the bad-block tables live.
 +				 *
 +				 * "rootfs1" at 182M is the bank the box boots:
 +				 * its own command line says root=/dev/mtdblock8.
@@ -268,7 +271,6 @@ index 0000000..a959552
 +					partition@0 {
 +						label = "u-boot-env";
 +						reg = <0x00000000 0x00020000>;
-+						read-only;
 +					};
 +					partition@20000 {
 +						label = "ubl";
@@ -283,7 +285,6 @@ index 0000000..a959552
 +					partition@1e0000 {
 +						label = "u-boot-env-redundant";
 +						reg = <0x001e0000 0x00020000>;
-+						read-only;
 +					};
 +					partition@200000 {
 +						label = "kernel0";
@@ -329,6 +330,10 @@ index 0000000..a959552
 +						label = "persistent-logs";
 +						reg = <0x0f900000 0x00600000>;
 +						read-only;
++					};
++					partition@10000000 {
++						label = "openhc";
++						reg = <0x10000000 0x0ff80000>;
 +					};
 +				};
 +			};
@@ -555,7 +560,7 @@ index 0000000..319a74d
 +
 +		timer0: timer@1c21400 {
 +			compatible = "ti,da830-timer";
-+			reg = <0x01c21400 0x1000>;
++			reg = <0x01c21400 0x400>;	/* timer1 at +0x400, watchdog at +0x800 */
 +			interrupts = <32>, <33>;
 +			interrupt-names = "tint12", "tint34";
 +			clocks = <&ref_clk_24m>;
