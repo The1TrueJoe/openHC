@@ -1,22 +1,71 @@
 #!/bin/sh
 # openHC: route the DM355 IO pins from the (unused) camera/video pin-mux to GPIO.
 #
-# On the IO Extender the relays (GIO88-95), the contacts on GIO86/87, and the
-# front-panel data/link LEDs (GIO75/76) all share balls with the DM355 VPFE
-# (video-in) and VPBE (video-out) ports. U-Boot leaves those muxed to video, so
-# driving them as GPIO does NOTHING until the pin-mux is flipped. Per the DM355
-# TRM (sprufb3, System Module, 9.10.1/9.10.2):
-#   PINMUX0 (Video In):  bit10=YIN[7:0]=GIO[93:86], bit9=CIN[1:0]=GIO[95:94]
-#                        -> 0 selects GPIO (relays 88-95 + contacts 86/87)
-#   PINMUX1 (Video Out): bits13:12=COUT1=GIO75, bits11:10=COUT2=GIO76
-#                        -> 0 selects GPIO (data/link LEDs)
-# PINMUX1[5:0] carries the PWM0/1/2 status/power LEDs, so it is left untouched.
+# On the IO Extender the relays (GIO88-95), the contacts (GIO70/71 and GIO82-87)
+# and the front-panel data/link LEDs (GIO75/76) all share balls with the DM355
+# VPFE (video-in) and VPBE (video-out) ports. U-Boot leaves those muxed to
+# video, so driving them as GPIO does NOTHING until the pin-mux is flipped.
+#
+# The field layout is mainline's own dm355_pins[] table (arch/arm/mach-davinci/
+# dm355.c, last present in v6.1), read as MUX_CFG(soc, name, reg, bit, mask,
+# mode): the mode column is the value that selects the PERIPHERAL, so zero
+# selects GPIO. Every video field here is two bits wide with 01 = peripheral,
+# which is why the values below only ever clear bits.
+#
+#   PINMUX0 (Video In)                     PINMUX1 (Video Out)
+#     0-7  CINL_EN   FPGA config pins        0-7   COUTL_EN
+#     8-9  CINH_EN   GIO95:94  (relays)      8-15  COUTH_EN  incl. GIO75/76
+#     10   YIN_EN    GIO93:86  (relays       16    HVSYNC
+#                    + contacts 7/8)         18-19 FIELD -> GIO70 (contact2)
+#     11   CAM_HD  \
+#     12   CAM_VD   } GIO82-85 = contacts 3-6
+#     13   CAM_WEN  /
+#     14   PCLK    /
+#
+# PINMUX1[5:0] are the PWM0/1/2 pins (GIO81/80/79), the tri-colour status LED.
+# They are cleared to GPIO so the kernel's gpio-leds own them (see the DT).
 # (Proper fix is a DT pinctrl node; this early script is the bring-up stand-in.)
+#
+# CONFIRMED on hardware: all eight relays click, both front LEDs light, and all
+# eight contacts read 1 with every terminal open.
+#
+# CONTACT1 = GIO71 IS BIT 17, and that bit is in NO published table.
+# Mainline's dm355_pins[] documents PINMUX1 bits 16 (HVSYNC) and 18-19 (FIELD)
+# and nothing between them, so bit 17 reads as reserved. It is not: setting it
+# is what routes GIO71 to the GPIO block.
+#
+# AUTHORITATIVE: these are the vendor's own values, read with peeknpoke from a
+# running Control4 factory OS on this board while its FPGA was configured and
+# every port worked. No longer inferred — copied from the one system that is
+# known correct.
+#
+#   PINMUX0 = 0x00000000   PINMUX1 = 0x0012416a
+#   PINMUX2 = 0x00000804   PINMUX3 = 0x11ffffff   PINMUX4 = 0x00000000
+#
+# We write only the two registers we own the meaning of (0 and 1); the others
+# already hold their reset/boot values. The vendor GPIO banks confirmed what
+# PINMUX0=0 buys: m2(GIO55)/m0(GIO57) driven high for slave-serial mode, cclk
+# (GIO96) an output, prog(GIO98) an output, DONE(GIO97) reading HIGH (the part
+# is configured), and initb(GIO7) readable.
+#
+# Why the earlier sweeps missed M2/M0/DIN: they toggled one bit at a time while
+# holding PINMUX0 = 0x15, and each config pin needs its whole 2-bit CINL field
+# cleared. 0x15 kept the low bit of three of those fields set throughout, so no
+# single additional bit ever freed the pin. Zeroing the register clears all
+# four fields together, which is exactly what the vendor does.
 case "$1" in
   start|"")
-    devmem 0x01c40000 32 0x00007955
-    devmem 0x01c40004 32 0x0014416A
-    echo "pinmux: relays/LEDs routed to GPIO"
+    # PINMUX0 = 0, the vendor value. Clears every video-in field, which routes
+    # the relays (GIO88-95), contacts 3-8, and ALL the FPGA config pins
+    # (M2/M0/DIN/CCLK/PROG_B) to the GPIO block at once.
+    devmem 0x01c40000 32 0x00000000
+    # PINMUX1 = the vendor's 0x0012416a with bits [5:0] cleared. The vendor
+    # value routes the data/link LEDs and contacts 1 and 2 to GPIO (bit 17 set,
+    # which confirms the contact1 discovery). Its low six bits put PWM0/1/2 on
+    # the status LED pins, where U-Boot leaves the orange one blinking; clearing
+    # them hands those pins to GPIO too, as status-blue/orange/red.
+    devmem 0x01c40004 32 0x00124140
+    echo "pinmux: relays, contacts and all panel LEDs routed to GPIO"
     ;;
 esac
 exit 0

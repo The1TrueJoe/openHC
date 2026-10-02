@@ -55,10 +55,34 @@ pub fn relay_get(index: u8) -> io::Result<bool> {
     read(&format!("relay{}", index + 1))
 }
 
-pub fn contact_get(index: u8) -> io::Result<bool> {
-    read(&format!("contact{}", index + 1))
+/// Is contact `index` MADE?
+///
+/// `active_low` is the board's electrical sense, not a preference: on native
+/// GPIO these are pull-up inputs, so an open terminal reads high and a closed
+/// one is shorted to ground. Behind an IO microcontroller the firmware has
+/// already normalised it. See `Io::contacts_active_low`.
+pub fn contact_get(index: u8, active_low: bool) -> io::Result<bool> {
+    let level = read(&format!("contact{}", index + 1))?;
+    Ok(level != active_low)
 }
 
+/// Read a line WITHOUT touching its direction.
+///
+/// The missing `.as_input()` is the entire point, and leaving it in was a real
+/// bug: on native GPIO, requesting a line as an input reconfigures the pin, so
+/// asking "is relay 3 closed?" set it to input, stopped it driving, and OPENED
+/// THE RELAY. The poller reads every relay on a timer, so anything switched on
+/// turned itself off a second later and the GUI looked like it was forgetting
+/// state. It was not: the relay really was opening.
+///
+/// Omitting the direction leaves the kernel's flag unset, which the uAPI reads
+/// as "as-is" — the value comes back and the pin is left exactly as it was.
+/// That is right for contacts too, which are already inputs.
+///
+/// This works because the DM355's IN_DATA reflects pins that are being DRIVEN,
+/// not only pins configured as inputs — measured on hardware: driving relay1
+/// put its bit into IN as well as OUT. On a SoC where that were not true, a
+/// relay would have to be read back from the output register instead.
 #[cfg(target_os = "linux")]
 fn read(name: &str) -> io::Result<bool> {
     let (chip, offset) = find(name)?;
@@ -66,7 +90,6 @@ fn read(name: &str) -> io::Result<bool> {
         .on_chip(chip)
         .with_consumer("iod")
         .with_line(offset)
-        .as_input()
         .request()
         .map_err(err)?;
     let v = req.value(offset).map_err(err)?;
@@ -100,10 +123,10 @@ pub fn relay_toggle(index: u8) -> io::Result<bool> {
 }
 
 /// Every contact, as a bitmask — the shape the rest of iod already speaks.
-pub fn contacts_mask(count: u8) -> io::Result<u32> {
+pub fn contacts_mask(count: u8, active_low: bool) -> io::Result<u32> {
     let mut mask = 0u32;
     for i in 0..count {
-        if contact_get(i)? {
+        if contact_get(i, active_low)? {
             mask |= 1 << i;
         }
     }

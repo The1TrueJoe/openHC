@@ -187,6 +187,10 @@ pub enum Cmd {
     /// a thing that can exist.
     #[serde(rename = "serial.baud")]
     SerialBaud { index: usize, baud: u32 },
+    /// Drive DTR or RTS on a port whose connector carries them (`modem`).
+    /// Dropping DTR is how a line-powered accessory is power-cycled.
+    #[serde(rename = "serial.line")]
+    SerialLine { index: usize, line: SerialLine, on: bool },
     /// Write to a port without holding a serial WebSocket open. Handy for
     /// automation: send one command string to a projector and walk away.
     #[serde(rename = "serial.write")]
@@ -203,6 +207,13 @@ pub enum Cmd {
         b64: bool,
     },
 }
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SerialLine {
+    Dtr,
+    Rts,
+}
+
 fn one() -> u8 {
     1
 }
@@ -224,6 +235,7 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::StateGet => Ok(c.bus.state.doc()),
         Cmd::SerialBaud { index, baud } => serial_baud(c, index, baud),
         Cmd::SerialWrite { index, data, hex, b64 } => serial_write(c, index, &data, hex, b64),
+        Cmd::SerialLine { index, line, on } => serial_line(c, index, line, on),
     }
 }
 
@@ -406,9 +418,12 @@ async fn alive(c: &Arc<Config>) -> bool {
     }
     let has_contact = c.board.io.contacts > 0;
     let has_relay = c.board.io.relays > 0;
+    // Copied out before the closure: the blocking task outlives this borrow of
+    // `c`, so reaching through it inside would not compile.
+    let low = c.board.io.contacts_active_low;
     tokio::task::spawn_blocking(move || {
         if has_contact {
-            crate::gpio_io::contact_get(0).is_ok()
+            crate::gpio_io::contact_get(0, low).is_ok()
         } else if has_relay {
             crate::gpio_io::relay_get(0).is_ok()
         } else {
@@ -503,7 +518,8 @@ async fn contacts(c: &Arc<Config>) -> Out {
         return Err(Fault::NoSuch("this board has no contacts".into()));
     }
     io_ready(c)?;
-    let mask = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(n))
+    let low = c.board.io.contacts_active_low;
+    let mask = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(n, low))
         .await
         .map_err(|e| Fault::Io(e.to_string()))?
         .map_err(|e| Fault::Io(e.to_string()))?;
@@ -619,6 +635,23 @@ fn serial_baud(c: &Arc<Config>, index: usize, baud: u32) -> Out {
     s.set_baud(baud);
     c.bus.set(&format!("serial/{}/baud", crate::mqtt::topics::label(index)), json!(baud));
     Ok(json!({ "index": index, "baud": baud }))
+}
+
+fn serial_line(c: &Arc<Config>, index: usize, line: SerialLine, on: bool) -> Out {
+    let port = c
+        .board
+        .io
+        .serials
+        .get(index)
+        .ok_or_else(|| Fault::NoSuch(format!("no serial port {index}")))?;
+    if !port.modem {
+        return Err(Fault::Bad(format!("{} has no DTR/RTS lines on its connector", port.label)));
+    }
+    let s = session(c, index)?;
+    s.set_line(line == SerialLine::Dtr, on).map_err(|e| Fault::Io(e.to_string()))?;
+    let name = if line == SerialLine::Dtr { "dtr" } else { "rts" };
+    c.bus.set(&format!("serial/{}/{name}", crate::mqtt::topics::label(index)), json!(on));
+    Ok(json!({ "index": index, name: on }))
 }
 
 fn serial_write(c: &Arc<Config>, index: usize, data: &str, hex: bool, b64: bool) -> Out {

@@ -55,6 +55,16 @@ pub fn parse_pronto(code: &str) -> Result<(u32, Vec<u32>), Fault> {
     if durations.is_empty() {
         return Err(Fault::Bad("pronto code carries no burst pairs".into()));
     }
+    // The header says how many pairs follow. A code cut short (a paste that
+    // lost its tail) would otherwise go out as a fragment no receiver acts on.
+    let pairs = words[2] as usize + words[3] as usize;
+    if durations.len() != pairs * 2 {
+        return Err(Fault::Bad(format!(
+            "pronto header promises {pairs} burst pairs ({} words) but {} follow",
+            pairs * 2,
+            durations.len()
+        )));
+    }
     let us = durations
         .iter()
         .map(|d| ((*d & 0x7fff) as u64 * 1_000_000 / carrier_hz.max(1) as u64) as u32)
@@ -65,9 +75,16 @@ pub fn parse_pronto(code: &str) -> Result<(u32, Vec<u32>), Fault> {
 /// Microsecond marks and spaces back to a Pronto "0000" (learned) code.
 pub fn to_pronto(durs: &[u32], carrier_hz: u32) -> String {
     let word = (PRONTO_HZ / carrier_hz.max(1)) as u16;
+    // A capture ends on a mark (the trailing silence is a timeout, not a space),
+    // but Pronto is whole mark/space pairs. Close it with a 50 ms gap, or the
+    // header would promise one word fewer than follows.
+    let mut durs = durs.to_vec();
+    if durs.len() % 2 == 1 {
+        durs.push(50_000);
+    }
     let pairs = (durs.len() / 2) as u16;
     let mut out = format!("0000 {word:04X} {pairs:04X} 0000");
-    for d in durs {
+    for d in &durs {
         let periods = ((*d as u64 * carrier_hz as u64) / 1_000_000).min(0x7fff) as u16;
         out.push_str(&format!(" {periods:04X}"));
     }
@@ -164,5 +181,15 @@ mod tests {
         assert!(parse_pronto("0100 006D 0002 0000 0062").is_err());
         assert!(parse_pronto("0000 006D 0000 0000").is_err()); // no durations
         assert!(parse_pronto("not hex").is_err());
+        // A header promising more pairs than follow: a truncated paste.
+        assert!(parse_pronto("0000 006D 0022 0002 0157 00AC 0016 0016").is_err());
+    }
+
+    /// A capture ending on a mark still makes a code iod will send back.
+    #[test]
+    fn an_odd_capture_is_closed_into_pairs() {
+        let code = to_pronto(&[9000, 4500, 560], 38_000);
+        let (_, us) = parse_pronto(&code).expect(&code);
+        assert_eq!(us.len(), 4, "{code}");
     }
 }

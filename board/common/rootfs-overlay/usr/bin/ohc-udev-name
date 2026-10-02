@@ -36,7 +36,7 @@ lirc)
 tty)
     [ -r /opt/ohc/board.env ] || exit 1
     . /opt/ohc/board.env
-    # OHC_SERIALS is dev:label:baud. The POSITION is the number the installer
+    # OHC_SERIALS is dev:label:baud[:modem]. The POSITION is the number the installer
     # reads on the case, so it is also the name here.
     n=0
     for e in $OHC_SERIALS; do

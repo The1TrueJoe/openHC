@@ -60,6 +60,7 @@ async fn poller(cfg: Arc<Config>) {
 
     let contacts = cfg.board.io.contacts;
     let relays = cfg.board.io.relays;
+    let low = cfg.board.io.contacts_active_low;
     let mut tick: u32 = 0;
 
     loop {
@@ -67,7 +68,7 @@ async fn poller(cfg: Arc<Config>) {
         tick = tick.wrapping_add(1);
 
         if contacts > 0 {
-            let r = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(contacts)).await;
+            let r = tokio::task::spawn_blocking(move || crate::gpio_io::contacts_mask(contacts, low)).await;
             match r {
                 Ok(Ok(mask)) => {
                     cfg.bus.set("mcu/link", serde_json::json!(true));
@@ -177,6 +178,17 @@ fn main() {
             let n = mqtt::topics::label(i);
             cfg.bus.set(&format!("serial/{n}/baud"), serde_json::json!(p.baud));
             cfg.bus.set(&format!("serial/{n}/viewers"), serde_json::json!(0));
+            // Open every host UART now and hold it, as the stock dtserver does:
+            // open raises DTR/RTS, which line-powered accessories (a GC-IRL, for
+            // one) run on, and serial/N/rx should fire with no terminal attached.
+            if let Some(dev) = &p.dev {
+                if let Err(e) = cfg.serial.session(i, dev, p.baud, &cfg.bus) {
+                    eprintln!("iod: cannot open {dev}: {e}");
+                } else if p.modem {
+                    cfg.bus.set(&format!("serial/{n}/dtr"), serde_json::json!(true));
+                    cfg.bus.set(&format!("serial/{n}/rts"), serde_json::json!(true));
+                }
+            }
         }
 
         // The driver enables capture itself; this only reads what it decodes.

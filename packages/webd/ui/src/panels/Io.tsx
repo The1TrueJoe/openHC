@@ -109,7 +109,9 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
 }
 
 function IrSection({ caps }: { caps: Capabilities }) {
-  const [pronto, setPronto] = useState('0000 006D 0022 0002 0157 00AC 0016 0016');
+  // A complete code (NEC 0x20DF10EF, an LG TV's power toggle), not a stub: a
+  // learner ignores a truncated burst, so a short example looks like a dead jack.
+  const [pronto, setPronto] = useState('0000 006D 0022 0002 0157 00AC 0016 0016 0016 0016 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0016 0016 0016 0016 0016 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 05BF 0157 0056 0016 0E45');
   // null = the front blaster; a number = a rear jack, as labelled on the case.
   const [port, setPort] = useState<number | null>(0);
   const [note, setNote] = useState<string | null>(null);

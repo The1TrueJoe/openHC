@@ -16,7 +16,7 @@ use crate::events::Bus;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::unix::AsyncFd;
 use serde_json::json;
@@ -39,6 +39,11 @@ pub struct Session {
     reopen: mpsc::UnboundedSender<u32>,
     scrollback: Mutex<VecDeque<u8>>,
     clients: AtomicUsize,
+    /// Wanted DTR/RTS. Opening a tty raises both, so these start true and are
+    /// re-applied after every reopen; otherwise a baud change would silently
+    /// power a line-powered accessory back up.
+    dtr: AtomicBool,
+    rts: AtomicBool,
 }
 
 impl Session {
@@ -74,6 +79,29 @@ impl Session {
     pub fn viewers(&self) -> usize {
         self.clients.load(Ordering::Relaxed)
     }
+    /// Drive DTR (`dtr == true`) or RTS. Applied on a second fd: the pump owns
+    /// the first, and the port stays open through it, so closing this one is
+    /// not a hangup.
+    pub fn set_line(&self, dtr: bool, on: bool) -> io::Result<()> {
+        (if dtr { &self.dtr } else { &self.rts }).store(on, Ordering::Relaxed);
+        let path = std::ffi::CString::new(self.dev.as_str()).map_err(|_| io::Error::other("bad device path"))?;
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_NONBLOCK) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let r = self.apply_lines(fd);
+        unsafe { libc::close(fd) };
+        r
+    }
+    fn apply_lines(&self, fd: RawFd) -> io::Result<()> {
+        for (want, bit) in [(&self.dtr, libc::TIOCM_DTR), (&self.rts, libc::TIOCM_RTS)] {
+            let req = if want.load(Ordering::Relaxed) { libc::TIOCMBIS } else { libc::TIOCMBIC };
+            if unsafe { libc::ioctl(fd, req as _, &bit) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -100,6 +128,8 @@ impl Hub {
             reopen: re_tx,
             scrollback: Mutex::new(VecDeque::with_capacity(SCROLLBACK)),
             clients: AtomicUsize::new(0),
+            dtr: AtomicBool::new(true),
+            rts: AtomicBool::new(true),
         });
         // Prove the port is openable before handing back a session that looks
         // live but never produces a byte.
@@ -140,6 +170,7 @@ async fn pump(
                 match open_serial(&sess.dev, b).and_then(|f| AsyncFd::new(unsafe { OwnedFd::from_raw_fd(f) })) {
                     Ok(a) => {
                         afd = a;
+                        let _ = sess.apply_lines(afd.get_ref().as_raw_fd());
                         let note = format!("\r\n[iod] {} reopened at {} baud\r\n", sess.dev, b);
                         let _ = sess.rx.send(note.into_bytes());
                     }

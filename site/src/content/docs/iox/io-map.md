@@ -17,23 +17,61 @@ because the pin isn't connected to the GPIO block.
 
 | Reg | Address | Write | Effect |
 |---|---|---|---|
-| PINMUX0 | `0x01c40000` | `0x00007955` | GIO86–95 → GPIO (relays 88–95, contacts 86/87) |
-| PINMUX1 | `0x01c40004` | `0x0014416A` | GIO75/76 → GPIO (data/link LEDs) |
+| PINMUX0 | `0x01c40000` | `0x00000155` | GIO82–95 → GPIO (relays 88–95, contacts 3–8) |
+| PINMUX1 | `0x01c40004` | `0x00124140` | GIO70/71/75/76/79–81 → GPIO (contacts 1-2, every panel LED) |
 
-Per the TRM's System Module section: PINMUX0 bit 10 is `YIN` = GIO[93:86] and bit
-9 is `CIN` = GIO[95:94], with `0` meaning GPIO. PINMUX1 bits `[13:12]` are `COUT1`
-= GIO75 and `[11:10]` are `COUT2` = GIO76.
+The field layout is **mainline's own `dm355_pins[]` table** (`arch/arm/mach-davinci/dm355.c`,
+last present in v6.1), which is more precise than reading it off the TRM by hand.
+Each entry is `MUX_CFG(soc, name, reg, bit, mask, mode)` where `mode` is the value
+that selects the **peripheral** — so zero selects GPIO, and every video field here
+is two bits wide with `01` = peripheral:
 
-:::caution[Keep PINMUX1 bits [5:0]]
-Those are PWM0/1/2, the status and power LEDs, already muxed and driven by
-U-Boot. Clobbering them trades two working LEDs for two others.
+| Reg | Bits | Field | Carries |
+|---|---|---|---|
+| PINMUX0 | 0–7 | `VIN_CINL_EN` | four 2-bit fields; bits 6–7 are **GIO98 = the FPGA's PROG_B** |
+| PINMUX0 | 8–9 | `VIN_CINH_EN` | GIO95:94 (relays 7–8) |
+| PINMUX0 | 10 | `VIN_YIN_EN` | GIO93:86 (relays 1–6, contacts 7–8) |
+| PINMUX0 | 11–14 | `VIN_CAM_HD`, `VIN_CAM_VD`, `VIN_CAM_WEN`, `VIN_PCLK` | GIO82–85 = contacts 3–6 (one bit each) |
+| PINMUX1 | 8–15 | `VOUT_COUTH_EN` | includes GIO75/76 (data/link LEDs) |
+| PINMUX1 | 16 | `VOUT_HVSYNC` | unidentified |
+| PINMUX1 | **17** | *(in no published table)* | GIO71 = **contact1** — SET this bit |
+| PINMUX1 | 18–19 | `VOUT_FIELD` | GIO70 = **contact2** |
+
+:::note[PINMUX1 bits [5:0] go to GPIO too]
+Those are the PWM0/1/2 pins, the tri-colour status LED. U-Boot leaves them as
+PWM with the orange one blinking. openHC clears them so the status LED is three
+plain GPIO lines the kernel's `gpio-leds` own.
 :::
 
 `board/ioxv1/rootfs-overlay/etc/init.d/S01pinmux` applies these at boot. That's a
 runtime stand-in; the proper fix is DT pinctrl.
 
-**Still to do, same mechanism:** contacts GIO70/71 (PINMUX1 bits 17–19) and
-GIO82–85 (PINMUX0 bits 11–14).
+**Confirmed on hardware:** the relays and the data/link LEDs.
+**Also confirmed:** the contact bits above. All eight read through iod, with an
+open terminal reading high (the inputs are pulled up, so contacts are active-low).
+
+:::tip[contact1 is PINMUX1 bit 17, which is in no table]
+Mainline's `dm355_pins[]` documents bit 16 (`VOUT_HVSYNC`) and bits 18–19
+(`VOUT_FIELD`) and **nothing between them**, so bit 17 reads as reserved. It is
+not — setting it routes GIO71 to the GPIO block, and with it set all eight
+contacts read correctly.
+
+Found by sweeping every bit of both registers on a live board while watching
+bit 7 of the GPIO `IN` register, after first proving the field was not the
+problem: clearing PINMUX0 *entirely* and PINMUX1's whole video range still left
+GIO71 at 0.
+
+Two things made this hard to see. The pins are shared with the SoC's VPFE/VPBE
+peripherals even though **this board has no video at all**, so "muxed to video"
+never meant a video feature existed. And the polarity is not uniform: the video
+fields are 2 bits with `01` = peripheral, so clearing selects GPIO — but
+`VOUT_HVSYNC` at bit 16 is a 1-bit field whose mode **0** is the peripheral.
+Clearing "more" bits therefore selected *more* video, not less.
+
+Sweeping is the right tool here and costs almost nothing: openHC on this board
+is RAM-only and nothing is flashed, so the worst a wrong pin-mux write can do is
+require a power cycle.
+:::
 
 ## Relays (8) — confirmed clicking
 
@@ -42,27 +80,32 @@ SoC GPIO, no driver needed.
 
 ## Contacts (8, inputs)
 
-`gpiochip0` lines 70, 71, 82, 83, 84, 85, 86, 87. Lines 86/87 are already GPIO
-after the PINMUX0 fix; 70/71 and 82–85 still need their pinmux.
+`gpiochip0` lines 71, 70, 82, 83, 84, 85, 86, 87 for contacts 1–8 (1 and 2 are
+reversed). `S01pinmux` routes all eight to GPIO. They are pull-up inputs, so an
+open terminal reads 1 and a closed one 0: `OHC_CONTACTS_ACTIVE_LOW=1` makes iod
+report them the right way up.
 
 ## LEDs
 
-| Name | Type | How to drive | Notes |
+The front and rear panels **share every line**: each has power, a tri-colour
+status LED, data and link. Identified on hardware by blinking each line in turn.
+
+| LED | Line | Polarity | Kernel name |
 |---|---|---|---|
-| **data** (front) | GPIO | `gpiochip0` line **75**, active high | 1 = on |
-| **link** (front) | GPIO | `gpiochip0` line **76**, active high | 1 = on |
-| **status** (front) | PWM0 @ `0x01c22000` | orange | blink = slow period; steady = small PER |
-| **power** (front) | PWM1 @ `0x01c22400` | blue | |
-| (red) | PWM2 @ `0x01c22800` | red | part of the tri-colour status |
-| rear status/data/link/power | **TBD** | — | not in the vendor board file; needs discovery |
+| data | GPIO 75 | active high | `c4:data` |
+| link | GPIO 76 | active high | `c4:link` |
+| status, blue | GIO80 (PWM1 pin) | active low | `c4:blue:status` |
+| status, orange | GIO81 (PWM0 pin) | active low | `c4:orange:status` |
+| status, red | GIO79 (PWM2 pin) | active low | `c4:red:status` |
+| power | none | | hardwired on |
 
-PWM registers, base + channel × `0x400`: PCR `+0x04`, CFG `+0x08`, START `+0x0c`,
-RPT `+0x10`, PER `+0x14` (period), PH1D `+0x18` (phase-1 / duty). The LEDs are
-**active low**. A ~1 s PER reads as a blink; a small PER with PH1D ≈ PER/2 is a
-steady glow.
+The stock kernel calls the status colours `c4:blue:good`, `c4:orange:fair` and
+`c4:red:poor`. openHC boots with blue on and the others off. Blinking comes from
+the LED triggers (`timer`, `heartbeat`), not the PWM block.
 
-The status and power LEDs are already muxed and driven by U-Boot, so they are
-controllable through those PWM registers with no pinmux work.
+U-Boot drives the status LED through PWM (`0x01c22000` + channel × `0x400`; PCR
+`+0x04`, CFG `+0x08`, PER `+0x14`, PH1D `+0x18`), leaving PWM0 in continuous
+mode with a ~1 s period: the orange blink seen before the kernel takes over.
 
 ## GPIO registers for `devmem`
 
@@ -98,20 +141,35 @@ working" question on this board is answered by a human in the room.
 | Port | Device | Backing | Status |
 |---|---|---|---|
 | debug console | `ttyS0` | SoC UART0 @ `0x01c20000` | working (RX only unless TX is wired) |
-| RS232 1–4 | `ttyS1-4` | **FPGA UARTs** @ `0x04000240/250/260/270` | **blocked: FPGA not programmed** |
+| RS-232 1–4 | `ttyS1-4` | **FPGA UARTs** @ `0x04000240/250/260/270` | **working**, verified both ways |
 
-The FPGA UARTs are stock 16550As and need only `ns16550a` DT nodes on a shared
-IRQ (GIO7) once the FPGA is loaded. Their input clock frequency is still unknown —
-recover it from `c4serial.ko` or measure it.
+The FPGA UARTs are stock 16550As on one shared interrupt (GIO7), appearing once
+the FPGA is loaded. Their geometry is not the SoC UART's: the 8-bit registers sit
+in the low byte of each 16-bit EMIF word, so `reg-shift = <1>` (confirmed by
+reading IIR `0xc1` and LSR `0x60` at `reg << 1` and by the scratch register
+holding writes). The input clock is **50 MHz**, from the vendor `c4serial.ko`'s
+`uartclk`; 115200 is then divisor 27, 0.4% off.
 
-**CE1 (`0x04000000`+) isn't readable from userspace `devmem`.** It needs a
-kernel driver, or at least AEMIF CS1 timing configured, before the window responds.
+They do hardware flow control too. Control4 patched `8250.c` with a
+`UPF_C4_SUPPORT_AFE` flag purely for these (*"the fpga supports flow control but
+is detected as a 16550A"*). Mainline has no equivalent, so `CRTSCTS` on these
+ports would need that forward-ported. Nothing in openHC needs it yet.
+
+**DTR and RTS are wired** to the DB9s. iod holds each port open from boot with
+both raised, as the stock `dtserver` does, since accessories like a GC-IRL
+learner are powered from them. MQTT `serial/N/dtr` and `serial/N/rts` drop or
+raise either one.
+
+To talk to a port from a PC, use a full **3-wire null-modem** cable (TX↔RX
+crossed, GND to GND). A cable that carries only one direction makes the port
+look half-dead when nothing in openHC is wrong.
 
 ## IR-out (8) — FPGA
 
-FPGA at `0x04000220` and `0x04000230`. Also needs the FPGA programmed, and then a
-small bespoke driver whose register semantics come from the on-device
-`c4irout.ko`.
+Two engines at `0x04000220` and `0x04000230`, either of which can drive any of the
+eight jacks through its output-enable mask. `ohc-iox-irout.c` registers one lirc
+device per jack ("openHC IR out N"). Layout and verification are on the
+[IR register map](/iox/ir-register-map/) page.
 
 ## Buttons
 
@@ -135,7 +193,136 @@ Standard protocol: pulse PROG_B, wait for INIT_B, clock each bit on DIN/CCLK,
 wait for DONE. It can be a tiny kernel driver or a userspace libgpiod tool; the
 image `fpga_fw.bin` is on the stock NAND.
 
+### The config pins are muxed AWAY from GPIO by default
+
+This is the thing that makes the loader look broken when it is not. The
+slave-serial pins come out of reset routed to an SoC peripheral, so the GPIO
+block drives nothing and the FPGA never sees PROG_B. The symptom is a perfect
+bitstream clocked into a part that was never reset, reported as the thoroughly
+misleading `DONE never rose`.
+
+Diagnose it with the fact that **DM355 `IN_DATA` reflects pins that are being
+DRIVEN**, not only pins configured as inputs — so a pin that is correctly muxed
+reads back what you drive onto it, and one that is muxed away reads 0 forever:
+
+```sh
+# bank block = 0x10 + (gpio/32)*0x28 ; DIR +0x00, SET +0x08, CLR +0x0c, IN +0x10
+devmem 0x01c67088 32 $((d & ~(1<<2)))   # GIO98 -> output
+devmem 0x01c67090 32 $((1<<2))          # drive high
+devmem 0x01c67098 32                    # IN: bit 2 set?  if not, it is muxed away
+```
+
+**SETTLED from the vendor OS** — booted the stock Control4 image (which has the
+FPGA working) and read the registers with its own `peeknpoke`:
+
+| Register | Vendor value | What it does |
+|---|---|---|
+| PINMUX0 | `0x00000000` | every video-in field cleared → relays, contacts 3–8, **and all five FPGA config pins** to GPIO |
+| PINMUX1 | `0x0012416a` | data/link LEDs + contacts 1–2 (bit 17 set, confirming the contact1 find; bit 16 clear) |
+| PINMUX2 | `0x00000804` | left at its boot value |
+| PINMUX3 | `0x11ffffff` | left at its boot value |
+| PINMUX4 | `0x00000000` | left at its boot value |
+
+`PINMUX0 = 0` is the whole answer for the config pins. The sweeps missed
+M2/M0/DIN because they toggled one bit at a time while holding `0x15`, and each
+config pin needs its entire 2-bit CINL field cleared — `0x15` kept the low bit
+of three of those fields set the whole time. Zeroing the register clears all
+four fields together.
+
+The GPIO banks on the live vendor system confirm what that buys: M2 (GIO55) and
+M0 (GIO57) driven high for slave-serial mode, CCLK (GIO96) an output, PROG_B
+(GIO98) an output, DONE (GIO97) reading **high** (the part is configured), and
+INIT_B (GIO7) readable. `/proc/iomem` shows `c4fpga` at `0x04000200`, `c4irout`
+at `0x220`/`0x230`, and four `c4serial` at `0x240`/`250`/`260`/`270` — every
+address in our device tree, validated against the vendor's own driver layout.
+`/proc/tty/driver/serial` lists all four as `16550A`, which confirms reg-shift 0.
+
+### The bitstream is not the problem, and here is how to be sure
+
+`fpga_fw.bin` lives at **`/control4/lib/fpga/fpga_fw.bin`** on the vendor root
+filesystem and is **169,216 bytes** — exactly the XC3S250E bitstream size from
+DS312. It is a headerless `.bin` (no ASCII `.bit` header), and its own
+configuration packets confirm every assumption the loader makes:
+
+```
+CMD    RCRC
+FLR    0x48
+COR    0x31e5   StartupClk=CCLK
+IDCODE 01c1a093 = XC3S250E
+CMD    SWITCH / FAR 0 / CMD WCFG
+FDRI + 42194 words of frame data
+```
+
+Two of those matter. `IDCODE 0x01c1a093` is the XC3S250E's JTAG IDCODE, so the
+file matches the part on the board. And **`StartupClk=CCLK`** means the start-up
+sequence runs on the clock a slave-serial load already provides — so `DONE`
+failing to rise can never be blamed on a clock-source mismatch.
+
+Decode it with the **Spartan-3 register map** (`CMD=4, COR=9, FLR=0xB,
+IDCODE=0xE`), not the Virtex one. The Virtex map is shifted and reads the IDCODE
+write as `CBC` and the CMD writes as `FDRO`, which looks like a corrupt file.
+
+:::danger[devmem cannot tell you whether the FPGA is alive]
+busybox `devmem` maps `/dev/mem`, and that mapping is **cached**. Writing a byte
+dirties a cache line and reading it back hits that line — so every offset in the
+FPGA window looks like working storage even with nothing driving the bus at all.
+The giveaway is that a *fresh* read of the same offsets returns a constant.
+
+Read the window from inside a driver through `ioremap` instead, which is
+uncached. `ohc-iox-fpga` exposes exactly that as its `window` sysfs attribute.
+:::
+
+**The loader does not have to be written from scratch — Control4 published it.**
+`cmd_c4fpga.c` and `c4fpgaldr.c` are in `u-boot-1.2.0.tgz+patches.tar.gz`
+(`patches/uboot-video-fpga.patch`), GPL, complete. That copy is for a different
+board so its GPIO numbers are another product's, but the sequence is the whole
+answer: drive M2/M0 high, PROG_B high → 20 µs → low, 200 µs settle, check INIT_B
+is high, then per byte send bits **MSB first** — DIN, CCLK low, CCLK high — and
+when the bitstream is done clock **12 dummy cycles** and read DONE.
+
+:::caution[INIT_B is GIO7, and so is the UART interrupt]
+The same line is a programming status pin during the load and the shared serial
+interrupt afterwards. A loader that keeps hold of it leaves the four UARTs with no
+usable IRQ.
+:::
+
 ## I²C
 
 `davinci-i2c` at 400 kHz, bus 1: a 24c08 EEPROM at `0x50`. The temperature sensor
 is behind the FPGA.
+
+## Where the vendor source is — and what is missing from it
+
+Control4's GPL drops are still live, old-scheme, on their CDN:
+
+```
+http://update.control4.com/open_src/<VERSION>-res/src/<name>+patches.tar.gz
+```
+
+Directory listing is refused, but `src-<VERSION>.xml` indexes every file with its
+size and MD5. `2.9.0.525559-res` and `2.10.0.540110-res` both resolve and carry
+identical DM355 sources. The two that matter:
+
+| Package | What is in it |
+|---|---|
+| `linux-davinci-2.6.28-rc8+patches.tar.gz` | `patches/2.6.32/arch-arm-mach-davinci-board-hammer_c.patch` — **the board file**, and the source of nearly every number on this page |
+| `u-boot-1.2.0.tgz+patches.tar.gz` | `patches/uboot-video-fpga.patch` — the complete Xilinx slave-serial loader |
+
+`board-hammer.c` gives, verbatim: relays `GIO88–95` active-high named `relay1..8`;
+contacts named `contact1..8` on `GIO71, 70, 82, 83, 84, 85, 86, 87` (note the
+reversal at the front); `c4serial_fpga_resource` = the four UART windows plus
+`IORESOURCE_IRQ` on `GIO(7)`; `c4irout_fpga_resource` = the two IR windows;
+`c4fpga_desc.ss` = the seven programming pins; `id-btn` on `GIO9` and
+`recovery-btn` on `GIO8`; the PWM LED names; and the full NAND partition table.
+
+:::danger[The IO drivers themselves are NOT in the drop]
+`c4fpga-drivers.patch` adds `drivers/control4/Kconfig` and `Makefile` — which name
+`c4fpga.o c4gpio.o c4irout.o c4serial.o` — and **no `.c` files for any of them**.
+Neither kernel package contains `drivers/control4/*.c`, and neither does
+`all_current_patches.tar.gz` (that one is MontaVista's, not Control4's).
+
+So the FPGA register semantics for IR and the UART clock cannot be read out of the
+published source. They have to come off a unit: `c4irout.ko` and `c4serial.ko` on
+the stock NAND rootfs, disassembled. Do not spend another evening searching the
+CDN for them — this page is the record that they are not there.
+:::

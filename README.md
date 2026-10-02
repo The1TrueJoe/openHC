@@ -13,9 +13,9 @@ locked.
 | **ea1-v1** | Intel CE5310 | proven — netboots, Wi-Fi + SSH |
 | **ea3-v2** | Intel CE5310 | proven — persistent self-boot from eMMC |
 | **ca1** | i.MX6 SoloLite | proven — openHC on eMMC, web dashboard |
-| **ioxv1** | TI DM355 | proven — boots, Ethernet + SSH, 8 relays |
+| **ioxv1** | TI DM355 | proven — netboots; relays, contacts, 4× RS-232, 8 IR outputs, status LEDs |
 | ea1-v2, ea1-v2-poe, ea3-v1 | Intel CE5310 | build; not yet booted |
-| hc800 | Atom D525 | builds; not yet booted |
+| **hc800** | Atom D525 | proven — persistent install, relays, contacts, IR, web UI |
 
 ## Install on a controller
 
@@ -49,7 +49,7 @@ recommended way in if you are not scripting.
 
 **The HC-800 and the IO Extender are manual.** The HC-800 install is two files and
 a one-line edit to GRUB's `menu.lst`; the IO Extender currently boots from RAM
-over TFTP only. Both are covered in
+over TFTP only (`ohc-flash netboot`). Both are covered in
 [Installing on a controller](https://the1truejoe.github.io/openHC/build/install/).
 
 ## Going back to stock

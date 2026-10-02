@@ -35,5 +35,7 @@ __pycache__/
 /site/node_modules/
 c4-recon/
 
+# local secrets (Kasa login etc.)
+.env
 # agent worktrees — a git repo inside this one, never ours to commit
 .claude/worktrees/
