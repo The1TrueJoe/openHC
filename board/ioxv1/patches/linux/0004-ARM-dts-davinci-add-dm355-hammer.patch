@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,461 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
@@ -99,9 +99,12 @@ index 0000000..a959552
 +	};
 +
 +	/*
-+	 * The two front-panel GPIO LEDs. The other indicators on this box are
-+	 * PWM-driven (status orange, power blue/red on PWM0/1/2, which U-Boot
-+	 * already mux/drives) and are not modelled here yet.
++	 * Front and rear panels share every line: data, link, and a tri-colour
++	 * status LED (power is hardwired on). The status colours sit on the
++	 * PWM0/1/2 pins (GIO81/80/79), which U-Boot leaves running as PWM, the
++	 * orange one blinking. S01pinmux turns those three pins into plain GPIO,
++	 * so they are ordinary active-low LEDs here and blink by trigger.
++	 * Stock names them c4:blue:good, c4:orange:fair, c4:red:poor.
 +	 */
 +	leds {
 +		compatible = "gpio-leds";
@@ -115,6 +118,24 @@ index 0000000..a959552
 +		led-link {
 +			label = "c4:link";
 +			gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led-status-blue {
++			label = "c4:blue:status";
++			gpios = <&gpio 80 GPIO_ACTIVE_LOW>;
++			default-state = "on";
++		};
++
++		led-status-orange {
++			label = "c4:orange:status";
++			gpios = <&gpio 81 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		led-status-red {
++			label = "c4:red:status";
++			gpios = <&gpio 79 GPIO_ACTIVE_LOW>;
 +			default-state = "off";
 +		};
 +	};

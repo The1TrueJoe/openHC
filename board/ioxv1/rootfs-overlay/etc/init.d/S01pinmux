@@ -22,7 +22,8 @@
 #     13   CAM_WEN  /
 #     14   PCLK    /
 #
-# PINMUX1[5:0] carries the PWM0/1/2 status/power LEDs, so it is left untouched.
+# PINMUX1[5:0] are the PWM0/1/2 pins (GIO81/80/79), the tri-colour status LED.
+# They are cleared to GPIO so the kernel's gpio-leds own them (see the DT).
 # (Proper fix is a DT pinctrl node; this early script is the bring-up stand-in.)
 #
 # CONFIRMED on hardware: all eight relays click, both front LEDs light, and all
@@ -58,13 +59,13 @@ case "$1" in
     # the relays (GIO88-95), contacts 3-8, and ALL the FPGA config pins
     # (M2/M0/DIN/CCLK/PROG_B) to the GPIO block at once.
     devmem 0x01c40000 32 0x00000000
-    # PINMUX1 = 0x0012416a, the vendor value. Routes the data/link LEDs and
-    # contacts 1 and 2 to GPIO. This is the vendor's own number: it differs from
-    # our earlier 0x0013416a only in bit 16 (VOUT_HVSYNC), which the vendor
-    # leaves 0 — and it confirms our contact1 discovery, since bit 17 is set
-    # here too.
-    devmem 0x01c40004 32 0x0012416A
-    echo "pinmux: relays, contacts and front LEDs routed to GPIO"
+    # PINMUX1 = the vendor's 0x0012416a with bits [5:0] cleared. The vendor
+    # value routes the data/link LEDs and contacts 1 and 2 to GPIO (bit 17 set,
+    # which confirms the contact1 discovery). Its low six bits put PWM0/1/2 on
+    # the status LED pins, where U-Boot leaves the orange one blinking; clearing
+    # them hands those pins to GPIO too, as status-blue/orange/red.
+    devmem 0x01c40004 32 0x00124140
+    echo "pinmux: relays, contacts and all panel LEDs routed to GPIO"
     ;;
 esac
 exit 0

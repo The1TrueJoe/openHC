@@ -18,7 +18,7 @@ because the pin isn't connected to the GPIO block.
 | Reg | Address | Write | Effect |
 |---|---|---|---|
 | PINMUX0 | `0x01c40000` | `0x00000155` | GIO82–95 → GPIO (relays 88–95, contacts 3–8) |
-| PINMUX1 | `0x01c40004` | `0x0013416A` | GIO70/71/75/76 → GPIO (contacts 1-2, data/link LEDs) |
+| PINMUX1 | `0x01c40004` | `0x00124140` | GIO70/71/75/76/79–81 → GPIO (contacts 1-2, every panel LED) |
 
 The field layout is **mainline's own `dm355_pins[]` table** (`arch/arm/mach-davinci/dm355.c`,
 last present in v6.1), which is more precise than reading it off the TRM by hand.
@@ -37,9 +37,10 @@ is two bits wide with `01` = peripheral:
 | PINMUX1 | **17** | *(in no published table)* | GIO71 = **contact1** — SET this bit |
 | PINMUX1 | 18–19 | `VOUT_FIELD` | GIO70 = **contact2** |
 
-:::caution[Keep PINMUX1 bits [5:0]]
-Those are PWM0/1/2, the status and power LEDs, already muxed and driven by
-U-Boot. Clobbering them trades two working LEDs for two others.
+:::note[PINMUX1 bits [5:0] go to GPIO too]
+Those are the PWM0/1/2 pins, the tri-colour status LED. U-Boot leaves them as
+PWM with the orange one blinking. openHC clears them so the status LED is three
+plain GPIO lines the kernel's `gpio-leds` own.
 :::
 
 `board/ioxv1/rootfs-overlay/etc/init.d/S01pinmux` applies these at boot. That's a
@@ -84,22 +85,25 @@ after the PINMUX0 fix; 70/71 and 82–85 still need their pinmux.
 
 ## LEDs
 
-| Name | Type | How to drive | Notes |
+The front and rear panels **share every line**: each has power, a tri-colour
+status LED, data and link. Identified on hardware by blinking each line in turn.
+
+| LED | Line | Polarity | Kernel name |
 |---|---|---|---|
-| **data** (front) | GPIO | `gpiochip0` line **75**, active high | 1 = on |
-| **link** (front) | GPIO | `gpiochip0` line **76**, active high | 1 = on |
-| **status** (front) | PWM0 @ `0x01c22000` | orange | blink = slow period; steady = small PER |
-| **power** (front) | PWM1 @ `0x01c22400` | blue | |
-| (red) | PWM2 @ `0x01c22800` | red | part of the tri-colour status |
-| rear status/data/link/power | **TBD** | — | not in the vendor board file; needs discovery |
+| data | GPIO 75 | active high | `c4:data` |
+| link | GPIO 76 | active high | `c4:link` |
+| status, blue | GIO80 (PWM1 pin) | active low | `c4:blue:status` |
+| status, orange | GIO81 (PWM0 pin) | active low | `c4:orange:status` |
+| status, red | GIO79 (PWM2 pin) | active low | `c4:red:status` |
+| power | none | | hardwired on |
 
-PWM registers, base + channel × `0x400`: PCR `+0x04`, CFG `+0x08`, START `+0x0c`,
-RPT `+0x10`, PER `+0x14` (period), PH1D `+0x18` (phase-1 / duty). The LEDs are
-**active low**. A ~1 s PER reads as a blink; a small PER with PH1D ≈ PER/2 is a
-steady glow.
+The stock kernel calls the status colours `c4:blue:good`, `c4:orange:fair` and
+`c4:red:poor`. openHC boots with blue on and the others off. Blinking comes from
+the LED triggers (`timer`, `heartbeat`), not the PWM block.
 
-The status and power LEDs are already muxed and driven by U-Boot, so they are
-controllable through those PWM registers with no pinmux work.
+U-Boot drives the status LED through PWM (`0x01c22000` + channel × `0x400`; PCR
+`+0x04`, CFG `+0x08`, PER `+0x14`, PH1D `+0x18`), leaving PWM0 in continuous
+mode with a ~1 s period: the orange blink seen before the kernel takes over.
 
 ## GPIO registers for `devmem`
 
