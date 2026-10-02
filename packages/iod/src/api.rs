@@ -56,6 +56,8 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .routes(routes!(capabilities))
         .routes(routes!(mcu_info))
         .routes(routes!(mcu_reset))
+        .routes(routes!(restore_status_h))
+        .routes(routes!(restore_stock_h))
         .routes(routes!(config_get, config_put))
         .split_for_parts();
 
@@ -102,6 +104,25 @@ carry the fix.",
     responses((status = 200, description = "which polarity worked, and whether it answered")))]
 async fn mcu_reset(s: Ctx) -> axum::response::Response {
     run(s, Cmd::McuReset).await
+}
+
+#[utoipa::path(get, path = "/api/system/restore", tag = "Recovery",
+    summary = "Return-to-stock availability + current MFH state",
+    description = "Read-only. Says whether this board can be returned to stock from software \
+(the EA/CEFDK family) and whether openHC's MFH boot item is currently present.",
+    responses((status = 200, description = "availability and MFH state")))]
+async fn restore_status_h(s: Ctx) -> axum::response::Response {
+    run(s, Cmd::RestoreStatus).await
+}
+
+#[utoipa::path(post, path = "/api/system/restore/stock", tag = "Recovery",
+    summary = "Return the controller to stock (DESTRUCTIVE, one-way)",
+    description = "Reverses openHC's single MFH item and hands p1 to CEFDK's recovery kernel, \
+which reimages the stock rootfs. The controller reboots to stock and openHC is gone until \
+reinstalled. POST-ing here IS the confirmation; wrap it in a UI confirm dialog.",
+    responses((status = 200, description = "restore started; the box will reboot")))]
+async fn restore_stock_h(s: Ctx) -> axum::response::Response {
+    run(s, Cmd::RestoreStock { confirm: true }).await
 }
 
 /// Permissive CORS, deliberately.

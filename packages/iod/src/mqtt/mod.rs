@@ -102,6 +102,11 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
             }),
         },
         ["mcu", "reset"] => Some(Cmd::McuReset),
+        ["restore", "status"] => Some(Cmd::RestoreStatus),
+        // Body must be CONFIRM — a bare topic publish cannot wipe the box.
+        ["restore", "stock"] => Some(Cmd::RestoreStock {
+            confirm: b.trim().eq_ignore_ascii_case("confirm"),
+        }),
         // `ir/front/send` for the internal blaster; `ir/<n>/send` for a rear
         // jack, numbered as the case is.
         ["ir", "front", "send"] => {

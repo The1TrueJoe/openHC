@@ -138,27 +138,70 @@ fn cmd_stock() -> io::Result<()> {
 }
 
 /// Reimage p1 by kexec-ing p2's stock recovery kernel with `recovery` on its
-/// command line — the same path the recessed button takes, but triggered from
-/// software. The recovery kernel's initramfs reformats p1 and unpacks the stock
-/// rootfs from p2. p1 is our running root, which is exactly why this must run
-/// from a different kernel rather than here.
+/// command line — the same path the recessed button takes, but from software. The
+/// recovery kernel's initramfs reformats p1 and unpacks the stock rootfs from p2.
+/// p1 is our running root, which is exactly why this must run from a different
+/// kernel rather than in place.
+///
+/// The recovery kernel ships in p2 as recovery_kernel.deb (an ar archive whose
+/// data.tar.gz holds the kernel). We extract it with the box's own ar + busybox
+/// tar (`-xa`, autodetect), find the bzImage inside, and kexec it.
 fn recovery_reimage_p1() -> io::Result<()> {
-    // The recovery kernel lives in p2 as recovery_kernel.deb (ar -> data.tar.xz
-    // -> the kernel). Extraction is left to the caller's wrapper (busybox ar/tar
-    // on the box) to keep this binary dependency-free; this function performs the
-    // kexec once /tmp/recovery.bzImage exists.
-    let kern = "/tmp/recovery.bzImage";
-    if !std::path::Path::new(kern).exists() {
-        return Err(io::Error::other(format!(
-            "{kern} not staged — extract it from p2's recovery_kernel.deb first"
-        )));
+    let p2 = "/mnt/ohc-recovery";
+    std::fs::create_dir_all(p2)?;
+    run("mount", &["-o", "ro", "/dev/mmcblk0p2", p2])
+        .or_else(|_| run("mount", &["-o", "ro,remount", "/dev/mmcblk0p2", p2]))?;
+    let deb = format!("{p2}/recovery_kernel.deb");
+    if !std::path::Path::new(&deb).exists() {
+        return Err(io::Error::other(format!("{deb} missing — cannot recover p1")));
     }
+    // ar p <deb> data.tar.gz | tar -x -a -f - -C /tmp/ohc-rk
+    let work = "/tmp/ohc-rk";
+    let _ = std::fs::remove_dir_all(work);
+    std::fs::create_dir_all(work)?;
+    let tgz = format!("{work}/data.tar.gz");
+    let data = std::process::Command::new("ar").args(["p", &deb, "data.tar.gz"]).output()?;
+    if !data.status.success() || data.stdout.is_empty() {
+        return Err(io::Error::other("ar: could not read data.tar.gz from recovery_kernel.deb"));
+    }
+    std::fs::write(&tgz, &data.stdout)?;
+    run("tar", &["-x", "-a", "-f", &tgz, "-C", work])?;
+
+    // Find the kernel: a file whose 0x202 magic is "HdrS" (the bzImage setup sig).
+    let kern = find_bzimage(std::path::Path::new(work))
+        .ok_or_else(|| io::Error::other("no bzImage (HdrS magic) found in recovery_kernel.deb"))?;
+    eprintln!("stock: recovery kernel = {}", kern.display());
+
     let cmdline = "console=ttyS0,115200 pci=realloc,nocrs,routeirq recovery";
-    run("kexec", &["-l", kern, &format!("--command-line={cmdline}")])?;
-    eprintln!("stock: kexec -e (reimaging p1 from p2; the box will reboot to stock)");
+    run("kexec", &["-l", kern.to_str().unwrap(), &format!("--command-line={cmdline}")])?;
+    eprintln!("stock: kexec -e (reimaging p1 from p2; the box reboots to stock)");
     run("sync", &[])?;
-    run("kexec", &["-e"])?;
+    run("kexec", &["-e"])?; // does not return
     Ok(())
+}
+
+/// Walk `dir` and return the first file that is a Linux bzImage (the "HdrS" setup
+/// magic at offset 0x202), so we kexec the kernel regardless of how the .deb lays
+/// its payload out.
+fn find_bzimage(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if let Ok(mut f) = std::fs::File::open(&p) {
+                let mut sig = [0u8; 4];
+                use std::io::{Read, Seek, SeekFrom};
+                if f.seek(SeekFrom::Start(0x202)).is_ok() && f.read_exact(&mut sig).is_ok() && &sig == b"HdrS" {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn run(cmd: &str, args: &[&str]) -> io::Result<()> {
