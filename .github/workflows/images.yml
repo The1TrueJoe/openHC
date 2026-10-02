@@ -102,11 +102,15 @@ jobs:
           fi
 
           sel=()
-          # ea-common is shared by the EA family only.
-          if echo "$changed" | grep -qE '^board/ea-common/'; then
+          # ea/common is shared by the EA family only.
+          if echo "$changed" | grep -qE '^board/ea/common/'; then
             sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
           fi
-          for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
+          # EA boards live under board/ea/<board>/; the others are top-level.
+          for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2; do
+            echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
+          done
+          for b in ioxv1 ca1 hc800; do
             echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")
           done
           # Workflow-only or docs-only change: nothing to build.

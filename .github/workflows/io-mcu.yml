@@ -38,11 +38,11 @@ jobs:
           # The EA tree emits a bare .bin; the HC-800 tree wraps it in
           # Control4's container, so it gets the `image` target and a CRC check.
           - name: tm4c1231d5-ea1
-            dir: board/ea-common/firmware/io-mcu/tm4c1231d5
+            dir: board/ea/common/firmware/io-mcu/tm4c1231d5
             target: fw
             args: BOARD=ea1
           - name: tm4c1231d5-ea3
-            dir: board/ea-common/firmware/io-mcu/tm4c1231d5
+            dir: board/ea/common/firmware/io-mcu/tm4c1231d5
             target: fw
             args: BOARD=ea3
           - name: lm3s1162-hc800

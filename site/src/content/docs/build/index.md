@@ -43,7 +43,7 @@ concatenates them and feeds the result in as `BR2_DEFCONFIG`:
 
 ```
 board/common/common_defconfig          every board
-  + board/ea-common/ea-common_defconfig   EA family only
+  + board/ea/common/common_defconfig   EA family only
   + features listed in ohc.features       wifi, emmc, switch, audio, sgx
   + board/<board>/<board>_defconfig       the board's own differences
 ```

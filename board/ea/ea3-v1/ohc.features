@@ -1,0 +1,30 @@
+# Shared EA feature sets this board pulls in. One word per feature, space
+# separated. Each lives in board/ea/common/features/<name>/, holding both its
+# halves: defconfig (userspace) and linux.fragment (kernel).
+#   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
+#   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
+#   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
+#   audio  - CE5300 I2S + ADAU1451 codec, ALSA, AirPlay (shairport-sync)
+#            and Spotify Connect (librespot)
+wifi emmc switch audio
+
+# RE-ENABLED (was `wifi emmc` while Home Assistant was brought up). This is the
+# full EA-3 v1 feature set: it has the radio, the BCM53125 switch and the EA-3
+# audio hardware.
+#
+# !!! SIZE: an x86_64 EA-3 kernel already fills ~7,037,952 of CEFDK's 7,417,856-byte
+# bootlinux window; `switch` and `audio` must not push it over (an oversized
+# bzImage is TRUNCATED silently and does not boot). Status:
+#   switch - now built =m (b53/dsa/tag), loaded by /etc/init.d/S39ea-switch, so
+#            it no longer costs the window. SPI master stays =y.
+#   audio  - still =y: SND_SOC=m would make the obj-y ASoC drivers fail the
+#            vmlinux link (they call snd-soc-core exports), and making those
+#            copied drivers obj-m is a separate change not done here. So audio
+#            still spends its full size in the bzImage.
+# STILL NEEDS A CI BUILD to confirm the image fits + boots, and that S39ea-switch
+# actually brings the switch up. `audio` also has never been built for x86_64
+# (compile risk) and its platform driver is probe-only (enable_pcm=0; reading TX
+# reg 0x2004 hangs the SoC).
+#
+# `wifi` stays affordable only because its fragment builds ath9k/mac80211/cfg80211
+# as MODULES; as =y they were ~1 MB and did not fit either.

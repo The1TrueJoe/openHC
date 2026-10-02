@@ -1,0 +1,31 @@
+#!/bin/sh
+# openHC Zigbee NCP bring-up — SHARED (board/common).
+#
+# ohc-zigbee takes the EM35x out of its serial bootloader and holds the port open
+# so the radio stack (zigbee2mqtt) finds a live NCP. This script is on EVERY
+# board but is INERT unless BOTH halves are present:
+#   * the ohc-zigbee binary is installed — only the 'zigbee' feature stages it
+#     (packages/build.sh gates the crate on the feature), so an IO Extender never
+#     has it; and
+#   * board.env names a radio port (OHC_ZIGBEE_TTY).
+# Runs after S90ohcweb; the radio owner starts later and connects to the live NCP.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+BIN=/opt/ohc/bin/ohc-zigbee
+
+start() {
+    [ -x "$BIN" ] || return 0                # no zigbee feature on this board
+    [ -n "$OHC_ZIGBEE_TTY" ] || return 0     # no radio configured
+    export OHC_ZIGBEE_TTY OHC_ZIGBEE_BAUD
+    start-stop-daemon -S -q -b -m -p /var/run/ohc-zigbee.pid --exec "$BIN" \
+        && echo "zigbee: NCP bring-up on $OHC_ZIGBEE_TTY"
+}
+stop() {
+    [ -f /var/run/ohc-zigbee.pid ] && start-stop-daemon -K -q -p /var/run/ohc-zigbee.pid
+    rm -f /var/run/ohc-zigbee.pid
+}
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

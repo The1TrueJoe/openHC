@@ -31,12 +31,18 @@ ohc-flash restore <host>
 - **IO Extender:** sets U-Boot's compiled-in `bootcmd`, deletes every variable
   openHC added, and erases the openHC slot. Verified on a unit: it comes back with
   the factory environment and boots stock.
-- **HC-800:** restores the stock `menu.lst` from the backup the install kept and
-  deletes openHC's two files from the spare kernel partition.
-- **EA family and CA-1:** the install replaced stock's root filesystem, which only
-  Control4's own recovery can re-image, and that is started by the recessed
-  factory-restore button. `restore` says so and changes nothing; the per-board
-  sections below cover the button.
+- **HC-800:** points `menu.lst` at Control4's own factory-restore system
+  (entry 0, `/dev/sda2`), the software equivalent of the ID button.
+- **EA family:** runs the box's `ohc-restore stock`, which removes openHC's single
+  MFH item from SPI-NOR (read-back verified) and kexecs p2's recovery kernel to
+  re-image p1, the same reimage the recessed button starts.
+- **CA-1:** deletes openHC's `boot.scr`, zImage and DTB from the FAT partition and
+  makes the next boot run U-Boot's own `factoryrestore` once, which re-images p2
+  from p3. The one-shot is plain `setenv` words, no nested quoting: the original
+  `bootcmd` is held in `ohc_stock_bootcmd`, and running `restore` again on the
+  restored stock box folds it back and removes the helper variables.
+
+`factory-restore` is an alias for the same command.
 
 ## EA family
 

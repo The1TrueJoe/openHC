@@ -2,7 +2,9 @@
 # (not globbed) so non-Rust packages can live under packages/ later too.
 [workspace]
 resolver = "2"
-members = ["wifi", "iod", "webd", "portal", "sysmond"]
+# `portal` is no longer its own member — the captive-portal binary now lives in
+# the `wifi` crate (which also holds the shared Wi-Fi lib webd uses).
+members = ["wifi", "iod", "webd", "sysmond", "zigbee", "restore"]
 
 [workspace.package]
 version = "0.1.0"

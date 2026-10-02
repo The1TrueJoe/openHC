@@ -150,6 +150,18 @@ pub enum Cmd {
     /// which on a controller in a rack is a site visit.
     #[serde(rename = "mcu.reset")]
     McuReset,
+    /// Report the stock-restore state: whether openHC's MFH item is present and
+    /// the box can be returned to stock from software. Read-only — safe to poll.
+    #[serde(rename = "restore.status")]
+    RestoreStatus,
+    /// Return the controller to stock: reverse openHC's one MFH item and hand p1
+    /// to CEFDK's recovery kernel. ONE-WAY and the box reboots; the caller must
+    /// pass `confirm: true` so a stray topic or click cannot wipe a controller.
+    #[serde(rename = "restore.stock")]
+    RestoreStock {
+        #[serde(default)]
+        confirm: bool,
+    },
     #[serde(rename = "contact.get")]
     ContactGet,
     #[serde(rename = "relay.get")]
@@ -210,6 +222,8 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::Capabilities => Ok(capabilities(c)),
         Cmd::McuInfo => mcu_info(c).await,
         Cmd::McuReset => mcu_reset(c).await,
+        Cmd::RestoreStatus => restore_status().await,
+        Cmd::RestoreStock { confirm } => restore_stock(confirm).await,
         Cmd::LedList => Ok(json!({ "leds": crate::led::list() })),
         Cmd::LedSet { name, on, level } => led_set(c, &name, on, level).await,
         Cmd::ContactGet => contacts(c).await,
@@ -223,6 +237,54 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::SerialWrite { index, data, hex, b64 } => serial_write(c, index, &data, hex, b64),
         Cmd::SerialLine { index, line, on } => serial_line(c, index, line, on),
     }
+}
+
+/// Path to the return-to-stock helper. Present only on boards whose `ohc.features`
+/// has `restore` (the EA / CEFDK family); absent elsewhere, which is how the UI
+/// knows not to offer the control.
+const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
+
+/// Read-only: is a software return-to-stock available here, and what does the MFH
+/// currently say? Shells out to `ohc-restore status` and passes its stdout through.
+async fn restore_status() -> Out {
+    if !std::path::Path::new(RESTORE_BIN).exists() {
+        return Ok(json!({ "available": false, "reason": "no restore support on this board" }));
+    }
+    let out = tokio::process::Command::new(RESTORE_BIN)
+        .arg("status")
+        .output()
+        .await
+        .map_err(|e| Fault::Io(format!("ohc-restore: {e}")))?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let openhc = text.contains("state: openHC");
+    Ok(json!({
+        "available": true,
+        "openhc": openhc,          // true = openHC's MFH item present (restorable)
+        "detail": text.trim(),
+    }))
+}
+
+/// Destructive, one-way: reverse openHC's MFH item and let CEFDK's recovery kernel
+/// reimage p1. Requires `confirm: true`. Spawned DETACHED so this call returns
+/// before the box reboots itself out from under the connection.
+async fn restore_stock(confirm: bool) -> Out {
+    if !confirm {
+        return Err(Fault::NoSuch(
+            "restore.stock needs confirm:true — this wipes the controller back to stock".into(),
+        ));
+    }
+    if !std::path::Path::new(RESTORE_BIN).exists() {
+        return Err(Fault::NoSuch("no restore support on this board".into()));
+    }
+    // Detached: the recovery kexec reboots the box, so we must not wait on it.
+    std::process::Command::new(RESTORE_BIN)
+        .arg("stock")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| Fault::Io(format!("ohc-restore stock: {e}")))?;
+    Ok(json!({ "started": true, "note": "returning to stock; the controller will reboot" }))
 }
 
 /// Everything a client needs to draw the UI, and nothing it does not.

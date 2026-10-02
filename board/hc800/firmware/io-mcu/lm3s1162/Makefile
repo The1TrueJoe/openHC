@@ -18,7 +18,7 @@
 #
 # They should really live in a shared io-mcu/common/ directory. Pointing at the
 # EA tree is the smaller change today; make that move when a third part appears.
-SHARED = ../../../../ea-common/firmware/io-mcu/tm4c1231d5
+SHARED = ../../../../ea/common/firmware/io-mcu/tm4c1231d5
 
 BOARD  ?= hc800
 CROSS  ?= arm-none-eabi-

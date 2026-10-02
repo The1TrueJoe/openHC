@@ -3,11 +3,26 @@ name = "wifi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared Wi-Fi setup helpers (scan cache, wpa_supplicant station config, captive-portal page). Used by both portal and webd."
+description = "openHC Wi-Fi setup: the shared helper lib (scan cache, wpa_supplicant station config, captive-portal page — used by webd too) AND the captive-portal binary that serves the setup page/join API while the setup AP is up. Portal and lib were separate crates; merged because a Wi-Fi board always wants both."
 
+# The lib itself is still pure std (src/lib.rs has no `use` of the crates below);
+# the axum/tokio/serde deps exist only for the `portal` binary. They do become
+# dependencies of this PACKAGE, so a crate that depends on the wifi lib (webd)
+# pulls them into its build graph — but webd already depends on axum, tokio,
+# serde and serde_json directly, so this introduces no NEW third-party code to
+# any image. The only other consumer of the lib was the portal binary, now in
+# this same crate, which is why merging them costs nothing.
 [lib]
 path = "src/lib.rs"
 
-# Pure std — no dependencies on purpose, so both the tiny portal and the dashboard
-# can pull it in without dragging extra crates into either.
+# The captive-portal web app (was packages/portal). S41wifi-ap runs it only
+# while the setup AP is up. Its binary is still /opt/ohc/bin/portal.
+[[bin]]
+name = "portal"
+path = "src/main.rs"
+
 [dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt", "net", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

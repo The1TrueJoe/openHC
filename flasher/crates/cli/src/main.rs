@@ -1,8 +1,8 @@
 //! Thin CLI over the flasher crates. The same engine the GUI drives — this is
 //! for power users and scripts.
 
-use ohc_flash_core::{board, image, method, Method};
-use ohc_flash_engine::{hc800, iox, network, Progress, Release};
+use ohc_flash_core::{board, cefdk, image, method, Method};
+use ohc_flash_engine::{ca1, ea, hc800, iox, netboot, network, Progress, Release};
 use ohc_flash_transport as tp;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -13,17 +13,27 @@ fn main() -> ExitCode {
     let rest = &args[args.len().min(1)..];
     let ok = match cmd {
         "boards" => { boards(); true }
-        "discover" => discover(),
+        "discover" => discover(rest),
         "identify" => identify(rest),
         "plan" => plan(rest),
         "validate" => validate(rest),
         "install" => install(rest),
         "rootfs" => rootfs(rest),
+        // Two boards, two netboot wire protocols. The EA drives CEFDK's serial
+        // console and answers a bare BOOTP cookie (--serial); the IO-Extender has
+        // no console and speaks full DHCP+TFTP (--mac/--image). Pick by the flag
+        // that only one of them takes.
+        "netboot" => {
+            if rest.iter().any(|a| a == "--serial") { netboot_cmd(rest) } else { netboot_dhcp(rest) }
+        }
         "boot" => boot(rest),
+        "sh" => shell(rest),
+        "push" => push(rest),
+        "log" => log(rest),
+        "reset" => reset(rest),
         "uninstall" => uninstall(rest),
-        "restore" => restore(rest),
+        "restore" | "factory-restore" => restore(rest),
         "wrap" => wrap(rest),
-        "netboot" => netboot(rest),
         "help" | "-h" | "--help" => { help(); true }
         other => { eprintln!("unknown command '{other}'\n"); help(); false }
     };
@@ -34,7 +44,9 @@ fn help() {
     println!(
         "openHC flasher (CLI)\n\n\
          usage: ohc-flash <command>\n\n\
-           discover                 find Control4 units on the network\n\
+           discover [--all]         find Control4 controllers on the network.\n\
+                                    --all also lists the non-Control4 devices\n\
+                                    announcing on the SDDP bus (TVs, amps, DVRs)\n\
            identify [HOST]          say what a unit is (auto-discovers if omitted)\n\
              \n\
            Any command taking [HOST] also accepts --password <pw> for a controller\n\
@@ -51,19 +63,37 @@ fn help() {
                                     the tiny boot-init instead).\n\
                                     HC-800: --method kexec (default) writes NOTHING and\n\
                                     runs openHC from RAM; --method grub installs it to\n\
-                                    the kernel partition so it survives a power cut.\n\
+                                    the kernel partition so it survives a power cut,\n\
+                                    and --boot-once makes that install hand the GRUB\n\
+                                    default back to Control4 as openHC starts (safer\n\
+                                    for a box you cannot reach).\n\
                                     IO Extender: --method nand writes the half of the\n\
                                     NAND stock never uses, from stock or openHC; three\n\
                                     failed openHC boots fall back to stock on their own.\n\
                                     --netconsole <ip>[:port] ships the boot log to you\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
+           netboot --serial <dev> --mac <aa:bb:..> [--images <dir|zip>]\n\
+                   [--server-ip <ip>] [--box-ip <ip>] [--cmdline <str>] [--no-wait]\n\
+                                    EA bring-up: netboot openHC into RAM from CEFDK's\n\
+                                    manufacturing shell — answers BOOTP with the C4 cookie,\n\
+                                    serves the images over TFTP, and drives the serial\n\
+                                    console. Writes NOTHING to the box. Needs sudo (binds\n\
+                                    :67/:69) and the ID button held through a power cycle.\n\
+           sh <host> <command>      run a command on a unit\n\
+           push <host> <file>...    copy files into /tmp on a unit\n\
+           log [--port N]           listen for netconsole (run this BEFORE an install\n\
+                                    that passes --netconsole; the boot log cannot be\n\
+                                    recovered afterwards)\n\
+           reset [HOST]             sysrq-reboot, through the kernel rather than init\n\
            boot [HOST]              re-enter an INSTALLED openHC (HC-800: after any reset;\n\
                                     IO Extender: after a fallback to stock)\n\
            uninstall [HOST] [--yes]  boot stock again. HC-800: restore the stock menu.lst;\n\
                                     IO Extender: U-Boot boots stock (openHC stays, for boot)\n\
-           restore [HOST] [--yes]    back to factory: everything openHC wrote is undone.\n\
-                                    EA/CA-1: prints the factory-button procedure instead\n\
+           restore [HOST] [--yes]    back to factory, on any board (alias factory-restore).\n\
+                                    IO Extender: U-Boot's default boot, slot erased. HC-800\n\
+                                    and CA-1: Control4's own recovery re-images the box.\n\
+                                    EA: removes openHC's autoscript, then Control4's recovery\n\
            wrap <bzImage> <out> [--header FILE]\n\
                                     wrap a bzImage in a CEFDK container\n\
            netboot --mac <MAC> --image <FILE> [--board NAME]\n\
@@ -85,16 +115,56 @@ fn boards() {
     }
 }
 
-fn discover() -> bool {
+fn discover(rest: &[String]) -> bool {
     println!("scanning...");
-    let found = tp::discover(true);
+    // The Control4-only rule lives in the transport, so this and the GUI cannot
+    // disagree about what counts as a controller.
+    let all = rest.iter().any(|a| a == "--all");
+    let found = if all { tp::discover_all(true) } else { tp::discover(true) };
     if found.is_empty() {
         println!("  nothing found. A freshly restored unit may not answer ICMP yet; \
-                  try again or pass the IP directly.");
+                  try again, pass the IP directly, or use --all to see every device \
+                  on the SDDP bus.");
         return false;
     }
+    // Columns sized to the data, so a fleet with long names does not wrap and a
+    // fleet without any does not leave a gutter.
+    let w = |pick: fn(&tp::Found) -> String| {
+        found.iter().map(|f| pick(f).chars().count()).max().unwrap_or(0)
+    };
+    let wn = w(|f| f.name.clone().unwrap_or_default()).max(4);
+    let wm = w(|f| f.model.clone().unwrap_or_default()).max(5);
+
+    println!(
+        "  {:<16} {:<17} {:<wn$} {:<wm$} {}",
+        "ADDRESS", "MAC", "NAME", "MODEL", "VIA"
+    );
     for f in &found {
-        println!("  {:<16} {:<18} {}", f.ip, f.mac.clone().unwrap_or_default(), f.via.join(","));
+        // A controller is what you can install onto; everything else on the
+        // SDDP bus is a device Control4 drives. Marking it saves the operator
+        // working it out from the type string.
+        let lead = if f.is_director { "*" } else { " " };
+        println!(
+            "{lead} {:<16} {:<17} {:<wn$} {:<wm$} {}",
+            f.ip,
+            f.mac.clone().unwrap_or_else(|| "-".into()),
+            f.name.clone().unwrap_or_else(|| "-".into()),
+            f.model.clone().unwrap_or_else(|| "-".into()),
+            f.via.join(","),
+        );
+    }
+    if found.iter().any(|f| f.is_director) {
+        println!("\n  * = answered as a Control4 controller");
+    }
+    if found.iter().any(|f| f.name.is_none()) {
+        // Say why a row is bare rather than leaving it looking like a failure.
+        for line in [
+            "Rows with no name were found by MAC alone. SDDP announcements are periodic —",
+            "one unit here advertises max-age 5000, about 80 minutes — and a controller with",
+            "Director disabled never announces at all. `identify <ip>` asks the unit directly.",
+        ] {
+            println!("  {line}");
+        }
     }
     true
 }
@@ -121,8 +191,18 @@ fn connect(rest: &[String]) -> Option<(String, tp::Ssh)> {
     match tp::first_working_login_with(&host, &extra) {
         Some(s) => Some((host, s)),
         None if tp::ssh_port_open(&host) => {
-            eprintln!("  {host} is reachable but no password worked — SSH password login may be \
-                       disabled or the root password is calculated; pass --password <pw> or use a key");
+            // NOT "no password worked". On OS 3.1.0 and later there IS no root
+            // password — Control4 removed it — so trying more of them is not the
+            // answer and saying "wrong password" sends people looking for one
+            // that does not exist. Measured both ways: the factory password
+            // still works on an HC-800 running the 2.x image, and an EA-3 on
+            // 3.3.3 refuses it.
+            eprintln!("  {host} answers on 22 but refused every login this tool knows.");
+            eprintln!("    On Control4 OS 3.1.0 and later there is no default root password at");
+            eprintln!("    all — it was removed, so no amount of guessing will work. Add an SSH");
+            eprintln!("    user with Composer's Network Tools, then pass --password <pw>, or");
+            eprintln!("    install a key and let this fall through to key auth.");
+            eprintln!("    On OS 3.0.x and earlier, root / t0talc0ntr0l4! is the factory login.");
             None
         }
         None => { eprintln!("  cannot reach {host} over SSH"); None }
@@ -133,6 +213,9 @@ fn identify(rest: &[String]) -> bool {
     let Some((host, ssh)) = connect(rest) else { return false };
     let id = tp::identify(&ssh);
     println!("  {host}: {}", id.describe());
+    if let Some(v) = &id.version {
+        println!("    running version {v}");
+    }
     for (k, v) in &id.raw { println!("    {k}: {}", v.trim()); }
     id.board.is_some()
 }
@@ -142,7 +225,8 @@ fn plan(rest: &[String]) -> bool {
         eprintln!("usage: ohc-flash plan <board> [method]"); return false
     };
     let Some(b) = board::by_name(name) else { eprintln!("unknown board '{name}'"); return false };
-    let id = ohc_flash_core::Identity { board: Some(b), candidates: vec![b], running: board::Running::Stock, raw: vec![] };
+    let id = ohc_flash_core::Identity { board: Some(b), candidates: vec![b], running: board::Running::Stock,
+            version: None, raw: vec![] };
     println!("  board:  {} ({})", b.name, b.desc);
 
     // Named method: show just that one. Otherwise show the preferred method and
@@ -227,7 +311,7 @@ fn validate(rest: &[String]) -> bool {
 ///
 /// This exists so the Buildroot post-image step and the installer agree on the
 /// container layout by construction rather than by two implementations staying
-/// in sync. board/ea-common/post-image.sh calls it.
+/// in sync. board/ea/common/post-image.sh calls it.
 fn wrap(rest: &[String]) -> bool {
     let args: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
     if args.len() < 2 {
@@ -324,6 +408,126 @@ fn boot(rest: &[String]) -> bool {
     true
 }
 
+/// `sh [HOST] <command>` — run something on a unit.
+///
+/// Folded in from what used to be tools/ohc-hc800, along with `push`, `log` and
+/// `reset`. That script grew during HC-800 bring-up, when the flasher had no
+/// support for the board at all, and by the time it did the two had become two
+/// implementations of the same discovery — which is not an abstract cost: the
+/// stale-ARP rule that keeps a dead address out of the results was fixed in the
+/// script and not here, so the same operator got different answers from the two
+/// tools on the same network.
+fn shell(rest: &[String]) -> bool {
+    // HOST is REQUIRED here, unlike the install commands. Those can guess,
+    // because a wrong guess only costs a refused connection; `sh` would
+    // otherwise have to decide whether a bare first argument is an address or
+    // the first word of the command, and every rule for that is a guess that
+    // eventually runs the wrong thing on the wrong box.
+    let args: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
+    if args.len() < 2 {
+        eprintln!("usage: ohc-flash sh <host> <command>");
+        return false;
+    }
+    let Some((_h, ssh)) = connect(rest) else { return false };
+    let command = args[1..].iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+    match ssh.run(&command, false) {
+        Ok(out) => {
+            print!("{out}");
+            true
+        }
+        Err(e) => {
+            eprintln!("  {e}");
+            false
+        }
+    }
+}
+
+/// `push [HOST] <file>...` — copy files into /tmp on a unit.
+fn push(rest: &[String]) -> bool {
+    // Same rule as `sh`: host first, then the files.
+    let args: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
+    if args.len() < 2 {
+        eprintln!("usage: ohc-flash push <host> <file>...");
+        return false;
+    }
+    for f in &args[1..] {
+        if !Path::new(f.as_str()).is_file() {
+            eprintln!("  no such file: {f}");
+            return false;
+        }
+    }
+    let Some((_h, ssh)) = connect(rest) else { return false };
+    for f in &args[1..] {
+        let Ok(data) = std::fs::read(f.as_str()) else {
+            eprintln!("  cannot read {f}");
+            return false;
+        };
+        let base = Path::new(f.as_str())
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if let Err(e) = ssh.put_stream(&data, &format!("cat > /tmp/{base}")) {
+            eprintln!("  {e}");
+            return false;
+        }
+        println!("  /tmp/{base}  {} B", data.len());
+    }
+    true
+}
+
+/// `log [--port N]` — listen for netconsole.
+///
+/// The boot log is the one thing that cannot be recovered afterwards: by the
+/// time a box is up, the messages explaining why it nearly wasn't are gone. Run
+/// this BEFORE an install that passes --netconsole.
+fn log(rest: &[String]) -> bool {
+    let port: u16 = rest
+        .windows(2)
+        .find(|w| w[0] == "--port")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(6666);
+    let sock = match std::net::UdpSocket::bind(("0.0.0.0", port)) {
+        Ok(s) => s,
+        Err(e) => {
+            // A second listener binds nothing and prints nothing, which looks
+            // exactly like a box that has stopped talking. Say so instead.
+            eprintln!("  cannot listen on udp/{port}: {e}");
+            return false;
+        }
+    };
+    eprintln!("  netconsole listener on udp/{port} — Ctrl-C to stop");
+    let mut buf = [0u8; 2048];
+    loop {
+        match sock.recv_from(&mut buf) {
+            Ok((n, _)) => {
+                print!("{}", String::from_utf8_lossy(&buf[..n]));
+                if !buf[..n].ends_with(b"\n") {
+                    println!();
+                }
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+            }
+            Err(e) => { eprintln!("  {e}"); return false }
+        }
+    }
+}
+
+/// `reset [HOST]` — sysrq reboot.
+///
+/// Goes through the kernel, not init, so it still works when userspace is too
+/// wedged to run `reboot`. On an HC-800 the unit comes back on stock Control4,
+/// because openHC hands the GRUB default back as it boots.
+fn reset(rest: &[String]) -> bool {
+    let Some((host, ssh)) = connect(rest) else { return false };
+    eprintln!("  sysrq-reboot on {host}");
+    // ONE attempt, no retry: the connection dying is the intended outcome, so
+    // retrying it just spends ssh timeouts before the operator learns anything.
+    let _ = ssh.run("echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger", false);
+    eprintln!("  sent. It takes a fresh DHCP lease, so find it by MAC: ohc-flash discover");
+    true
+}
+
 /// `uninstall [HOST]` — boot stock again (HC-800, IO Extender).
 fn uninstall(rest: &[String]) -> bool {
     use ohc_flash_core::board::Family;
@@ -344,12 +548,11 @@ fn uninstall(rest: &[String]) -> bool {
     true
 }
 
-/// `restore [HOST]` — put a board back the way it shipped.
+/// `restore [HOST]` — put a board back the way it shipped, on any board.
 ///
-/// Automatic where openHC never overwrote stock (IO Extender, HC-800). On the EA
-/// family and the CA-1 the install replaced stock's root filesystem, which only
-/// Control4's own recovery can re-image, and that recovery is started by a
-/// button this tool cannot press — so there it says how, and changes nothing.
+/// IO Extender: U-Boot's factory bootcmd, our variables gone, the slot erased.
+/// HC-800, EA and CA-1: openHC replaced stock's root there, so each hands the box
+/// to Control4's own recovery, started by software instead of the button.
 fn restore(rest: &[String]) -> bool {
     use ohc_flash_core::board::Family;
     let Some((_host, ssh)) = connect(rest) else { return false };
@@ -357,15 +560,9 @@ fn restore(rest: &[String]) -> bool {
     println!("  target: {}", id.describe());
     let (what, f): (&str, fn(&tp::ssh::Ssh, &Progress) -> anyhow::Result<()>) = match id.board.map(|b| b.family) {
         Some(Family::Iox) => ("restore U-Boot's factory boot and erase the openHC slot", iox::restore),
-        Some(Family::Hc) => ("restore the stock menu.lst and delete openHC from the kernel partition", hc800::uninstall),
-        Some(Family::Ea) | Some(Family::Ca) => {
-            println!(
-                "  openHC replaced stock's root filesystem on this board; only Control4's recovery\n  \
-                 can put it back. Power the box off, hold the recessed factory-restore button, power\n  \
-                 it on and keep holding until the status LED changes. Nothing was changed."
-            );
-            return false;
-        }
+        Some(Family::Hc) => ("boot Control4's factory-restore system and let it wipe openHC", hc800::factory_restore),
+        Some(Family::Ea) => ("remove openHC's autoscript and let Control4's recovery re-image the box", ea::restore),
+        Some(Family::Ca) => ("delete openHC's boot files and run Control4's factoryrestore once", ca1::restore),
         None => { eprintln!("  refusing to restore an unidentified board"); return false }
     };
     if !rest.iter().any(|a| a == "--yes") && !confirm(what) {
@@ -432,7 +629,7 @@ fn install(rest: &[String]) -> bool {
                 let nc = netconsole_arg(rest);
                 hc800::kexec(&ssh, &rel, nc.as_ref().map(|(i, p)| (i.as_str(), *p)), &p)
             }
-            _ => hc800::install_grub(&ssh, &rel, &p),
+            _ => hc800::install_grub(&ssh, &rel, rest.iter().any(|a| a == "--boot-once"), &p),
         };
         if let Err(e) = r { eprintln!("  {e:#}"); return false; }
         return true;
@@ -473,35 +670,75 @@ fn install(rest: &[String]) -> bool {
         println!("\n  done — the box is rebooting; first boot self-installs p1 and pivots.");
         return true;
     }
-    if let Err(e) = network::stage1_ram_installer(&ssh, &rel, board.secure_boot, &p) {
-        eprintln!("  stage 1 failed: {e:#}");
+    // The proven no-serial conversion: kernel+initrd into the eMMC user-partition
+    // gap, a CEFDK `script` autoscript created over SSH with the correct SHA-256
+    // table hash (see engine::network::install_ramboot / core::mfh), enable it,
+    // reboot. The stock kernel at eMMC 0x400 is left as a clean fallback.
+    if let Err(e) = network::install_ramboot(&ssh, &rel, &p) {
+        eprintln!("  install failed: {e:#}");
         return false;
     }
-    println!("\n  stage 1 done — the box is rebooting into the RAM installer.");
-    if rest.iter().any(|a| a == "--no-wait") {
-        println!("  when it is back (same IP), run:");
-        println!("    ohc-flash rootfs {host} --images {}", images.display());
+    if rest.iter().any(|a| a == "--ram-only") || rest.iter().any(|a| a == "--no-wait") {
+        println!("\n  done — the box is rebooting into openHC (RAM). Give it ~90s.");
         return true;
     }
-
-    // Finish the job: wait for the RAM-booted openHC and run stage 2 itself.
-    // Leaving the box in RAM and telling the user to run a second command is how
-    // a half-installed unit gets forgotten about.
-    println!("  waiting up to 300s for the box to come back in RAM...");
+    // Stage 2: once openHC is RAM-booted, write the real rootfs to p1. The same
+    // RAM-boot autoscript then pivots to p1 on the next reboot (/init checks for
+    // /etc/openhc-release), so persistence needs no autoscript rewrite.
+    println!("  waiting up to 300s for openHC (RAM) to come up...");
     let ssh2 = match tp::wait_for_login(&host, 300) {
-        Some(s) => { println!("  — up"); s }
+        Some(s) => { println!("  — up; writing the persistent rootfs to p1"); s }
         None => {
-            eprintln!("  the box did not come back within 300s. When it is up, run:");
-            eprintln!("    ohc-flash rootfs {host} --images {}", images.display());
+            eprintln!("  no SSH within 300s. When openHC is up, run:  ohc-flash rootfs {host} --images {}", images.display());
             return false;
         }
     };
     if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, &p) {
-        eprintln!("  stage 2 failed: {e:#}");
+        eprintln!("  stage 2 (p1) failed: {e:#}");
+        eprintln!("  openHC still auto-boots from RAM; p1 persistence is not set up.");
         return false;
     }
-    println!("\n  done — the box is rebooting into openHC on p1.");
+    println!("\n  done — rebooting into openHC on p1 (persistent).");
     true
+}
+
+/// `netboot` — the EA bring-up loop: boot openHC into RAM from CEFDK's
+/// manufacturing shell without writing anything to the box.
+///
+/// Unlike the other subcommands this one does NOT connect over SSH first: the
+/// box is in the CEFDK bootloader with no OS, reachable only over serial. It
+/// binds the privileged BOOTP/TFTP ports, so it must be run under sudo.
+fn netboot_cmd(rest: &[String]) -> bool {
+    let flag = |name: &str| rest.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
+
+    let Some(serial) = flag("--serial") else {
+        eprintln!("  netboot needs --serial <dev> (the CEFDK console, e.g. /dev/tty.usbserial-XXXX)");
+        return false;
+    };
+    let Some(mac) = flag("--mac") else {
+        eprintln!("  netboot needs --mac <aa:bb:cc:dd:ee:ff> (the target's, so only it is answered)");
+        return false;
+    };
+    // The server IP is this host on the bring-up link; there is no safe default
+    // (a machine has several addresses), so require it rather than guess wrong.
+    let Some(server_ip) = flag("--server-ip") else {
+        eprintln!("  netboot needs --server-ip <ip> (this host's address on the link to the EA)");
+        return false;
+    };
+    let box_ip = flag("--box-ip").unwrap_or_else(|| "10.0.0.200".into());
+    let cmdline = flag("--cmdline").unwrap_or_else(|| cefdk::RAMBOOT_CMDLINE.to_string());
+    let wait = !rest.iter().any(|a| a == "--no-wait");
+
+    let images = images_arg(rest);
+    let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
+
+    println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
+    println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    let p = Progress::stdout();
+    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, wait, &p) {
+        Ok(()) => { println!("\n  done — openHC was netbooted into RAM."); true }
+        Err(e) => { eprintln!("  netboot failed: {e:#}"); false }
+    }
 }
 
 fn rootfs(rest: &[String]) -> bool {
@@ -534,7 +771,7 @@ fn rootfs(rest: &[String]) -> bool {
 ///
 /// --mac is required and there is no serve-everyone mode on purpose: this runs
 /// on a live home network, and every reply is gated on that one address.
-fn netboot(rest: &[String]) -> bool {
+fn netboot_dhcp(rest: &[String]) -> bool {
     let arg = |k: &str| rest.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
 
     let Some(mac_s) = arg("--mac") else {

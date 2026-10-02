@@ -18,7 +18,7 @@ it in and `board/Config.in` sources its `Config.in`:
 |---|---|
 | `board/common/packages/splash`, `figlet` | base firmware features, on every board |
 | `board/hc800/packages/ths8200` | HC-800 video DAC — that silicon is on one board |
-| `board/ea-common/packages/sgx545-*`, `wpebackend-pvr`, `webview` | the CE5300 graphics stack |
+| `board/ea/common/packages/sgx545-*`, `wpebackend-pvr`, `webview` | the CE5300 graphics stack |
 
 And things that are just *files* are just files: `/etc/motd` is
 `board/common/rootfs-overlay/etc/motd`, not a package that shells out to figlet
@@ -46,21 +46,24 @@ at `/api/openapi.json`. It can also **control Wi-Fi** — `GET /api/wifi/scan` a
 `POST /api/wifi/connect` — via the shared `wifi` crate, so the dashboard drives
 the same join flow the setup portal does.
 
-## portal
+## wifi (lib + the `portal` binary)
 
-The captive-portal Wi-Fi setup — a **separate** web app (~700 KB), deliberately
-kept out of the dashboard. `S41wifi-ap` runs it only while the setup AP is up, on
-its **own port `:8080`** (the dashboard keeps `:80`). The dashboard 302-redirects
-the phone's OS connectivity check to it while the AP is up, which is what trips the
-captive-portal popup. It serves a self-contained setup page for *every* path plus
-the same scan/join API, and does no wireless I/O itself — it hands off to `wifi`.
+One crate with two halves, merged because a Wi-Fi board always wants both:
 
-## wifi
+- **the lib** — a tiny pure-std helper (the lib itself pulls in no third-party
+  crates): reads the scanned SSID cache, writes the `wpa_supplicant` station
+  config (escaping SSID/PSK against conf-injection), kicks `S41wifi-ap` to switch
+  AP→station, and holds the captive-portal page. One copy of the credential
+  logic, used by both `webd` and the portal binary.
+- **the `portal` binary** — the captive-portal Wi-Fi setup web app, kept out of
+  the dashboard. `S41wifi-ap` runs it only while the setup AP is up, on its
+  **own port `:8080`** (the dashboard keeps `:80`). `webd` 302-redirects the
+  phone's OS connectivity check to it while the AP is up, which is what trips the
+  captive-portal popup. It serves a self-contained setup page for *every* path
+  plus the same scan/join API, and does no wireless I/O itself — it calls the lib.
 
-A tiny pure-std lib (no deps) shared by the two binaries above: reads the scanned
-SSID cache, writes the `wpa_supplicant` station config (escaping SSID/PSK against
-conf-injection), kicks `S41wifi-ap` to switch AP→station, and holds the portal
-page. One copy of the credential-handling logic, used by both.
+It was two crates (`wifi` + `portal`); they are one now. The binary is still
+installed as `/opt/ohc/bin/portal`.
 
 ## Build
 
@@ -106,16 +109,16 @@ being brought up. See `https://the1truejoe.github.io/openHC/ea/graphics/` for wh
 
 ```
 packages/
-  Cargo.toml            virtual workspace (wifi, webd, portal)
+  Cargo.toml            virtual workspace (wifi, webd, iod, sysmond, zigbee, restore)
   .cargo/config.toml    cross targets (rust-lld linker)
   rust-toolchain.toml   pins the rustup toolchain
-  build.sh              host build + stage both binaries into the overlay
-  wifi/             shared lib: scan cache, wpa config, portal page
+  build.sh              host build + stage the binaries into the overlay
+  wifi/             shared Wi-Fi lib + the captive-portal binary (:8080, AP-only)
+    src/lib.rs          scan cache, wpa config, portal page (pure std)
+    src/main.rs         the `portal` binary
   webd/
     Cargo.toml
     build.rs            embeds ui/dist
     src/                main, api, serial (libc termios), board, system
     ui/                 Vite + React + TS dashboard
-  portal/           standalone captive-portal app (:80, AP-only)
-    src/main.rs
 ```

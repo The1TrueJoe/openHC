@@ -13,16 +13,16 @@ comment "openHC board options"
 #   ce5300-ea3.c: undefined reference to `devm_snd_soc_register_card'
 #
 # Gating in Config.in rather than by sniffing the board name in a Makefile keeps
-# it explicit and greppable. ea-common_defconfig sets this; nothing else does.
+# it explicit and greppable. ea/common/common_defconfig sets this; nothing else does.
 config BR2_OHC_EA_KERNEL_DRIVERS
 	# A PROMPT IS LOAD BEARING. A prompt-less bool is not user-settable, so
 	# kconfig would silently discard the BR2_OHC_EA_KERNEL_DRIVERS=y line in
-	# ea-common_defconfig and leave it n — stripping every EA kernel driver
+	# ea/common/common_defconfig and leave it n — stripping every EA kernel driver
 	# from the EA boards with no error anywhere. Do not "tidy" this string away.
 	bool "EA family: inject the CE5300 kernel drivers"
 	help
-	  Injects board/ea-common/{drivers,sound} into the kernel tree and
-	  registers them per board/ea-common/kernel/objs.mk. EA family only —
+	  Injects board/ea/common/{drivers,sound} into the kernel tree and
+	  registers them per board/ea/common/kernel/objs.mk. EA family only —
 	  every driver behind it is Intel CE5300 specific.
 
 # The IO microcontroller's gpiochip driver. Same gating reason as the two below,
@@ -73,12 +73,12 @@ config BR2_OHC_IOXV1_KERNEL_DRIVERS
 	  them per board/ioxv1/kernel/objs.mk. IO Extender V1 only.
 
 # Buildroot packages live in <repo>/packages/ (BR2_EXTERNAL_OPENHC_PATH is board/).
-source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/figlet/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/figlet/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/splash/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/common/packages/iomcu-attach/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/splash/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/iomcu-attach/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-ce/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/sgx545-um/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/wpebackend-pvr/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea-common/packages/webview/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-ce/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-um/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/wpebackend-pvr/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/webview/Config.in"

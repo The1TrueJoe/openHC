@@ -68,8 +68,8 @@ make image BOARD=ea3-v2
 
 ```
 board/      Buildroot BR2_EXTERNAL root — one directory per board, plus the
-            shared common/ and ea-common/ trees they compose from
-packages/   Buildroot packages and the Rust workspace (iod, webd, sysmond)
+            shared common/ and ea/common/ trees they compose from
+packages/   Buildroot packages and the Rust workspace (iod, webd, wifi+portal, …)
 flasher/    the flasher — Rust workspace, GUI + CLI over one engine
 build/      Dockerised Buildroot
 site/       this project's documentation site (Astro + Starlight)
