@@ -50,6 +50,70 @@ button, extracted the factory rootfs over p1, and rebooted into a working stock
 image in about a minute. There's a benign `device_shutdown` warning in the reboot
 path; the machine restarts anyway.
 
+### openHC's own software return-to-stock
+
+The native button above is Control4's. openHC adds a second path that needs no
+serial and, with one of the triggers below, no button either. It exists because
+the boot SPI-NOR is now a writable `/dev/mtd0` — the in-tree `spi-ea-ce5xx`
+controller driver drives the CE5300's dedicated boot-flash block (PCI
+`8086:08a0`, a 16 MB S25FL127S), confirmed on an EA1 where `/proc/mtd` shows a
+16 MB `mtd0`. See [the boot chain](/ea/boot-chain/).
+
+**openHC's install makes exactly one boot change.** It appends a single `script`
+item to the CEFDK Master Flash Header (MFH) item-table in SPI-NOR — the table at
+offset `0x80000`, SHA-256 protected — redirecting CEFDK to openHC's autoscript.
+The stock kernel item, the stock kernel, and p2's entire factory payload are left
+untouched. So "return to stock" is just removing that one item. The tool is
+`ohc-restore` (shipped only on the EA, via the `restore` feature); its MFH edit is
+the byte-for-byte inverse of the installer's append, unit-tested to reproduce the
+known-stock SHA against the real 16 MB backup. Its subcommands:
+
+| Subcommand | What it does | Writes `mtd0`? |
+|---|---|---|
+| `status` | parse and print the MFH table | no |
+| `revert` | remove openHC's item (stock boot); reversible with `install` while p1 is still openHC | yes — erase + write + read-back verify |
+| `install` | re-append openHC's item (undo `revert`) | yes |
+| `stock` | `revert`, then recovery-kexec p2's kernel to reimage p1 — the full return to Control4 | yes |
+| `restore-mfh <backup.bin> [--compensate]` | rewrite the MFH block from a full-flash backup (repair a corrupted MFH) | yes |
+| `erasetest` | erase the MFH block and report how much read back `0xff` (diagnostic) | erase only |
+
+Every write is read-modify-**erase**-write then **read-back-verified**; nothing
+here ever claims success without the flash reading back exactly what was intended.
+
+**Three ways to trigger it:**
+
+1. **iod**, over REST (`/api/system/restore` and `/api/system/restore/stock`) and
+   MQTT (`cmd/restore/status`, `cmd/restore/stock`). `stock` requires an explicit
+   `{confirm:true}`.
+2. **The web UI System panel**, a two-step "Reset to stock" confirm, shown only
+   when `status.available`.
+3. **The front ID button.** Holding it runs `ohc-restore stock`. The button is a
+   bare SoC GPIO (`gpiochip0` line 32, active-low — released reads `1`, pressed
+   `0`, confirmed on an EA1) that `gpio-ea-board` deliberately leaves unclaimed. A
+   watcher (`/opt/ohc/bin/ohc-restore-button`, polling with libgpiod, launched by
+   init `S96ohc-restore-button`) fires after `OHC_RESTORE_BUTTON_HOLD` seconds
+   (default 10). It is **fail-safe**: it arms only after one clean "released"
+   reading, so a wrong line or polarity stays inert rather than wiping a box at
+   boot — verified on hardware. Each board configures it in `board.env`
+   (`OHC_RESTORE_BUTTON="gpiochip0 32"`, etc.).
+
+:::caution[Why the software path is the reliable one on a fuse-blown EA1]
+The native recessed CEFDK button does **not** rewrite the SPI-NOR MFH on a
+fuse-blown EA1, so the native button alone won't undo openHC's one change. The
+software path is the dependable way back there. On the EA3 the button's GPIO line
+and polarity are not yet hardware-confirmed (the `board.env` notes this); the
+fail-safe keeps the watcher inert until they are.
+:::
+
+:::note[Proven, and not-yet-proven]
+The `mtd0` **write path is proven**: it rewrote the MFH on a corrupted live EA1
+and read it back verified (the recovery was possible because `kexec` is a soft
+load that never reads the MFH, so a fixed kernel could be kexec'd in to repair the
+flash). The **full `stock` round-trip** — `revert` the MFH *and* recovery-kexec p2
+to reimage p1, all the way back to Control4 — has **not** yet been run end to end
+on hardware.
+:::
+
 ### Three boot modes, chosen at power-on
 
 ```
@@ -133,6 +197,14 @@ the vendor image again, and the vendor root on `sda4` and the factory-restore
 image on `sda2` are never written.
 
 Keep a copy of the original file, the install saves `menu.lst.stock` alongside it.
+
+The flasher can do that one-digit change for you: `ohc-flash factory-restore
+[HOST]` flips `menu.lst`'s `default` to Control4's own recovery entry (entry 0, on
+`/dev/sda2`) — the software equivalent of holding the ID button. It backs up
+`menu.lst`, read-back-verifies the change, guards the factory-default lines (never
+touches `sda2` or the MBR) and pushes no image. **This is code-complete and
+compiles, but has not yet been run against real HC-800 hardware** — treat it as
+unverified until it has.
 
 A serial console on `ttyS0` at 115200 sees GRUB itself if that fails.
 
