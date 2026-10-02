@@ -46,7 +46,9 @@ struct EraseInfoUser {
     length: u32,
 }
 // MEMERASE = _IOW('M', 2, struct erase_info_user) — 8-byte arg, x86 _IOC encoding.
-const MEMERASE: libc::c_ulong = 0x4008_4d02;
+// `u32` + `as _` at the call site: libc::ioctl's request arg is c_int on musl but
+// c_ulong on glibc/macOS, so let the cast coerce to whatever the target wants.
+const MEMERASE: u32 = 0x4008_4d02;
 
 fn read_block() -> io::Result<Vec<u8>> {
     let mut f = std::fs::OpenOptions::new().read(true).open(MTD)?;
@@ -63,7 +65,7 @@ fn erase_and_write(block: &[u8]) -> io::Result<()> {
     assert_eq!(block.len(), ERASE_BLOCK);
     let mut f = std::fs::OpenOptions::new().read(true).write(true).open(MTD)?;
     let ei = EraseInfoUser { start: BLOCK_OFF as u32, length: ERASE_BLOCK as u32 };
-    let rc = unsafe { libc::ioctl(f.as_raw_fd(), MEMERASE, &ei) };
+    let rc = unsafe { libc::ioctl(f.as_raw_fd(), MEMERASE as _, &ei) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
