@@ -1,47 +1,35 @@
 # --- audio: CE5300 I2S -> ADAU1451 SigmaDSP -> analog out ------------------
 #
-# Pairs with features/audio.defconfig. Three openHC drivers do the work, copied
-# in via drivers/objs.mk rather than patched:
-#   sound/soc/ce5300/ce5300-i2s.c   platform (I2S + scatter-gather DMA)
-#   sound/soc/ce5300/ce5300-ea3.c   machine driver (ties the two together)
-#   sound/soc/codecs/adau1451-c4.c  codec
+# Pairs with features/audio.defconfig. Three openHC drivers (ce5300-i2s.c platform,
+# ce5300-ea3.c machine, adau1451-c4.c codec) are copied in via objs.mk, not
+# patched, so they have NO Kconfig symbol — they are gated only by CONFIG_SND_SOC
+# below deciding whether sound/soc is built at all. Inventing a CONFIG_ symbol here
+# would silently build nothing (see drivers/objs.mk).
 #
-# There is no Kconfig symbol for any of them (they are copied, not patched), so
-# they are gated by CONFIG_SND_SOC below deciding whether sound/soc is built at
-# all. See drivers/objs.mk for why inventing a CONFIG_ symbol here would
-# silently build nothing.
-#
-# These stay =y ON PURPOSE — do NOT set SND_SOC=m to save bzImage space. The
-# three copied-in ASoC drivers are obj-y (board/ea/common/kernel/objs.mk) and
-# CALL snd-soc-core exports directly: ce5300-ea3.c -> devm_snd_soc_register_card,
-# adau1451-c4.c / ce5300-i2s.c -> devm_snd_soc_register_component. With
-# SND_SOC=m those symbols live only in a .ko, and the obj-y drivers fail at
-# `LD vmlinux` with "undefined reference to devm_snd_soc_register_card" — the
-# exact failure board/external.mk documents for hc800. Making audio a module
-# therefore requires making the copied drivers obj-m too (give them MODULE_*
-# metadata and flip their objs.mk lines) — a separate change, deliberately not
-# done here. Until then audio contributes its full size to the bzImage; see this
-# board's ohc.features for the window it has to fit.
+# SND_SOC stays =y ON PURPOSE — do NOT set it =m to save bzImage space. The three
+# copied-in drivers are obj-y and call snd-soc-core exports directly
+# (devm_snd_soc_register_card / _component); with SND_SOC=m those live only in a
+# .ko and the obj-y drivers fail at `LD vmlinux` with "undefined reference" — the
+# failure board/external.mk documents for hc800. Making audio a module first
+# requires making the copied drivers obj-m. Until then audio costs its full size
+# in the bzImage; see the board's ohc.features for the window it has to fit.
 CONFIG_SOUND=y
 CONFIG_SND=y
 CONFIG_SND_PCM=y
 CONFIG_SND_SOC=y
 CONFIG_SND_SOC_I2C_AND_SPI=y
 
-# The codec is a plain I2C regmap device. REGMAP_I2C is normally selected by a
-# codec's Kconfig entry -- ours has none, so ask for it explicitly or the driver
-# fails to link.
+# The codec is a plain I2C regmap device; REGMAP_I2C is normally selected by a
+# codec's Kconfig entry — ours has none, so ask for it explicitly or it won't link.
 CONFIG_REGMAP=y
 CONFIG_REGMAP_I2C=y
 
-# NOTE: the codec sits at 0x38 on the CE5300's FOURTH I2C controller. Mainline's
-# i2c-pxa-pci hardcodes three, so without patches/linux/0001 (DEVS 3 -> 4) the
-# bus does not exist and nothing here can probe. That patch is not optional for
-# audio.
+# The codec sits at 0x38 on the CE5300's FOURTH I2C controller. Mainline's
+# i2c-pxa-pci hardcodes three, so patches/linux/0001 (DEVS 3 -> 4) is NOT optional
+# for audio — without it the bus does not exist and nothing can probe.
 
 # Userspace mixer/PCM access: /dev/snd/*.
 CONFIG_SND_MIXER_OSS=n
 CONFIG_SND_HRTIMER=y
 
-# The DAC soft-mute line is a GPIO on the CE5300 controller (gpio-intelce).
-# GPIOLIB is already on in common.fragment; nothing extra needed here.
+# (The DAC soft-mute line is a gpio-intelce GPIO; GPIOLIB is already on in common.)
