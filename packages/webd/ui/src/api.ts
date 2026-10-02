@@ -178,9 +178,16 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
 /** One telemetry sample from sysmond. `values` is positional against `series`,
  *  which is why the series list comes with it rather than being repeated per
  *  reading. */
+export interface Series {
+  slug: string;
+  label: string;
+  chip: string;
+  kind: 'temp' | 'fan' | 'pwm';
+}
+
 export interface Telemetry {
   at: number | null;
-  series: { slug: string; label: string; chip: string; kind: 'temp' | 'fan' | 'pwm' }[];
+  series: Series[];
   values: (number | null)[] | null;
   cpu: number | null;
   load1: number | null;
@@ -189,9 +196,52 @@ export interface Telemetry {
   uptime_s: number | null;
 }
 
+/** sysmond's in-RAM ring. `series` is sent ONCE and each sample's `v` is
+ *  positional against it — the same compaction sysmond uses internally, which is
+ *  why the labels do not repeat per sample. `held`/`capacity` describe the ring,
+ *  not the window actually returned. */
+export interface History {
+  period_s: number;
+  held: number;
+  capacity: number;
+  series: Series[];
+  samples: {
+    at: number;
+    v: (number | null)[];
+    cpu: number | null;
+    load1: number | null;
+    mem_used_pct: number | null;
+  }[];
+}
+
+/** Fan presence and mode. `available` is false on boards with no fan helper
+ *  (the Health panel then shows only readings); `mode` is auto|manual and `pct`
+ *  is the fan's current duty when a controllable fan is present. */
+export interface FanStatus {
+  available: boolean;
+  mode?: 'auto' | 'manual';
+  pct?: number | null;
+  error?: string;
+}
+
 export const rest = {
   /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
   telemetry: () => j<Telemetry>(`${SYS}/api/now`),
+  /** The telemetry ring. `seconds` trims the window; absent/0 is everything held. */
+  history: (seconds?: number) =>
+    j<History>(`${SYS}/api/history${seconds ? `?seconds=${seconds}` : ''}`),
+  /** Fan presence/mode/duty. `available:false` on boards with no fan helper. */
+  fan: () => j<FanStatus>(`${SYS}/api/fan`),
+  /** Manual override, 0-100. Persists until released; fail-safe still applies. */
+  fanSet: (pct: number) =>
+    j<{ ok: boolean; mode?: string; pct?: number; error?: string }>(`${SYS}/api/fan/set`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pct: Math.max(0, Math.min(100, Math.round(pct))) }),
+    }),
+  /** Release the fan back to its automatic curve. */
+  fanAuto: () =>
+    j<{ ok: boolean; mode?: string; error?: string }>(`${SYS}/api/fan/auto`, { method: 'POST' }),
   capabilities: () => j<Capabilities>(`${HTTP}/api/io`),
   mcu: () => j<McuInfo>(`${HTTP}/api/io/mcu`),
   /** Full audio picture. 404s on a board with no audio (the panel then shows

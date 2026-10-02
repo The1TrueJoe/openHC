@@ -11,9 +11,22 @@
 # vendor daemon: on_temp 50, min 10%, 10%/deg, 60s cool-hold, 80C critical,
 # and fail-SAFE to 100% if the sensor read ever fails.
 #
+# MANUAL OVERRIDE — the state file.
+#   Path     : /run/ohc/fan.override  (OHC_FAN_OVERRIDE)
+#   Contents : an integer 0-100  -> hold the fan at THAT percent (manual mode),
+#              the word "auto" or no file -> run the temperature curve.
+#   Lifetime : /run is tmpfs, so the override is cleared on reboot and the board
+#              always comes up in automatic mode. The control loop re-reads this
+#              file every iteration, which is why `set` now PERSISTS instead of
+#              being quietly overwritten by the next curve pass.
+#   Safety   : manual mode still forces 100% on CRITICAL temp or a failed sensor
+#              read. Manual does not mean "disable the thermal fail-safe".
+#
 #   ohc-fand            run the control loop (service backgrounds it)
-#   ohc-fand set <pct>  manual override 0-100
-#   ohc-fand off
+#   ohc-fand set <pct>  manual override 0-100 (persists until `auto`)
+#   ohc-fand off        manual override 0% (persists until `auto`)
+#   ohc-fand auto       clear the override, return to the curve
+#   ohc-fand status     print "mode:", "pct:" and "override:" for the backend
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 [ -f /opt/ohc/board.env ] && . /opt/ohc/board.env
 
@@ -26,6 +39,7 @@ PCNT_PER_DEG=${OHC_FAN_PCNT_PER_DEG:-10}
 COOL_HOLD=${OHC_FAN_COOL_HOLD:-60}
 CRITICAL=${OHC_FAN_CRITICAL:-80}
 INTERVAL=${OHC_FAN_INTERVAL:-15}
+OVERRIDE=${OHC_FAN_OVERRIDE:-/run/ohc/fan.override}
 
 PWM="$PWMCHIP/pwm$PWMCH"
 
@@ -63,6 +77,34 @@ set_pct() {                                # 0-100 -> duty_cycle + enable
   echo "$pct"
 }
 
+# Current actual duty, as a percent of period — 0 when the channel is disabled.
+# This is what the hardware is doing right now, not what we last asked for.
+cur_pct() {
+  [ -d "$PWM" ] || { echo 0; return; }
+  en=$(cat "$PWM/enable" 2>/dev/null)
+  [ "$en" = "1" ] || { echo 0; return; }
+  per=$(cat "$PWM/period" 2>/dev/null)
+  duty=$(cat "$PWM/duty_cycle" 2>/dev/null)
+  [ -n "$per" ] && [ "$per" -gt 0 ] 2>/dev/null || { echo 0; return; }
+  echo $((duty * 100 / per))
+}
+
+# The override as a bare token: an integer, or "auto" when absent/cleared.
+read_override() {
+  [ -r "$OVERRIDE" ] || { echo auto; return; }
+  v=$(cat "$OVERRIDE" 2>/dev/null)
+  case "$v" in
+    ''|auto) echo auto ;;
+    *[!0-9]*) echo auto ;;                  # anything non-numeric -> auto
+    *) echo "$v" ;;
+  esac
+}
+
+write_override() {                          # "<pct>" or "auto"
+  mkdir -p "$(dirname "$OVERRIDE")" 2>/dev/null
+  printf '%s\n' "$1" > "$OVERRIDE" 2>/dev/null
+}
+
 read_temp_c() {
   f=$(find_temp) || return 1
   t=$(cat "$f" 2>/dev/null) || return 1
@@ -79,19 +121,47 @@ duty_for() {
 }
 
 case "$1" in
-  set)  set_pct "${2:-0}" >/dev/null; echo "fan set to ${2:-0}%"; exit 0 ;;
-  off)  set_pct 0 >/dev/null; echo "fan off"; exit 0 ;;
+  set)
+    pct=${2:-0}
+    write_override "$pct"
+    set_pct "$pct" >/dev/null
+    echo "fan set to ${pct}% (manual)"; exit 0 ;;
+  off)
+    write_override 0
+    set_pct 0 >/dev/null
+    echo "fan off (manual)"; exit 0 ;;
+  auto)
+    write_override auto
+    echo "fan returned to automatic"; exit 0 ;;
+  status)
+    ov=$(read_override)
+    if [ "$ov" = auto ]; then echo "mode: auto"; else echo "mode: manual"; fi
+    echo "pct: $(cur_pct)"
+    echo "override: $ov"
+    exit 0 ;;
 esac
 
 TEMPF=$(find_temp) || { echo "ohc-fand: no hwmon temp sensor (lm75 not bound?)" >&2; exit 1; }
-echo "ohc-fand: temp=$TEMPF pwm=$PWM on=${ON_TEMP}C min=${MIN_PCNT}% slope=${PCNT_PER_DEG}%/C crit=${CRITICAL}C"
+echo "ohc-fand: temp=$TEMPF pwm=$PWM on=${ON_TEMP}C min=${MIN_PCNT}% slope=${PCNT_PER_DEG}%/C crit=${CRITICAL}C override=$OVERRIDE"
 last_on=0; now=0
 while :; do
   t=$(read_temp_c)
+  # Fail-safe FIRST, and regardless of mode: a sensor we cannot read means we do
+  # not get to decide the fan is allowed to be slow.
   if [ -z "$t" ]; then
     set_pct 100 >/dev/null; echo "ohc-fand: temp read failed -> fan 100%"
     sleep "$INTERVAL"; now=$((now + INTERVAL)); continue
   fi
+  ov=$(read_override)
+  if [ "$ov" != auto ]; then
+    # Manual hold — honour the override, but CRITICAL still wins. Manual is not
+    # a licence to cook the board.
+    pct=$ov
+    [ "$t" -ge "$CRITICAL" ] && { pct=100; echo "ohc-fand: CRITICAL ${t}C -> 100% (overriding manual)"; }
+    set_pct "$pct" >/dev/null
+    sleep "$INTERVAL"; now=$((now + INTERVAL)); continue
+  fi
+  # Automatic curve.
   pct=$(duty_for "$t")
   [ "$t" -ge "$CRITICAL" ] && { pct=100; echo "ohc-fand: CRITICAL ${t}C -> 100%"; }
   if [ "$pct" -gt 0 ]; then last_on=$now
