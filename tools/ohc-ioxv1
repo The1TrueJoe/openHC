@@ -1,0 +1,141 @@
+#!/bin/sh
+# Install openHC on an IO Extender's NAND over the network — no serial, no lid.
+#
+#   ohc-ioxv1 install HOST uImage   write openHC and make U-Boot boot it
+#   ohc-ioxv1 status  HOST          which OS is up, and the boot variables
+#   ohc-ioxv1 arm     HOST          boot openHC again after it fell back to stock
+#   ohc-ioxv1 stock   HOST          make U-Boot boot stock Control4 again
+#
+# HOST may be running stock Control4 or openHC; `install` works from either,
+# which is what makes the takeover need nothing but SSH.
+#
+# WHERE IT GOES. The NAND is 512 MiB and stock partitions only the bottom half.
+# openHC's image (kernel + rootfs, ~17 MB) goes in a 32 MiB slot at 0x10000000,
+# the start of the half stock never touches. Both stock systems, the recovery
+# pair, the bootloaders and every stock partition are left exactly as they are.
+#
+# HOW IT BOOTS, AND HOW IT COMES BACK. U-Boot's bootcmd becomes `run ohcboot`:
+#
+#   ohc_try >= 3  ->  run oldbootcmd           (stock, untouched)
+#   else ohc_try += 1; saveenv; boot openHC from 0x10000000
+#   (no valid image there  ->  run oldbootcmd)
+#
+# openHC's S95ohcboot sets ohc_try back to 0 once the uplink is up. A kernel that
+# panics (panic=10), hangs (U-Boot arms the hardware watchdog, openHC feeds it) or
+# never gets a network comes back to U-Boot uncleared, so three bad boots in a
+# row land on stock Control4 — reachable over SSH, with nobody in the room.
+# `arm` puts ohc_try back to 0 to try openHC again.
+set -eu
+
+SLOT_OFF=0x10000000            # start of the half stock does not partition
+SLOT_BLOCKS=256                # 256 x 128 KiB erase blocks = 32 MiB
+BLOCK=131072
+
+say() { printf '%s\n' "$*" >&2; }
+die() { say "ohc-ioxv1: $*"; exit 1; }
+
+# The vendor's dropbear needs the legacy algorithms; openHC's accepts them too.
+SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+        -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa
+        -o KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1
+        -o Ciphers=+aes128-ctr,aes256-ctr,aes128-cbc,3des-cbc -o MACs=+hmac-sha1
+        -o ConnectTimeout=20 -o LogLevel=ERROR"
+command -v sshpass >/dev/null || die "sshpass is not installed (brew install sshpass)"
+
+# openHC's root password, then the vendor's (the same on every unit shipped).
+# A refusal is retried: sshpass races dropbear's prompt about one time in ten.
+on() {   # on HOST cmd...   (stdin passes through)
+    _h=$1; shift; _n=0
+    while [ "$_n" -lt 3 ]; do
+        for _p in openhc 't0talc0ntr0l4!'; do
+            sshpass -p "$_p" ssh $SSHOPT "root@$_h" "$@" && return 0 || _rc=$?
+            [ "$_rc" = 5 ] || [ "$_rc" = 255 ] || return "$_rc"   # the command itself failed
+        done
+        _n=$((_n + 1)); sleep 2
+    done
+    die "$_h refused both passwords"
+}
+
+os_of() { case "$(on "$1" uname -r)" in 2.6.*) echo stock ;; *) echo openhc ;; esac; }
+
+# Where the slot is, as "device offset", on whichever OS is running.
+slot_of() {
+    if [ "$(os_of "$1")" = stock ]; then
+        # Stock's mtd0 is the whole chip ("NAND Flash Image", 0x20000000).
+        on "$1" 'grep -q "^mtd0: 20000000 " /proc/mtd' ||
+            die "stock mtd0 is not the whole 512 MiB chip; refusing to guess"
+        echo "/dev/mtd0 $SLOT_OFF"
+    else
+        _m=$(on "$1" 'sed -n "s/^mtd\([0-9]*\):.*\"openhc\"$/\1/p" /proc/mtd')
+        [ -n "$_m" ] || die "this openHC has no \"openhc\" partition; netboot a newer image first"
+        echo "/dev/mtd$_m 0"
+    fi
+}
+
+md5_local() { md5 -q "$1" 2>/dev/null || md5sum "$1" | cut -d' ' -f1; }
+
+# U-Boot 1.2's shell: three ordered tests step ohc_try up by one without nesting.
+OHCBOOT='if itest ${ohc_try} -ge 3; then run oldbootcmd; fi; if itest ${ohc_try} -eq 2; then setenv ohc_try 3; fi; if itest ${ohc_try} -eq 1; then setenv ohc_try 2; fi; if itest ${ohc_try} -eq 0; then setenv ohc_try 1; fi; saveenv; if nboot.e ${bootload} 0 ${ohc_addr}; then setenv bootargs mem=${memsize} ${ohc_bootargs}; if itest ${usewatchdogtimer} -eq 1; then c4sys watchdog c5986200 3; fi; bootm ${bootload}; fi; run oldbootcmd'
+
+install() {
+    _h=$1; _img=$2
+    [ -f "$_img" ] || die "no image at $_img"
+    [ "$(xxd -p -l 4 "$_img")" = 27051956 ] || die "$_img is not a U-Boot uImage"
+    _size=$(wc -c < "$_img" | tr -d ' ')
+    [ "$_size" -le $((SLOT_BLOCKS * BLOCK)) ] || die "$_img is bigger than the 32 MiB slot"
+    _os=$(os_of "$_h"); set -- $(slot_of "$_h"); _dev=$1; _off=$2
+    say "host $_h is running $_os; slot is $_dev @ $_off"
+
+    # Stage. Stock's /tmp is a 16 MB ramdisk, too small, so it gets its own tmpfs.
+    _stage=/tmp/ohc-stage
+    on "$_h" "mkdir -p $_stage && { [ $_os = openhc ] || mount | grep -q ' $_stage ' || mount -t tmpfs -o size=40m tmpfs $_stage; }"
+    say "uploading $(basename "$_img") ($_size bytes) ..."
+    on "$_h" "cat > $_stage/uImage" < "$_img"
+    _want=$(md5_local "$_img")
+    _got=$(on "$_h" "md5sum $_stage/uImage" | cut -d' ' -f1)
+    [ "$_want" = "$_got" ] || die "upload corrupted ($_got != $_want)"
+
+    # The slot must have no bad blocks: U-Boot's nboot and nandwrite would each
+    # skip one, but nothing guarantees they agree on where the image resumes.
+    say "erasing $SLOT_BLOCKS blocks and writing ..."
+    on "$_h" "flash_erase $_dev $_off $SLOT_BLOCKS" | grep -qi 'bad' &&
+        die "bad block in the slot; not writing an image U-Boot might misread"
+    on "$_h" "nandwrite -p -s $_off $_dev $_stage/uImage >/dev/null"
+
+    # Read back through ECC, padded to whole blocks the way nandwrite -p wrote it.
+    _blocks=$(( (_size + BLOCK - 1) / BLOCK ))
+    _pad=$(mktemp); cp "$_img" "$_pad"
+    python3 -c "import sys; f=open(sys.argv[1],'ab'); f.write(b'\xff'*(int(sys.argv[2])-int(sys.argv[3])))" \
+        "$_pad" $((_blocks * BLOCK)) "$_size"
+    _want=$(md5_local "$_pad"); rm -f "$_pad"
+    _got=$(on "$_h" "dd if=$_dev bs=$BLOCK skip=$(( _off / BLOCK )) count=$_blocks 2>/dev/null | md5sum" | cut -d' ' -f1)
+    [ "$_want" = "$_got" ] || die "read-back does not match ($_got != $_want); boot variables NOT changed"
+    on "$_h" "[ $_os = openhc ] || umount $_stage; rm -rf $_stage" || true
+    say "image written and verified"
+
+    # Boot variables last, so a failure above leaves U-Boot exactly as it was.
+    on "$_h" sh -s <<EOF
+set -e
+fw_setenv ohc_addr $SLOT_OFF
+fw_setenv ohc_bootargs 'console=ttyS0,115200n8 panic=10'
+fw_setenv ohcboot '$OHCBOOT'
+fw_setenv ohc_try 0
+fw_setenv bootcmd 'run ohcboot'
+EOF
+    status "$_h"
+    say "installed. Power-cycle (or reboot) to boot openHC from NAND."
+}
+
+status() {
+    say "host $1 is running $(os_of "$1")"
+    on "$1" 'for v in bootcmd ohc_try ohc_addr ohc_bootargs; do printf "%-13s %s\n" "$v" "$(fw_printenv -n $v 2>/dev/null || echo "(unset)")"; done'
+}
+
+case "${1:-}" in
+    install) [ $# = 3 ] || die "usage: ohc-ioxv1 install HOST uImage"; install "$2" "$3" ;;
+    status)  [ $# = 2 ] || die "usage: ohc-ioxv1 status HOST"; status "$2" ;;
+    arm)     [ $# = 2 ] || die "usage: ohc-ioxv1 arm HOST"; on "$2" fw_setenv ohc_try 0; status "$2" ;;
+    stock)   [ $# = 2 ] || die "usage: ohc-ioxv1 stock HOST"
+             on "$2" "fw_setenv bootcmd 'run oldbootcmd'"; status "$2" ;;
+    *) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
