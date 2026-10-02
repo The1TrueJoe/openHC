@@ -178,6 +178,14 @@ fn main() {
             let n = mqtt::topics::label(i);
             cfg.bus.set(&format!("serial/{n}/baud"), serde_json::json!(p.baud));
             cfg.bus.set(&format!("serial/{n}/viewers"), serde_json::json!(0));
+            // Open every host UART now and hold it, as the stock dtserver does:
+            // open raises DTR/RTS, which line-powered accessories (a GC-IRL, for
+            // one) run on, and serial/N/rx should fire with no terminal attached.
+            if let Some(dev) = &p.dev {
+                if let Err(e) = cfg.serial.session(i, dev, p.baud, &cfg.bus) {
+                    eprintln!("iod: cannot open {dev}: {e}");
+                }
+            }
         }
 
         // The driver enables capture itself; this only reads what it decodes.
