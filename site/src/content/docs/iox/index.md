@@ -133,7 +133,7 @@ prints `openhc-ioxv1 login:`.
 | Ethernet, SSH, iod, web UI | working |
 | 8 relays, 8 contacts | working through iod and MQTT (contacts active-low) |
 | 4× RS-232 (`ttyS1`–`ttyS4`) | verified both ways against a PC, raw and through iod |
-| 8 IR outputs | verified on jack 1 against a GC-IRL learner (NEC at 38 kHz); jacks 2–8 untested |
+| 8 IR outputs | all eight verified against a GC-IRL learner (NEC at 38 kHz), no crosstalk |
 | LEDs | data, link and the tri-colour status LED; power is hardwired |
 | Flash install | not yet: it runs from RAM |
 

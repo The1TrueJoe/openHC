@@ -13,7 +13,7 @@
  * c4irout.ko (c4irout_config/_setup/_go, whose debug strings name every field)
  * and was confirmed against a GC-IRL learner on jack 1. All registers are
  * 16-bit. Per engine, from its base:
- *   +0x00  OE        output enable, bit n = jack n+1 (bit 0 = jack 1 verified)
+ *   +0x00  OE        output enable, bit n = jack n+1 (all eight verified)
  *   +0x02  PERIOD    carrier period in 50 MHz clocks (Hz = 50e6 / PERIOD,
  *                    measured 50-100 kHz to the kHz)
  *   +0x04  CONTROL   bit15 GO, bit14 infinite, bit13 enable, bits 4..12 FIFO
@@ -167,8 +167,8 @@ static int iox_register_emitter(struct iox_irout *ir, int i)
 
 	em->ir = ir;
 	em->carrier = IR_DEFAULT_HZ;
-	/* Bit 0 = jack 1 is verified; bits 1-7 = jacks 2-8 follow the vendor's
-	 * 8-bit OE byte but have no emitter on the bench yet. */
+	/* Bit n = jack n+1, verified on all eight against a learner: each
+	 * send was heard on its own jack and no other. */
 	em->oe = BIT(i);
 	em->name = kasprintf(GFP_KERNEL, "openHC IR out %d", i + 1);
 	if (!em->name)
