@@ -10,41 +10,44 @@ register layout had to come from the compiled driver. `c4irout.ko` was pulled
 off a running unit (`/mnt/jffs2/modules/.../c4davinci/c4irout.ko`, ELF with
 symbols) and disassembled. This is what it does.
 
-## Two blocks, eight halfword registers each
+## Two engines, either one drives any jack
 
-The IR output lives in two 16-byte windows on the FPGA, `0x04000220` and
-`0x04000230` (confirmed in `/proc/iomem` as `c4irout.0`). Each is eight halfword
-registers. `c4irout_config` selects which block an emitter uses via a "mode":
+The IR output is two identical engines ("accelerators") in the FPGA, at
+`0x04000220` and `0x04000230`. `c4irout_config` assigns one per minor number.
+Which jacks an engine drives is its output-enable mask, so either can drive
+any jack. The module's debug strings name every register `c4irout_setup`
+writes, which pins the layout:
 
-- mode 0 → block at base + 0x20
-- mode 1 → block at base + 0x30
-
-## Register roles (from c4irout_setup / c4irout_config / c4irout_go)
-
-Per emitter, `c4irout_config` assigns the register offsets and `c4irout_setup`
-writes them from a config struct:
-
-| Register | Written from | Meaning |
+| Offset | Register | Notes |
 |---|---|---|
-| CONTROL | read-modify-write | bit 15 = **go**, bit 14 = mode flag, bit 13 always set, bits 5–12 a select field |
-| carrier | `(cfg & 0x7f) << 9` | carrier prescaler (not direct Hz) |
-| count | `cfg - 1` | burst length minus one |
-| data/A/B | direct | timing/data words |
-| status | `+0x3e` | shared status/version |
+| +0x00 | OE | output enable, bit n = jack n+1 |
+| +0x02 | carrier period | 50 MHz clocks: Hz = 50e6 / period |
+| +0x04 | CONTROL | bit 15 GO, 14 infinite, 13 enable, 4–12 FIFO watermark, 0 reset |
+| +0x06 | repeat count | `count << 9` |
+| +0x08 | FIFO | write-only pulse/space stream |
+| +0x0a | repeat start | |
+| +0x0c | repeat end | written as `end - 1` |
+| `0x3e` | inverted / no-carrier | shared by both engines |
 
-To send: program carrier, count and data; write CONTROL with the mode/enable
-bits; then `c4irout_go` sets **bit 15** of CONTROL to fire. Completion raises the
-shared FPGA interrupt on GIO7 (IRQ 71).
+FIFO words are durations in carrier periods: mark `0x8000 | n`, space `n`,
+a `0x4000 | (n >> 14)` high word first when `n > 0x3fff`, and `0xc000` to end.
+To send: program the registers, pulse reset, fill the FIFO, set GO. GO clears
+when the train is out.
 
-## What still needs a live confirm
+## Confirmed on hardware
 
-Two calibration details, settleable in minutes once openHC's own FPGA driver can
-drive the block:
+With a GC-IRL learner on jack 1:
 
-- the exact carrier math — `(v & 0x7f) << 9` looks like a prescaler; fire a
-  known 38 kHz code on the vendor OS and read the register back to calibrate;
-- which physical jack is mode 0 vs mode 1, and how eight emitters map onto two
-  blocks (likely the CONTROL select field, bits 5–12).
+- **OE bit 0 is jack 1**, from either engine. Jacks 2–8 are presumably bits 1–7.
+- **Carrier is exact.** Periods 500 / 658 / 694 / 760 / 1000 measured 100 / 76 /
+  72 / 66 / 50 kHz. The vendor's default period `0x17e` is 131 kHz, past the
+  learner's range, which reports it aliased as 66 kHz with halved counts.
+- **The FIFO holds a whole code.** Three back-to-back NEC frames (204 words)
+  loaded before GO came out intact, and NEC `0x20DF10EF` learned back at exactly
+  38000 Hz.
+
+An earlier reading had the watermark down as a jack "select", the repeat
+register as a carrier prescaler, and never wrote OE, so nothing ever radiated.
 
 ## Why this matters
 

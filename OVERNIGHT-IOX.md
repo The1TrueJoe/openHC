@@ -68,43 +68,28 @@ was in software the whole time:
   read correctly. The one earlier failure (ttyS4 → host reading nothing) was the
   host cable carrying only one direction; a full 3-wire null-modem (cross 2↔3,
   GND 5↔5) fixes it. Nothing in openHC was at fault.
-## IR output — driver built & emitting; verification blocked on the emitter
-`ohc-iox-irout.c` is now a real **rc-core / lirc TX driver** (8 devices named
-`openHC IR out N`, exactly what `iod`'s `lirc.rs` finds — same path as the
-HC-800), plus a sysfs calibration harness (`cal_carrier`/`cal_block`/`cal_select`
-/`send`/`regs`) at `/sys/.../4000220.irout`. `RC_CORE`/`LIRC` are enabled in the
-kernel fragment; it's wired via `objs.mk`.
+## IR output — working, verified on a GC-IRL learner
+`ohc-iox-irout.c` is an rc-core / lirc TX driver: 8 devices named
+`openHC IR out N`, which `iod`'s `lirc.rs` finds (same path as the HC-800).
 
-The full IR protocol was recovered from the vendor `c4irout.ko`/`c4fpga.ko` and
-the emit now **completes exactly like the vendor** (CONTROL settles to 0x2200,
-GO clears):
-- Two 16-bit blocks (0x220/0x230): +0x02 timing (0x017e), +0x04 CONTROL, +0x06
-  CARRIER = `(v&0x7f)<<9` (v≤64), +0x08 write-only DATA FIFO, +0x0c COUNT.
-- CONTROL = `ENABLE(0x2000) | select` — **no mode bit** (0x4000 wedges it).
-- FIFO encoding: mark = `0x8000|d`, space = `d` (no flag), high word (d>0x3fff)
-  = `0x4000|(d>>14)`, terminator `0xc000`. Fill at kernel speed.
-- Carrier is set by ioctl `_IOW('Z',0x46,u32)` on the vendor; the driver writes
-  the reg directly.
+The earlier attempt never radiated because the register map was wrong. The
+vendor `c4irout.ko` debug strings name every field, and per engine
+(0x04000220 / 0x230) the layout is:
+- `+0x00` **OE**, the output-enable mask: bit n = jack n+1. This was never
+  written (0), so no jack was ever driven.
+- `+0x02` carrier **period** in 50 MHz clocks: Hz = 50e6 / period, measured
+  exact from 50 to 100 kHz. The vendor default 0x17e is 131 kHz.
+- `+0x04` CONTROL: enable 0x2000, FIFO watermark 32 << 4 (the "select 0x200"
+  was the watermark), infinite 0x4000, GO 0x8000, reset bit 0.
+- `+0x06` repeat count << 9 (this was taken for a carrier prescaler);
+  `+0x0a`/`+0x0c` repeat start / end-1; `0x3e` inverted/no-carrier (shared).
+- FIFO durations are in carrier periods (mark `0x8000|n`, space `n`, end
+  `0xc000`). It holds at least 204 words, so a whole code loads before GO.
 
-**Why it's not yet confirmed radiating:** the GC-IRL learner (on OUT 1) captured
-nothing from *my* emit — but it also captured **nothing from the vendor's own
-`/dev/irout0`/`irout1`** (carrier set, register-identical), while it learns a
-hand-held remote fine. So the FPGA is emitting; the **emitter→learner physical
-path** is the blocker (bumped/misaligned/weak emitter after the serial-cable
-session, or its jack isn't the one the default select 0x200 drives). This is
-hardware, not the driver — the driver matches the vendor register-for-register.
-
-**Morning steps to finish IR:** (1) re-seat/re-aim the IR emitter on OUT 1 over
-the GC-IRL window (or point it at a real device / a scope on the jack); (2) with
-a working detector, sweep `cal_carrier` via the harness to read the frequency and
-pin v→Hz, and sweep `cal_block`/`cal_select` to find OUT 1's routing —
-`/private/tmp/.../scratchpad/cal_*.sh` and the vendor `ir_send` tool are ready;
-(3) bake the carrier `Hz→v` and the per-jack block/select map into the driver.
+Verified on jack 1: NEC `0x20DF10EF` learned back at exactly 38000 Hz, three
+frames intact. Jacks 2-8 follow OE bits 1-7 (no emitter on them yet).
 
 ## How to load it (dev / netboot)
-```
-scp fpga_fw.bin root@<box>:/lib/firmware/c4/iox-fpga.bin
-echo c4/iox-fpga.bin > /sys/devices/platform/soc/4000200.fpga/firmware
-# dmesg → "FPGA CONFIGURED — version 0x0400, DONE=1"; ttyS1-4 appear
-```
-Or just reboot with the bitstream in place — `S12fpga` does it.
+Nothing to do: at boot `S12fpga` copies `fpga_fw.bin` read-only from the unit's
+recovery rootfs on NAND and loads it ("FPGA CONFIGURED — version 0x0400,
+DONE=1"; ttyS1-4 and the IR outputs appear).
