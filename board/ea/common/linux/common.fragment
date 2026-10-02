@@ -99,10 +99,22 @@ CONFIG_HIGHMEM4G=y
 CONFIG_PCI=y
 CONFIG_PCIEPORTBUS=y
 
-# --- networking core (radios, if any, are in the per-board fragment) ---
+# --- networking core ---
 CONFIG_NET=y
 CONFIG_INET=y
 CONFIG_CRYPTO=y
+
+# --- radio: OFF by family default; the `wifi` feature turns it back on ---
+# The arch default config carries the wireless stack, and a board with no radio
+# (ea1-v2-poe, ea3-v2) must not drag it in. Disabling it here — once, for the
+# whole family — rather than in each radio-less board's fragment is why those
+# boards' fragments no longer each repeat this block. Boards WITH a radio list
+# the `wifi` feature, whose linux.fragment is applied AFTER this file (build.sh
+# appends feature fragments last) and sets CONFIG_WLAN/CFG80211/MAC80211 back on
+# — so the final config is identical to stating it per-board, just not copied.
+# CONFIG_WLAN is not set
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
 
 # --- wired NIC: the on-board Intel GbE (e1000) CEFDK netboots from. Mainline,
 #     builtin, and present on every EA. On EA1 this is a second path alongside
