@@ -82,10 +82,20 @@ impl Ssh {
     /// Run a command; capture stdout. `check` turns a non-zero exit into an
     /// error (some probes want to inspect a failure instead).
     pub fn run(&self, cmd: &str, check: bool) -> Result<String, SshError> {
-        let mut c = self.base()?;
-        c.arg(cmd);
-        c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let out = c.output().map_err(|e| SshError::Spawn(e.to_string()))?;
+        let mut last = None;
+        for attempt in 0..AUTH_TRIES {
+            let mut c = self.base()?;
+            c.arg(cmd);
+            c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let out = c.output().map_err(|e| SshError::Spawn(e.to_string()))?;
+            if spurious_refusal(&out.status, &out.stderr) && attempt + 1 < AUTH_TRIES {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                continue;
+            }
+            last = Some(out);
+            break;
+        }
+        let out = last.expect("loop always sets it");
         if check && !out.status.success() {
             let msg = String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr });
             return Err(SshError::Command {
@@ -111,17 +121,35 @@ impl Ssh {
     /// Pipe bytes into a remote command's stdin — how images land, avoiding scp
     /// and any need for free space on a box with a 512 MB rootfs.
     pub fn put_stream(&self, data: &[u8], remote_cmd: &str) -> Result<String, SshError> {
-        let mut c = self.base()?;
-        c.arg(remote_cmd);
-        c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = c.spawn().map_err(|e| SshError::Spawn(e.to_string()))?;
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(data)
-            .map_err(|e| SshError::Spawn(e.to_string()))?;
-        let out = child.wait_with_output().map_err(|e| SshError::Spawn(e.to_string()))?;
+        let mut last: Option<std::process::Output> = None;
+        for attempt in 0..AUTH_TRIES {
+            let mut c = self.base()?;
+            c.arg(remote_cmd);
+            c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = c.spawn().map_err(|e| SshError::Spawn(e.to_string()))?;
+
+            // A refused login makes ssh exit while we are still writing, and the
+            // write then fails with EPIPE. Reporting "Broken pipe" would blame
+            // the transfer for what is an auth flake, so swallow the write error
+            // here and let the child's own exit status and stderr say what
+            // actually happened.
+            let wrote = child.stdin.take().unwrap().write_all(data);
+            let out = child.wait_with_output().map_err(|e| SshError::Spawn(e.to_string()))?;
+            if spurious_refusal(&out.status, &out.stderr) && attempt + 1 < AUTH_TRIES {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                continue;
+            }
+            if let Err(e) = wrote {
+                if out.status.success() {
+                    // The remote consumed less than we sent but still exited 0 —
+                    // a truncated file, which is far worse than a failed one.
+                    return Err(SshError::Spawn(format!("short write to `{remote_cmd}`: {e}")));
+                }
+            }
+            last = Some(out);
+            break;
+        }
+        let out = last.expect("loop always sets it");
         if !out.status.success() {
             return Err(SshError::Command {
                 host: self.host.clone(),
@@ -132,6 +160,33 @@ impl Ssh {
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
+}
+
+/// How many times a command is retried through a refused login.
+///
+/// ROUGHLY ONE AUTH IN TEN IS SPURIOUSLY REFUSED against these controllers.
+/// Measured on an HC-800: 47 identical logins produced 5 `Permission denied
+/// (publickey, password)` and 42 successes. It is sshpass racing dropbear's
+/// password prompt on the pty — the rate is the same with and without the
+/// legacy algorithm options, and against both the stock image and openHC.
+///
+/// A flasher that takes the first refusal at face value therefore fails about
+/// one command in ten, and a multi-step install has many commands. Worse, it
+/// fails with whatever the symptom happened to be — a 13 MB image transfer dies
+/// with "Broken pipe", which reads like a network fault rather than a login
+/// that never happened.
+const AUTH_TRIES: usize = 3;
+
+/// Did this look like the flake above rather than a real failure? Deliberately
+/// narrow: only a login refusal, so a command that genuinely exits non-zero is
+/// never quietly run three times.
+fn spurious_refusal(status: &std::process::ExitStatus, stderr: &[u8]) -> bool {
+    // 255 is ssh's own "I failed", as distinct from the remote command's status.
+    if status.code() != Some(255) {
+        return false;
+    }
+    let e = String::from_utf8_lossy(stderr);
+    e.contains("Permission denied") || e.contains("Authentication failed")
 }
 
 /// Credentials to try, openHC first (a half-installed unit is the common

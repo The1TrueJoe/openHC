@@ -60,7 +60,14 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 #                     BR2_OHC_EA_KERNEL_DRIVERS is set by ea-common_defconfig
 #                     and by nothing else.
 OHC_KERNEL_SUBTREES = drivers sound
-OHC_KERNEL_MIRRORS = $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
+# NOT unconditional, despite living under common/. The only thing in that mirror
+# is the IO-MCU gpiochip driver, and two boards have no IO microcontroller —
+# mirroring it there cost them a vmlinux link failure on rc-core. See
+# BR2_OHC_IOMCU_KERNEL_DRIVER in board/Config.in.
+OHC_KERNEL_MIRRORS =
+ifeq ($(BR2_OHC_IOMCU_KERNEL_DRIVER),y)
+OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
+endif
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/kernel
 endif

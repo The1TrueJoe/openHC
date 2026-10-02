@@ -440,10 +440,12 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 	payload[9] = word & 0xff;
 	/* payload[10..13]: repeat count and offset, both zero */
 	for (i = 0; i < n; i++) {
-		/* div_u64, not `/`: a u64/u32 divide on ARM emits a call to
-		 * __aeabi_uldivmod, and the kernel links no libgcc. x86 inlines
-		 * the same expression, which is why this stood until the first
-		 * ARM board tried to build it. */
+		/* div_u64, not `/`. A 64-bit divide compiles to a libgcc helper
+		 * (__aeabi_uldivmod on ARM) that the kernel does not link against,
+		 * so a plain `/` here builds on x86 and fails at `LD vmlinux` on
+		 * every 32-bit board. The multiply genuinely needs 64 bits —
+		 * 0xffff * 500000 overflows u32 — so widening is not the fix.
+		 */
 		u32 periods = div_u64((u64)txbuf[i] * carrier, 1000000u);
 
 		if (periods > 0x7fff)

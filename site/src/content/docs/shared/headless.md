@@ -38,8 +38,11 @@ vendor root and the factory-restore image are byte-identical to how they shipped
    └──────────────────────────┘
 ```
 
-Every arrow into the stock image is automatic except the last, and every one of
-them can be taken from another room. That is the entire argument.
+The two middle arrows are the ones that matter: a panic and a hang get back to a
+reachable system **with nobody in the room**. `sysrq-b` is the same thing on
+demand, and it works when userspace is too wedged to run `reboot`. The power
+cycle is the only one that still needs hands, and after this it is the fallback
+rather than the procedure.
 
 `menu.lst` is what makes the top box unconditional: `default 1` selects the
 vendor root, `fallback 1` points at that same entry, and `timeout 0` with
@@ -71,6 +74,32 @@ Boards with `CONFIG_WATCHDOG` off — the whole EA family, which is up against a
 bzImage size ceiling — get the script anyway and it exits quietly. Inert beats
 absent: the file is where you would look for it.
 
+### Reachability, not just liveness, is what feeds it
+
+A plain watchdog leaves one hole, and it is the one most likely to swallow a
+box: **userspace that is perfectly healthy but has no network.** The kicker runs,
+the timer never fires, and the unit sits there alive and unreachable — which from
+the outside is indistinguishable from a hang and needs exactly the physical
+access the watchdog exists to avoid. Breaking the NIC is a normal outcome of
+working on a kernel, so this is not a corner case.
+
+So `S02watchdog` also starts a monitor that `SIGKILL`s the kicker when the uplink
+has been down for ten minutes. `SIGKILL` and not `SIGTERM`, deliberately: no
+magic `V` is written, the chip keeps counting, and the board resets. Verified on
+the unit — the kernel logs `watchdog: watchdog0: watchdog did not stop!` and the
+board is gone within the timeout.
+
+It is **off by default** and the HC-800 opts in with `OHC_NET_WATCHDOG=1`, for
+the same reason `panic=` is scoped to this board: a reset only helps if it lands
+somewhere *different*. Here it lands on the untouched vendor image, which
+answers SSH. On a board where openHC is what is installed, the identical reset
+boots the identical image into the identical dead network ten minutes later,
+forever — a reboot loop, not a safety net.
+
+It will not arm until the uplink has had carrier **and** an address at least
+once, so a board still bringing its network up — or one that has no network at
+all — is never caught by it.
+
 ### `panic=10`, so a panic is not permanent either
 
 `kernel.panic` defaults to `0`, which means *stop forever*. On a sealed box with
@@ -97,10 +126,17 @@ netconsole=6665@<box>/eth0,6666@<you>/<your-mac>
 Built in, not a module: a module loads too late to log the thing that stopped the
 module loading. Listen with `ohc-hc800 log`.
 
-**It starts at about 6.3 seconds**, when the NIC comes up — that is a real limit,
-not a bug. Anything before that is only visible on the wire if you have the
-cable. In practice a failure that early is a failure to boot at all, and the
-answer to that is the watchdog, not a log.
+**It does not lose the early boot.** netconsole registers as a console with
+`CON_PRINTBUFFER`, so when it comes up at around 6.9 s the kernel replays
+everything already in the ring buffer — a captured log from this board starts at
+`[    0.000000] Linux version` and carries **616 lines from before netconsole
+itself existed**. So for a box that boots, the network gives you exactly what
+the cable would have.
+
+The limit is narrower than it looks, then, but it is real: a hang *before* that
+replay happens means the buffer is never flushed and you get **nothing at all**.
+That failure is a failure to boot, and the answer to it is the watchdog rather
+than a log.
 
 The boot line bakes in the listener's address, which is awkward when the laptop
 moves. `ohc-netconsole on <host>` drives the same driver through configfs
@@ -140,6 +176,19 @@ it configures itself after one successful `find`.
 `tools/ohc-hc800` is the loop, with the discovery and the two root passwords
 already handled:
 
+The flasher is the other half of this, and the two have different jobs:
+`ohc-hc800` is the ad-hoc tool for a box you are working on; `ohc-flash` is the
+installer.
+
+```bash
+ohc-flash identify 10.0.0.111                       # what is it, and how sure are we
+ohc-flash plan hc800                                # both methods, and what each writes
+ohc-flash install HOST --images DIR --method kexec  # run it from RAM, writes nothing
+ohc-flash install HOST --images DIR --method grub   # persistent
+ohc-flash boot HOST                                 # re-enter an installed openHC
+ohc-flash uninstall HOST                            # put the boot chain back
+```
+
 ```bash
 tools/ohc-hc800 find                    # where is it, and which OS booted
 tools/ohc-hc800 sh 'dmesg | tail -30'   # run something
@@ -154,13 +203,18 @@ Seed it once, if mDNS is not available to you:
 OHC_HOST=10.0.0.111 tools/ohc-hc800 find
 ```
 
-:::caution[One auth in twelve is refused]
-Measured on a healthy box: twelve identical `sshpass` runs produced one
-`Permission denied (publickey,password)` and eleven successes. A refusal is
-**not** evidence of a wrong password, and a tool that treats it as one reports
-the box unreachable roughly every twelfth command — which is exactly what sends
-you looking for the serial cable again. `ohc-hc800` retries; anything you write
-yourself should too.
+:::caution[About one auth in ten is refused]
+Measured on a healthy box: 47 identical `sshpass` runs produced 5
+`Permission denied (publickey,password)` and 42 successes. It is **sshpass
+racing dropbear's password prompt**, not a wrong password — the rate is the same
+with and without the legacy algorithm options, and it happens against both
+images.
+
+A tool that treats a refusal as authoritative will call the box unreachable
+roughly every tenth command, which is exactly what sends you looking for the
+serial cable again. `ohc-hc800` retries; anything you write yourself should too.
+The real cure is **public-key auth**, which never touches that prompt — worth
+adding a key to the image if you find yourself scripting against it a lot.
 :::
 
 ## Deploying a new build
@@ -185,6 +239,7 @@ Run on the unit on 2026-09-10, with the serial cable idle throughout:
 
 | Step | What happened |
 |---|---|
+| `ohc-flash install --method kexec --netconsole` | staged 25 MB, resolved the listener's MAC from the box, kexec'd — **679 log lines captured, from `[0.000000]`** |
 | `ohc-hc800 reset` on openHC at `.111` | netconsole caught `sysrq: Resetting`, connection dropped |
 | board resets, GRUB `default 1` | vendor image answering SSH ~2 min later — **at `.112`, not `.111`** |
 | `ohc-hc800 find` | located it by MAC and reported `running=vendor (Control4 stock)`, kernel `3.16.38-8.260.24` |
@@ -197,12 +252,66 @@ because a **stale ARP entry** for `.111` outranked the live one for `.112` —
 `sweep()` now probes a candidate before believing it, and says which rows it
 skipped.
 
+## Installing it, without giving up any of that
+
+A `kexec` install lives entirely in RAM, so a power cut leaves you on stock with
+25 MB to push again. The persistent install fixes that **without** inverting the
+recovery story, and the trick is one GRUB Legacy keyword.
+
+The naive persistent install is `default 2`, and it quietly undoes everything
+above: openHC becomes what the box boots, so a panic reboots into the same
+panic and the network watchdog resets into the same dead network. A safety net
+turns into a loop.
+
+Instead the openHC entry ends with `savedefault 1`, and `default` becomes
+`saved`. GRUB executes that **before** handing over to the kernel, so every
+openHC boot immediately re-points the default back at Control4:
+
+```
+default         saved            <- was `default 1`
+...
+title           openHC
+root            (hd0,2)
+kernel          /boot/openhc-bzImage console=ttyS0,115200
+initrd          /boot/openhc-initrd.gz
+savedefault     1                <- hands the default back, before booting
+boot
+```
+
+openHC is therefore always exactly **one** boot. Anything at all — panic,
+watchdog, power cut, `reset` — comes back on stock, which answers SSH. Going
+back in is `ohc-flash boot`, which sets one byte and reboots; the images are
+already on disk.
+
+Measured on the unit, in this order:
+
+| | |
+|---|---|
+| probe `default saved` with saved = the stock entry | booted stock — GRUB reads `/boot/grub/default` correctly on this stage2 |
+| `ohc-flash install --method grub` | 169536 KB free on `sda3`, wrote 25628 KB, `menu.lst verified, 596 bytes` |
+| reboot | **openHC from disk**, `panic=10 console=ttyS0,115200`, no kexec |
+| read `/boot/grub/default` | already `1` — `savedefault` fired during that boot |
+| reboot again | stock Control4 |
+| `ohc-flash boot` | openHC again, and the default back to `1` |
+| `ohc-flash uninstall` | `menu.lst` restored from the backup the install kept, images removed from `sda3`, vendor entries byte-identical |
+| reinstall from pristine stock | ran the `default 1` → `default saved` conversion for real, `menu.lst verified, 595 bytes` |
+
+:::caution[sda1 is the one unrecoverable partition]
+Every recovery layer on this board — including the hardware factory-default
+button — needs GRUB to read `menu.lst` from `sda1`. Take the byte-exact backup
+first (`backups/hc800/`, md5 recorded and verified), and read back what you
+wrote. The installer refuses to write a `menu.lst` whose
+`support_factorydefault` / `factorydefault` lines it cannot find afterwards, and
+restores its own backup if the read-back differs. `sda2` is never written by any
+method. See [Recovery](/shared/recovery/).
+
 ## What is still only on the cable
 
 Being honest about the gaps:
 
-- **Anything before the NIC comes up** — roughly the first 6 seconds. A failure
-  there is a failure to boot, and the recovery is the watchdog.
+- **A hang before netconsole's replay**, i.e. in roughly the first 7 seconds.
+  Not the *messages* from that window — those are replayed — but a box that
+  stops inside it sends nothing at all. The recovery is the watchdog.
 - **GRUB itself.** No interactive menu exists (`timeout 0`, `hiddenmenu`), so
   there is nothing to catch even with a cable attached. Choosing a different
   entry means editing `default`, which is a write to `sda1` — see

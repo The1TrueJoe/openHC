@@ -264,6 +264,56 @@ done
 [ -n "$FEATURES" ] && echo ">> features: $FEATURES"
 echo ">> defconfig: $EFFECTIVE"
 
+# ---- preflight: every path the defconfig NAMES has to exist -----------------
+#
+# Buildroot does not check these up front. It discovers a missing rootfs overlay
+# at `target-finalize`, which is the very last step — so a typo, or a board file
+# naming a directory nobody created, costs a full toolchain build before it says
+# anything. That is exactly how ea1-v2, ea1-v2-poe and ea3-v1 failed: thirty-odd
+# minutes each, ending in
+#
+#   rsync: change_dir ".../board/ea1-v2/rootfs-overlay" failed: No such file
+#   make: *** [Makefile:750: target-finalize] Error 23
+#
+# One second here, with the offending key named, instead.
+#
+# The reverse check matters just as much and Buildroot can never make it: an
+# overlay directory that EXISTS but is not listed is silently ignored, so the
+# board boots without the files somebody carefully wrote. Nothing fails; the
+# behaviour is just quietly wrong.
+_pf_missing=0
+_pf_check() {   # $1 = defconfig key, $2 = dir|file
+    _vals=$(sed -n "s/^$1=\"\(.*\)\"$/\1/p" "$EFFECTIVE" | tail -1)
+    for _v in $_vals; do
+        _p=$(printf '%s' "$_v" | sed "s#\$(BR2_EXTERNAL_OPENHC_PATH)#$REPO/board#")
+        case "$2" in
+            dir)  [ -d "$_p" ] && continue ;;
+            file) [ -f "$_p" ] && continue ;;
+        esac
+        echo "build.sh: $1 names a $2 that does not exist:" >&2
+        echo "    $_p" >&2
+        _pf_missing=1
+    done
+}
+_pf_check BR2_ROOTFS_OVERLAY dir
+_pf_check BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES file
+_pf_check BR2_GLOBAL_PATCH_DIR dir
+_pf_check BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES file
+
+# An overlay that exists and is not listed: a warning, not an error, because a
+# downstream tree may legitimately keep one it composes in some other way.
+for _d in "$REPO/board/$BOARD/rootfs-overlay" \
+          ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/rootfs-overlay"}; do
+    [ -d "$_d" ] || continue
+    grep -q "$(basename "$(dirname "$_d")")/rootfs-overlay" "$EFFECTIVE" ||
+        echo "build.sh: WARNING $_d exists but no BR2_ROOTFS_OVERLAY entry names it" >&2
+done
+
+[ "$_pf_missing" = 0 ] || {
+    echo "build.sh: refusing to start a build that cannot finish" >&2
+    exit 1
+}
+
 # Compose the defconfig and stop. Useful on its own — you can read exactly what
 # a board resolves to without waiting for a build — and it is how the feature
 # composition is regression-tested when this file changes.
