@@ -157,21 +157,6 @@ fn build_reply(cfg: &Config, req: &Message, kind: MessageType) -> Message {
     m
 }
 
-/// A REQUEST is ours only if it selects our offer: it names us as the server,
-/// or (a reboot/renewal, no server id) asks for the address we hand out.
-/// Acking a request that selected the LAN router's offer is not a win, it is a
-/// second, contradictory answer — the client already keeps the router's.
-fn request_is_ours(cfg: &Config, req: &Message) -> bool {
-    let opts = req.opts();
-    if let Some(v4::DhcpOption::ServerIdentifier(id)) = opts.get(v4::OptionCode::ServerIdentifier) {
-        return *id == cfg.server_ip;
-    }
-    match opts.get(v4::OptionCode::RequestedIpAddress) {
-        Some(v4::DhcpOption::RequestedIpAddress(ip)) => *ip == cfg.client_ip,
-        _ => req.ciaddr() == cfg.client_ip,
-    }
-}
-
 fn message_type(m: &Message) -> Option<MessageType> {
     match m.opts().get(v4::OptionCode::MessageType) {
         Some(v4::DhcpOption::MessageType(t)) => Some(*t),
@@ -209,7 +194,12 @@ fn dhcp_thread(
         let Some(saw) = message_type(&req) else { continue };
         let kind = match saw {
             MessageType::Discover => MessageType::Offer,
-            MessageType::Request if request_is_ours(&cfg, &req) => MessageType::Ack,
+            // ACK every REQUEST from this MAC, even one that selected the LAN
+            // router's offer. Contradictory, and deliberate: the client keeps
+            // whichever ACK lands first, and when the router never ACKs (a
+            // deleted or blocked lease) ours is the only one — without it the
+            // box ends up with no lease at all.
+            MessageType::Request => MessageType::Ack,
             // Inform, Release, Decline: nothing a bootloader needs from us.
             _ => {
                 emit(Event::Dhcp { saw, replied: None });
@@ -314,8 +304,17 @@ pub fn serve(
     // because the real one is built below.
     let _ = tftpd::Config::new(["tftpd", "-v", "-v"].iter().map(|s| s.to_string()));
 
-    let mut tftp = tftpd::Server::new(&tftp_cfg)
-        .map_err(|e| io::Error::other(format!("tftp on {}:69 — {e}", cfg.server_ip)))?;
+    // A specific-address bind of :69 needs root on macOS; the wildcard does
+    // not (10.14+). Fall back so the server runs without sudo. Replies still
+    // leave from server_ip: it holds the connected route to the box's subnet.
+    let mut tftp = match tftpd::Server::new(&tftp_cfg) {
+        Err(e) if e.to_string().contains("Permission denied") => {
+            let any = tftpd::Config { ip_address: IpAddr::V4(Ipv4Addr::UNSPECIFIED), ..tftp_cfg };
+            tftpd::Server::new(&any)
+        }
+        r => r,
+    }
+    .map_err(|e| io::Error::other(format!("tftp on {}:69 — {e}", cfg.server_ip)))?;
     let tftp_abort = tftp.get_abort_flag();
 
     emit(Event::Listening { dhcp: 67, tftp: 69, iface: iface.clone() });
@@ -574,18 +573,6 @@ mod tests {
         assert_eq!(message_type(&req), Some(MessageType::Request));
         let reply = build_reply(&cfg, &req, MessageType::Ack);
         assert_eq!(message_type(&reply), Some(MessageType::Ack));
-    }
-
-    /// A REQUEST selecting another server's offer gets no ACK from us.
-    #[test]
-    fn a_request_for_the_routers_offer_is_not_acked() {
-        let cfg = cfg();
-        let mut req = discover_from(cfg.mac);
-        req.opts_mut().insert(v4::DhcpOption::MessageType(MessageType::Request));
-        req.opts_mut().insert(v4::DhcpOption::ServerIdentifier(Ipv4Addr::new(192, 168, 1, 1)));
-        assert!(!request_is_ours(&cfg, &req));
-        req.opts_mut().insert(v4::DhcpOption::ServerIdentifier(cfg.server_ip));
-        assert!(request_is_ours(&cfg, &req));
     }
 
     /// A nested bootfile name has to become a real path, or the box asks for
