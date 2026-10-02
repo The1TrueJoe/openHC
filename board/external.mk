@@ -88,7 +88,7 @@ define OHC_KERNEL_MIRROR_HOOK
 		for t in $(OHC_KERNEL_SUBTREES); do \
 			[ -d "$$m/$$t" ] || continue; \
 			( cd "$$m/$$t" && \
-			  find . \( -name '*.c' -o -name '*.h' -o -name 'Makefile' \) | sed 's|^\./||' ) | while read -r f; do \
+			  find . \( -name '*.c' -o -name '*.h' -o -name 'Makefile' -o -name 'Kbuild' -o -name 'Kconfig' \) | sed 's|^\./||' ) | while read -r f; do \
 				install -D -m644 "$$m/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
 				echo "openHC: installed $$t/$$f ($$who)"; \
 			done; \

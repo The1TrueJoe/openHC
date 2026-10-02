@@ -1,5 +1,6 @@
-# Kernel options for the PowerVR SGX545 driver (packages/sgx545-ce). Mirrors that
-# repo's own linux.fragment.
+# Kernel options for the in-tree PowerVR SGX545 driver (sgx545ce, mirrored from
+# board/ea/common/kernel/drivers/gpu/drm/sgx545ce). Mirrors that repo's own
+# linux.fragment.
 #
 # NOTE ON COMMENTS IN THIS FILE: Buildroot's merge_config.sh scrapes any line that
 # looks like a kconfig assignment, including inside prose. Do not write a symbol
@@ -16,6 +17,11 @@
 # the rootfs instead. (The helpers are not trimmable here — DRM_KMS_HELPER /
 # DRM_DISPLAY_HELPER have no prompt and disabling them in a fragment is ignored.)
 CONFIG_DRM=m
+
+# The SGX545 driver itself (sgx545ce, mirrored in-tree via objs.mk), built as a
+# module for the same reason — and depends on DRM, so =m is the only option while
+# DRM is =m. Gated on its own real Kconfig symbol now, not a Buildroot package.
+CONFIG_SGX545_CE=m
 
 # PAT gives real write-combining for the SGX command buffers. Without it the
 # driver falls back to uncached: correct, markedly slower.

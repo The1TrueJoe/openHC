@@ -78,7 +78,9 @@ source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/splash/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/iomcu-attach/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-ce/Config.in"
+# sgx545-ce (the SGX545 KERNEL driver) is no longer a package — it is an in-tree
+# driver mirrored from board/ea/common/kernel/drivers/gpu/drm/sgx545ce. Only its
+# userspace (sgx545-um) and the WPE stack remain packages.
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-um/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/wpebackend-pvr/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/webview/Config.in"
