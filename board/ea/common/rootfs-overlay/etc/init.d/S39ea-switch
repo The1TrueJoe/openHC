@@ -1,0 +1,56 @@
+#!/bin/sh
+# Load the BCM53125 managed-switch driver (the `switch` feature, now built =m to
+# keep the EA-3 bzImage inside CEFDK's bootlinux window — see
+# board/ea/common/features/switch/linux.fragment).
+#
+# WHY an init script and not modules-load.d: this image has no systemd and no
+# modules-load.d reader, so modules are loaded by modprobe from init, the same
+# way S41wifi-ap loads the radio. Features have no rootfs-overlay hook of their
+# own, so the switch autoload lives in the EA family overlay; it is a NO-OP on
+# EA boards built without the switch feature (b53_spi.ko simply is not in the
+# image, so modprobe fails harmlessly).
+#
+# WHY before S40net (S39 < S40): once the b53 driver binds, the SoC MAC becomes
+# the switch's DSA CPU port and the real jacks appear as lan1/lan2. S40net brings
+# those up (OHC_DSA_PORTS) and, if DSA has NOT attached, falls back to the master
+# — so loading here gives DSA the chance to attach first. modprobe b53_spi pulls
+# b53, dsa_core and the Broadcom tag module via modules.dep.
+#
+# The board glue (spi-ea-b53-board.c) is built in and already registered the
+# spi:bcm53125 device at subsys_initcall; loading the module now binds it by
+# deferred probe. We wait briefly for the bind so S40net sees the slave netdevs.
+
+MOD=b53_spi
+DRV=/sys/bus/spi/drivers/b53-switch
+
+start() {
+    # modprobe fails harmlessly on an EA board built without the switch feature
+    # (b53_spi.ko is simply not in the image) — same guard style as S41wifi-ap.
+    modprobe "$MOD" >/dev/null 2>&1 || {
+        echo "ea-switch: $MOD not in this image, skipping"
+        return 0
+    }
+    # Best-effort wait for the driver to bind the spi:bcm53125 device, so the
+    # lan1/lan2 DSA slaves exist by the time S40net runs. A bound device shows as
+    # an spiN.N symlink in the driver dir. S40net's fallback keeps the board
+    # reachable on the primary jack even if this times out.
+    i=0
+    while [ $i -lt 10 ]; do
+        for e in "$DRV"/spi*; do
+            [ -e "$e" ] && { echo "ea-switch: $MOD bound $(basename "$e")"; return 0; }
+        done
+        sleep 1; i=$((i + 1))
+    done
+    echo "ea-switch: $MOD loaded (not bound yet; S40net falls back if needed)"
+}
+
+stop() {
+    modprobe -r "$MOD" >/dev/null 2>&1 || true
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

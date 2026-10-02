@@ -1,16 +1,19 @@
 # Full EA-3 v2 feature set. (It was cut to 'emmc' during Home Assistant bring-up;
 # sgx came back once confirmed on the EA3, and switch + audio are RE-ENABLED here.)
 #
-# !!! SIZE: `switch` and `audio` are =y in their feature fragments, and an x86_64
-# EA-3 kernel already fills ~7,037,952 of CEFDK's 7,417,856-byte bootlinux window.
-# =y switch+audio (on top of sgx) very likely OVERRUNS it; an oversized bzImage is
-# TRUNCATED silently and does not boot. The documented fix is MODULES (=m) on p1 —
-# NOT done here: the switch SPI/b53 + ASoC drivers are injected obj-y via
-# board/ea/common/kernel/objs.mk (switch board glue built-in), so =m needs
-# load-ordering + a build/boot measurement that cannot be done without building.
-# MEASURE the bzImage before trusting a boot. `audio` has also never been built
-# for x86_64 (compile risk); its platform driver is probe-only (enable_pcm=0,
-# reading TX reg 0x2004 hangs the SoC).
+# !!! SIZE: an x86_64 EA-3 kernel already fills ~7,037,952 of CEFDK's 7,417,856-byte
+# bootlinux window; with sgx also on, switch+audio must not push it over (an
+# oversized bzImage is TRUNCATED silently and does not boot). Status:
+#   switch - now built =m (b53/dsa/tag), loaded by /etc/init.d/S39ea-switch, so
+#            it no longer costs the window. SPI master stays =y.
+#   audio  - still =y: SND_SOC=m would make the obj-y ASoC drivers fail the
+#            vmlinux link (they call snd-soc-core exports), and making those
+#            copied drivers obj-m is a separate change not done here. So audio
+#            still spends its full size in the bzImage, alongside sgx.
+# STILL NEEDS A CI BUILD to confirm the image fits + boots, and that S39ea-switch
+# actually brings the switch up. `audio` also has never been built for x86_64
+# (compile risk); its platform driver is probe-only (enable_pcm=0, reading TX
+# reg 0x2004 hangs the SoC).
 #
 # Shared EA feature sets this board pulls in. One word per feature, space
 # separated. Each lives in board/ea/common/features/<name>/, holding both its

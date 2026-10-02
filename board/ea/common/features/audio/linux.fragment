@@ -10,6 +10,18 @@
 # they are gated by CONFIG_SND_SOC below deciding whether sound/soc is built at
 # all. See drivers/objs.mk for why inventing a CONFIG_ symbol here would
 # silently build nothing.
+#
+# These stay =y ON PURPOSE — do NOT set SND_SOC=m to save bzImage space. The
+# three copied-in ASoC drivers are obj-y (board/ea/common/kernel/objs.mk) and
+# CALL snd-soc-core exports directly: ce5300-ea3.c -> devm_snd_soc_register_card,
+# adau1451-c4.c / ce5300-i2s.c -> devm_snd_soc_register_component. With
+# SND_SOC=m those symbols live only in a .ko, and the obj-y drivers fail at
+# `LD vmlinux` with "undefined reference to devm_snd_soc_register_card" — the
+# exact failure board/external.mk documents for hc800. Making audio a module
+# therefore requires making the copied drivers obj-m too (give them MODULE_*
+# metadata and flip their objs.mk lines) — a separate change, deliberately not
+# done here. Until then audio contributes its full size to the bzImage; see this
+# board's ohc.features for the window it has to fit.
 CONFIG_SOUND=y
 CONFIG_SND=y
 CONFIG_SND_PCM=y
