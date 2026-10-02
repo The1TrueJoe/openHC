@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,462 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
