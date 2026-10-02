@@ -390,92 +390,76 @@ pub fn boot_installed(ssh: &Ssh, p: &Progress) -> Result<()> {
     Ok(())
 }
 
-/// Point GRUB's default straight at Control4's own factory-restore entry
-/// (menu.lst entry 0, backed by the untouched `/dev/sda2` restore system) and
-/// reboot into it — the software equivalent of holding the ID button.
+/// Run Control4's own factory restore (menu.lst entry 0, the untouched
+/// `/dev/sda2` restore system) ONCE, and reboot into it — the software
+/// equivalent of holding the ID button.
 ///
-/// This writes NOTHING from the host: it flips one line in `menu.lst` so the
-/// box boots the recovery kernel/rootfs Control4 already shipped on
-/// [`hc::RESTORE_PART`], which is never touched by any method in this tool.
-/// From there the restore is entirely the box's own process — same as the
-/// button — and it decides what to boot once it finishes.
+/// Nothing is pushed from the host and sda2 is never written: the restore is the
+/// box's own process, same kernel line as the button. What this writes is
+/// `menu.lst` and `/boot/grub/default` on sda1 — see
+/// [`hc::factory_once_menu`] for why it is a one-shot entry plus
+/// `default saved`, and NOT `default 0` (which restores forever: restore.sh
+/// reboots without touching menu.lst, and the next boot picks entry 0 again).
 ///
-/// Unlike [`boot_installed`], this rewrites the `default` line in `menu.lst`
-/// itself rather than the `default saved` file, because a persistent openHC
-/// install leaves `menu.lst` on `default 2` (not `saved`) and only editing the
-/// line GRUB actually reads works in both install modes.
+/// The default file is written and read back BEFORE menu.lst switches to
+/// `default saved`, because GRUB 0.97 with `default saved` and no file falls
+/// back to entry 0 — the same loop by another route.
 pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     let gm = "/mnt/ohc-grub";
     ssh.run(&format!("mkdir -p {gm} && mount {} {gm}", hc::GRUB_PART), true)
         .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;
+    let bail_umount = |msg: String| -> anyhow::Error {
+        let _ = ssh.run(&format!("sync; umount {gm}"), false);
+        anyhow::anyhow!(msg)
+    };
 
     let menu = format!("{gm}/boot/grub/menu.lst");
+    let dflt = format!("{gm}/boot/grub/default");
     let before = ssh
         .read_file(&menu)
-        .with_context(|| format!("{menu} is unreadable — refusing to write a bootloader blind"))?;
-
-    // Same guard every other write to this file uses: if the button-dependent
-    // lines are not where expected, this is not a menu.lst this tool
-    // understands, and it should not be edited blind.
-    for line in hc::GUARDED_LINES {
-        if !before.lines().any(|l| l.trim_start().starts_with(line)) {
-            let _ = ssh.run(&format!("umount {gm}"), false);
-            bail!("menu.lst has no `{line}` line — the factory-default button depends on it");
-        }
-    }
+        .ok_or_else(|| bail_umount(format!("{menu} is unreadable — refusing to write a bootloader blind")))?;
+    let (out, once) = hc::factory_once_menu(&before).map_err(|e| bail_umount(e))?;
 
     let backup_suffix = format!(".pre-factory-restore.{}", chrono_like_stamp());
-    ssh.run(&format!("cp {menu} {menu}{backup_suffix}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
+    ssh.run(&format!("cp {menu} {menu}{backup_suffix}"), true).map_err(|e| bail_umount(format!("{e}")))?;
     p.emit(Event::detail(format!("kept {menu}{backup_suffix}")));
 
-    let want = format!("default\t\t{}", hc::ENTRY_FACTORY);
-    let mut out = String::new();
-    let mut seen_default = false;
-    for l in before.lines() {
-        if l.trim_start().starts_with("default") {
-            seen_default = true;
-            out.push_str(&want);
-            out.push('\n');
-        } else {
-            out.push_str(l);
-            out.push('\n');
-        }
+    // 1. The default file, pointing at the one-shot entry. Rewrite only the
+    //    first line if it exists (savedefault rewrites it in place by sector);
+    //    create it padded if not.
+    let have = ssh.run(&format!("test -s {dflt}"), false).is_ok();
+    if have {
+        ssh.run(&format!("sed -i '1s/.*/{once}/' {dflt}"), true).map_err(|e| bail_umount(format!("{e}")))?;
+    } else {
+        ssh.put_stream(hc::default_file(once).as_bytes(), &format!("cat > {dflt}"))
+            .map_err(|e| bail_umount(format!("{e}")))?;
     }
-    if !seen_default {
-        let _ = ssh.run(&format!("umount {gm}"), false);
-        bail!("menu.lst has no `default` line at all — not the file this tool expects");
+    let first = ssh.run(&format!("sync; head -n 1 {dflt}"), true).map_err(|e| bail_umount(format!("{e}")))?;
+    if first.trim() != once.to_string() {
+        return Err(bail_umount(format!("{dflt} reads back {:?}, expected {once} — menu.lst NOT changed", first.trim())));
     }
+    p.emit(Event::detail(format!("saved default -> entry {once} ({})", hc::FACTORY_ONCE_TITLE)));
 
-    ssh.put_stream(out.as_bytes(), &format!("cat > {menu}")).map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    // Also point `default saved` at the same entry, in case a later install
-    // left the box in boot-once mode — belt and braces, costs nothing.
-    let _ = ssh.run(
-        &format!("sed -i '1s/.*/{}/' {gm}/boot/grub/default 2>/dev/null; true", hc::ENTRY_FACTORY),
-        false,
-    );
-
-    // Read back before trusting it, same rule as every other write to this
-    // partition.
-    let after = ssh.read_file(&menu).context("menu.lst unreadable after writing it")?;
-    if after != out {
-        let _ = ssh.run(&format!("cp {menu}{backup_suffix} {menu}; sync; umount {gm}"), false);
-        bail!("menu.lst read back differently than written — restored the backup, nothing changed");
+    // 2. menu.lst, read back before trusting it.
+    ssh.put_stream(out.as_bytes(), &format!("cat > {menu}")).map_err(|e| bail_umount(format!("{e}")))?;
+    let after = ssh.read_file(&menu);
+    if after.as_deref() != Some(out.as_str()) {
+        let _ = ssh.run(&format!("cp {menu}{backup_suffix} {menu}"), false);
+        return Err(bail_umount("menu.lst read back differently than written — restored the backup".into()));
     }
-    for line in hc::GUARDED_LINES {
-        if !after.lines().any(|l| l.trim_start().starts_with(line)) {
-            let _ = ssh.run(&format!("cp {menu}{backup_suffix} {menu}; sync; umount {gm}"), false);
-            bail!("`{line}` did not survive the write — restored the backup");
-        }
-    }
-    p.emit(Event::detail(format!("menu.lst verified, {} bytes, default -> entry {}", after.len(), hc::ENTRY_FACTORY)));
+    p.emit(Event::detail(format!(
+        "menu.lst verified, {} bytes: entry {once} restores once and saves entry {} as the default",
+        out.len(),
+        hc::ENTRY_VENDOR
+    )));
     ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     p.emit(Event::step("rebooting into Control4's factory-restore system — this connection will drop".into()));
     let _ = ssh.run("sync; reboot", false);
     p.emit(Event::resolved(
-        "on its way. The box is now running Control4's own restore process off \
-         the untouched recovery partition, same as the ID button — nothing was pushed from this host"
+        "on its way. The box runs Control4's own restore off the untouched recovery partition, \
+         same as the ID button, then reboots into the freshly restored stock image. Allow ~5 minutes; \
+         it comes back on a new DHCP lease, so find it by MAC"
             .into(),
     ));
     Ok(())
@@ -565,9 +549,13 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
         )
         .ok();
         p.emit(Event::detail(format!("`default saved` kept, saved -> entry {}", hc::ENTRY_VENDOR)));
+    } else {
+        // `default saved` is gone with the entry, so the file it read is
+        // orphaned. Only then: deleting it while menu.lst still says `default
+        // saved` makes GRUB fall back to entry 0 — a factory restore on every
+        // boot.
+        let _ = ssh.run(&format!("rm -f {gm}/boot/grub/default"), false);
     }
-    // `default saved` is gone with the entry, so the file it read is orphaned.
-    let _ = ssh.run(&format!("rm -f {gm}/boot/grub/default"), false);
     ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // The images last: menu.lst no longer names them, so deleting them now
