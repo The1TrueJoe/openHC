@@ -11,9 +11,13 @@
 DAEMON=/usr/bin/librespot
 PIDFILE=/var/run/librespot.pid
 NAME="$(hostname)"
-# 'alsa' with no device follows the default PCM, so an asound.conf or a USB DAC
-# change does not need this file edited.
-ARGS="--name $NAME --backend alsa --bitrate 320 --disable-audio-cache"
+# The web UI's output selector (iod audio.output) writes OHC_AUDIO_DEVICE here;
+# honour it when set, otherwise 'alsa' with no device follows the default PCM, so
+# an asound.conf or a USB DAC change needs no edit. Picked up on (re)start, which
+# is what the panel tells the user.
+[ -r /etc/ohc/audio-output ] && . /etc/ohc/audio-output
+DEV="${OHC_AUDIO_DEVICE:+--device $OHC_AUDIO_DEVICE}"
+ARGS="--name $NAME --backend alsa $DEV --bitrate 320 --disable-audio-cache"
 
 case "$1" in
   start)

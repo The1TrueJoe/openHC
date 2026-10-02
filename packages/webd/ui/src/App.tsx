@@ -1,11 +1,12 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
 import { SettingsPanel } from './panels/Settings';
 import { DocsPanel } from './panels/Docs';
 import { SystemPanel } from './panels/System';
+import { AudioPanel } from './panels/Audio';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -37,6 +38,11 @@ function destinations(c: Capabilities): Dest[] {
   // otherwise. The terminal itself opens as a window over that page.
   if (c.relays || c.contacts || c.ir || c.serials?.length) {
     d.push({ id: 'io', label: 'IO', icon: ToggleLeft, render: (c) => <IoPanel caps={c} /> });
+  }
+  // Audio appears only on a box that actually has it — a sound card or a
+  // network receiver — the same "nothing behind it does not appear" rule.
+  if (c.audio) {
+    d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} /> });
   }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.

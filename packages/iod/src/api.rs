@@ -56,6 +56,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .routes(routes!(capabilities))
         .routes(routes!(mcu_info))
         .routes(routes!(mcu_reset))
+        .routes(routes!(audio_status_h))
         .routes(routes!(restore_status_h))
         .routes(routes!(restore_stock_h))
         .routes(routes!(config_get, config_put))
@@ -123,6 +124,19 @@ reinstalled. POST-ing here IS the confirmation; wrap it in a UI confirm dialog."
     responses((status = 200, description = "restore started; the box will reboot")))]
 async fn restore_stock_h(s: Ctx) -> axum::response::Response {
     run(s, Cmd::RestoreStock { confirm: true }).await
+}
+
+#[utoipa::path(get, path = "/api/audio", tag = "IO",
+    summary = "ALSA outputs, the network receivers, selection and volume",
+    description = "A thing with nothing behind it does not appear: a board with no sound card and \
+no receiver binaries has no `audio` section at all and this faults 404. Otherwise it reports the \
+outputs discovered at runtime, whether librespot/shairport-sync are installed and running, the \
+selected output, the volume, and any now-playing the receivers actually feed us. Changing the \
+output or the volume is MQTT (`cmd/audio/output`, `cmd/audio/volume`), the same as a relay — this \
+read is for drawing the panel.",
+    responses((status = 200, description = "audio status"), (status = 404, description = "no audio on this board")))]
+async fn audio_status_h(s: Ctx) -> axum::response::Response {
+    run(s, Cmd::AudioStatus).await
 }
 
 /// Permissive CORS, deliberately.

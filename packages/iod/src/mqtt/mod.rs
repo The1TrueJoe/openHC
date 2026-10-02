@@ -136,6 +136,10 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
             index: topics::index(n)? as usize,
             baud: b.parse().ok()?,
         }),
+        // Audio: the output device is a free string (e.g. `hw:DSP`), volume is a
+        // plain percent so a Home Assistant number entity can drive it.
+        ["audio", "output"] if !b.is_empty() => Some(Cmd::AudioOutput { device: b.to_string() }),
+        ["audio", "volume"] => b.parse::<u8>().ok().map(|percent| Cmd::AudioVolume { percent, device: None }),
         _ => None,
     }
 }
@@ -192,6 +196,17 @@ mod tests {
         assert!(matches!(parse_cmd("serial/4/rts", "on"),
                          Some(Cmd::SerialLine { index: 3, line: SerialLine::Rts, on: true })));
         assert!(parse_cmd("serial/1/dtr", "maybe").is_none());
+    }
+
+    #[test]
+    fn audio_output_and_volume_parse() {
+        assert!(matches!(parse_cmd("audio/output", "hw:DSP"),
+                         Some(Cmd::AudioOutput { device }) if device == "hw:DSP"));
+        // An empty body is not a device — ignore it rather than clearing the pick.
+        assert!(parse_cmd("audio/output", "").is_none());
+        assert!(matches!(parse_cmd("audio/volume", "60"),
+                         Some(Cmd::AudioVolume { percent: 60, device: None })));
+        assert!(parse_cmd("audio/volume", "loud").is_none());
     }
 
     #[test]
