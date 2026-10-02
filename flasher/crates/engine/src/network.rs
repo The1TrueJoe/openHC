@@ -180,7 +180,7 @@ pub fn stage1_ram_installer(
 
 
 /// Linux eMMC offset where the tiny /init expects the gzipped rootfs to be
-/// staged. MUST match ROOTFS_STAGE_MB in board/ea-common/boot-init/init.
+/// staged. MUST match ROOTFS_STAGE_MB in board/ea/common/boot-init/init.
 const ROOTFS_STAGE_OFF: u64 = 16 * 1024 * 1024; // 16 MiB
 
 /// How much room the staged rootfs actually has: the gap between where it is

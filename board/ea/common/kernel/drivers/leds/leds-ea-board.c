@@ -17,7 +17,7 @@
  * NOTE THE GPIO NUMBERS: 99, 100, 102 are far above the 12 lines mainline's
  * gpio-sodaville exposes for this controller. That is exactly why the LEDs were
  * unreachable before, and why openHC replaces it with gpio-intelce (128 lines,
- * ea-common/drivers/gpio/gpio-intelce.c). This file is useless without it.
+ * ea/common/drivers/gpio/gpio-intelce.c). This file is useless without it.
  *
  * ACTIVE LOW: the two 4-ball LEDs carry flags = 1 in the stock table
  * (GPIO_ACTIVE_LOW). The four warn/network LEDs are active high.

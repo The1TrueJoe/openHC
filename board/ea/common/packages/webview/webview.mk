@@ -5,7 +5,7 @@
 ################################################################################
 
 WEBVIEW_VERSION = 0.1.0
-WEBVIEW_SITE = $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/packages/webview
+WEBVIEW_SITE = $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/packages/webview
 WEBVIEW_SITE_METHOD = local
 WEBVIEW_LICENSE = MIT
 # libglib2 is listed even though wpewebkit already pulls it in: this source

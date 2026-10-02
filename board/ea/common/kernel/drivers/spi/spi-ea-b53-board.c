@@ -27,7 +27,7 @@
  * dsa_switch_parse_ports() still reads its port_names[]/netdev[]. Only the
  * dsa_platform_data WRAPPER was removed, so we hand over the chip data directly.
  *
- * See board/ea3-v2/patches/linux/0003-*.patch in openHC for what is verified here
+ * See board/ea/ea3-v2/patches/linux/0003-*.patch in openHC for what is verified here
  * and what is not. In short: the bus, chip-select and the whole port map were
  * measured on a live unit; what is untested is DSA's bring-up of them.
  */

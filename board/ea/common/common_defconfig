@@ -23,7 +23,7 @@ BR2_x86_bonnell=y
 #   tools/objtool/include/objtool/elf.h:10:10: fatal error: gelf.h
 BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
 
-# Inject this family's kernel drivers (board/ea-common/{drivers,sound}) via
+# Inject this family's kernel drivers (board/ea/common/{drivers,sound}) via
 # OHC_KERNEL_MIRROR_HOOK. Opt-in, and this is the only file that opts in — so if
 # an EA kernel comes out missing gpio-intelce, pwm-ce5300 or the ADAU1451 ASoC
 # stack, check this line first.
@@ -80,5 +80,5 @@ BR2_USE_WCHAR=y
 
 # Both point back into this directory, which is the giveaway that they were
 # never per-board settings.
-BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/patches"
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/post-image.sh"
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/patches"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/post-image.sh"

@@ -92,7 +92,7 @@ published the GPL kernel source for that.
 variants are composed, not copied: each lists its peripherals in
 `ohc.features` and shared feature sets supply the config.
 
-**Family base** — `board/ea-common/`, the config and patches every EA variant
+**Family base** — `board/ea/common/`, the config and patches every EA variant
 shares. The HC-800 deliberately has none and never will; it is a PC and nothing
 about it generalises.
 

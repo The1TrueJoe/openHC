@@ -1,4 +1,4 @@
-# EA3-only kernel config, applied on top of board/ea-common/linux/common.fragment.
+# EA3-only kernel config, applied on top of board/ea/common/linux/common.fragment.
 #
 # The EA3 is the same computer as the EA1 (CE5310, 1.5 GB, same eMMC layout and
 # bootloader), so almost everything it needs is already in the common fragment.
@@ -41,9 +41,9 @@
 # Piece 3 is the unverified one. See the patch header before trusting this.
 
 # ── BCM53125 switch: NOW ENABLED ────────────────────────────────────────────
-# The kernel side is ea-common/features/switch/linux.fragment and the board glue is
-# ea-common/drivers/spi/spi-ea-b53-board.c, both pulled in by the
-# 'switch' entry in board/ea3-v2/ohc.features. The glue's old compile failure
+# The kernel side is ea/common/features/switch/linux.fragment and the board glue is
+# ea/common/drivers/spi/spi-ea-b53-board.c, both pulled in by the
+# 'switch' entry in board/ea/ea3-v2/ohc.features. The glue's old compile failure
 # (dsa_chip_data moved out of <net/dsa.h>) is fixed. Port 1's DSA bring-up is
 # still unproven on hardware — S40net falls back to the master if DSA does not
 # attach, so the board stays reachable through the primary jack regardless.
@@ -82,7 +82,7 @@
 # CE5300 GbE has no PHY on the MDIO bus — the MAC is wired back-to-back to the
 # BCM53125 — so the ce4100 PHY-address autodetect scanned all 32 addresses,
 # found nothing, and e1000_probe() returned a bare -EIO with nothing logged.
-# board/ea-common/patches/linux/0003-e1000-ce5300-fake-phy.patch ports Control4's
+# board/ea/common/patches/linux/0003-e1000-ce5300-fake-phy.patch ports Control4's
 # "fake PHY" mode from the GPL drop. PROVEN on hardware 2026-08-26 via bootlinux:
 #   e1000 0000:01:0c.0: CE5300: no GbE PHY, using fake-PHY mode
 #   e1000: eth0 NIC Link is Up 1000 Mbps Full Duplex
@@ -122,7 +122,7 @@
 # CEFDK hands out a different split needs its own numbers, and a memmap past
 # the end of real DRAM is unrecoverable remotely.
 # pci=routeirq enables the CE5300 UART interrupt link (LUAR/GSI 38) so the IO-MCU
-# on ttyS1 can take an RX interrupt — see board/ea-common/linux/common.fragment.
+# on ttyS1 can take an RX interrupt — see board/ea/common/linux/common.fragment.
 CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
 
 # --- RAM: CEFDK hides 90% of it -------------------------------------------
@@ -181,8 +181,8 @@ CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc
 # last address before the uninitialised region under the framebuffer) and run
 # something memory-heavy at each step before widening.
 #
-# EA-3 v2 only. Do not promote this to ea-common: the EA-1 boards have not been
+# EA-3 v2 only. Do not promote this to ea/common: the EA-1 boards have not been
 # measured and a memmap= past the end of real DRAM is unrecoverable.
 
-# eMMC storage (sdhci-pci + ext4) comes from ea-common/features/emmc/linux.fragment
-# via the 'emmc' entry in board/ea3-v2/ohc.features.
+# eMMC storage (sdhci-pci + ext4) comes from ea/common/features/emmc/linux.fragment
+# via the 'emmc' entry in board/ea/ea3-v2/ohc.features.

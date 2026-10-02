@@ -42,7 +42,7 @@ USB peripheral can come up.
 +			 * reset handshake times out (-110), killing every USB port.
 +			 * Its PHY also has no working LPM. Both quirks come from
 +			 * Intel's GPL CE5300 BSP (the CONFIG_GEN3_USB ehci-pci
-+			 * changes) -- see board/ea-common/patches/linux/README.md.
++			 * changes) -- see board/ea/common/patches/linux/README.md.
 +			 */
 +			if (pdev->revision >= 0x6) {
 +				ehci->has_hostpc = 1;

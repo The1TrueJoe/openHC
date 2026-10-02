@@ -24,23 +24,28 @@ BUILDROOT_DIR="${BUILDROOT_DIR:-/opt/buildroot}"
 OUT="${BR2_OUTPUT_DIR:-$REPO/output/build/$BOARD}"
 DL="${BR2_DL_DIR:-$REPO/dl}"
 
-# The shared "family" base is picked by board name: ea* -> ea-common (Intel
+# The shared "family" base is picked by board name: ea* -> ea/common (Intel
 # CE5300, x86). A board with no family base builds from its own defconfig alone
 # — that is ca1 (i.MX6SL), ioxv1 (DM355) and hc800 (Atom D525) today,
 # deliberately: a family with one member in it would be indirection with
-# nothing behind it. Add a ca-common when a second CA-series board lands.
+# nothing behind it. Add a ca/common when a second CA-series board lands.
 #
 # hc800 will never get a family base. It is a PC, not a Control4 SoC board, and
 # the only other member of its IO-MCU family (hc250) is ARMv7 and shares
 # nothing else with it.
+#
+# A family keeps its member boards in their own subdirectory: the EA boards live
+# at board/ea/<board>, not board/<board>, so BOARD_DIR — not "$REPO/board/$BOARD"
+# — is what everything below has to use to find a board's files. BOARD stays the
+# bare name (ea3-v2); only where it lives on disk changed.
 case "$BOARD" in
-  ea*)  COMMON_CFG="$REPO/board/ea-common/ea-common_defconfig" ;;
-  *)    COMMON_CFG="" ;;
+  ea*)  COMMON_CFG="$REPO/board/ea/common/common_defconfig"; BOARD_DIR="$REPO/board/ea/$BOARD" ;;
+  *)    COMMON_CFG=""; BOARD_DIR="$REPO/board/$BOARD" ;;
 esac
-BOARD_CFG="$REPO/board/$BOARD/${BOARD}_defconfig"
+BOARD_CFG="$BOARD_DIR/${BOARD}_defconfig"
 [ -f "$BOARD_CFG" ] || {
     echo "no such board '$BOARD' — have:" >&2
-    for d in "$REPO"/board/*/; do
+    for d in "$REPO"/board/*/ "$REPO"/board/ea/*/; do
         b=$(basename "$d")
         [ -f "$d/${b}_defconfig" ] && echo "  $b" >&2
     done
@@ -144,7 +149,7 @@ mkdir -p "$OUT" "$DL"
 EFFECTIVE="$OUT/openhc-${BOARD}.defconfig"
 mkdir -p "$OUT"
 # Three layers now, each overriding the previous (kconfig takes the LAST
-# assignment): common (every board) -> family (ea-common, EA boards only) ->
+# assignment): common (every board) -> family (ea/common, EA boards only) ->
 # board. Anything true fleet-wide lives in common/common_defconfig so the board
 # files stay short lists of genuine differences.
 ALL_CFG="$REPO/board/common/common_defconfig"
@@ -157,10 +162,10 @@ ALL_CFG="$REPO/board/common/common_defconfig"
 #
 # The LIST layers the same way the defconfigs do — family first, then board —
 # so a capability every EA controller has is stated once in
-# board/ea-common/ohc.features rather than five times. Duplicates are harmless
+# board/ea/common/ohc.features rather than five times. Duplicates are harmless
 # and removed.
 FEATURES=""
-for _ff in ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/ohc.features"} "$REPO/board/$BOARD/ohc.features"; do
+for _ff in ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/ohc.features"} "$BOARD_DIR/ohc.features"; do
     [ -f "$_ff" ] || continue
     FEATURES="$FEATURES $(sed 's/#.*//' "$_ff" | tr '\n' ' ')"
 done
@@ -184,7 +189,7 @@ FEATURES=$(printf '%s\n' $FEATURES | awk '!seen[$0]++' | tr '\n' ' ')
 feature_dir() {
     for _d in "$REPO/board/common/features/$1" \
               ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/features/$1"} \
-              "$REPO/board/$BOARD/features/$1"; do
+              "$BOARD_DIR/features/$1"; do
         [ -d "$_d" ] && { printf '%s\n' "$_d"; return 0; }
     done
     return 1
@@ -272,7 +277,7 @@ echo ">> defconfig: $EFFECTIVE"
 # anything. That is exactly how ea1-v2, ea1-v2-poe and ea3-v1 failed: thirty-odd
 # minutes each, ending in
 #
-#   rsync: change_dir ".../board/ea1-v2/rootfs-overlay" failed: No such file
+#   rsync: change_dir ".../board/ea/ea1-v2/rootfs-overlay" failed: No such file
 #   make: *** [Makefile:750: target-finalize] Error 23
 #
 # One second here, with the offending key named, instead.
@@ -302,7 +307,7 @@ _pf_check BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES file
 
 # An overlay that exists and is not listed: a warning, not an error, because a
 # downstream tree may legitimately keep one it composes in some other way.
-for _d in "$REPO/board/$BOARD/rootfs-overlay" \
+for _d in "$BOARD_DIR/rootfs-overlay" \
           ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/rootfs-overlay"}; do
     [ -d "$_d" ] || continue
     grep -q "$(basename "$(dirname "$_d")")/rootfs-overlay" "$EFFECTIVE" ||
@@ -428,7 +433,7 @@ fi
 # Record the toolchain this tree now carries, for the next run's comparison.
 mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
 # Kernel bring-up iterates on both the config fragment AND the patch set
-# (board/ea-common/patches/linux/). Buildroot applies patches only at EXTRACT time and
+# (board/ea/common/patches/linux/). Buildroot applies patches only at EXTRACT time and
 # won't re-extract a cached source, so a plain reconfigure silently ignores new
 # patches. linux-dirclean wipes the extracted tree; the next build re-extracts,
 # re-applies all patches, reconfigures from the fragment, and rebuilds. Drop this
@@ -460,16 +465,19 @@ mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
 # BOTH the top-level packages/ AND the board-local board/*/packages/ trees, so a
 # new package in either is covered without anyone knowing this exists.
 #
-# The board-local glob is NOT optional: iomcu-attach, splash, sgx545-* and
-# webview all live under board/*/packages/, and leaving them out is exactly how
-# an edited iomcu-attach.c (the IO-MCU bring-up) shipped the previous binary from
-# a cached output tree even though the source was right -- the two examples named
-# just above (ohc-splash, sgx545-um) are themselves board packages this loop
-# used to miss.
+# The board-local glob is NOT optional: sgx545-* and webview live under
+# board/ea/common/packages/ and ths8200 under board/hc800/packages/, and leaving
+# them out is exactly how an edited source shipped the previous binary from a
+# cached output tree even though the source was right.
+#
+# TWO depths, because a family nests its boards: board/<board>/packages/ for a
+# top-level board (hc800) AND board/<family>/<member>/packages/ for a family
+# member (board/ea/common, board/ea/ea3-v2). Miss the second and every EA
+# silicon package silently ships stale.
 #
 # Same shape as the linux-dirclean above: a cached step that silently ignores
 # changed input.
-for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk; do
+for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board/*/*/packages/*/*.mk; do
     [ -e "$_mk" ] || continue
     _pkg=$(basename "$(dirname "$_mk")")
     # only if this build selects it, else make has no such target

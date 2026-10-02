@@ -5,7 +5,7 @@
 #   1. the SPI master     — spi-pxa2xx-pci binds PCI 8086:2e6a (the CE4100 port,
 #                           which the CE5310 also exposes)
 #   2. the switch driver  — b53 with its SPI binding
-#   3. board description  — ea-common/drivers/spi/spi-ea-b53-board.c
+#   3. board description  — ea/common/drivers/spi/spi-ea-b53-board.c
 #                           registers the switch at CS 1 on the SPI bus whose
 #                           number is the controller's PCI devfn (92), and hands DSA
 #                           the measured port map (CPU=5, jacks=1 and 2) as

@@ -104,7 +104,7 @@ webd:
 
 # IO-MCU firmware builds with an arm-none-eabi toolchain; its own Makefile
 # documents the prerequisites. The board profile is compile-time — see
-# board/ea-common/firmware/io-mcu/tm4c1231d5/include/board_profile.h.
+# board/ea/common/firmware/io-mcu/tm4c1231d5/include/board_profile.h.
 mcu:
 	@case "$(BOARD)" in \
 	  ea*) : ;; \
@@ -119,7 +119,7 @@ mcu:
 ifeq ($(BOARD),hc800)
 	$(MAKE) -C board/hc800/firmware/io-mcu/lm3s1162 image BOARD=hc800
 else
-	$(MAKE) -C board/ea-common/firmware/io-mcu/tm4c1231d5 fw BOARD=$(BOARD)
+	$(MAKE) -C board/ea/common/firmware/io-mcu/tm4c1231d5 fw BOARD=$(BOARD)
 endif
 
 # Serve the built kernel over BOOTP+TFTP. Needs root (binds :67/:69); run the

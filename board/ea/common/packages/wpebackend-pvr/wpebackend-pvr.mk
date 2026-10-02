@@ -5,7 +5,7 @@
 ################################################################################
 
 WPEBACKEND_PVR_VERSION = 0.1.0
-WPEBACKEND_PVR_SITE = $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/packages/wpebackend-pvr
+WPEBACKEND_PVR_SITE = $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/packages/wpebackend-pvr
 WPEBACKEND_PVR_SITE_METHOD = local
 WPEBACKEND_PVR_LICENSE = MIT
 WPEBACKEND_PVR_INSTALL_STAGING = YES

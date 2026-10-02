@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the tiny boot-initramfs (boot-init.cpio.gz) that the EA autoscript loads.
 #
-# It carries only what board/ea-common/boot-init/init needs: busybox, its
+# It carries only what board/ea/common/boot-init/init needs: busybox, its
 # dynamic loader + libc, the /init itself, and the applet symlinks the script
 # calls. A few hundred KB to ~2 MB, versus the ~15-20 MB full rootfs — so a
 # normal boot unpacks almost nothing before switch_root frees it.

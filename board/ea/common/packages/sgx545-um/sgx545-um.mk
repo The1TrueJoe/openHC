@@ -14,7 +14,7 @@
 # PGP-signed .dsc published alongside the tarball.
 #
 # Needs a glibc toolchain — the blobs are glibc-linked and cannot be loaded by
-# musl at all. board/ea-common/ea-common_defconfig selects glibc for exactly
+# musl at all. board/ea/common/common_defconfig selects glibc for exactly
 # this reason.
 #
 ################################################################################
@@ -110,7 +110,7 @@ define SGX545_UM_INSTALL_TARGET_CMDS
 	# The bus id the DDK looks for is wrong on this board; see the shim.
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) -shared -fPIC \
 		-o $(@D)/busidshim.so \
-		$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/packages/sgx545-ce/tools/busidshim.c -ldl
+		$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/packages/sgx545-ce/tools/busidshim.c -ldl
 	$(INSTALL) -D -m 0644 $(@D)/busidshim.so \
 		$(TARGET_DIR)/usr/lib/sgx-busidshim.so
 

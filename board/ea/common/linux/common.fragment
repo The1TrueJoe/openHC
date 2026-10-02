@@ -257,7 +257,7 @@ CONFIG_OF=y
 CONFIG_GPIOLIB=y
 
 # Front-panel LEDs: six GPIO-backed LEDs described by
-# ea-common/drivers/leds/leds-ea-board.c (map recovered from the stock
+# ea/common/drivers/leds/leds-ea-board.c (map recovered from the stock
 # kernel — see that patch). Needs gpio-intelce above, because three of them sit
 # on GPIOs 99-102, far past what gpio-sodaville exposed.
 CONFIG_NEW_LEDS=y
@@ -308,7 +308,7 @@ CONFIG_COMMON_CLK=y
 CONFIG_HWMON=y
 CONFIG_SENSORS_LM75=y
 
-# Fan PWM framework. The driver itself is board/ea-common/drivers/pwm/pwm-ce5300.c
+# Fan PWM framework. The driver itself is board/ea/common/drivers/pwm/pwm-ce5300.c
 # (binds PCI 8086:089f), copied in and registered as plain obj-y by
 # drivers/objs.mk — so there is deliberately NO CONFIG_PWM_CE5300 here. It used
 # to be set, but the symbol only existed in the Kconfig hunk of the old patch;
@@ -385,7 +385,7 @@ CONFIG_PWM_SYSFS=y
 # The boot flash is NOT on the pxa2xx SSP (8086:2e6a) the BCM switch rides, as
 # once assumed -- proven on an EA1: an spi-nor hung off that SSP only answered
 # "SPI transfer failed: -5". It sits on its own block, PCI 01:17.0 8086:08a0
-# ("FLASH memory"), driven by ea-common/kernel/drivers/spi/spi-ea-ce5xx.c (a
+# ("FLASH memory"), driven by ea/common/kernel/drivers/spi/spi-ea-ce5xx.c (a
 # spi-mem port of Intel's ce5xx_spi_flash). That driver instantiates the chip,
 # so spi-nor below autodetects the S25FL127S and /dev/mtd0 appears.
 #

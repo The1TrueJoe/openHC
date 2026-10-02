@@ -1,6 +1,6 @@
 # openHC — Control4 EA1 board revision 2.
 #
-# Layered after common/common_defconfig + ea-common/ea-common_defconfig.
+# Layered after common/common_defconfig + ea/common/common_defconfig.
 #
 # Reported to be close to the ea1-v1 (Wi-Fi, no managed switch) with possible
 # BOOT differences — in particular it is NOT established whether its CEFDK
@@ -13,6 +13,6 @@ BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1-v2"
 BR2_TARGET_GENERIC_ISSUE="openHC EA1 v2"
 
 # wifi + emmc kernel sides, on top of the family trim
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea-common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea1-v2/linux/ea1-v2.fragment"
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea1-v2/rootfs-overlay"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea/ea1-v2/linux/ea1-v2.fragment"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea/ea1-v2/rootfs-overlay"
 BR2_ROOTFS_POST_SCRIPT_ARGS="ea1-v2"

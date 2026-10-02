@@ -1,4 +1,4 @@
-# EA1-only kernel config, applied on top of board/ea-common/linux/common.fragment.
+# EA1-only kernel config, applied on top of board/ea/common/linux/common.fragment.
 #
 # The EA1's reachability path is Wi-Fi: an Atheros AR9485 on PCIe, driven by
 # fully mainline ath9k with no firmware blob. That is what lets the serial
@@ -20,5 +20,5 @@
 # it LUAR stays merely "configured" and request_irq(38) fails, so ttyS1 (the
 # IO-MCU port) never takes an RX interrupt and the tm4c looks dead. Confirmed on
 # an EA1: with routeirq, `ACPI: \_SB_.LUAR: Enabled at IRQ 38` and ttyS1 registers
-# on irq 38. See board/ea-common/linux/common.fragment for the full story.
+# on irq 38. See board/ea/common/linux/common.fragment for the full story.
 CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"

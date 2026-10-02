@@ -23,7 +23,7 @@ serial8250_isa_init_ports drop them and the 2e66 PCI UARTs steal the ttyS number
 The 8051 power PIC at 0x3E8 is a genuine 8250 and is deliberately not matched,
 matching stock's /proc/tty/driver/serial. Pairs with patch 0002 (clock + IRQ 38).
 
-Scope: EA family only (board/ea-common/patches).
+Scope: EA family only (board/ea/common/patches).
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---

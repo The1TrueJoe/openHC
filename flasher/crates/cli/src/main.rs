@@ -223,7 +223,7 @@ fn validate(rest: &[String]) -> bool {
 ///
 /// This exists so the Buildroot post-image step and the installer agree on the
 /// container layout by construction rather than by two implementations staying
-/// in sync. board/ea-common/post-image.sh calls it.
+/// in sync. board/ea/common/post-image.sh calls it.
 fn wrap(rest: &[String]) -> bool {
     let args: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
     if args.len() < 2 {

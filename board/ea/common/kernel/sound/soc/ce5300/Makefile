@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 # openHC: CE5300 audio. Copied into the kernel tree by OHC_KERNEL_MIRROR_HOOK
 # together with these sources; sound/soc/Makefile is told to descend here by an
-# entry in board/ea-common/drivers/objs.mk.
+# entry in board/ea/common/drivers/objs.mk.
 #
 # Plain obj-y, like openHC's other copied-in drivers: there is no Kconfig hunk
 # declaring a symbol for these, so obj-$(CONFIG_...) would silently expand to

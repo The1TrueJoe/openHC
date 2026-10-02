@@ -1,6 +1,6 @@
 # openHC feature: restore (kernel half). The MFH lives in the boot SPI-NOR, which
 # the spi-ea-ce5xx controller exposes as /dev/mtd0; MTD + the mtd char device are
-# enabled in ea-common/linux/common.fragment (shared with the installer path).
+# enabled in ea/common/linux/common.fragment (shared with the installer path).
 # This fragment is intentionally minimal — the feature's real content is its
 # userspace package — but a feature must ship both halves, so the MTD char
 # interface ohc-restore opens is asserted here.

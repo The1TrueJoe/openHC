@@ -52,7 +52,7 @@ bzsize=$(wc -c < "$bz")
 if [ "$bzsize" -gt "$BOOTLINUX_WINDOW" ]; then
 	echo "post-image: bzImage is $bzsize B, over CEFDK's $BOOTLINUX_WINDOW B bootlinux window" >&2
 	echo "  it would overwrite the loader mid-copy and the board would not boot." >&2
-	echo "  Trim board/ea-common/linux/common.fragment; that file exists for this." >&2
+	echo "  Trim board/ea/common/linux/common.fragment; that file exists for this." >&2
 	exit 1
 fi
 echo "post-image: bzImage $bzsize B, $((BOOTLINUX_WINDOW - bzsize)) B under the bootlinux window"
@@ -106,7 +106,7 @@ fi
 # ~1 MB instead of the whole rootfs, and the flasher writes everything in one
 # stage. TARGET_DIR is the images dir's sibling in this build layout.
 TARGET="$IMAGES/../target"
-BOOTINIT="$EXT/ea-common/boot-init/init"
+BOOTINIT="$EXT/ea/common/boot-init/init"
 if [ -d "$TARGET" ] && [ -f "$BOOTINIT" ]; then
 	"$EXT/../build/mk-boot-init.sh" "$TARGET" "$IMAGES/boot-init.cpio.gz" "$BOOTINIT" \
 		|| echo "post-image: WARNING boot-init build failed (tiny-init install unavailable)" >&2

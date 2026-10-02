@@ -18,7 +18,7 @@ ttyS1 is configured by Linux from the mainline table, so it never got DMA_SELECT
 Bring the PORT_XSCALE config in line with stock's GEN3 values. Applies to every
 port forced to XScale here, which is what stock does too.
 
-Scope: EA family only (board/ea-common/patches). Pairs with 0002/0006/0010/0011.
+Scope: EA family only (board/ea/common/patches). Pairs with 0002/0006/0010/0011.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---

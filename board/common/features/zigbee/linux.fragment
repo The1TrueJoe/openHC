@@ -5,7 +5,7 @@
 # Harmless on boards whose NCP is on a NATIVE UART (ca1 ttymxc4, hc800 ttyS4):
 # there is no CP2104, so cp210x simply binds nothing. The USB HOST CONTROLLER
 # itself is board hardware, not part of this shared feature — it stays in each
-# board's own fragment (on the EA that is the EHCI block in ea-common, which also
+# board's own fragment (on the EA that is the EHCI block in ea/common, which also
 # needs patch 0014 to bring the TransDimension core out of -110 at all).
 CONFIG_USB=y
 CONFIG_USB_SERIAL=y

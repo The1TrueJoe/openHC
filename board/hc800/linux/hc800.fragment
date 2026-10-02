@@ -1,6 +1,6 @@
 # Kernel config delta on the mainline x86_64 defconfig, for a reachable HC-800.
 #
-# Read this next to board/ea-common/linux/common.fragment and note what is NOT
+# Read this next to board/ea/common/linux/common.fragment and note what is NOT
 # here: there is no size trim. That fragment cuts hard because CEFDK's bootlinux
 # copies the kernel into a ~7 MB window and overruns its own loader if the image
 # is bigger. The HC-800 boots from GRUB 0.97, which has no such ceiling, so this
@@ -279,7 +279,7 @@ CONFIG_RTC_DRV_CMOS=y
 # CONFIRMED WORKING on hardware: the splash draws. Any note elsewhere calling
 # this board headless predates that.
 #
-# Cheap here because this is the board with no image-size ceiling: ea-common has
+# Cheap here because this is the board with no image-size ceiling: ea/common has
 # to fight CEFDK bootlinux's ~8.07 MB copy window, GRUB 0.97 does not, and sda3
 # has 165 MB free. MODULES=n above means builtin is the only option. Runtime
 # cost is nothing either — one 1280x720x32 frame is 3.6 MB, written at
@@ -317,7 +317,7 @@ CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_FB=y
 CONFIG_FB_DEVICE=y
 
-# No fbcon, for the reason ea-common/linux/video.fragment records: the text
+# No fbcon, for the reason ea/common/linux/video.fragment records: the text
 # console clears the framebuffer when it takes the surface over, and that is
 # what ate the EA's first splash. The console is ttyS0 on this board and always
 # was. Flip this to =y temporarily if you want the kernel log on the TV while
@@ -341,10 +341,10 @@ CONFIG_IKCONFIG=y
 CONFIG_IKCONFIG_PROC=y
 
 # ── note on the stack protector ───────────────────────────────────────────
-# ea-common has to disable STACKPROTECTOR: musl + i386 + 7.1.8 disagree about
+# ea/common has to disable STACKPROTECTOR: musl + i386 + 7.1.8 disagree about
 # the per-CPU canary and the kernel panics in do_idle. x86_64 puts the canary at
 # a fixed %gs offset and is expected to be fine, so it is left ON here. If this
 # board panics with "stack-protector: Kernel stack is corrupted in: do_idle",
-# the fix is the same two lines ea-common uses:
+# the fix is the same two lines ea/common uses:
 #   # CONFIG_STACKPROTECTOR is not set
 #   # CONFIG_STACKPROTECTOR_STRONG is not set

@@ -17,7 +17,7 @@
 # Nothing here is needed to REACH the rootfs — the radio is brought up from
 # userspace by S41wifi-ap long after p1 is mounted — so modules cost nothing
 # and lift the ceiling entirely. See TEMPORARILY-DISABLED.md and
-# board/ea-common/linux/common.fragment's size-budget section.
+# board/ea/common/linux/common.fragment's size-budget section.
 #
 # CFG80211/MAC80211 must be =m too: a built-in cannot depend on a module, so
 # leaving them =y would drag ath9k back in with them.

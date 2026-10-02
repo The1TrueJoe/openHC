@@ -6,7 +6,7 @@
  * channels at stride 0x20. There is no upstream driver and no public register
  * doc; the map below was reverse-engineered on the stock 3.12 kernel by driving
  * the vendor sysfs to 0/50/100 % and dumping the BAR at each level (see
- * board/ea-common/patches/PWM-CE5300-REGMAP.md in openHC):
+ * board/ea/common/patches/PWM-CE5300-REGMAP.md in openHC):
  *
  *   per channel, offset = channel * 0x20:
  *     +0x00 CTRL    0x6000 = run, 0x0 = stop

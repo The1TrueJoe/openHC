@@ -20,7 +20,7 @@ function, and patch 0001 already makes i2c-pxa-pci enumerate WITHOUT a device
 tree (it hands each BAR to a platform device when of_node is NULL), so the OF
 dependency is not needed either. Widen both to X86 and drop OF.
 
-Scope: EA family only (board/ea-common/patches), the only openHC target on this
+Scope: EA family only (board/ea/common/patches), the only openHC target on this
 SoC. Pairs with 0001 (enumerate without DT).
 
 Author: Joseph Telaak <joseph@telaak.dev>

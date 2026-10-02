@@ -28,7 +28,7 @@ and why the variants are composed rather than copied.
 
 Each board lists what it has in `board/<board>/ohc.features` — `wifi`, `emmc`,
 `switch`, `audio`, `sgx` — and shared feature sets under
-`board/ea-common/features/` supply the configuration. Buildroot has no include
+`board/ea/common/features/` supply the configuration. Buildroot has no include
 mechanism for defconfigs, so the build script concatenates them: a common file
 for every board, then the EA family base, then the board's feature sets, then the
 board's own file. Kconfig takes the last assignment, so a board extends or
@@ -74,10 +74,10 @@ mode against a fixed link, with the switch behind it. See
 
 ## What is common, and where it lives
 
-`board/ea-common/` carries everything the family shares:
+`board/ea/common/` carries everything the family shares:
 
 ```
-ea-common_defconfig       the EA half of the config
+ea/common/common_defconfig       the EA half of the config
 features/                 composable feature sets: wifi, emmc, switch, audio, sgx
 linux/                    common.fragment + per-feature fragments
 patches/linux/            i2c-pxa, pwm-ce5300, e1000 fake-phy,

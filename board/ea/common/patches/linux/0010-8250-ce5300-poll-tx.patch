@@ -23,7 +23,7 @@ way is the IIR early return. For a polled XScale port (irq == 0, type set by
 patch 0006) fall through to it instead, so every timer tick services TX as well
 as RX. Interrupt-driven ports are untouched: the guard requires irq == 0.
 
-Scope: EA family only (board/ea-common/patches). Pairs with 0002 (irq 0) and
+Scope: EA family only (board/ea/common/patches). Pairs with 0002 (irq 0) and
 0006 (PORT_XSCALE).
 
 Author: Joseph Telaak <joseph@telaak.dev>

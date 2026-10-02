@@ -76,7 +76,7 @@ make image BOARD=ea3-v2
 
 ```
 board/      Buildroot BR2_EXTERNAL root — one directory per board, plus the
-            shared common/ and ea-common/ trees they compose from
+            shared common/ and ea/common/ trees they compose from
 packages/   Buildroot packages and the Rust workspace (ohc-webd, ohc-portal)
 flasher/    the installer — Rust workspace, GUI + CLI over one engine
 build/      Dockerised Buildroot

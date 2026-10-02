@@ -62,19 +62,20 @@ export RUSTC="$(dirname "$CARGO")/rustc"
 #
 # A feature owns a crate by dropping a `packages` file in its feature directory,
 # one "<crate> <binary>" per line (binary defaults to the crate name). The family
-# base and feature search mirror build/build.sh: ea* -> ea-common, nothing else.
+# base and feature search mirror build/build.sh: ea* -> ea/common, and the EA
+# boards live at board/ea/<board>, so BOARD_DIR (not board/$BOARD) is the board.
 case "$BOARD" in
-  ea*) FAM="$REPO/board/ea-common" ;;
-  *)   FAM="" ;;
+  ea*) FAM="$REPO/board/ea/common"; BOARD_DIR="$REPO/board/ea/$BOARD" ;;
+  *)   FAM="";                      BOARD_DIR="$REPO/board/$BOARD" ;;
 esac
 FEATURES=""
-for ff in ${FAM:+"$FAM/ohc.features"} "$REPO/board/$BOARD/ohc.features"; do
+for ff in ${FAM:+"$FAM/ohc.features"} "$BOARD_DIR/ohc.features"; do
   [ -f "$ff" ] && FEATURES="$FEATURES $(sed 's/#.*//' "$ff" | tr '\n' ' ')"
 done
 FEATURES=$(printf '%s\n' $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
 
 feature_dir() {
-  for d in "$REPO/board/common/features/$1" ${FAM:+"$FAM/features/$1"} "$REPO/board/$BOARD/features/$1"; do
+  for d in "$REPO/board/common/features/$1" ${FAM:+"$FAM/features/$1"} "$BOARD_DIR/features/$1"; do
     [ -d "$d" ] && { echo "$d"; return 0; }
   done
   return 1

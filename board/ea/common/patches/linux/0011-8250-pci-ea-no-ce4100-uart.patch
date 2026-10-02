@@ -18,7 +18,7 @@ Stock's kernel drives only the legacy ports (its /proc/tty/driver/serial shows
 (tx and rx both non-zero). So match stock: drop the PCI match for 0x2e66 so the
 SoC keeps UART1 on legacy 0x2F8 decode and openHC's writes reach the IO-MCU.
 
-Scope: EA family only (board/ea-common/patches), the only openHC target on this
+Scope: EA family only (board/ea/common/patches), the only openHC target on this
 SoC. Pairs with 0002 (legacy ports, polled) and 0006 (PORT_XSCALE).
 
 Author: Joseph Telaak <joseph@telaak.dev>

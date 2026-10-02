@@ -2,19 +2,23 @@
 # BR2_EXTERNAL_OPENHC_PATH points at board/, so reach up one level.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 #
-# ...and every package that lives WITH A BOARD instead. This glob covers
-# board/<anything>/packages/, so ea-common (the CE5300 SGX/WPE stack) and hc800
-# (ths8200 — that DAC is HC-800 silicon) are picked up without naming each one.
+# ...and every package that lives WITH A BOARD instead. These globs cover
+# board/<board>/packages/ (hc800 — ths8200, that DAC is HC-800 silicon) AND
+# board/<family>/<member>/packages/ (board/ea/common — the CE5300 SGX/WPE
+# stack), picked up without naming each one. The second glob is the family
+# nesting: EA boards live at board/ea/<member>, one level deeper than a
+# top-level board, so a single-* glob would miss every EA silicon package.
 #
 # The split: `packages/` at the repo root holds everything SHARED across boards —
 # the Rust service daemons AND the board-agnostic Buildroot packages (figlet,
 # splash, iomcu-attach, librespot). Anything that is BOARD SILICON belongs with
 # the board tree that owns it, and lands here.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
+include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
 
 # ── openHC's own kernel drivers: copied in, not patched in ─────────────────
 #
-# board/ea-common/kernel/drivers/ mirrors the kernel's drivers/ subtree, so a file at
+# board/ea/common/kernel/drivers/ mirrors the kernel's drivers/ subtree, so a file at
 # video/fbdev/foo.c lands at $(LINUX_DIR)/drivers/video/fbdev/foo.c, and
 # drivers/objs.mk says which kernel Makefile each one is registered in.
 #
@@ -32,7 +36,7 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 # under drivers/, so the hook walks a list of kernel subtrees instead of a single
 # hardcoded one. objs.mk needs no change for this — its left-hand column was
 # always a full kernel-relative Makefile path.
-# board/ea-common/kernel/ is a MIRROR OF THE KERNEL SOURCE TREE: a file at
+# board/ea/common/kernel/ is a MIRROR OF THE KERNEL SOURCE TREE: a file at
 # kernel/sound/soc/ce5300/foo.c lands at $(LINUX_DIR)/sound/soc/ce5300/foo.c.
 # That is why sound/ sits BESIDE drivers/ rather than under it — the kernel has
 # them as siblings, and the mirror has to match or the paths stop being obvious.
@@ -50,14 +54,14 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 # a fourth pasted copy is how that happens again.)
 #
 #   common/kernel     every board. Not tied to any SoC.
-#   ea-common/kernel  EA FAMILY ONLY. Everything in it is Intel CE5300 silicon
+#   ea/common/kernel  EA FAMILY ONLY. Everything in it is Intel CE5300 silicon
 #                     and is registered obj-y, so on another board it is at best
 #                     dead weight in the kernel and at worst a link failure —
 #                     which is what it was: hc800 died at `LD vmlinux` on the
 #                     ASoC machine drivers, because it uses SND_HDA_INTEL and
 #                     defines no CONFIG_SND_SOC. Gating by list membership keeps
 #                     that explicit and greppable.
-#                     BR2_OHC_EA_KERNEL_DRIVERS is set by ea-common_defconfig
+#                     BR2_OHC_EA_KERNEL_DRIVERS is set by ea/common/common_defconfig
 #                     and by nothing else.
 OHC_KERNEL_SUBTREES = drivers sound
 # NOT unconditional, despite living under common/. The only thing in that mirror
@@ -69,7 +73,7 @@ ifeq ($(BR2_OHC_IOMCU_KERNEL_DRIVER),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
 endif
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
-OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ea-common/kernel
+OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/kernel
 endif
 ifeq ($(BR2_OHC_HC800_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/hc800/kernel

@@ -18,7 +18,7 @@ it in and `board/Config.in` sources its `Config.in`:
 |---|---|
 | `board/common/packages/splash`, `figlet` | base firmware features, on every board |
 | `board/hc800/packages/ths8200` | HC-800 video DAC — that silicon is on one board |
-| `board/ea-common/packages/sgx545-*`, `wpebackend-pvr`, `webview` | the CE5300 graphics stack |
+| `board/ea/common/packages/sgx545-*`, `wpebackend-pvr`, `webview` | the CE5300 graphics stack |
 
 And things that are just *files* are just files: `/etc/motd` is
 `board/common/rootfs-overlay/etc/motd`, not a package that shells out to figlet
