@@ -15,7 +15,7 @@ whose SoC no longer exists in mainline Linux.
 ```
 SoC        TI DaVinci DM355 (ARM926EJ-S, ARMv5TE)
 RAM        128 MB
-Storage    256 MB Micron NAND
+Storage    512 MB Micron NAND (stock partitions use the first 256 MB)
 Kernel     Linux 2.6.28.10-rc8.47   (OS 2.9.1.539509-res)
 Userland   BusyBox 1.2.2 + glibc 2.7 (EABI)
 Bootloader U-Boot 1.2.0-IOX
@@ -83,13 +83,13 @@ The stock U-Boot environment already contains `tst`, which does DHCP, TFTPs
 `hammer/uImage` from the server, and `bootm`s it **from RAM**. No flash writes.
 That is the entire development loop for this board.
 
-:::caution[`run tst` doesn't fall through on a silent TFTP failure]
-If DHCP succeeds but TFTP does not answer, U-Boot loops forever — it ignores ICMP
-port-unreachable. Recovery to stock needs **either** no DHCP at all (so `tst`
-aborts) **or** a definitive TFTP *error* reply.
-
-The armed command is `run tst; run oldbootcmd` with the original saved, and that
-fall-through only fires on the failures U-Boot actually recognises.
+:::caution[`run tst` never falls through]
+If DHCP succeeds but TFTP does not answer, U-Boot retries forever. It ignores
+ICMP port-unreachable, and on a TFTP *error* it prints "Starting again" and
+retries too, because `netretry` is not set to `no`. So a refusing server does
+not make it boot stock. Recovery to stock needs a U-Boot prompt, or serving the
+stock kernel itself (pull `kernel1` off NAND, correct it with 1-bit ECC, and
+`tst` boots it with the stock rootfs since it runs `setbootargs` first).
 :::
 
 ### Booting it with no serial console at all
@@ -143,18 +143,26 @@ The serial console on this unit is **read-only** — TX isn't wired, so the logi
 getty respawns on floating-RX noise. Cosmetic, but it also means U-Boot can't be
 interrupted from serial here.
 
-## What is still blocked
+## The FPGA
 
-The **FPGA**, which gates the four RS-232 ports and the eight IR outputs. It is a
-Xilinx part loaded by slave-serial bit-bang over seven GPIOs (55, 57, 96, 97, 58,
-7, 98), from `fpga_fw.bin` which is on the stock NAND. That protocol is standard
-and portable and can live entirely in userspace with libgpiod.
+The four RS-232 ports and eight IR outputs live in a Xilinx Spartan-3E that
+comes up blank. `ohc-iox-fpga` loads it at boot (`S12fpga`), bit-banging
+`fpga_fw.bin` over slave-serial GPIO. The bitstream is proprietary, so it is not
+in the image. `S12fpga` copies it, read-only, from the unit's own recovery
+rootfs on NAND.
 
-Note that the CE1 window is **not** readable from userspace `devmem` — it needs a
-kernel driver or proper AEMIF timing configuration first.
+That only works with the NAND ECC set right (1-bit, not 4-bit). Getting there
+took a while; [the FPGA startup problem](/iox/fpga-startup-clock/) has the
+whole story.
 
-After the FPGA, the only genuinely bespoke driver the board needs is IR-out: two
-0x10 register windows, to be recovered from the on-device `c4irout.ko`.
+## NAND layout
+
+The stock flash holds three complete systems, each a kernel plus a 64 MB JFFS2
+rootfs: update banks 0 and 1 (A/B; `bootsystem` in the U-Boot env picks one)
+and a factory **recovery** pair. Beside them sit the writable `jffs2.img`,
+`Internal` and `Persistent Logs` partitions. The chip is 512 MB but the stock
+table covers only the first 256 MB. The top half is empty apart from the
+bad-block tables in its last two blocks.
 
 ## Vendor drivers, for reference
 

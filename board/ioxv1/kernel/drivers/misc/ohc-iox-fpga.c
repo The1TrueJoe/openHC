@@ -307,7 +307,9 @@ static int iox_fpga_program(struct iox_fpga *f, const u8 *data, size_t len)
 			iounmap(base);
 		dev_info(f->dev, "after load: version reg = 0x%04x, DONE pin = %d\n",
 			 ver, done);
-		if (ver == 0x0000 || ver == 0xffff || (ver & 0xff) == 0x02) {
+		/* DONE=0 with a non-float version (0x8000 seen) is still a failed
+		 * load; populating the UARTs/IR on it then hangs the box. */
+		if (done <= 0 || ver == 0x0000 || ver == 0xffff || (ver & 0xff) == 0x02) {
 			dev_err(f->dev,
 				"FPGA did not configure (version 0x%04x float, DONE=%d) "
 				"after %zu bytes\n", ver, done, len);

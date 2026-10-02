@@ -24,6 +24,14 @@ needed; openHC loads it exactly as the vendor's `c4fpga.ko` does.
 
 ## Installing it
 
+**Usually you don't.** `S12fpga` copies it at boot from the unit's own NAND,
+read-only: the recovery rootfs first, then the two update banks. That needs the
+1-bit NAND ECC in the device tree (with the wrong ECC, JFFS2 silently returns a
+copy with zeroed holes and the FPGA never reaches DONE). On a stock unit every
+copy has md5 `096f05cc76d8213ab2a9ddacf7022925`.
+
+To supply your own copy instead:
+
 Name it `iox-fpga.bin` and put it in **either** place:
 
 1. **Baked into the image** (recommended for a standalone box) — drop it at

@@ -34,3 +34,6 @@ __pycache__/
 /site/.astro/
 /site/node_modules/
 c4-recon/
+
+# local secrets (Kasa login etc.)
+.env

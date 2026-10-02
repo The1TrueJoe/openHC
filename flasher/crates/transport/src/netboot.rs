@@ -157,6 +157,21 @@ fn build_reply(cfg: &Config, req: &Message, kind: MessageType) -> Message {
     m
 }
 
+/// A REQUEST is ours only if it selects our offer: it names us as the server,
+/// or (a reboot/renewal, no server id) asks for the address we hand out.
+/// Acking a request that selected the LAN router's offer is not a win, it is a
+/// second, contradictory answer — the client already keeps the router's.
+fn request_is_ours(cfg: &Config, req: &Message) -> bool {
+    let opts = req.opts();
+    if let Some(v4::DhcpOption::ServerIdentifier(id)) = opts.get(v4::OptionCode::ServerIdentifier) {
+        return *id == cfg.server_ip;
+    }
+    match opts.get(v4::OptionCode::RequestedIpAddress) {
+        Some(v4::DhcpOption::RequestedIpAddress(ip)) => *ip == cfg.client_ip,
+        _ => req.ciaddr() == cfg.client_ip,
+    }
+}
+
 fn message_type(m: &Message) -> Option<MessageType> {
     match m.opts().get(v4::OptionCode::MessageType) {
         Some(v4::DhcpOption::MessageType(t)) => Some(*t),
@@ -194,7 +209,7 @@ fn dhcp_thread(
         let Some(saw) = message_type(&req) else { continue };
         let kind = match saw {
             MessageType::Discover => MessageType::Offer,
-            MessageType::Request => MessageType::Ack,
+            MessageType::Request if request_is_ours(&cfg, &req) => MessageType::Ack,
             // Inform, Release, Decline: nothing a bootloader needs from us.
             _ => {
                 emit(Event::Dhcp { saw, replied: None });
@@ -559,6 +574,18 @@ mod tests {
         assert_eq!(message_type(&req), Some(MessageType::Request));
         let reply = build_reply(&cfg, &req, MessageType::Ack);
         assert_eq!(message_type(&reply), Some(MessageType::Ack));
+    }
+
+    /// A REQUEST selecting another server's offer gets no ACK from us.
+    #[test]
+    fn a_request_for_the_routers_offer_is_not_acked() {
+        let cfg = cfg();
+        let mut req = discover_from(cfg.mac);
+        req.opts_mut().insert(v4::DhcpOption::MessageType(MessageType::Request));
+        req.opts_mut().insert(v4::DhcpOption::ServerIdentifier(Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(!request_is_ours(&cfg, &req));
+        req.opts_mut().insert(v4::DhcpOption::ServerIdentifier(cfg.server_ip));
+        assert!(request_is_ours(&cfg, &req));
     }
 
     /// A nested bootfile name has to become a real path, or the box asks for

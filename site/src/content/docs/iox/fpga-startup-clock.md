@@ -1,65 +1,68 @@
 ---
 title: The FPGA startup problem
-description: The bitstream loads cleanly but the FPGA never finishes starting up. What's been ruled out, and why the next step is JTAG.
+description: DONE never rose, and it looked like a clock or pin fault. It was two NAND bugs and a driver that believed a failed load.
 sidebar:
   order: 5
 ---
 
-The bitstream loads with **zero CRC errors** — INIT_B stays high through all
-169 KB (verified with an explicit per-byte INIT_B gate). But **DONE never
-releases** and the version register floats at `0x0202` (a configured part reads
-`0x0400`). The data is accepted; the **startup sequence never completes**.
+**Solved.** The symptom: the bitstream loads with INIT_B high throughout, but
+DONE never releases. The version register reads garbage (`0x0202` on a blank
+bus, later `0x8000`) instead of `0x0400`. Two separate faults produced it.
 
-This page records what has been ruled out, so the investigation isn't repeated.
+## 1. The config pins were wired to address lines
 
-## Not the video/VENC clock
+`M2`/`M0`/`DIN` share pins with EMIF address lines. The vendor's `c4fpga.ko`
+sets `PINMUX2[0:1]` for the duration of the load and clears them afterwards.
+openHC only ever held the post-load value, so DIN never reached the part. The
+driver now does the same dance (see its PINMUX2 comment and the
+[IO map](/iox/io-map/)).
 
-An earlier theory held that the FPGA's DCM needs the DM355 video encoder (VENC)
-clock, stripped along with video in openHC. **Disproven.** On the live vendor OS,
-where the FPGA works, `VPSS_CLKCTL` is `0` and the VENC block reads floating and
-unclocked — identical to openHC. The FPGA is configured there regardless. The
-"no video → no clock" correlation was a coincidence.
+## 2. The bitstream read off NAND was corrupt
 
-## Not the driver or the load sequence
+With the pins fixed, loading a bitstream copied off NAND *by openHC* still left
+DONE low. The one copied off a running vendor OS configured fine. Same size,
+different md5: 1,082 bytes of the openHC copy were zeros.
 
-A standalone **userspace bit-bang** (mmap `/dev/mem`, replicating the vendor's
-exact slave-serial sequence, bypassing the kernel driver) fails **identically**
-to the in-kernel loader. So the failure is not in the driver.
+**The device tree had the wrong NAND ECC.** It declared 4-bit; the flash is
+written with DaVinci **1-bit** hardware ECC, three bytes per 512-byte sector at
+OOB offsets 40–51, stored inverted. That was proved by recomputing those bytes
+from a raw `nanddump`: every sector of the vendor kernel matches, nine of them
+with a genuine single-bit flip that the ECC corrects and the data CRC then
+confirms. It is exactly mainline `davinci_nand`'s 1-bit mode, so the fix is
+`ti,davinci-ecc-bits = <1>`.
 
-The load sequence itself was disassembled from the vendor's `c4fpga.ko` and
-matched byte for byte: PROG polarity (high = reset, low = release — confirmed on
-hardware via INIT_B), M2/M0 high, DIN sampled on the rising CCLK edge, the GPIO
-SET/CLR register offsets, and the post-data startup clocks.
+With 4-bit, every read came back uncorrected and the aging flash's bit flips
+went straight through. JFFS2 caught one bad node in `fpga_fw.bin` and did what
+it does with a node it cannot verify: dropped it and read that range as a hole.
+So `cat` succeeded and returned a file with zeros in the middle.
 
-## Not any SoC register
+The same mismatch explained a recurring "Bad block table not found ... written"
+on every boot. The stock U-Boot also keeps an on-flash BBT in the last two
+blocks, written with 1-bit ECC. Each side failed to read the other's table and
+rewrote it. openHC no longer uses an on-flash BBT at all (`use-bbt` is dropped)
+so a netboot never writes NAND.
 
-openHC and the working vendor OS were compared register-for-register and are
-**identical**:
+## 3. The driver believed a failed load
 
-| block | result |
-|-------|--------|
-| system module 0x01c40000–0x70 | identical |
-| PLLC1 (0x01c40900) full | identical |
-| PLLC2 (0x01c40d00) full | identical |
-| PSC MDSTAT[0..41] | identical (incl. VPSS master/slave) |
-| PINMUX0–4 | identical |
-| async EMIF CS1 (`A2CR`, FPGA bus) | identical (`0x00a00505`) |
-| bitstream `fpga_fw.bin` | identical md5 |
+The success check rejected only the obvious float patterns. `0x8000` with
+DONE=0 passed, so the driver populated the four UARTs and the IR block on an
+unconfigured part, and the box hung within seconds. DONE=0 is now a failure.
 
-## Not clocking regularity
+## Two hazards worth knowing
 
-Clocking the entire stream with interrupts disabled (gap-free CCLK, to rule out
-a DCM losing its reference to preemption) did not help either.
+- **Nothing may touch EMIF during a load.** The PINMUX2 switch takes address
+  lines away from the dm9000 and the NAND on the same bus. A network interrupt
+  mid-load hangs the box with `dm9000 ... status check fail` forever. At boot
+  `S12fpga` runs before networking; on a manual re-run it takes `eth0` down for
+  the load and puts it back.
+- **Where the bitstream comes from.** It is proprietary and never in the repo.
+  `S12fpga` copies it from the unit's own **recovery rootfs** (falling back to
+  the two update banks), read-only. Every copy on a stock unit has the same md5.
 
-## What's left: the pins
+## What was ruled out along the way
 
-Same board, same bitstream, byte-identical register state, same sequence, clean
-data — yet the vendor completes startup (DONE high) and openHC does not. Every
-remotely-observable difference has been eliminated. The remaining unknowns are
-only visible with instrumentation: is the FPGA's DCM reference clock actually
-present, and what do DONE / INIT_B / CCLK do during startup?
-
-**The next step is JTAG or a scope on the J18 header** — compare the vendor and
-openHC at the FPGA pins during a load. Until then, serial (`ttyS1..4`) and the IR
-block stay offline; relays, contacts, LEDs, `webd` and MQTT `iod` are unaffected
-and working.
+None of these were the cause, and each was checked against a working vendor OS:
+the VENC/video clock, IRQ-off gap-free clocking, the load sequence (matched to
+the vendor's `c4fpga.ko`), and the PLL, PSC, PINMUX and EMIF CS1 registers
+(identical). Reading NAND before the load turned out not to matter on its own.
+What mattered was *what* it read.

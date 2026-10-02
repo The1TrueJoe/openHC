@@ -35,7 +35,7 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,441 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
@@ -209,8 +209,19 @@ index 0000000..a959552
 +				ti,davinci-mask-cle = <0>;
 +				ti,davinci-mask-chipsel = <0>;
 +				ti,davinci-ecc-mode = "hw";
-+				ti,davinci-ecc-bits = <4>;
-+				ti,davinci-nand-use-bbt;
++				/*
++				 * 1-bit, not 4: the stock flash carries 3
++				 * inverted Hamming bytes per 512 at OOB 40-51
++				 * (checked by recomputing them off a raw dump).
++				 * With 4 every read is uncorrected.
++				 */
++				ti,davinci-ecc-bits = <1>;
++				/*
++				 * No ti,davinci-nand-use-bbt: it writes a
++				 * bad-block table into the last two blocks,
++				 * and a netboot must not write NAND. Without
++				 * it the driver scans the OOB markers instead.
++				 */
 +
 +				/*
 +				 * The vendor's table, names included, read out

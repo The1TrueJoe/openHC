@@ -37,11 +37,26 @@ start() {
         echo "fpga: already configured"; return 0
     fi
 
+    # Not baked in? A stock unit still carries it on its own NAND, in the
+    # vendor rootfs. Mount that read-only and copy it into RAM. This must finish
+    # before the load: the load takes EMIF address lines (and so NAND) away.
+    [ -f "$FW" ] || from_vendor_nand
+
     [ -f "$FW" ] || {
         echo "fpga: no bitstream at $FW — serial ports and IR stay dark."
         echo "fpga: drop the proprietary bitstream there (see board/ioxv1/firmware/fpga/README.md)."
         return 0
     }
+
+    # While loading, the driver muxes EMIF address lines to GPIO, so the dm9000
+    # on the same bus reads garbage: an Ethernet interrupt mid-load hangs the
+    # box. At boot eth0 is not up yet; on a manual re-run take it down (dm9000
+    # frees its IRQ on close) and put it back after.
+    eth_was_up=0
+    if [ $(( $(cat /sys/class/net/eth0/flags 2>/dev/null || echo 0) & 1 )) = 1 ]; then
+        eth_was_up=1
+        ip link set eth0 down
+    fi
 
     # request_firmware() searches under /lib/firmware, so hand it the path with
     # that prefix stripped (e.g. /lib/firmware/c4/iox-fpga.bin -> c4/iox-fpga.bin).
@@ -52,8 +67,26 @@ start() {
         echo "fpga: configured (DONE=$(cat "$D/done" 2>/dev/null)) — ttyS1-4 and IR are live"
     else
         echo "fpga: load FAILED — see dmesg (INIT_B/DONE and the version register)"
-        return 1
     fi
+    [ "$eth_was_up" = 1 ] && ip link set eth0 up
+    [ "$(cat "$D/loaded" 2>/dev/null)" = "1" ]
+}
+
+from_vendor_nand() {
+    # recovery-rootfs first: the factory image, which firmware updates never
+    # rewrite. The two update banks carry the same file (same md5 on a stock
+    # unit) and are the fallback. Needs the 1-bit NAND ECC in the DT: with the
+    # wrong ECC, JFFS2 drops nodes it cannot verify and reads them as zeros.
+    for part in recovery-rootfs rootfs1 rootfs0; do
+        mtd=$(sed -n "s/^mtd\([0-9]*\):.*\"$part\"$/\1/p" /proc/mtd)
+        [ -n "$mtd" ] || continue
+        mkdir -p /tmp/vendor-rootfs "${FW%/*}"
+        mount -t jffs2 -o ro "/dev/mtdblock$mtd" /tmp/vendor-rootfs 2>/dev/null || continue
+        cp /tmp/vendor-rootfs/control4/lib/fpga/fpga_fw.bin "$FW" 2>/dev/null &&
+            echo "fpga: bitstream copied from the vendor $part on NAND (mtd$mtd, read-only)"
+        umount /tmp/vendor-rootfs
+        [ -f "$FW" ] && return 0
+    done
 }
 
 case "$1" in
