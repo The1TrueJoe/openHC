@@ -1,7 +1,2 @@
-# Shared EA feature sets this board pulls in. One word per feature, space
-# separated. Each lives in board/ea/common/features/<name>/, holding both its
-# halves: defconfig (userspace) and linux.fragment (kernel).
-#   wifi  - Atheros ath9k radio + wpa_supplicant/iw userspace
-#   emmc  - sdhci-pci + ext4, persistent rootfs on mmcblk0p1
-#   switch - BCM53125 managed switch over SPI (DSA/b53); gives lan1/lan2
-wifi emmc
+# EA1 v2: same as v1 — Wi-Fi radio, no managed switch.
+wifi

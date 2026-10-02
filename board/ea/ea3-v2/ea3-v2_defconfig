@@ -1,45 +1,10 @@
-# openHC — Control4 EA3 deltas.
+# openHC — Control4 EA3 (rev 2). No radio (wired-only, e1000), a BCM53125 switch
+# on SPI via DSA, and the ADAU1451 DSP analog audio (ohc.features: switch
+# audio-dsp). The ext4 eMMC rootfs comes from the shared 'emmc' feature.
 #
-# Concatenated AFTER board/ea/common/common_defconfig by build/build.sh, so
-# only the EA3-specific differences belong here.
-#
-# Relative to the EA1: no PCIe Wi-Fi card and no radio at all, wired-only
-# reachability (e1000), and a BCM53125 managed switch on SPI driven by DSA so
-# the two rear RJ45s come up as separate netdevs.
-#
-# PCI itself stays enabled — the NIC and the SPI controller are both PCI
-# functions on the CE5310. What goes away is the card, not the bus.
-#
-# NOT YET BOOTED ON HARDWARE: https://the1truejoe.github.io/openHC/ea/ea3/
-
+# PROVEN on hardware: secure-boot fuse is BLOWN, so the eMMC path rejects an
+# unsigned kernel — openHC takes over via the CEFDK `script`+`bootlinux`
+# autoscript (our kernel in the raw eMMC gap; signed stock kernel left as the
+# `script off` recovery). See /ea/ea3/ and tools/ohc-ea-takeover.py.
 BR2_TARGET_GENERIC_HOSTNAME="openhc-ea3"
 BR2_TARGET_GENERIC_ISSUE="openHC EA3"
-
-# --- kernel config: common trim + no-radio and the BCM53125 switch ---
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/linux/common.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/linux/video.fragment $(BR2_EXTERNAL_OPENHC_PATH)/ea/ea3-v2/linux/ea3-v2.fragment"
-
-# --- rootfs: shared services + EA3's wired bring-up ---
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/ea/ea3-v2/rootfs-overlay"
-
-# --- persistent rootfs: ext4 on the eMMC (mmcblk0p1) ---
-# No embedded initramfs; one kernel serves both the persistent boot and the
-# installer, which supplies its initrd over the network at boot time.
-#
-# HOW IT BOOTS OUR KERNEL (proven 2026-08-26): CEFDK secure boot is FUSED ON on
-# this unit, so the normal eMMC path rejects an unsigned kernel — but the shell
-# `bootlinux` does NOT verify, and the `script` autorun runs BEFORE the verifying
-# path. So: our kernel in the raw eMMC gap past the container, plus a stored
-# autoscript that reads and boots it. The signed stock kernel stays untouched as
-# a `script off` recovery. See /ea/ea3/ and tools/ohc-ea-takeover.py.
-#
-# mmcblk0 7.28 GiB: p1 (6 GiB ext4) + p2 (1 GiB restore payload, NEVER WRITE) +
-# p3 (32 MiB persistent). Writing p1 is reversible via the recessed button.
-# 512M base, grown with resize2fs at install.
-BR2_TARGET_ROOTFS_EXT2=y
-BR2_TARGET_ROOTFS_EXT2_4=y
-BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
-
-# --- wrap the bzImage in the CEFDK container for netboot ---
-BR2_ROOTFS_POST_SCRIPT_ARGS="ea3-v2"
-
-# --- kernel patches: shared (i2c-pxa, pwm-ce5300) + EA3's switch board glue ---
