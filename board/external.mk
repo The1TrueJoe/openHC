@@ -3,13 +3,13 @@
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 #
 # ...and every package that lives WITH A BOARD instead. This glob covers
-# board/<anything>/packages/, so ea-common (the CE5300 SGX/WPE stack), hc800
-# (ths8200 — that DAC is HC-800 silicon) and common (splash, a base
-# firmware feature) are all picked up without naming each one here.
+# board/<anything>/packages/, so ea-common (the CE5300 SGX/WPE stack) and hc800
+# (ths8200 — that DAC is HC-800 silicon) are picked up without naming each one.
 #
-# The split is deliberate: `packages/` at the repo root is for SERVICES — the
-# daemons with APIs. Anything that is board silicon or a base firmware feature
-# belongs with the board tree that owns it, and lands here.
+# The split: `packages/` at the repo root holds everything SHARED across boards —
+# the Rust service daemons AND the board-agnostic Buildroot packages (figlet,
+# splash, iomcu-attach, librespot). Anything that is BOARD SILICON belongs with
+# the board tree that owns it, and lands here.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 
 # ── openHC's own kernel drivers: copied in, not patched in ─────────────────
