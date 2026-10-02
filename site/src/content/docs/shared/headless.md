@@ -65,7 +65,7 @@ Two details that are easy to get wrong:
   busybox writes the magic `V` on `SIGTERM`, which tells the driver the close was
   deliberate. Killing it any other way leaves a 30 second fuse burning.
 - `kexec -e` jumps straight into the new kernel and runs **no** shutdown script,
-  so the handover has to stop the watchdog explicitly. `ohc-hc800 boot` does.
+  so the handover has to stop the watchdog explicitly. `ohc-flash`'s kexec install does.
   (The new kernel's `iTCO_wdt` probe also stops the timer, so this is belt and
   braces — but a 30 second fuse across a kexec is not a thing to leave to one
   mechanism.)
@@ -124,7 +124,8 @@ netconsole=6665@<box>/eth0,6666@<you>/<your-mac>
 ```
 
 Built in, not a module: a module loads too late to log the thing that stopped the
-module loading. Listen with `ohc-hc800 log`.
+module loading. Listen with `nc -lu 6666`; `ohc-flash install --netconsole <you>:6666`
+puts the boot argument on the command line for you.
 
 **It does not lose the early boot.** netconsole registers as a console with
 `CON_PRINTBUFFER`, so when it comes up at around 6.9 s the kernel replays
@@ -148,9 +149,9 @@ routing, which is exactly what lets it keep logging from inside a panic.
 
 ### sysrq, for when userspace is too far gone to run `reboot`
 
-`CONFIG_MAGIC_SYSRQ`, reachable at `/proc/sysrq-trigger`. `ohc-hc800 reset`
-writes `b` to it: the reset happens inside the kernel, skipping every shutdown
-path that might be the thing that is stuck.
+`CONFIG_MAGIC_SYSRQ`, reachable at `/proc/sysrq-trigger`. Writing `b` to it over
+SSH resets the box from inside the kernel, skipping every shutdown path that might
+be the thing that is stuck.
 
 ## Finding it again
 
@@ -167,40 +168,23 @@ loop:
 | **mDNS** — `_openhc._tcp`, hostname `openhc-<board>-<MAC>.local` | openHC is running | instant |
 | **ARP sweep for the MAC** | either OS is running | ~3 s |
 
-The MAC is the one identifier that survives the reset, so it is what the tooling
-keys on. `ohc-hc800` learns it the first time it finds the box and caches it, so
-it configures itself after one successful `find`.
+The MAC is the one identifier that survives the reset, so it is what to key on.
+`ohc-flash discover` lists every Control4 unit it can see with its address and
+MAC, whichever OS is running.
 
-## The tool
+## The flasher
 
-`tools/ohc-hc800` is the loop, with the discovery and the two root passwords
-already handled:
-
-The flasher is the other half of this, and the two have different jobs:
-`ohc-hc800` is the ad-hoc tool for a box you are working on; `ohc-flash` is the
-installer.
+Everything above is driven from `ohc-flash`, with the discovery and both root
+passwords already handled:
 
 ```bash
-ohc-flash identify 10.0.0.111                       # what is it, and how sure are we
+ohc-flash discover                                  # where is it
+ohc-flash identify HOST                             # what is it, and which OS booted
 ohc-flash plan hc800                                # both methods, and what each writes
 ohc-flash install HOST --images DIR --method kexec  # run it from RAM, writes nothing
 ohc-flash install HOST --images DIR --method grub   # persistent
 ohc-flash boot HOST                                 # re-enter an installed openHC
 ohc-flash uninstall HOST                            # put the boot chain back
-```
-
-```bash
-tools/ohc-hc800 find                    # where is it, and which OS booted
-tools/ohc-hc800 sh 'dmesg | tail -30'   # run something
-tools/ohc-hc800 log                     # netconsole listener
-tools/ohc-hc800 boot output/build/hc800/images
-tools/ohc-hc800 reset                   # back to stock
-```
-
-Seed it once, if mDNS is not available to you:
-
-```bash
-OHC_HOST=10.0.0.111 tools/ohc-hc800 find
 ```
 
 :::caution[About one auth in ten is refused]
@@ -212,26 +196,26 @@ images.
 
 A tool that treats a refusal as authoritative will call the box unreachable
 roughly every tenth command, which is exactly what sends you looking for the
-serial cable again. `ohc-hc800` retries; anything you write yourself should too.
+serial cable again. `ohc-flash` retries; anything you write yourself should too.
 The real cure is **public-key auth**, which never touches that prompt — worth
 adding a key to the image if you find yourself scripting against it a lot.
 :::
 
 ## Deploying a new build
 
-Nothing in this changes: CI builds the image, you fetch the bundle, `boot` pushes
-it and kexecs. No partition is written at any point.
+Nothing in this changes: CI builds the image, you fetch the bundle, the flasher
+pushes it and kexecs. No partition is written at any point.
 
 ```bash
 gh run download <run-id> -n openhc-hc800 -D /tmp/img && unzip -o /tmp/img/*.zip -d /tmp/img
-tools/ohc-hc800 log &                   # in another shell
-tools/ohc-hc800 boot /tmp/img
+nc -lu 6666 &                                       # the boot log, in another shell
+ohc-flash install HOST --images /tmp/img --method kexec --netconsole <you>:6666
 ```
 
 The one case that still needs a file from elsewhere: kexec'ing **from the vendor
 image**. Its kernel is `CONFIG_KEXEC=y` but Control4 never shipped the userspace
-tool, so `boot` pushes a static i686 one. `.github/workflows/tools.yml` builds
-it; drop `kexec-i686-static` next to the images or in `~/.cache/openhc/`.
+tool. `.github/workflows/tools.yml` builds a static i686 one; copy
+`kexec-i686-static` to `/tmp/` on the box first, where the flasher looks for it.
 
 ## The whole loop, measured
 
@@ -240,10 +224,10 @@ Run on the unit on 2026-09-10, with the serial cable idle throughout:
 | Step | What happened |
 |---|---|
 | `ohc-flash install --method kexec --netconsole` | staged 25 MB, resolved the listener's MAC from the box, kexec'd — **679 log lines captured, from `[0.000000]`** |
-| `ohc-hc800 reset` on openHC at `.111` | netconsole caught `sysrq: Resetting`, connection dropped |
+| sysrq reset on openHC at `.111` | netconsole caught `sysrq: Resetting`, connection dropped |
 | board resets, GRUB `default 1` | vendor image answering SSH ~2 min later — **at `.112`, not `.111`** |
-| `ohc-hc800 find` | located it by MAC and reported `running=vendor (Control4 stock)`, kernel `3.16.38-8.260.24` |
-| `ohc-hc800 boot <dir>` | pushed the static kexec + 24 MB of image, `kexec -l`, `kexec -e` |
+| find it by MAC | located it by MAC and reported `running=vendor (Control4 stock)`, kernel `3.16.38-8.260.24` |
+| kexec it again | pushed the static kexec + 24 MB of image, `kexec -l`, `kexec -e` |
 | openHC back | at `.111` again, **685 lines of boot log captured over the network** |
 
 Both DHCP addresses came up inside one hour, which is the whole argument for
