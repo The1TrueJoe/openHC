@@ -128,7 +128,8 @@ EOF
 
 status() {
     say "host $1 is running $(os_of "$1")"
-    on "$1" 'for v in bootcmd ohc_try ohc_addr ohc_bootargs; do printf "%-13s %s\n" "$v" "$(fw_printenv -n $v 2>/dev/null || echo "(unset)")"; done'
+    # echo, not printf: stock's BusyBox 1.2.2 has no printf.
+    on "$1" 'for v in bootcmd ohc_try ohc_addr ohc_bootargs; do echo "$v=$(fw_printenv -n $v 2>/dev/null || echo "(unset)")"; done'
 }
 
 case "${1:-}" in

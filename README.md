@@ -48,8 +48,8 @@ recommended way in if you are not scripting.
 > written to one specific region.
 
 **The HC-800 and the IO Extender are manual.** The HC-800 install is two files and
-a one-line edit to GRUB's `menu.lst`; the IO Extender currently boots from RAM
-over TFTP only (`ohc-flash netboot`). Both are covered in
+a one-line edit to GRUB's `menu.lst`; the IO Extender installs to NAND over SSH
+with `tools/ohc-ioxv1 install`, from stock or openHC. Both are covered in
 [Installing on a controller](https://the1truejoe.github.io/openHC/build/install/).
 
 ## Going back to stock
@@ -59,7 +59,7 @@ over TFTP only (`ohc-flash netboot`). Both are covered in
 | EA family | press the recessed factory-restore button — it reimages kernel, rootfs and bootloader |
 | CA-1 | delete `boot.scr` from the eMMC's vfat partition |
 | HC-800 | set `default` back to `1` in `menu.lst` |
-| IO Extender | power-cycle; bring-up writes no flash |
+| IO Extender | `tools/ohc-ioxv1 stock <host>`, or automatic after three failed openHC boots |
 
 ## Build it yourself
 

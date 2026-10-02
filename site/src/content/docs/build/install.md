@@ -154,8 +154,40 @@ A serial console on `ttyS0` at 115200 sees GRUB itself if it doesn't come back.
 
 ## IO Extender V1
 
-Bring-up is RAM-only: the stock U-Boot's `run tst` DHCPs, TFTPs a kernel and boots
-it without touching flash. There's no persistent install path yet.
+### Install to NAND
+
+`tools/ohc-ioxv1` installs openHC over SSH, with no serial console and no button,
+from either stock Control4 or a running openHC:
+
+```sh
+tools/ohc-ioxv1 install <host> openhc-ioxv1-kernel.img   # ~2-3 minutes
+tools/ohc-ioxv1 status  <host>                           # bootcmd and ohc_try
+```
+
+The image goes in a 32 MiB slot at `0x10000000`, the start of the half of the
+512 MiB NAND that stock never partitioned. No stock partition, bootloader or
+recovery image is touched. The tool uploads, checks the md5, erases, writes,
+reads the slot back through ECC, and only then changes U-Boot's environment:
+`bootcmd=run ohcboot`, plus a boot-attempt counter, `ohc_try`.
+
+Each boot, U-Boot bumps `ohc_try` and saves it before starting openHC, and openHC
+clears it once its uplink has carrier and an address. A kernel that panics,
+hangs (U-Boot arms the hardware watchdog and openHC feeds it) or never gets a
+network leaves the count climbing, and at 3 U-Boot runs the untouched stock boot
+instead. That was tested by installing a kernel command line that panics: three
+counted attempts, then stock Control4, with nobody touching the box. From stock,
+`install` again takes it back.
+
+```sh
+tools/ohc-ioxv1 arm   <host>   # try openHC again after a fallback (ohc_try=0)
+tools/ohc-ioxv1 stock <host>   # make U-Boot boot stock Control4 again
+```
+
+### Netboot (development)
+
+The stock U-Boot's `run tst` DHCPs, TFTPs a kernel and boots it from RAM without
+touching flash. An install replaces the `bootcmd` that runs it, so to netboot an
+installed box, set `bootcmd` back to `run tst; run oldbootcmd` with `fw_setenv`.
 
 The board's `tst` TFTPs `hammer/uImage` from a hardcoded `192.168.0.10`, so the
 serving machine has to hold that address. `ohc-flash netboot` answers DHCP for

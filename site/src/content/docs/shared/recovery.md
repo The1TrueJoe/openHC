@@ -18,7 +18,7 @@ region, per board.
 | **EA family** | CEFDK lives in **SPI-NOR, separate from the eMMC**, and the recovery button reimages kernel + rootfs + CEFDK from p2 | **p2** — it holds the entire recovery payload |
 | **CA-1** | the factory-restore button boots a recovery kernel from **SPI-NOR**, pre-`bootcmd`, needing no password | **p3** (`recfs`) and the SPI-NOR |
 | **HC-800** | two vendor GRUB entries and a factory-restore partition, untouched by our install | **sda2** and the vendor's two `menu.lst` entries |
-| **IOX v1** | **dual flash banks plus a recovery image**, and bring-up never writes flash at all | the recovery bank |
+| **IOX v1** | **dual flash banks plus a recovery image**, untouched; openHC lives in the half of the NAND stock never partitioned, and three failed openHC boots fall back to stock automatically | the recovery bank |
 
 ## EA family
 
@@ -143,7 +143,25 @@ this board.** openHC doesn't touch it and has no reason to.
 ## IO Extender V1
 
 Dual flash banks plus a recovery image, and every MTD tool already on the box.
-Bring-up writes no flash at all — `run tst` RAM-netboots a kernel over TFTP.
+openHC never touches any of it. The install writes a 32 MiB slot at `0x10000000`,
+in the half of the 512 MiB NAND that stock never partitioned, and changes only
+U-Boot's environment (see [Installing](/build/install/#io-extender-v1)).
+
+The way back needs no serial console:
+
+- **Automatic.** U-Boot counts openHC boot attempts in `ohc_try` and openHC clears
+  it once its uplink is up. A panic (`panic=10`), a hang (U-Boot arms the hardware
+  watchdog; openHC feeds it) or a box that never gets a network leaves the count
+  climbing, and at 3 U-Boot runs the stock `oldbootcmd`. Tested on the unit with a
+  kernel that panics on every boot: three attempts, then stock Control4.
+- **On purpose.** `tools/ohc-ioxv1 stock <host>` sets `bootcmd` back to stock.
+- **Before any of this,** take a raw backup of every partition (`nanddump -n -o`,
+  one file each). The NAND ECC is 1-bit, stored inverted; a backup read with the
+  wrong ECC setting has holes in it.
+
+The vendor's own A/B scheme is separate and still intact: `c4sys init` counts
+stock boots in an I²C EEPROM, switches banks after too many failures, and falls
+back to the recovery pair if both banks fail.
 
 :::caution[`run tst` doesn't fall through on a silent TFTP failure]
 If DHCP succeeds but TFTP doesn't answer, U-Boot loops forever — it ignores ICMP
