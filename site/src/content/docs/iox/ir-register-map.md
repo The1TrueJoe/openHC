@@ -38,7 +38,9 @@ when the train is out.
 
 With a GC-IRL learner on jack 1:
 
-- **OE bit 0 is jack 1**, from either engine. Jacks 2–8 are presumably bits 1–7.
+- **OE bit n is jack n+1**, from either engine, on all eight. Moving the emitter
+  jack to jack and sending to every output in turn, the learner heard exactly one
+  output each time: the jack the emitter was on.
 - **Carrier is exact.** Periods 500 / 658 / 694 / 760 / 1000 measured 100 / 76 /
   72 / 66 / 50 kHz. The vendor's default period `0x17e` is 131 kHz, past the
   learner's range, which reports it aliased as 66 kHz with halved counts.
