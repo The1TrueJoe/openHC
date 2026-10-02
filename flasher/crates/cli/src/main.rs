@@ -32,6 +32,7 @@ fn main() -> ExitCode {
         "log" => log(rest),
         "reset" => reset(rest),
         "uninstall" => uninstall(rest),
+        "factory-restore" => factory_restore(rest),
         "wrap" => wrap(rest),
         "help" | "-h" | "--help" => { help(); true }
         other => { eprintln!("unknown command '{other}'\n"); help(); false }
@@ -87,6 +88,11 @@ fn help() {
                                     this is how you go back in after a reset\n\
            uninstall [HOST] [--yes]  HC-800: remove openHC and restore the stock\n\
                                     menu.lst from the backup the install kept\n\
+           factory-restore [HOST] [--yes]\n\
+                                    HC-800: boot Control4's own factory-restore\n\
+                                    system (menu.lst entry 0, /dev/sda2) — the\n\
+                                    software equivalent of holding the ID button.\n\
+                                    Pushes no image; the box wipes openHC itself\n\
            wrap <bzImage> <out> [--header FILE]\n\
                                     wrap a bzImage in a CEFDK container\n\
            netboot --mac <MAC> --image <FILE> [--board NAME]\n\
@@ -516,6 +522,29 @@ fn reset(rest: &[String]) -> bool {
     // retrying it just spends ssh timeouts before the operator learns anything.
     let _ = ssh.run("echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger", false);
     eprintln!("  sent. It takes a fresh DHCP lease, so find it by MAC: ohc-flash discover");
+    true
+}
+
+/// `factory-restore [HOST]` — boot Control4's own recovery system (HC-800
+/// menu.lst entry 0, `/dev/sda2`), the software equivalent of the ID button.
+/// Pushes no image; removes openHC by handing the box back to its own
+/// untouched restore process.
+fn factory_restore(rest: &[String]) -> bool {
+    let Some((host, ssh)) = connect(rest) else { return false };
+    let id = tp::identify(&ssh);
+    match id.board.map(|b| b.family) {
+        Some(ohc_flash_core::board::Family::Hc) => {}
+        _ => { eprintln!("  `factory-restore` is an HC-800 command; this is {}", id.describe()); return false }
+    }
+    if !rest.iter().any(|a| a == "--yes") && !confirm(&format!(
+        "boot {host}'s factory-restore system and let Control4 wipe openHC back to stock"
+    )) {
+        return false;
+    }
+    if let Err(e) = hc800::factory_restore(&ssh, &Progress::stdout()) {
+        eprintln!("  {e:#}");
+        return false;
+    }
     true
 }
 

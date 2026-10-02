@@ -390,6 +390,106 @@ pub fn boot_installed(ssh: &Ssh, p: &Progress) -> Result<()> {
     Ok(())
 }
 
+/// Point GRUB's default straight at Control4's own factory-restore entry
+/// (menu.lst entry 0, backed by the untouched `/dev/sda2` restore system) and
+/// reboot into it — the software equivalent of holding the ID button.
+///
+/// This writes NOTHING from the host: it flips one line in `menu.lst` so the
+/// box boots the recovery kernel/rootfs Control4 already shipped on
+/// [`hc::RESTORE_PART`], which is never touched by any method in this tool.
+/// From there the restore is entirely the box's own process — same as the
+/// button — and it decides what to boot once it finishes.
+///
+/// Unlike [`boot_installed`], this rewrites the `default` line in `menu.lst`
+/// itself rather than the `default saved` file, because a persistent openHC
+/// install leaves `menu.lst` on `default 2` (not `saved`) and only editing the
+/// line GRUB actually reads works in both install modes.
+pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
+    let gm = "/mnt/ohc-grub";
+    ssh.run(&format!("mkdir -p {gm} && mount {} {gm}", hc::GRUB_PART), true)
+        .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;
+
+    let menu = format!("{gm}/boot/grub/menu.lst");
+    let before = ssh
+        .read_file(&menu)
+        .with_context(|| format!("{menu} is unreadable — refusing to write a bootloader blind"))?;
+
+    // Same guard every other write to this file uses: if the button-dependent
+    // lines are not where expected, this is not a menu.lst this tool
+    // understands, and it should not be edited blind.
+    for line in hc::GUARDED_LINES {
+        if !before.lines().any(|l| l.trim_start().starts_with(line)) {
+            let _ = ssh.run(&format!("umount {gm}"), false);
+            bail!("menu.lst has no `{line}` line — the factory-default button depends on it");
+        }
+    }
+
+    let backup_suffix = format!(".pre-factory-restore.{}", chrono_like_stamp());
+    ssh.run(&format!("cp {menu} {menu}{backup_suffix}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
+    p.emit(Event::detail(format!("kept {menu}{backup_suffix}")));
+
+    let want = format!("default\t\t{}", hc::ENTRY_FACTORY);
+    let mut out = String::new();
+    let mut seen_default = false;
+    for l in before.lines() {
+        if l.trim_start().starts_with("default") {
+            seen_default = true;
+            out.push_str(&want);
+            out.push('\n');
+        } else {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    if !seen_default {
+        let _ = ssh.run(&format!("umount {gm}"), false);
+        bail!("menu.lst has no `default` line at all — not the file this tool expects");
+    }
+
+    ssh.put_stream(out.as_bytes(), &format!("cat > {menu}")).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Also point `default saved` at the same entry, in case a later install
+    // left the box in boot-once mode — belt and braces, costs nothing.
+    let _ = ssh.run(
+        &format!("sed -i '1s/.*/{}/' {gm}/boot/grub/default 2>/dev/null; true", hc::ENTRY_FACTORY),
+        false,
+    );
+
+    // Read back before trusting it, same rule as every other write to this
+    // partition.
+    let after = ssh.read_file(&menu).context("menu.lst unreadable after writing it")?;
+    if after != out {
+        let _ = ssh.run(&format!("cp {menu}{backup_suffix} {menu}; sync; umount {gm}"), false);
+        bail!("menu.lst read back differently than written — restored the backup, nothing changed");
+    }
+    for line in hc::GUARDED_LINES {
+        if !after.lines().any(|l| l.trim_start().starts_with(line)) {
+            let _ = ssh.run(&format!("cp {menu}{backup_suffix} {menu}; sync; umount {gm}"), false);
+            bail!("`{line}` did not survive the write — restored the backup");
+        }
+    }
+    p.emit(Event::detail(format!("menu.lst verified, {} bytes, default -> entry {}", after.len(), hc::ENTRY_FACTORY)));
+    ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    p.emit(Event::step("rebooting into Control4's factory-restore system — this connection will drop".into()));
+    let _ = ssh.run("sync; reboot", false);
+    p.emit(Event::resolved(
+        "on its way. The box is now running Control4's own restore process off \
+         the untouched recovery partition, same as the ID button — nothing was pushed from this host"
+            .into(),
+    ));
+    Ok(())
+}
+
+/// Cheap unique-enough suffix for a backup filename — no chrono dependency for
+/// one string.
+fn chrono_like_stamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Remove an installed openHC and put the boot chain back the way it shipped.
 ///
 /// The point of this is that it is a REAL revert, not a best effort: the
