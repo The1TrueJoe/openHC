@@ -159,6 +159,13 @@ OHC_SERIALS="ttyS1:RS-232_port_1:115200 ttyS2:RS-232_port_2:115200"
 OHC_RADIOS="zigbee:ttyS4"
 ```
 
+A serial entry may end in `:modem` when its connector carries DTR and RTS (the
+DB9s on the HC-800 and IO Extender). iod holds those lines up from boot, as the
+stock `dtserver` does, because accessories like a GC-IRL learner are powered
+from them. It also offers `serial/N/dtr` and `serial/N/rts` (ON/OFF) to drop
+either one. Ports without it (3.5 mm jacks, an unverified RJ45) get no line
+controls.
+
 ### Why eudev, not mdev
 
 busybox mdev has no include mechanism, so shipping our rules would mean forking

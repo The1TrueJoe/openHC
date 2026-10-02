@@ -44,6 +44,11 @@ pub struct SerialPort {
     /// same limits, and offering a rate the hardware cannot reach is offering a
     /// setting whose only effect is garbage on the wire.
     pub bauds: Vec<u32>,
+    /// DTR and RTS are wired to the connector (a DB9), so they can be driven.
+    /// A 3.5 mm jack carries TX/RX/GND only; offering line control there would
+    /// be a switch connected to nothing. Declared per port in OHC_SERIALS as a
+    /// fourth `:modem` field.
+    pub modem: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -171,6 +176,7 @@ impl Board {
                             baud: p.get(2).and_then(|x| x.parse().ok()).unwrap_or(115200),
                             transport: "host",
                             bauds: host_bauds.clone(),
+                            modem: p.get(3) == Some(&"modem"),
                         }
                     })
                     .collect()
@@ -187,6 +193,7 @@ impl Board {
                 baud: 115200,
                 transport: "mcu",
                 bauds: mcu_bauds.clone(),
+                modem: false,
             });
         }
 

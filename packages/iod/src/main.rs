@@ -184,6 +184,9 @@ fn main() {
             if let Some(dev) = &p.dev {
                 if let Err(e) = cfg.serial.session(i, dev, p.baud, &cfg.bus) {
                     eprintln!("iod: cannot open {dev}: {e}");
+                } else if p.modem {
+                    cfg.bus.set(&format!("serial/{n}/dtr"), serde_json::json!(true));
+                    cfg.bus.set(&format!("serial/{n}/rts"), serde_json::json!(true));
                 }
             }
         }
