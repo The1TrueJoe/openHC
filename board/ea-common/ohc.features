@@ -7,3 +7,4 @@
 iomcu       # relays/contacts/IR live behind the IO microcontroller
 splash      # these boards have a display to draw on
 zigbee      # EM357 NCP on a CP2104 USB bridge (/dev/ttyUSB0); node + cp210x
+restore     # software return-to-stock: ohc-restore edits the MFH over mtd0
