@@ -212,15 +212,97 @@ fn run(cmd: &str, args: &[&str]) -> io::Result<()> {
     Ok(())
 }
 
+/// RECOVERY: write the known-good 64 KiB MFH block from a full-flash backup file
+/// straight onto the flash, erase + write + READ-BACK-VERIFY. Used to repair a
+/// corrupted MFH. `--compensate` writes the source one page (0x100) HIGH, to undo
+/// the ce5xx write path's -0x100 address shift (see the controller driver); with
+/// it the data lands at 0x80000. Without a verified read-back this never claims
+/// success, so it is safe to try both ways.
+fn cmd_restore_mfh(file: &str, compensate: bool) -> io::Result<()> {
+    let full = std::fs::read(file)?;
+    let blk = mfh::TABLE_OFF & !(ERASE_BLOCK - 1); // 0x80000
+    if full.len() < blk + ERASE_BLOCK {
+        return Err(io::Error::other("backup too small"));
+    }
+    let src = &full[blk..blk + ERASE_BLOCK]; // the good 64 KiB MFH block
+    // sanity: the source really is an MFH (header count in a sane range)
+    let cnt = u32::from_le_bytes([src[0x0c], src[0x0d], src[0x0e], src[0x0f]]);
+    if !(1..=32).contains(&cnt) {
+        return Err(io::Error::other(format!("backup block @0x{blk:x} has no MFH (count={cnt})")));
+    }
+    println!("restore-mfh: source MFH count={cnt}, compensate={compensate}");
+
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(MTD)?;
+    let ei = EraseInfoUser { start: blk as u32, length: ERASE_BLOCK as u32 };
+    if unsafe { libc::ioctl(f.as_raw_fd(), MEMERASE as _, &ei) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Where to hand the bytes to the (shifting) write path.
+    let write_off = if compensate { blk + 0x100 } else { blk } as u64;
+    f.seek(SeekFrom::Start(write_off))?;
+    f.write_all(src)?;
+    f.flush()?;
+    drop(f);
+
+    let back = read_block()?; // reads flash @ 0x80000
+    if back == src {
+        println!("restore-mfh: OK — flash @0x{blk:x} matches the backup, verified.");
+        return Ok(());
+    }
+    // Report the shift so the operator knows which way to compensate.
+    let mut shift = None;
+    for d in [-0x100i64, 0x100, -0x200, 0x200] {
+        let ok = (0..ERASE_BLOCK as i64).all(|i| {
+            let j = i + d;
+            j < 0 || j >= ERASE_BLOCK as i64 || back[i as usize] == src[j as usize]
+        });
+        if ok { shift = Some(d); break; }
+    }
+    Err(io::Error::other(format!(
+        "restore-mfh: read-back MISMATCH (apparent shift {:?}); NOT verified — do not reboot",
+        shift
+    )))
+}
+
+/// DIAGNOSTIC: erase the MFH block and report how much actually went to 0xff.
+/// If the ce5xx erase works, the whole 64 KiB reads back 0xff. Anything else
+/// means the erase did not take (which is why writes can't fix the flash).
+fn cmd_erasetest() -> io::Result<()> {
+    let blk = (mfh::TABLE_OFF & !(ERASE_BLOCK - 1)) as u32;
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(MTD)?;
+    let ei = EraseInfoUser { start: blk, length: ERASE_BLOCK as u32 };
+    let rc = unsafe { libc::ioctl(f.as_raw_fd(), MEMERASE as _, &ei) };
+    println!("erasetest: MEMERASE(0x{blk:x}, 0x{:x}) rc={rc} errno={}",
+             ERASE_BLOCK, io::Error::last_os_error());
+    drop(f);
+    let b = read_block()?;
+    let ff = b.iter().filter(|&&x| x == 0xff).count();
+    println!("erasetest: after erase, {ff}/{} bytes are 0xff ({}%)",
+             b.len(), ff * 100 / b.len());
+    println!("erasetest: first 16 bytes: {:02x?}", &b[..16]);
+    Ok(())
+}
+
 fn main() {
-    let cmd = std::env::args().nth(1).unwrap_or_default();
-    let r = match cmd.as_str() {
+    let args: Vec<String> = std::env::args().collect();
+    let cmd = args.get(1).map(String::as_str).unwrap_or_default();
+    let r = match cmd {
         "status" => cmd_status(),
+        "erasetest" => cmd_erasetest(),
         "revert" => cmd_revert(),
         "install" => cmd_install(),
         "stock" => cmd_stock(),
+        "restore-mfh" => {
+            let file = args.get(2).map(String::as_str).unwrap_or("");
+            let comp = args.iter().any(|a| a == "--compensate");
+            if file.is_empty() {
+                eprintln!("usage: ohc-restore restore-mfh <backup.bin> [--compensate]");
+                std::process::exit(2);
+            }
+            cmd_restore_mfh(file, comp)
+        }
         _ => {
-            eprintln!("usage: ohc-restore {{status|revert|install|stock}}");
+            eprintln!("usage: ohc-restore {{status|revert|install|stock|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };

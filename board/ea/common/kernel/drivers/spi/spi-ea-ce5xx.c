@@ -172,37 +172,32 @@ static void ce5xx_read_bytes(struct ce5xx_spi *c, u8 *buf, size_t len)
 	}
 }
 
-static int ce5xx_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+/* The boot flash programs 256 bytes per page. spi-nor on this part mis-reads SFDP
+ * and offers 512-byte pages (and 4-byte-addr opcodes); a 512-byte program then
+ * wraps at the chip's 256-byte page boundary and the second half overwrites the
+ * first -- the exact corruption seen on hardware. We fold both back here. */
+#define CE5XX_PAGE 256
+
+/* One /CS-framed command: opcode + `naddr` address bytes + `dummy` clock-bytes +
+ * `dlen` bytes of data (tx to program/send, rx to read). The single primitive
+ * every operation below is built from. */
+static void ce5xx_cmd(struct ce5xx_spi *c, u8 cs, u8 opcode, u64 addr, u8 naddr,
+		      u8 dummy, const u8 *tx, u8 *rx, size_t dlen)
 {
-	struct ce5xx_spi *c = spi_controller_get_devdata(mem->spi->controller);
-	u8 cs = spi_get_chipselect(mem->spi, 0);
 	u8 cmd[8];
 	unsigned int i, n = 0;
 
-	/* Fast path: bulk read of the main array through the memory window. */
-	if (ce5xx_is_array_read(op->cmd.opcode) &&
-	    op->addr.nbytes && op->data.nbytes &&
-	    op->data.dir == SPI_MEM_DATA_IN) {
-		if (op->addr.val + op->data.nbytes > resource_size(&c->pdev->resource[1]))
-			return -EINVAL;
-		memcpy_fromio(op->data.buf.in, c->mem + op->addr.val,
-			      op->data.nbytes);
-		return 0;
-	}
-
-	/* CSR path: opcode + address [+ dummy] + data, /CS held throughout. */
 	ce5xx_cs_off(c);
 	ce5xx_cs_select(c, cs);
 
-	cmd[n++] = op->cmd.opcode;
-	for (i = 0; i < op->addr.nbytes; i++)
-		cmd[n++] = op->addr.val >> (8 * (op->addr.nbytes - 1 - i));
+	cmd[n++] = opcode;
+	for (i = 0; i < naddr; i++)
+		cmd[n++] = addr >> (8 * (naddr - 1 - i));
 	ce5xx_write_bytes(c, cmd, n);
 
-	/* Dummy bytes: clock them out as zero writes while /CS stays asserted. */
-	if (op->dummy.nbytes) {
+	if (dummy) {
 		u8 z[8] = { 0 };
-		size_t d = op->dummy.nbytes;
+		size_t d = dummy;
 
 		while (d) {
 			unsigned int k = min_t(size_t, d, sizeof(z));
@@ -211,15 +206,111 @@ static int ce5xx_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 			d -= k;
 		}
 	}
+	if (dlen) {
+		if (tx)
+			ce5xx_write_bytes(c, tx, dlen);
+		else if (rx)
+			ce5xx_read_bytes(c, rx, dlen);
+	}
+	ce5xx_cs_off(c);
+}
 
-	if (op->data.nbytes) {
-		if (op->data.dir == SPI_MEM_DATA_OUT)
-			ce5xx_write_bytes(c, op->data.buf.out, op->data.nbytes);
-		else
-			ce5xx_read_bytes(c, op->data.buf.in, op->data.nbytes);
+static void ce5xx_wren(struct ce5xx_spi *c, u8 cs)
+{
+	ce5xx_cmd(c, cs, 0x06, 0, 0, 0, NULL, NULL, 0); /* WRITE ENABLE */
+}
+
+/* Poll RDSR until Write-In-Progress clears. Erase/program leave the chip busy;
+ * the caller (or spi-nor afterwards) must not touch it until WIP=0. */
+static int ce5xx_wait_wip(struct ce5xx_spi *c, u8 cs)
+{
+	int i;
+
+	for (i = 0; i < 8000; i++) {
+		u8 sr = 0xff;
+
+		ce5xx_cmd(c, cs, 0x05, 0, 0, 0, NULL, &sr, 1); /* RDSR */
+		if (!(sr & 1))
+			return 0;
+		usleep_range(500, 1000);
+	}
+	return -ETIMEDOUT;
+}
+
+/* Program `len` bytes, split on 256-byte page boundaries. spi-nor's first WREN
+ * covers the first chunk; we re-enable writes and wait for WIP between chunks. */
+static int ce5xx_program(struct ce5xx_spi *c, u8 cs, u8 opcode, u32 addr,
+			 const u8 *buf, size_t len)
+{
+	size_t done = 0;
+	bool first = true;
+
+	while (done < len) {
+		u32 a = addr + done;
+		size_t chunk = min_t(size_t, len - done,
+				     CE5XX_PAGE - (a & (CE5XX_PAGE - 1)));
+		int ret;
+
+		if (!first)
+			ce5xx_wren(c, cs);
+		ce5xx_cmd(c, cs, opcode, a, 3, 0, buf + done, NULL, chunk);
+		ret = ce5xx_wait_wip(c, cs);
+		if (ret)
+			return ret;
+		done += chunk;
+		first = false;
+	}
+	return 0;
+}
+
+static int ce5xx_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+{
+	struct ce5xx_spi *c = spi_controller_get_devdata(mem->spi->controller);
+	u8 cs = spi_get_chipselect(mem->spi, 0);
+	u8 opcode = op->cmd.opcode;
+	u8 naddr = op->addr.nbytes;
+
+	/*
+	 * This controller and the 16 MiB boot flash run in 3-byte addressing (the
+	 * memory-window reads prove it). spi-nor nonetheless picks the 4-byte-addr
+	 * opcode variants for this part; every address fits 3 bytes (< 16 MiB), so
+	 * fold the 4-byte opcodes back to their 3-byte equivalents and drop to 3
+	 * address bytes. Without this, writes/erases hit the wrong command set.
+	 */
+	if (naddr == 4) {
+		naddr = 3;
+		switch (opcode) {
+		case 0x12: opcode = 0x02; break; /* PAGE_PROGRAM_4B -> PP */
+		case 0xdc: opcode = 0xd8; break; /* SECTOR_ERASE_4B  -> SE (64K) */
+		case 0x21: opcode = 0x20; break; /* 4K_ERASE_4B      -> 4K erase */
+		case 0x13: opcode = 0x03; break; /* READ_4B          -> READ */
+		case 0x0c: opcode = 0x0b; break; /* FAST_READ_4B     -> FAST_READ */
+		case 0x3c: opcode = 0x3b; break; /* DUAL_READ_4B     -> DUAL_READ */
+		default: break;
+		}
 	}
 
-	ce5xx_cs_off(c);
+	/* Fast path: bulk read of the main array through the memory window. */
+	if (ce5xx_is_array_read(opcode) && naddr && op->data.nbytes &&
+	    op->data.dir == SPI_MEM_DATA_IN) {
+		if (op->addr.val + op->data.nbytes > resource_size(&c->pdev->resource[1]))
+			return -EINVAL;
+		memcpy_fromio(op->data.buf.in, c->mem + op->addr.val, op->data.nbytes);
+		return 0;
+	}
+
+	/* Page program: must not cross the chip's 256-byte page boundary. */
+	if (opcode == 0x02 && op->data.dir == SPI_MEM_DATA_OUT &&
+	    naddr && op->data.nbytes)
+		return ce5xx_program(c, cs, opcode, op->addr.val,
+				     op->data.buf.out, op->data.nbytes);
+
+	/* Everything else (RDID, RDSR, WREN, erase, SFDP, register ops) is one
+	 * CS-framed command. */
+	ce5xx_cmd(c, cs, opcode, op->addr.val, naddr, op->dummy.nbytes,
+		  op->data.dir == SPI_MEM_DATA_OUT ? op->data.buf.out : NULL,
+		  op->data.dir == SPI_MEM_DATA_IN ? op->data.buf.in : NULL,
+		  op->data.nbytes);
 	return 0;
 }
 
