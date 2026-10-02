@@ -26,6 +26,25 @@ separate from the eMMC.** Destroying the eMMC doesn't brick the unit, the
 bootloader survives to reflash it, netboot a kernel, or take a new image over
 YMODEM. See [recovery](/shared/recovery/).
 
+## The boot SPI-NOR is now writable from Linux
+
+That SPI-NOR is a 16 MB S25FL127S (256-byte pages) on the CE5300's **dedicated
+boot-flash controller** — PCI `8086:08a0`, class `0501`, a separate block from the
+pxa2xx SSP the BCM switch rides. The in-tree `spi-ea-ce5xx` controller driver
+(a mainline-API port of Intel's out-of-tree `ce5xx_spi_flash.c`) lets the in-tree
+`spi-nor` driver detect the chip by JEDEC id, so openHC gets a writable
+`/dev/mtd0`. Confirmed on an EA1: `/proc/mtd` shows a 16 MB `mtd0` on `spi0.0`.
+
+This is the prerequisite for two things that otherwise need a serial console or an
+external programmer: an **in-place install**, and a **software return-to-stock**.
+openHC's install makes exactly **one** change to this flash — it appends a single
+`script` item to the CEFDK Master Flash Header (MFH) item-table (at offset
+`0x80000`, SHA-256 protected) that redirects CEFDK to openHC's autoscript. The
+stock kernel item, the stock kernel and p2's factory payload are left untouched,
+which is why returning to stock is just removing that one item. See
+[recovery](/shared/recovery/) for `ohc-restore` and
+[secure boot](/ea/secure-boot/) for the autoscript takeover itself.
+
 ## CEFDK cannot be interrupted on a normal boot
 
 Tested directly: Ctrl-C, ESC, space, CR, `x` and `c4` sent continuously at

@@ -208,6 +208,56 @@
       "summary": "Pulse the microcontroller's reset line",
       "description": "Recovery for a wedged part. Tries both polarities and reports which worked. Note: on the HC-800 a wedged MCU has NOT been recoverable by reset \u2014 it needs a power cycle."
     },
+    "audioOutputState": {
+      "address": "openhc/{box}/state/audio/output",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Selected ALSA output (retained)",
+      "description": "The device string the network receivers render to, e.g. `hw:DSP`. Absent/empty means they follow the system default PCM. The fuller picture — the list of outputs and the receivers' now-playing — is the REST `/api/audio` read."
+    },
+    "audioVolumeState": {
+      "address": "openhc/{box}/state/audio/volume",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Output volume percent (retained)",
+      "description": "0..100, read back from `amixer`. Best-effort: a card with no recognisable volume control simply never publishes this."
+    },
+    "audioReceiverRunning": {
+      "address": "openhc/{box}/state/audio/receiver/{id}/running",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Is a receiver up (retained)",
+      "description": "id is `librespot` (Spotify Connect) or `shairport` (AirPlay). These are receivers — playback is driven from the phone — so there is no transport here; this is only whether the daemon is running."
+    },
+    "audioSetOutput": {
+      "address": "openhc/{box}/cmd/audio/output",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Select the ALSA output",
+      "description": "A device string from the `/api/audio` output list, e.g. `hw:DSP`. iod writes its selection file; the receivers apply it on their next restart."
+    },
+    "audioSetVolume": {
+      "address": "openhc/{box}/cmd/audio/volume",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Set the output volume",
+      "description": "A percent 0..100. Clamped, applied via `amixer`, and read back into the retained state topic."
+    },
     "raw": {
       "address": "openhc/{box}/cmd/raw",
       "messages": {
@@ -345,6 +395,41 @@
         "$ref": "#/channels/mcuReset"
       },
       "summary": "Pulse the microcontroller's reset line"
+    },
+    "audioOutputState": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioOutputState"
+      },
+      "summary": "Selected ALSA output (retained)"
+    },
+    "audioVolumeState": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioVolumeState"
+      },
+      "summary": "Output volume percent (retained)"
+    },
+    "audioReceiverRunning": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioReceiverRunning"
+      },
+      "summary": "Is a receiver up (retained)"
+    },
+    "audioSetOutput": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioSetOutput"
+      },
+      "summary": "Select the ALSA output"
+    },
+    "audioSetVolume": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioSetVolume"
+      },
+      "summary": "Set the output volume"
     },
     "raw": {
       "action": "receive",

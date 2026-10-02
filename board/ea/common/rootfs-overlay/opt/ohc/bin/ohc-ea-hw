@@ -1,0 +1,23 @@
+#!/bin/sh
+# ohc-ea-hw — EA-family hardware bring-up. The universal services (mDNS, tz) are
+# in the fleet `ohc` dispatcher; this is the EA-only part that used to live in it.
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+# LM75 heatsink sensor: i2c-pxa gives us i2c-0; instantiate the (builtin) lm75.
+if [ -d /sys/bus/i2c/devices/i2c-0 ] && [ ! -d /sys/bus/i2c/devices/0-0048 ]; then
+  echo lm75 0x48 > /sys/bus/i2c/devices/i2c-0/new_device 2>/dev/null
+  sleep 1
+fi
+
+# Report the SoC driver bring-up on the console (input over 921600 is overrun-
+# prone, so let the box tell us what bound). Count gpiochips via the chardev AND
+# legacy sysfs: gpio-sodaville registers /dev/gpiochip0 but does not populate
+# /sys/class/gpio until a line is exported, so the sysfs-only check read 0.
+gc=$(ls -d /sys/bus/gpio/devices/gpiochip* /sys/class/gpio/gpiochip* 2>/dev/null | sort -u | wc -l)
+np=$(cat /sys/class/pwm/pwmchip0/npwm 2>/dev/null || echo none)
+ic=$(ls -d /sys/bus/i2c/devices/i2c-* 2>/dev/null | wc -l)
+echo "ohc-hw: gpiochips=$gc pwmchip0.npwm=$np i2c-buses=$ic"
+for d in /sys/class/hwmon/hwmon*; do
+  [ "$(cat "$d/name" 2>/dev/null)" = lm75 ] && \
+    echo "ohc-hw: lm75 temp=$(cat "$d/temp1_input" 2>/dev/null) milliC ($d)"
+done

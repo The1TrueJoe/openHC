@@ -7,6 +7,7 @@
 //! One binary runs the whole fleet. What differs between an HC-800, an EA3, an
 //! IO Extender and a CA-1 is `/opt/ohc/board.env` and nothing else.
 mod api;
+mod audio;
 mod b64;
 mod board;
 mod events;
@@ -102,6 +103,28 @@ async fn poller(cfg: Arc<Config>) {
                 }
             }
         }
+    }
+}
+
+/// Mirror the audio state that CHANGES at runtime: which output is selected, its
+/// volume, and whether each receiver is up. Slow on purpose — none of this moves
+/// fast, and reading it is a `/proc` scan plus an `amixer` fork. Now-playing is
+/// NOT mirrored here: it is structured and almost always empty in this image, so
+/// it is served proper JSON over REST (`/api/audio`) instead of as a retained
+/// topic a shell consumer would see as the string "null".
+async fn audio_poller(cfg: Arc<Config>) {
+    use std::time::Duration;
+    loop {
+        if let Some(dev) = audio::selected() {
+            cfg.bus.set("audio/output", serde_json::json!(dev));
+        }
+        if let Some(v) = audio::volume_get(None).await {
+            cfg.bus.set("audio/volume", serde_json::json!(v));
+        }
+        for r in audio::receivers() {
+            cfg.bus.set(&format!("audio/receiver/{}/running", r.id), serde_json::json!(r.running));
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
 
@@ -206,6 +229,14 @@ fn main() {
 
         if cfg.gpio_io {
             tokio::task::spawn_local(poller(cfg.clone()));
+        }
+
+        // Audio is independent of the IO backend — a box can be a Spotify/AirPlay
+        // endpoint with no relays at all — so it gets its own poller, spawned only
+        // when the box actually has audio (a sound card or a receiver installed).
+        if audio::capability().is_some() {
+            eprintln!("iod: audio present — serving outputs/receivers");
+            tokio::task::spawn_local(audio_poller(cfg.clone()));
         }
 
         // Serve MQTT, bridge outward, or both — and restart either when the

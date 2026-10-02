@@ -1,24 +1,32 @@
-# EA1-only kernel config, applied on top of board/ea/common/linux/common.fragment.
-#
-# The EA1's reachability path is Wi-Fi: an Atheros AR9485 on PCIe, driven by
-# fully mainline ath9k with no firmware blob. That is what lets the serial
-# tether be dropped on a board whose eMMC and SoC Ethernet need out-of-tree
-# vendor drivers.
-#
-# (The EA3 has no radio at all — see board/ea3/linux/ea3.fragment.)
-
-
+# EA1-only kernel config, on top of board/ea/common/linux/common.fragment.
+# Reachability is Wi-Fi (AR9485, mainline ath9k); the EA3 has no radio.
 
 # --- kernel command line (EA1) ---
-# pci=realloc,nocrs is REQUIRED on the EA1: CEFDK leaves the ath9k/e1000 BARs
-# unassigned, and this is the combination proven to bring up wlan0 there.
-# Do NOT copy it to another board without checking that board's E820 — see
-# the EA3 fragment for a case where `nocrs` actively breaks the NIC.
+# pci=realloc,nocrs is REQUIRED: CEFDK leaves the ath9k/e1000 BARs unassigned and
+# this is the combination proven to bring up wlan0. Do NOT copy to another board
+# without checking its E820 (see the EA3 fragment, where `nocrs` breaks the NIC).
+# pci=routeirq enables the CE5300 UART interrupt link (LUAR/GSI 38) for the IO-MCU
+# on ttyS1 — see board/ea/common/linux/common.fragment.
 #
-# pci=routeirq forces ACPI _PRT routing for every PCI device, which is what gets
-# the CE5300 UART's interrupt link (ACPI LUAR = GSI 38) actually ENABLED. Without
-# it LUAR stays merely "configured" and request_irq(38) fails, so ttyS1 (the
-# IO-MCU port) never takes an RX interrupt and the tm4c looks dead. Confirmed on
-# an EA1: with routeirq, `ACPI: \_SB_.LUAR: Enabled at IRQ 38` and ttyS1 registers
-# on irq 38. See board/ea/common/linux/common.fragment for the full story.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
+# --- RAM reclaim (EA1) --------------------------------------------------------
+# CEFDK withholds ~90% of DRAM. MEASURED on this EA1 (10.0.0.127): MemTotal only
+# 180384 kB because e820 hands Linux just [0x00100000-0x0c7fffff] (200 MB) and
+# marks [0x0c800000-0x7fffffff] (1.8 GB) "device reserved" — the Intel CE media
+# carve-out. That range is REAL, IDLE DRAM (read-only over /dev/mem it still holds
+# CEFDK's boot-time address-walk pattern up to ~0x7f000000). The e820 split, ACPI
+# window and low-memory layout are byte-identical to the EA3-v2, whose reclaim is
+# PROVEN on hardware, so the same line applies.
+#
+# memmap=exactmap is MANDATORY: the additive form is silently dropped (e820
+# sanitisation resolves overlaps toward the HIGHER type, so "reserved" beats added
+# "RAM"). Each entry is load-bearing — see ea3-v2.fragment for the full derivation
+# (60K#0x11000 = ACPI tables; claiming them as RAM gives AE_NO_ACPI_TABLES + hang).
+# 1536M@0x10000000 ends at 0x70000000, matching the EA3's proven margin. Do NOT
+# widen past 0x70000000 without re-measuring: a memmap past real DRAM is
+# unrecoverable remotely.
+#
+# GRADING: the e820/DRAM facts are measured on this EA1; the memmap line is the
+# EA3-v2's PROVEN line on a verified-identical map, but has NOT yet been booted
+# with it on an EA1 — confirm on hardware (a kexec is recoverable) and promote to
+# "proven" once MemTotal reads back ~1.7 GB.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"

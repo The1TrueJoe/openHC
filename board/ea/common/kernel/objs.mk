@@ -34,3 +34,12 @@ drivers/spi/Makefile|obj-y += spi-ea-ce5xx.o
 # their own directory, so sound/soc/Makefile has to be told to descend into it.
 sound/soc/codecs/Makefile|obj-y += adau1451-c4.o
 sound/soc/Makefile|obj-y += ce5300/
+
+# --- GPU: PowerVR SGX545 (the sgx545ce submodule mirrored in beside it) ---
+# Unlike the drivers above (openHC's own single .c files, obj-y), this is a large
+# vendored DDK with its own Kbuild + Kconfig, so it is gated by a REAL symbol and
+# built as a MODULE (=m, set in features/sgx/linux.fragment) to keep ~1.25 MiB of
+# DRM core out of the bzImage. The hook copies its Kbuild/Kconfig + src/ tree in
+# (find now matches Kbuild/Kconfig) and wires both lines below.
+drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/sgx545ce/Kconfig"
+drivers/gpu/drm/Makefile|obj-$(CONFIG_SGX545_CE) += sgx545ce/

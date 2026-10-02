@@ -1,10 +1,12 @@
-# Features EVERY EA controller has, whatever the variant. Layered ahead of the
-# board's own ohc.features by build/build.sh, so ea1-v1 and ea3-v2 do not each
-# restate them.
-#
-# Per-variant features (wifi, emmc, switch, sgx, audio) belong in the BOARD
-# file, because those are exactly what the variants differ by.
-iomcu       # relays/contacts/IR live behind the IO microcontroller
-splash      # these boards have a display to draw on
+# Capabilities every EA-series controller has. A board adds only what makes it
+# different (a radio, a switch, the DSP) in its own ohc.features.
+iomcu       # relays/contacts/IR behind the IO microcontroller
+splash      # boot splash on the display
+display     # the CEFDK framebuffer handed to Linux as simplefb (/dev/fb0)
+sgx         # PowerVR SGX545 GPU kernel driver — every EA is the same CE5310/HDMI
+wpe         # the on-screen UI: DDK GLES blobs (fetched at build) + WPE WebKit
+emmc        # persistent ext4 rootfs on the eMMC
 zigbee      # EM357 NCP on a CP2104 USB bridge (/dev/ttyUSB0); node + cp210x
+audio       # ALSA + Spotify Connect + AirPlay userspace (needs an output: DSP on
+            # EA3, HDMI elsewhere once that driver lands)
 restore     # software return-to-stock: ohc-restore edits the MFH over mtd0

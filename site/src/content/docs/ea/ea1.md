@@ -50,6 +50,25 @@ Firmly **i686**, not ARM.
 mtd0  16M  "nmyx25"            SPI NOR — bootloader/env
 ```
 
+The 16 MB SPI-NOR (an S25FL127S) is the stock image's read-only `nmyx25` chip.
+Under openHC it is a **writable `/dev/mtd0`** via the in-tree `spi-ea-ce5xx`
+controller driver — confirmed on this EA1, `/proc/mtd` shows a 16 MB `mtd0` on
+`spi0.0`. That is what makes an in-place install and a software return-to-stock
+possible without serial; see [the boot chain](/ea/boot-chain/) and
+[recovery](/shared/recovery/).
+
+### RAM: CEFDK withholds most of it
+
+Measured on this EA1: `MemTotal` is only ~176 MB. CEFDK's e820 hands Linux
+`[0x00100000-0x0c7fffff]` (200 MB) as System RAM and marks
+`[0x0c800000-0x7fffffff]` (1.8 GB) "device reserved" — the Intel CE media
+carve-out openHC never loads, exactly as on the [EA3](/ea/ea3/). It is real, idle
+DRAM, not bare address space: read read-only it still holds CEFDK's boot-time
+address-walk pattern (`0x40000000` reads `0x40000000`) up to near `0x7f000000`.
+The `memmap=exactmap` reclaim that gives the EA3 its 1.7 GB is written into this
+board's fragment too — the maps are identical — but it has **not** yet been booted
+with on an EA1, so until it is, the EA1 still runs on ~176 MB.
+
 ## The serial map
 
 This is the important one, and it differs from the HC-800 in two ways that
@@ -96,6 +115,18 @@ Three things worth knowing about the radio:
   is a config-file option, not a CLI flag.
 
 ## Zigbee: the bootloader trap
+
+:::note[On the openHC kernel, the EA1 NCP now answers directly]
+Two things changed since this recon. First, the CP2104 USB-UART bridge didn't
+enumerate at all on an early openHC kernel; the EHCI `has_hostpc` fix for the
+CE5300 TDI USB core (patch `0014`) fixes that, so `/dev/ttyUSB0` appears. Second,
+`gpio-ea-board` drives `zigbee_reset` (gpio29) high=released at boot, so the EM357
+runs its application from power-on rather than sitting in the serial bootloader —
+opening the port does **not** drop it to the bootloader. Measured on hardware: a
+bare ASH `RST` returns `RSTACK` (0xc1) at 115200 8N1, no RTS/CTS. The sequence
+below is the stock-image behaviour and the fallback for a radio that is in the
+bootloader; on openHC the EA1 does not need it.
+:::
 
 `ohc-serialbridge` puts the UART on the network and works, but the NCP answers
 nothing, not EZSP/ASH, at any baud, with or without RTS/CTS, not even after a
@@ -149,6 +180,22 @@ Whether the on-device `.ebl` is byte-identical to a stock SiLabs build is
 unconfirmed, the filename follows SiLabs' convention and the header says
 `ZNCPVer:4720`, but since path one needs no redistribution, that does not block
 anything.
+
+## Return to stock
+
+Because `/dev/mtd0` is writable (above), the EA1 has a **software** return-to-stock
+that needs no serial: openHC's install adds exactly one `script` item to the
+SPI-NOR MFH, and `ohc-restore` removes it. It can be triggered from iod (REST/MQTT),
+the web UI System panel, or by **holding the front ID button** — a bare SoC GPIO
+(`gpiochip0` line 32, active-low: released `1`, pressed `0`, confirmed on this
+EA1) that `gpio-ea-board` leaves unclaimed. The watcher is fail-safe: it arms only
+after one clean released reading, so a wrong polarity stays inert.
+
+This matters on the EA1 specifically: with the boot fuse blown, the native
+recessed CEFDK button does **not** rewrite the SPI-NOR MFH, so it alone won't undo
+openHC's one change — the software path is the dependable one. The `mtd0` write
+path is proven on this unit; the full `stock` round-trip back to Control4 is not
+yet hardware-verified. Full detail on [recovery](/shared/recovery/).
 
 ## Fan and thermal — fully open
 

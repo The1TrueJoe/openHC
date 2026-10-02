@@ -64,6 +64,42 @@ export interface Capabilities {
   relays?: { count: number };
   contacts?: { count: number };
   serials?: SerialPort[];
+  /** Audio, discovered at runtime (not board.env). Absent when the box has no
+   *  sound card AND no receiver binaries — the same "nothing behind it" rule. */
+  audio?: AudioStatus;
+}
+
+/** An ALSA playback device the receivers can be pointed at. `id` is what you
+ *  pass to `aplay -D` / librespot `--device` (e.g. `hw:DSP`). */
+export interface AudioOutput {
+  id: string;
+  name: string;
+  card: number;
+}
+
+/** A network audio receiver. Spotify Connect and AirPlay are *receivers* —
+ *  playback is driven from the phone — so `supports_transport` is honest about
+ *  whether this build exposes play/pause at all (it does not, today). */
+export interface AudioReceiver {
+  id: 'librespot' | 'shairport';
+  name: string;
+  kind: 'spotify' | 'airplay';
+  installed: boolean;
+  running: boolean;
+  supports_transport: boolean;
+  supports_metadata: boolean;
+  /** Whatever JSON a receiver's hook fed us; absent means nothing playing. */
+  now_playing?: unknown;
+}
+
+/** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
+ *  only present when genuinely available, so the panel shows them conditionally. */
+export interface AudioStatus {
+  outputs: AudioOutput[];
+  receivers: AudioReceiver[];
+  /** The chosen output id, or null when the receivers follow the default PCM. */
+  selected: string | null;
+  volume?: number;
 }
 
 /** What is carrying the IO. The kernel driver owns the link, so iod cannot ask
@@ -120,6 +156,13 @@ export interface IoState {
   led?: Record<string, number>;
   mcu?: { link?: boolean };
   serial?: Record<string, { baud?: number; viewers?: number }>;
+  /** Live audio deltas: the selected output, the volume, and per-receiver
+   *  running flags. The fuller picture (outputs, now-playing) comes over REST. */
+  audio?: {
+    output?: string;
+    volume?: number;
+    receiver?: Record<string, { running?: boolean }>;
+  };
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -151,6 +194,9 @@ export const rest = {
   telemetry: () => j<Telemetry>(`${SYS}/api/now`),
   capabilities: () => j<Capabilities>(`${HTTP}/api/io`),
   mcu: () => j<McuInfo>(`${HTTP}/api/io/mcu`),
+  /** Full audio picture. 404s on a board with no audio (the panel then shows
+   *  nothing); outputs/receivers/volume/now-playing come back when present. */
+  audio: () => j<AudioStatus>(`${HTTP}/api/audio`),
   config: () => j<ConfigDoc>(`${HTTP}/api/config`),
   saveConfig: (mqtt: MqttWrite) =>
     j<{ ok: boolean }>(`${HTTP}/api/config`, {
@@ -277,6 +323,12 @@ export class Io {
     this.#publish(`led/${slug}/set`, on ? 'ON' : 'OFF');
   setBaud = (i: number, baud: number) => this.#publish(`serial/${panel(i)}/baud`, String(baud));
   serialWrite = (i: number, data: string) => this.#publish(`serial/${panel(i)}/write`, data);
+  /** Point the network receivers at an ALSA output. `id` is a device string like
+   *  `hw:DSP`; they apply it on their next restart. */
+  setAudioOutput = (id: string) => this.#publish('audio/output', id);
+  /** Output volume, 0..100. Clamped and read back by iod. */
+  setAudioVolume = (percent: number) =>
+    this.#publish('audio/volume', String(Math.max(0, Math.min(100, Math.round(percent)))));
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {

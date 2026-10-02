@@ -105,14 +105,9 @@ BR2_PACKAGE_DNSMASQ=y
 # mismatch, not a local config issue. Revisit when a broker is actually needed.
 # BR2_PACKAGE_MOSQUITTO=y
 
-# C++ toolchain — needed by Node.js (V8).
-BR2_TOOLCHAIN_BUILDROOT_CXX=y
-
-# --- Node.js: runtime for zigbee2mqtt / zwave-js-server ---
-# npm so the servers install on-target. V8 is a heavy compile — bump Docker's VM
-# RAM if it OOMs.
-BR2_PACKAGE_NODEJS=y
-BR2_PACKAGE_NODEJS_NPM=y
+# Node.js (zigbee2mqtt / zwave-js) and its C++ toolchain come from the shared
+# 'zigbee' feature (board/common/features/zigbee), which ca1 enables in its
+# ohc.features — not duplicated here.
 
 # --- rootfs overlay + image publishing ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and

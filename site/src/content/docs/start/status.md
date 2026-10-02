@@ -23,7 +23,7 @@ them was invisible while CI only ever built one board. The row below says
 
 | Board | SoC | Status | What that means |
 |---|---|---|---|
-| **ea1-v1** | Intel CE5310 | **Proven** | Netboots Linux 7.1.8, reaches a shell, Wi-Fi and SSH up. Secure-boot fuse clear. |
+| **ea1-v1** | Intel CE5310 | **Proven** | Netboots Linux 7.1.8, reaches a shell, Wi-Fi and SSH up. Secure-boot fuse clear. Boot SPI-NOR is a writable `/dev/mtd0`; software return-to-stock and the hardware restore button are in place; the Zigbee NCP answers. |
 | **ea3-v2** | Intel CE5310 | **Proven** | 7.1.8 via `bootlinux`, e1000 + eMMC + SSH, **persistent self-boot** from eMMC. Fuse blown; takes over via the CEFDK autoscript. |
 | **ca1** | i.MX6SL | **Proven** | Boots our 7.1.8 kernel. openHC on eMMC ext4, Node, Rust dashboard, captive-portal Wi-Fi setup. |
 | **ioxv1** | TI DM355 | **Proven** | Installs to NAND over SSH from stock or openHC, and boots from it; three failed openHC boots fall back to stock on their own. The FPGA loads itself at boot from the unit's own NAND, giving four RS-232 ports (verified both ways against a PC) and eight IR outputs (all eight verified against a GC-IRL learner at 38 kHz). Relays, contacts, the tri-colour status LED, data/link LEDs, iod and the web UI all work. |
@@ -57,6 +57,27 @@ EA5, but neither board has been in hand.
 - **The DM355 SoC resurrection**, four files pulled back from pre-6.2 mainline
   history and forward-ported until a 7.1.8 kernel boots on ARMv5 silicon that
   upstream deleted.
+- **A writable boot SPI-NOR on the EA family.** The CE5300's dedicated boot-flash
+  controller (PCI `8086:08a0`, a 16 MB S25FL127S, 256-byte pages) is driven by the
+  in-tree `spi-ea-ce5xx`, so the chip comes up as a writable `/dev/mtd0`. Confirmed
+  on an EA1: `/proc/mtd` shows a 16 MB `mtd0` on `spi0.0`. This is what makes an
+  in-place install *and* a software return-to-stock possible without serial.
+- **Software return-to-stock on the EA**, openHC's own, needing no serial and no
+  button. The install makes exactly one boot change — a single `script` item
+  appended to the SHA-256-protected MFH item-table in SPI-NOR — so reverting is
+  removing that one item, a byte-for-byte inverse the installer's code is
+  unit-tested against the known-stock backup. The `mtd0` write path is **proven**:
+  it rewrote the MFH on a corrupted live EA1 and read it back verified. The full
+  `stock` round-trip all the way back to Control4 has **not** yet been run end to
+  end on hardware. See [recovery](/shared/recovery/).
+- **A hardware return-to-stock button on the EA.** Holding the front ID button —
+  a bare SoC GPIO the board driver deliberately leaves unclaimed — for ten seconds
+  runs the software restore. It is fail-safe: it arms only after one clean
+  "released" reading, so a wrong line or polarity stays inert rather than wiping a
+  box at boot. The fail-safe behaviour was confirmed on an EA1.
+- **The EA1 Zigbee NCP**, which now answers. The EHCI `has_hostpc` fix for the
+  CE5300 TDI USB core lets the CP2104 bridge enumerate and the EM357 replies: a
+  bare ASH reset returns `RSTACK` (0xc1) at 115200 8N1, measured on hardware.
 
 ## What is not
 
@@ -66,7 +87,22 @@ EA5, but neither board has been in hand.
   fields are still inferred, so the platform driver doesn't register a PCM.
 - **The BCM53125 switch under mainline DSA.** The board glue builds, but DSA has
   never attached on hardware — the second rear jack is still unusable.
-- **The Zigbee NCP on the CA-1**, which answers nothing at any baud.
+- **The Zigbee NCP on the CA-1**, which answers nothing at any baud. (The EA1's
+  NCP now does answer; this caveat is CA-1-specific.)
+- **The full `stock` return-to-Control4 round-trip on the EA, end to end.** The
+  `mtd0` write path that it rests on is proven, but reverting the MFH *and*
+  recovery-kexec'ing p2 to reimage p1 has not yet been run through on hardware.
+- **The return-to-stock button on the EA3.** The software path ships there too, but
+  that board's GPIO line and polarity are not hardware-confirmed yet, so the
+  fail-safe keeps the watcher inert until they are.
+- **The HC-800 software factory-restore.** `ohc-flash factory-restore` flips the
+  GRUB default to Control4's own recovery entry; it is code-complete and
+  read-back-verifies, but has not been run against real HC-800 hardware.
+- **The EA1 RAM reclaim.** EA1-v1 still boots on the ~176 MB CEFDK hands over,
+  while ~1.8 GB sits "device reserved". The `memmap=exactmap` line that gives the
+  EA3 its 1.7 GB is now written for the EA1 too — its e820 split and the fact that
+  the carve-out is real, idle DRAM are *measured* on an EA1, identical to the EA3 —
+  but it has not yet been booted with on an EA1, so it stays unproven until it is.
 
 ## How to read a claim on this site
 

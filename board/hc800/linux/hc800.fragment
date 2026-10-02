@@ -317,7 +317,7 @@ CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_FB=y
 CONFIG_FB_DEVICE=y
 
-# No fbcon, for the reason ea/common/linux/video.fragment records: the text
+# No fbcon, for the reason ea/common/features/display/linux.fragment records: the text
 # console clears the framebuffer when it takes the surface over, and that is
 # what ate the EA's first splash. The console is ttyS0 on this board and always
 # was. Flip this to =y temporarily if you want the kernel log on the TV while
