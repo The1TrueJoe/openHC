@@ -118,6 +118,15 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
             hex: false,
             b64: false,
         }),
+        ["serial", n, l @ ("dtr" | "rts")] => Some(Cmd::SerialLine {
+            index: topics::index(n)? as usize,
+            line: if *l == "dtr" { crate::ops::SerialLine::Dtr } else { crate::ops::SerialLine::Rts },
+            on: match b.to_ascii_uppercase().as_str() {
+                "ON" | "TRUE" | "1" => true,
+                "OFF" | "FALSE" | "0" => false,
+                _ => return None,
+            },
+        }),
         ["serial", n, "baud"] => Some(Cmd::SerialBaud {
             index: topics::index(n)? as usize,
             baud: b.parse().ok()?,
@@ -168,6 +177,16 @@ mod tests {
         assert!(parse_cmd("relay/0/set", "ON").is_none());
         assert!(parse_cmd("ir/0/send", "0000 006d").is_none());
         assert!(parse_cmd("serial/0/baud", "9600").is_none());
+    }
+
+    #[test]
+    fn serial_lines_parse() {
+        use crate::ops::SerialLine;
+        assert!(matches!(parse_cmd("serial/1/dtr", "OFF"),
+                         Some(Cmd::SerialLine { index: 0, line: SerialLine::Dtr, on: false })));
+        assert!(matches!(parse_cmd("serial/4/rts", "on"),
+                         Some(Cmd::SerialLine { index: 3, line: SerialLine::Rts, on: true })));
+        assert!(parse_cmd("serial/1/dtr", "maybe").is_none());
     }
 
     #[test]

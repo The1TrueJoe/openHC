@@ -12,10 +12,10 @@ forced). Boots via appended DTB; network brings up SSH.
 
 See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 ---
- arch/arm/boot/dts/ti/davinci/Makefile         |  3 +
- arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 86 ++++++++++
- arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 94 +++++++++++++++++++
- 3 files changed, 149 insertions(+)
+ arch/arm/boot/dts/ti/davinci/Makefile         | 3 +++
+ arch/arm/boot/dts/ti/davinci/dm355-hammer.dts | 430 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ arch/arm/boot/dts/ti/davinci/dm355.dtsi       | 104 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 537 insertions(+)
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
  create mode 100644 arch/arm/boot/dts/ti/davinci/dm355.dtsi
 
@@ -35,19 +35,24 @@ new file mode 100644
 index 0000000..a959552
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355-hammer.dts
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,462 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Control4 IO Extender V1 ("DM355 I/O Bar", board codename "hammer").
-+ * openHC bring-up board: console + 128 MB RAM + dm9000 Ethernet (for SSH).
-+ * NAND, the front-panel LEDs/PWM, relays/contacts GPIO and the FPGA UARTs/IR
-+ * are added once we are on the network. dm9000 facts from the vendor
-+ * board-hammer.c: 16-bit, no EEPROM, IRQ on GPIO1 (rising), reset on GPIO101.
++ * openHC bring-up board: console + 128 MB RAM + dm9000 Ethernet (for SSH),
++ * the relays/contacts/LEDs/buttons on SoC GPIO, and the FPGA that carries the
++ * four RS-232 ports and the eight IR outputs.
++ *
++ * Every address, GPIO and interrupt below is from Control4's own GPL board
++ * file, arch/arm/mach-davinci/board-hammer.c, in
++ * linux-davinci-2.6.28-rc8+patches.tar.gz — not inferred. NAND and the PWM
++ * front-panel LEDs are still to come.
 + */
 +
 +/dts-v1/;
 +
 +#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
 +#include <dt-bindings/interrupt-controller/irq.h>
 +#include "dm355.dtsi"
 +
@@ -63,6 +68,76 @@ index 0000000..a959552
 +	memory@80000000 {
 +		device_type = "memory";
 +		reg = <0x80000000 0x08000000>;	/* 128 MB */
++	};
++
++	/*
++	 * The two front-panel buttons. gpio-keys rather than a poll loop for the
++	 * same reason as on the HC-800: a key event is what every Linux tool
++	 * already knows how to consume.
++	 *
++	 * The vendor's c4button driver called these "id-btn" and "recovery-btn"
++	 * and gave them no keycodes; these are ours. Both are active-low, and
++	 * both sit on GIO0-9, which the DM355 wires straight to their own AINTC
++	 * lines — so these interrupt rather than poll.
++	 */
++	keys {
++		compatible = "gpio-keys";
++
++		key-id {
++			label = "id-btn";
++			gpios = <&gpio 9 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_F5>;
++			debounce-interval = <20>;
++		};
++
++		key-recovery {
++			label = "recovery-btn";
++			gpios = <&gpio 8 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++			debounce-interval = <20>;
++		};
++	};
++
++	/*
++	 * Front and rear panels share every line: data, link, and a tri-colour
++	 * status LED (power is hardwired on). The status colours sit on the
++	 * PWM0/1/2 pins (GIO81/80/79), which U-Boot leaves running as PWM, the
++	 * orange one blinking. S01pinmux turns those three pins into plain GPIO,
++	 * so they are ordinary active-low LEDs here and blink by trigger.
++	 * Stock names them c4:blue:good, c4:orange:fair, c4:red:poor.
++	 */
++	leds {
++		compatible = "gpio-leds";
++
++		led-data {
++			label = "c4:data";
++			gpios = <&gpio 75 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led-link {
++			label = "c4:link";
++			gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led-status-blue {
++			label = "c4:blue:status";
++			gpios = <&gpio 80 GPIO_ACTIVE_LOW>;
++			default-state = "on";
++		};
++
++		led-status-orange {
++			label = "c4:orange:status";
++			gpios = <&gpio 81 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		led-status-red {
++			label = "c4:red:status";
++			gpios = <&gpio 79 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
 +	};
 +};
 +
@@ -87,6 +162,303 @@ index 0000000..a959552
 +		davicom,no-eeprom;
 +		local-mac-address = [00 0f ff 18 21 9c];
 +	};
++
++	/*
++	 * The async EMIF, and the NAND inside it.
++	 *
++	 * The nesting is not decoration. davinci_nand does
++	 *
++	 *	info->aemif = dev_get_drvdata(pdev->dev.parent);
++	 *
++	 * and hands that straight to aemif_set_cs_timings(), so the memory
++	 * controller HAS to be its parent. Sitting beside it under &soc, the
++	 * chip probed as far as "Failed to configure data interface to SDR
++	 * timing mode 0" and then "No NAND device found" — which reads like a
++	 * dead chip and is really a device-tree shape error.
++	 *
++	 * Addresses are the vendor's own, from hammer_nand_resources in
++	 * board-hammer.c: the chip is on async EMIF CS0 at 0x02000000, and
++	 * DAVINCI_ASYNC_EMIF_CONTROL_BASE is 0x01e10000.
++	 *
++	 * The reason any of this exists is the FPGA bitstream. fpga_fw.bin is on
++	 * the stock root filesystem, and with no NAND node /proc/mtd is empty
++	 * and there is no route to it — no bitstream, no serial ports, no IR.
++	 */
++	aemif: memory-controller@1e10000 {
++		compatible = "ti,davinci-aemif";
++		reg = <0x01e10000 0x8000>;
++		#address-cells = <2>;
++		#size-cells = <1>;
++
++		/*
++		 * The same fixed 24 MHz stand-in the console UART uses. It is
++		 * not the real AEMIF rate, and here that is SAFE rather than
++		 * merely tolerable: the driver derives wait-states from it, so
++		 * understating the clock understates the speed and every access
++		 * comes out slower than it needs to be. Overstating it would be
++		 * the dangerous direction.
++		 */
++		clocks = <&ref_clk_24m>;
++
++		/* space 0 = the CS0 data window, space 1 = the control registers */
++		ranges = <0 0 0x02000000 0x02000000>,
++			 <1 0 0x01e10000 0x00008000>;
++
++		cs0 {
++			#address-cells = <2>;
++			#size-cells = <1>;
++			clock-ranges;
++			ranges;
++
++			ti,cs-chipselect = <0>;
++
++			nand@0,0 {
++				compatible = "ti,davinci-nand";
++				reg = <0 0x00000000 0x02000000>,
++				      <1 0x00000000 0x00008000>;
++
++				clocks = <&ref_clk_24m>;
++				clock-names = "aemif";
++
++				ti,davinci-chipselect = <0>;
++				/*
++				 * Zero means "use the driver's defaults" —
++				 * ALE on A3, CLE on A4 — which is what every
++				 * DaVinci board in mainline does.
++				 */
++				ti,davinci-mask-ale = <0>;
++				ti,davinci-mask-cle = <0>;
++				ti,davinci-mask-chipsel = <0>;
++				ti,davinci-ecc-mode = "hw";
++				/*
++				 * 1-bit, not 4: the stock flash carries 3
++				 * inverted Hamming bytes per 512 at OOB 40-51
++				 * (checked by recomputing them off a raw dump).
++				 * With 4 every read is uncorrected.
++				 */
++				ti,davinci-ecc-bits = <1>;
++				/*
++				 * No ti,davinci-nand-use-bbt: it writes a
++				 * bad-block table into the last two blocks,
++				 * and a netboot must not write NAND. Without
++				 * it the driver scans the OOB markers instead.
++				 */
++
++				/*
++				 * The vendor's table, names included, read out
++				 * of board-hammer.c. Several partitions overlap
++				 * deliberately — that is how Control4 wrote it.
++				 *
++				 * EVERY ONE IS READ-ONLY. This is somebody's
++				 * only IO Extender and this chip holds both
++				 * root filesystems, both kernels and the
++				 * recovery pair. We want to read ONE file out
++				 * of it; a writable mtd node is one typo away
++				 * from an unbootable box with a console that
++				 * cannot be typed into.
++				 *
++				 * "rootfs1" at 182M is the bank the box boots:
++				 * its own command line says root=/dev/mtdblock8.
++				 */
++				partitions {
++					compatible = "fixed-partitions";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					partition@0 {
++						label = "u-boot-env";
++						reg = <0x00000000 0x00020000>;
++						read-only;
++					};
++					partition@20000 {
++						label = "ubl";
++						reg = <0x00020000 0x00080000>;
++						read-only;
++					};
++					partition@a0000 {
++						label = "u-boot";
++						reg = <0x000a0000 0x00100000>;
++						read-only;
++					};
++					partition@1e0000 {
++						label = "u-boot-env-redundant";
++						reg = <0x001e0000 0x00020000>;
++						read-only;
++					};
++					partition@200000 {
++						label = "kernel0";
++						reg = <0x00200000 0x00300000>;
++						read-only;
++					};
++					partition@500000 {
++						label = "rootfs0";
++						reg = <0x00500000 0x04000000>;
++						read-only;
++					};
++					partition@4500000 {
++						label = "recovery-kernel";
++						reg = <0x04500000 0x00300000>;
++						read-only;
++					};
++					partition@4800000 {
++						label = "recovery-rootfs";
++						reg = <0x04800000 0x04000000>;
++						read-only;
++					};
++					partition@8800000 {
++						label = "jffs2-img";
++						reg = <0x08800000 0x00800000>;
++						read-only;
++					};
++					partition@9000000 {
++						label = "internal";
++						reg = <0x09000000 0x02600000>;
++						read-only;
++					};
++					partition@b600000 {
++						label = "rootfs1";
++						reg = <0x0b600000 0x04000000>;
++						read-only;
++					};
++					partition@f600000 {
++						label = "kernel1";
++						reg = <0x0f600000 0x00300000>;
++						read-only;
++					};
++					partition@f900000 {
++						label = "persistent-logs";
++						reg = <0x0f900000 0x00600000>;
++						read-only;
++					};
++				};
++			};
++		};
++	};
++
++	/*
++	 * THE FPGA, and why its children are children.
++	 *
++	 * The four rear RS-232 ports and the eight IR outputs are registers in a
++	 * Xilinx part on the same async EMIF CS1 window, 0x04000200 + 0x100. It
++	 * comes out of reset BLANK: U-Boot does not program it, the vendor's
++	 * c4fpga.ko does, by bit-banging a bitstream in over the slave-serial
++	 * pins below (MSB first, data on din, cclk low then high, twelve dummy
++	 * clocks at the end, then `done` must read high).
++	 *
++	 * So these registers do not answer until a bitstream is loaded, and an
++	 * ns16550a node probed at boot would autoconfigure against a blank part,
++	 * find no UART, and be gone before the loader ever ran. That is the whole
++	 * reason the ports are CHILDREN of the FPGA rather than siblings: the
++	 * openHC FPGA driver populates them only once `done` reads high, which is
++	 * the same ordering the vendor gets out of module dependencies.
++	 *
++	 * A board with no bitstream on it therefore has relays, contacts, LEDs
++	 * and buttons and nothing else — which is the truth, and is what the
++	 * kernel should report rather than four ttyS nodes that swallow bytes.
++	 */
++	fpga: fpga@4000200 {
++		compatible = "control4,iox-fpga";
++		reg = <0x04000200 0x100>;
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		/* The FPGA's own attention line, once it is running. */
++		interrupt-parent = <&gpio>;
++		interrupts = <2 IRQ_TYPE_EDGE_RISING>;
++
++		/* Xilinx slave-serial programming pins, from board-hammer.c. */
++		m2-gpios    = <&gpio 55 GPIO_ACTIVE_HIGH>;
++		m0-gpios    = <&gpio 57 GPIO_ACTIVE_HIGH>;
++		din-gpios   = <&gpio 58 GPIO_ACTIVE_HIGH>;
++		cclk-gpios  = <&gpio 96 GPIO_ACTIVE_HIGH>;
++		done-gpios  = <&gpio 97 GPIO_ACTIVE_HIGH>;
++		/*
++		 * ACTIVE_HIGH, verified on hardware: driving GIO98 LOW RELEASES the
++		 * FPGA (INIT_B goes high, ready) and driving it HIGH holds it in reset.
++		 * That is inverted from a textbook PROG_B, so the generic active-low
++		 * assumption left the loader clocking data into a part stuck in reset.
++		 * With ACTIVE_HIGH the loader's set(0)=release / set(1)=reset / set(0)
++		 * pulse ends released, and a 128-byte header then passes the FPGA's
++		 * IDCODE check (INIT_B stays high) — proof DIN/CCLK deliver good data.
++		 */
++		prog-gpios  = <&gpio 98 GPIO_ACTIVE_HIGH>;
++		/*
++		 * initb is GIO7 — the SAME line the UARTs interrupt on. It is a
++		 * programming status pin while the bitstream goes in and the
++		 * serial interrupt afterwards, so the loader has to let go of it
++		 * before the UARTs are populated.
++		 */
++		initb-gpios = <&gpio 7 GPIO_ACTIVE_HIGH>;
++
++		/*
++		 * Four 16550As, reg-shift 1: 8-bit regs in the low byte of each
++		 * 16-bit EMIF word (IIR=0xc1, LSR=0x60 at reg<<1; scratch holds).
++		 *
++		 * clock-frequency 50 MHz: the FPGA clocks these UARTs at 50 MHz —
++		 * uartclk 0x02FAF080 in the vendor's c4serial.ko, which hands it to
++		 * serial8250_register_port. base_baud = 50e6/16 = 3125000, so a
++		 * requested 115200 maps to divisor 27 -> 115740 baud (0.4% off).
++		 * (Earlier 27 MHz was a guess; this is the vendor's real value.)
++		 */
++		serial1: serial@4000240 {
++			compatible = "ns16550a";
++			reg = <0x04000240 0x10>;
++			reg-shift = <1>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <50000000>;
++		};
++
++		serial2: serial@4000250 {
++			compatible = "ns16550a";
++			reg = <0x04000250 0x10>;
++			reg-shift = <1>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <50000000>;
++		};
++
++		serial3: serial@4000260 {
++			compatible = "ns16550a";
++			reg = <0x04000260 0x10>;
++			reg-shift = <1>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <50000000>;
++		};
++
++		serial4: serial@4000270 {
++			compatible = "ns16550a";
++			reg = <0x04000270 0x10>;
++			reg-shift = <1>;
++			reg-io-width = <1>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_RISING>;
++			clock-frequency = <50000000>;
++		};
++
++		/*
++		 * Eight IR emitters across TWO 16-byte blocks at 0x220 and 0x230.
++		 * c4irout.c was never in Control4's GPL drop, but the register
++		 * layout was recovered by disassembling the vendor c4irout.ko off
++		 * a live unit (see the openHC IR-register-map notes). Each block
++		 * is eight halfword registers; per emitter c4irout_config assigns
++		 * regA/B, a CONTROL word (bit15 = go, bit14 = mode, bit13 always
++		 * set, bits5-12 a select field), a carrier field ((v & 0x7f) << 9),
++		 * data and a count-1 register. c4irout_go fires by setting bit 15
++		 * of CONTROL; completion raises the shared IRQ on GIO7. The exact
++		 * carrier calibration still wants a live confirm once our own FPGA
++		 * driver can drive the block.
++		 */
++		irout: irout@4000220 {
++			compatible = "control4,iox-irout";
++			reg = <0x04000220 0x10>, <0x04000230 0x10>;
++		};
++	};
 +};
 +
 +/*
@@ -105,29 +477,33 @@ index 0000000..a959552
 + * These pins share balls with the VPFE/VPBE video ports and do nothing until
 + * the pin-mux is flipped; see S01pinmux, which is itself a stand-in for a real
 + * pinctrl node.
++ *
++ * The FPGA's own lines are named too, so that a loader running from userspace
++ * during bring-up can `gpiofind fpga_prog` rather than carry its own copy of
++ * the numbers. Nothing claims them at boot.
 + */
 +&gpio {
 +	gpio-line-names =
-+		"", "dm9000_irq", "", "", "", "", "", "",	/* 0-7 */
-+		"", "", "", "", "", "", "", "",	/* 8-15 */
++		"", "dm9000_irq", "fpga_irq", "", "", "", "", "fpga_initb",	/* 0-7 */
++		"recovery_btn", "id_btn", "", "", "", "", "", "",	/* 8-15 */
 +		"", "", "", "", "", "", "", "",	/* 16-23 */
 +		"", "", "", "", "", "", "", "",	/* 24-31 */
 +		"", "", "", "", "", "", "", "",	/* 32-39 */
 +		"", "", "", "", "", "", "", "",	/* 40-47 */
-+		"", "", "", "", "", "", "", "",	/* 48-55 */
-+		"", "", "", "", "", "", "", "",	/* 56-63 */
++		"", "", "", "", "", "", "", "fpga_m2",	/* 48-55 */
++		"", "fpga_m0", "fpga_din", "", "", "", "", "",	/* 56-63 */
 +		"", "", "", "", "", "", "contact2", "contact1",	/* 64-71 */
 +		"", "", "", "led_data", "led_link", "", "", "",	/* 72-79 */
 +		"", "", "contact3", "contact4", "contact5", "contact6", "contact7", "contact8",	/* 80-87 */
 +		"relay1", "relay2", "relay3", "relay4", "relay5", "relay6", "relay7", "relay8",	/* 88-95 */
-+		"", "", "", "", "", "dm9000_reset", "", "";	/* 96-103 */
++		"fpga_cclk", "fpga_done", "fpga_prog", "", "", "dm9000_reset", "", "";	/* 96-103 */
 +};
 diff --git a/arch/arm/boot/dts/ti/davinci/dm355.dtsi b/arch/arm/boot/dts/ti/davinci/dm355.dtsi
 new file mode 100644
 index 0000000..319a74d
 --- /dev/null
 +++ b/arch/arm/boot/dts/ti/davinci/dm355.dtsi
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,104 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Device tree for the TI DaVinci DM355 SoC.
@@ -214,6 +590,21 @@ index 0000000..319a74d
 +			ti,davinci-gpio-unbanked = <0>;
 +			clocks = <&ref_clk_24m>;
 +			clock-names = "gpio";
++		};
++
++		/*
++		 * DM355 watchdog. The kernel fragment already sets
++		 * CONFIG_DAVINCI_WATCHDOG=y, but with no node the driver never
++		 * probes and /dev/watchdog does not exist — which is why the
++		 * pin-mux sweep had no safety net the night it hung the board.
++		 * With this, a userspace feeder turns a wedged kernel into a
++		 * self-reset instead of a dark box that needs someone to pull
++		 * the power. Same 24 MHz stand-in clock as everything else here.
++		 */
++		wdt: watchdog@1c21c00 {
++			compatible = "ti,davinci-wdt";
++			reg = <0x01c21c00 0x400>;
++			clocks = <&ref_clk_24m>;
 +		};
 +	};
 +};

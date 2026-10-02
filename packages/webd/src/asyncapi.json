@@ -158,6 +158,46 @@
       "summary": "Change a port's line rate",
       "description": ""
     },
+    "serialDtr": {
+      "address": "openhc/{box}/state/serial/{n}/dtr",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "DTR line state (retained)",
+      "description": "Only on ports whose connector carries the line (`modem: true` in the capability document): the DB9s on the HC-800 and IO Extender. Held ON from boot, as the stock `dtserver` does, because accessories such as a GC-IRL learner are powered from it."
+    },
+    "serialSetDtr": {
+      "address": "openhc/{box}/cmd/serial/{n}/dtr",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Raise or drop DTR",
+      "description": "`ON` or `OFF`. Refused on a port without the line. Dropping it power-cycles a line-powered accessory; the choice survives a baud change."
+    },
+    "serialRts": {
+      "address": "openhc/{box}/state/serial/{n}/rts",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "RTS line state (retained)",
+      "description": "Only on ports whose connector carries the line (`modem: true` in the capability document): the DB9s on the HC-800 and IO Extender. Held ON from boot, as the stock `dtserver` does, because accessories such as a GC-IRL learner are powered from it."
+    },
+    "serialSetRts": {
+      "address": "openhc/{box}/cmd/serial/{n}/rts",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Raise or drop RTS",
+      "description": "`ON` or `OFF`. Refused on a port without the line. Dropping it power-cycles a line-powered accessory; the choice survives a baud change."
+    },
     "mcuReset": {
       "address": "openhc/{box}/cmd/mcu/reset",
       "messages": {
@@ -271,6 +311,34 @@
       },
       "summary": "Change a port's line rate"
     },
+    "serialDtr": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/serialDtr"
+      },
+      "summary": "DTR line state (retained)"
+    },
+    "serialSetDtr": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/serialSetDtr"
+      },
+      "summary": "Raise or drop DTR"
+    },
+    "serialRts": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/serialRts"
+      },
+      "summary": "RTS line state (retained)"
+    },
+    "serialSetRts": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/serialSetRts"
+      },
+      "summary": "Raise or drop RTS"
+    },
     "mcuReset": {
       "action": "receive",
       "channel": {
@@ -351,7 +419,7 @@
         "payload": {
           "type": "string",
           "examples": [
-            "0000 006D 0022 0002 0157 00AC 0016 0016"
+            "0000 006D 0022 0002 0157 00AC 0016 0016 0016 0016 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0016 0016 0016 0016 0016 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 05BF 0157 0056 0016 0E45"
           ]
         }
       },

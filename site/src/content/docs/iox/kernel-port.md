@@ -103,8 +103,8 @@ where `/proc/davinci_clocks` reports `UART0 24000000`.
 | 0003 | restore DM355 SoC (mach-davinci glue, Kconfig, DT_MACHINE) | **compile + link verified** |
 | 0004 | `dm355.dtsi` + `dm355-hammer.dts` (first boot: aintc, timer, console, 128M) | **dtc + link verified, BOOTS** |
 | 0005 | dtsi peripherals: dm9000, NAND, i2c, gpio | done — [SSH and GPIO work](/iox/) |
-| 0006 | FPGA slave-serial loader (userspace libgpiod tool) | outstanding |
-| 0007 | IR-out driver (reverse `c4irout.ko`) | outstanding |
+| — | FPGA slave-serial loader, `ohc-iox-fpga.c` (in-kernel, loaded from sysfs by `S12fpga`) | **done** — [the FPGA startup problem](/iox/fpga-startup-clock/) |
+| — | IR-out driver, `ohc-iox-irout.c` (rc-core/lirc, register map from `c4irout.ko`) | **done** — [IR register map](/iox/ir-register-map/) |
 
 **Milestone (0001–0004):** all four apply clean, a `multi_v5` build with
 `ARCH_DAVINCI_DM355` links a 7.2 MB zImage with **zero undefined references** —
@@ -214,9 +214,9 @@ curl -s "$L/v7.1/arch/arm/mach-davinci/da850.c"
 
 ## Open technical questions
 
-- **The FPGA UART input clock**, needed for the 8250 `uartclk`. From
-  `c4serial.ko`, or measure it.
-- **IR-out register semantics**, from `c4irout.ko`.
+- ~~**The FPGA UART input clock**~~ — 50 MHz, from `c4serial.ko`'s `uartclk`.
+- ~~**IR-out register semantics**~~ — recovered from `c4irout.ko`'s debug strings
+  and verified on a learner; see the [IR register map](/iox/ir-register-map/).
 - **EDMA**: DM355 EDMA against the `dma/ti/edma` DT binding. Needed for NAND DMA,
   not for boot — NAND works in PIO.
 
@@ -224,5 +224,8 @@ curl -s "$L/v7.1/arch/arm/mach-davinci/da850.c"
 
 The original scoping estimate was **4–6 weeks to Ethernet, all digital IO and four
 serial ports, plus 1–3 weeks for IR** for one embedded-Linux engineer with a
-serial console. Ethernet, digital IO and the kernel came in around that; serial
-and IR are still gated on the FPGA loader rather than on the kernel.
+serial console. Ethernet, digital IO and the kernel came in around that. Serial
+and IR took longer, and not because of the kernel: the FPGA would not configure
+until two NAND bugs were found (wrong ECC mode, so the bitstream read back with
+zeroed holes), and IR stayed dark until the real register map showed an
+output-enable register nobody had been writing.

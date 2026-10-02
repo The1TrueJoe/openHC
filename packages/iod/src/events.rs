@@ -109,66 +109,18 @@ impl State {
     }
 }
 
-/// A monotonic `u64` counter, on hardware that may not have 64-bit atomics.
-///
-/// The IOX v1's DM355 is an ARM926EJ-S — ARMv5, which has no 64-bit atomic
-/// instruction and therefore no `std::sync::atomic::AtomicU64` at all. Not a
-/// slow one: the type is compiled out, and the import fails outright with
-/// `unresolved import`. Every other board in the tree has it, which is exactly
-/// why this went unnoticed until the whole matrix built.
-///
-/// The sequence number is part of the wire format (`Envelope.seq`) and clients
-/// use it to prove they missed nothing, so narrowing it to 32 bits to dodge
-/// this would be trading a real guarantee for a compile fix.
-mod seq {
-    #[cfg(target_has_atomic = "64")]
-    mod imp {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        #[derive(Default)]
-        pub struct Seq(AtomicU64);
-        impl Seq {
-            /// Pre-increment: returns the number just assigned.
-            pub fn next(&self) -> u64 {
-                self.0.fetch_add(1, Ordering::Relaxed) + 1
-            }
-            pub fn get(&self) -> u64 {
-                self.0.load(Ordering::Relaxed)
-            }
-        }
-    }
-
-    // A mutex rather than two 32-bit halves: this is bumped once per published
-    // message, so an uncontended lock costs nothing measurable next to the
-    // broadcast send it precedes, and a split counter would have a torn-read
-    // window precisely where the format promises monotonicity.
-    #[cfg(not(target_has_atomic = "64"))]
-    mod imp {
-        use std::sync::Mutex;
-        #[derive(Default)]
-        pub struct Seq(Mutex<u64>);
-        impl Seq {
-            pub fn next(&self) -> u64 {
-                // A poisoned lock here means another thread panicked holding a
-                // plain integer; the integer is still valid, so carry on rather
-                // than take the whole bus down with it.
-                let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
-                *g += 1;
-                *g
-            }
-            pub fn get(&self) -> u64 {
-                *self.0.lock().unwrap_or_else(|e| e.into_inner())
-            }
-        }
-    }
-
-    pub use imp::Seq;
-}
-use seq::Seq;
-
 #[derive(Clone)]
 pub struct Bus {
     tx: broadcast::Sender<Envelope>,
-    seq: Arc<Seq>,
+    /// A plain mutex, NOT an atomic, because the IO Extender's ARM926EJ-S is
+    /// ARMv5TE and has no 64-bit atomics — `std::sync::atomic::AtomicU64` does
+    /// not exist on that target, so iod simply did not compile for it.
+    /// Narrowing to `AtomicUsize` was the other option and is worse: usize is
+    /// 32 bits there, so the counter would silently wrap, and a wrap in a
+    /// gap-detection sequence looks exactly like the gap it exists to detect.
+    /// The lock costs nothing — iod runs on a current-thread runtime, so it is
+    /// never contended.
+    seq: Arc<Mutex<u64>>,
     pub state: Arc<State>,
 }
 
@@ -180,14 +132,18 @@ impl Bus {
         // 512 is generous enough to absorb a burst of serial traffic without
         // lagging a slow browser off the bus.
         let (tx, _) = broadcast::channel(512);
-        Bus { tx, seq: Arc::new(Seq::default()), state: Arc::new(State::default()) }
+        Bus { tx, seq: Arc::new(Mutex::new(0)), state: Arc::new(State::default()) }
     }
 
     fn send(&self, msg: Msg) {
         // Pre-increment, so the counter always holds the LAST seq assigned and
         // the first real message is 1. `snapshot` depends on that: it must be
         // able to name a position without consuming one.
-        let seq = self.seq.next();
+        let seq = {
+            let Ok(mut n) = self.seq.lock() else { return };
+            *n += 1;
+            *n
+        };
         // Err just means nobody is listening.
         let _ = self.tx.send(Envelope { seq, ts: now(), msg });
     }
@@ -223,7 +179,7 @@ impl Bus {
     /// everything after it; 0 means nothing has been published yet.
     pub fn snapshot(&self) -> Envelope {
         Envelope {
-            seq: self.seq.get(),
+            seq: self.seq.lock().map(|n| *n).unwrap_or(0),
             ts: now(),
             msg: Msg::Snapshot { state: self.state.doc() },
         }

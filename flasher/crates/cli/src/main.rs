@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         "boot" => boot(rest),
         "uninstall" => uninstall(rest),
         "wrap" => wrap(rest),
+        "netboot" => netboot(rest),
         "help" | "-h" | "--help" => { help(); true }
         other => { eprintln!("unknown command '{other}'\n"); help(); false }
     };
@@ -59,7 +60,13 @@ fn help() {
            uninstall [HOST] [--yes]  HC-800: remove openHC and restore the stock\n\
                                     menu.lst from the backup the install kept\n\
            wrap <bzImage> <out> [--header FILE]\n\
-                                    wrap a bzImage in a CEFDK container\n\n\
+                                    wrap a bzImage in a CEFDK container\n\
+           netboot --mac <MAC> --image <FILE> [--board NAME]\n\
+                   [--client-ip A] [--server-ip A] [--bootfile NAME] [--minutes N]\n\
+                                    answer ONE box's DHCP and TFTP it a kernel, for a\n\
+                                    unit whose console is unreachable. Needs root.\n\
+                                    --board supplies the addresses a bootloader has\n\
+                                    hardcoded (ioxv1: serverip 192.168.0.10).\n\n\
          The GUI (`ohc-flasher`) is the primary front end for non-CLI users.\n"
     );
 }
@@ -459,5 +466,201 @@ fn rootfs(rest: &[String]) -> bool {
     match network::stage2_write_rootfs(&ssh, &rel, &p) {
         Ok(()) => { println!("\n  done — the box is rebooting into openHC on p1."); true }
         Err(e) => { eprintln!("  stage 2 failed: {e:#}"); false }
+    }
+}
+
+/// Netboot a box whose console is unreachable.
+///
+/// The case this is for: a Control4 U-Boot with `run tst` armed DHCPs, then
+/// TFTPs from a `serverip` that no longer exists, and drops to a prompt nobody
+/// can see. It answers no TCP and ignores ICMP, so it looks bricked — but it
+/// still broadcasts a DISCOVER on every power cycle, and `dhcp` takes serverip
+/// from the OFFER rather than from its saved environment.
+///
+/// --mac is required and there is no serve-everyone mode on purpose: this runs
+/// on a live home network, and every reply is gated on that one address.
+fn netboot(rest: &[String]) -> bool {
+    let arg = |k: &str| rest.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
+
+    let Some(mac_s) = arg("--mac") else {
+        eprintln!("usage: ohc-flash netboot --mac <MAC> --image <FILE> --client-ip <ADDR>");
+        eprintln!("  the MAC is required: this answers exactly one box and ignores every other.");
+        return false;
+    };
+    let Some(mac) = tp::netboot::parse_mac(&mac_s) else {
+        eprintln!("  '{mac_s}' is not a MAC address");
+        return false;
+    };
+    let refuse = rest.iter().any(|a| a == "--refuse");
+
+    // A board's bootloader may have its netboot addresses compiled in. Those
+    // are board facts and live in core; the flags below only override them.
+    let profile = arg("--board")
+        .as_deref()
+        .and_then(board::by_name)
+        .and_then(|b| b.netboot);
+    if let Some(p) = profile {
+        println!("  board profile: serverip {} (hardcoded in this board's U-Boot), \
+                  offering {}", p.server_ip, p.client_ip);
+    }
+    let image = match arg("--image").map(PathBuf::from) {
+        Some(p) => p,
+        None if refuse => PathBuf::new(),
+        None => {
+            eprintln!("  --image <FILE> is required (the kernel to serve)");
+            return false;
+        }
+    };
+    // Checked HERE, not by serve(), so a typo does not first print
+    // "POWER-CYCLE THE BOX NOW" and then admit it has nothing to serve.
+    if !refuse && !image.is_file() {
+        eprintln!("  no image at {}", image.display());
+        return false;
+    }
+
+    let ipv4 = |v: &str, what: &str| -> Option<std::net::Ipv4Addr> {
+        match v.parse() {
+            Ok(a) => Some(a),
+            Err(_) => { eprintln!("  '{v}' is not an IPv4 address ({what})"); None }
+        }
+    };
+
+    // Explicit flag wins; otherwise the board profile; otherwise ask.
+    let client_raw = arg("--client-ip")
+        .or_else(|| profile.map(|p| p.client_ip.to_string()));
+    let Some(client_raw) = client_raw else {
+        eprintln!("  --client-ip <ADDR> is required (or pass --board so the profile supplies it)");
+        return false;
+    };
+    let Some(client_ip) = ipv4(&client_raw, "--client-ip") else { return false };
+
+    let server_ip = match arg("--server-ip").or_else(|| profile.map(|p| p.server_ip.to_string())) {
+        Some(v) => match ipv4(&v, "--server-ip") { Some(a) => a, None => return false },
+        // Ask the routing table which of our addresses faces that box, so the
+        // common case needs no flag and a multi-homed host still gets it right.
+        None => match tp::netboot::local_ip_towards(client_ip) {
+            Some(a) => a,
+            None => {
+                eprintln!("  cannot work out which local address faces {client_ip}; pass --server-ip");
+                return false;
+            }
+        },
+    };
+
+    // THE CHECK THAT SAVES AN EVENING. A bootloader with a hardcoded serverip
+    // ignores whatever the DHCP offer says and TFTPs to that address, so if
+    // this host does not hold it the request goes nowhere — and the only
+    // symptom is a box retrying forever with nothing in our log at all.
+    if tp::netboot::interface_holding(server_ip).is_none() {
+        eprintln!("  this machine does not hold {server_ip}, and this board's bootloader");
+        eprintln!("  will TFTP to exactly that address no matter what we offer it.");
+        eprintln!();
+        eprintln!("  add it first:");
+        #[cfg(target_os = "macos")]
+        eprintln!("    sudo ifconfig en0 alias {server_ip} 255.255.255.0");
+        #[cfg(not(target_os = "macos"))]
+        eprintln!("    sudo ip addr add {server_ip}/24 dev eth0");
+        return false;
+    }
+
+    let netmask = match arg("--netmask") {
+        Some(v) => match ipv4(&v, "--netmask") { Some(a) => a, None => return false },
+        None => std::net::Ipv4Addr::new(255, 255, 255, 0),
+    };
+    let bootfile = arg("--bootfile")
+        .or_else(|| profile.map(|p| p.bootfile.to_string()))
+        .unwrap_or_else(|| {
+            tp::netboot::default_bootfile(arg("--board").as_deref().unwrap_or("ioxv1"))
+        });
+    let minutes: u64 = arg("--minutes").and_then(|v| v.parse().ok()).unwrap_or(10);
+
+    println!("  netboot: answering {} and nothing else", tp::netboot::format_mac(&mac));
+    println!("    offering   {client_ip}  netmask {netmask}");
+    println!("    serverip   {server_ip}  bootfile {bootfile}");
+    if refuse {
+        println!("    serving    NOTHING — refusing the transfer on purpose, so a");
+        println!("               bootloader that retries forever gives up and boots");
+        println!("               whatever it would have booted without us");
+    } else {
+        println!("    serving    {}", image.display());
+    }
+    println!("\n  POWER-CYCLE THE BOX NOW — listening for {minutes} minutes.\n");
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ignored = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let acked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // A watcher, so the run ends by saying whether the box actually came up
+    // rather than leaving the operator to go and check. It only starts probing
+    // once we have ACKed, because before that there is nothing to wait for.
+    let (w_stop, w_acked) = (stop.clone(), acked.clone());
+    let watcher = std::thread::spawn(move || {
+        while !w_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            if w_acked.load(std::sync::atomic::Ordering::Relaxed)
+                && tp::ssh_port_open(&client_ip.to_string())
+            {
+                println!("  --> {client_ip} is answering SSH. It booted.");
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        }
+        false
+    });
+
+    let (ig, ak) = (ignored.clone(), acked.clone());
+    let cfg = tp::netboot::Config { mac, client_ip, server_ip, netmask, image, bootfile, refuse };
+    let served = tp::netboot::serve(
+        cfg,
+        std::time::Duration::from_secs(minutes * 60),
+        stop.clone(),
+        move |e| {
+            use std::sync::atomic::Ordering::Relaxed;
+            use tp::netboot::Event::*;
+            match e {
+                Listening { dhcp, tftp, iface } => match iface {
+                    Some(i) => println!("  listening: dhcp/{dhcp} tftp/{tftp} pinned to {i}"),
+                    // Worth shouting about: unpinned means replies follow the
+                    // routing table, which on a multi-homed host is how they end
+                    // up on the wrong LAN while still reporting success.
+                    None => println!(
+                        "  listening: dhcp/{dhcp} tftp/{tftp} — NOT pinned to an interface; \
+                         replies follow the routing table"
+                    ),
+                },
+                Dhcp { saw, replied: Some(kind) } => {
+                    if matches!(kind, tp::netboot::DhcpMessageType::Ack) {
+                        ak.store(true, Relaxed);
+                    }
+                    println!("  dhcp  {saw:?} -> {kind:?}");
+                }
+                Dhcp { saw, replied: None } => println!("  dhcp  {saw:?} (nothing to say)"),
+                // Counted, not printed: on a live network this is every other
+                // machine's lease renewal, and it would bury the lines that matter.
+                Ignored { .. } => { ig.fetch_add(1, Relaxed); }
+                Failed { what } => eprintln!("  !     {what}"),
+            }
+        },
+    );
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let booted = watcher.join().unwrap_or(false);
+
+    let skipped = ignored.load(std::sync::atomic::Ordering::Relaxed);
+    if skipped > 0 {
+        println!("\n  ignored {skipped} DHCP packets from other machines");
+    }
+    match served {
+        Err(e) => { eprintln!("  {e}"); false }
+        Ok(()) if booted => true,
+        Ok(()) if acked.load(std::sync::atomic::Ordering::Relaxed) => {
+            println!("  the box took the lease. Watch the tftp lines above for the transfer;");
+            println!("  if none appeared, its bootcmd is not netbooting and it needs a console.");
+            true
+        }
+        Ok(()) => {
+            eprintln!("  nothing was offered. Either the box was never power-cycled, or another");
+            eprintln!("  DHCP server answered first, or the MAC is wrong — check it and retry.");
+            false
+        }
     }
 }
