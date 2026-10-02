@@ -15,7 +15,7 @@ pub mod ssh;
 pub mod tftp;
 
 pub use bootp::{build_cookie_reply, parse_mac, BootpResponder};
-pub use discovery::{discover, Found};
+pub use discovery::{discover, discover_all, Found};
 pub use probe::identify;
 pub use sddp::{search as sddp_search, SddpUnit};
 pub use serial::{Serial, SerialError, CEFDK_BAUD};
