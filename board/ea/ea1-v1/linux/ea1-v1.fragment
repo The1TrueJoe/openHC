@@ -21,4 +21,35 @@
 # IO-MCU port) never takes an RX interrupt and the tm4c looks dead. Confirmed on
 # an EA1: with routeirq, `ACPI: \_SB_.LUAR: Enabled at IRQ 38` and ttyS1 registers
 # on irq 38. See board/ea/common/linux/common.fragment for the full story.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
+#
+# --- RAM reclaim (EA1) --------------------------------------------------------
+# Like the EA3, CEFDK withholds ~90% of the DRAM. MEASURED on this EA1
+# (10.0.0.127): MemTotal is only 180384 kB (~176 MB) because the e820 map hands
+# Linux just [0x00100000-0x0c7fffff] System RAM (200 MB) and marks
+# [0x0c800000-0x7fffffff] (1.8 GB) "device reserved" — the Intel CE media
+# carve-out openHC never loads. The reserved range is REAL, IDLE DRAM, not bare
+# address space: read read-only over /dev/mem it still holds CEFDK's boot-time
+# address-walk pattern (0x10000000 reads 0x10000000, 0x20000000 reads 0x20000000,
+# ... 0x70000000 reads 0x70000000), going non-pattern only up near 0x7f000000
+# where CEFDK's own structures and the framebuffer sit. The e820 split, the ACPI
+# window (0x11000-0x1ffff = 60K) and the low-memory layout are byte-identical to
+# the EA3-v2, whose reclaim is PROVEN on hardware, so the same line applies here.
+#
+# memmap=exactmap is MANDATORY: the additive form is silently dropped because
+# e820 sanitisation resolves overlaps toward the HIGHER type (CEFDK's "reserved"
+# beats added "RAM"); exactmap replaces the map outright. Every entry is
+# load-bearing — see board/ea/ea3-v2/linux/ea3-v2.fragment for the full
+# derivation of each one. 68K@0 / 60K#0x11000 (the ACPI tables — claiming them as
+# RAM gives AE_NO_ACPI_TABLES and a hang) / 512K@0x20000 reproduce low memory;
+# 255M@1M merges CEFDK's 200 MB region with the gap above it; 1536M@0x10000000 is
+# the reclaim, ending at 0x70000000 — 240 MB clear of the CEFDK structures near
+# 0x7f000000 and the framebuffer, matching the EA3's proven margin. Do NOT widen
+# past 0x70000000 without re-measuring: a memmap past real DRAM is unrecoverable
+# remotely.
+#
+# GRADING: the e820/DRAM facts above are measured on this EA1; the memmap line is
+# the EA3-v2's PROVEN line applied to a verified-identical map. It has NOT yet
+# been booted WITH this line on an EA1 — confirm on hardware (a kexec of the new
+# kernel is recoverable: a bad map fails the kexec and the vendor OS stays) and
+# promote this note to "proven" once MemTotal is read back ~1.7 GB.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
