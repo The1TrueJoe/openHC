@@ -47,8 +47,8 @@ plain GPIO lines the kernel's `gpio-leds` own.
 runtime stand-in; the proper fix is DT pinctrl.
 
 **Confirmed on hardware:** the relays and the data/link LEDs.
-**Not yet confirmed:** the contact bits above. They follow the same field layout
-and the same reasoning, but nothing has read a contact through them yet.
+**Also confirmed:** the contact bits above. All eight read through iod, with an
+open terminal reading high (the inputs are pulled up, so contacts are active-low).
 
 :::tip[contact1 is PINMUX1 bit 17, which is in no table]
 Mainline's `dm355_pins[]` documents bit 16 (`VOUT_HVSYNC`) and bits 18–19
@@ -80,8 +80,10 @@ SoC GPIO, no driver needed.
 
 ## Contacts (8, inputs)
 
-`gpiochip0` lines 70, 71, 82, 83, 84, 85, 86, 87. Lines 86/87 are already GPIO
-after the PINMUX0 fix; 70/71 and 82–85 still need their pinmux.
+`gpiochip0` lines 71, 70, 82, 83, 84, 85, 86, 87 for contacts 1–8 (1 and 2 are
+reversed). `S01pinmux` routes all eight to GPIO. They are pull-up inputs, so an
+open terminal reads 1 and a closed one 0: `OHC_CONTACTS_ACTIVE_LOW=1` makes iod
+report them the right way up.
 
 ## LEDs
 
@@ -139,35 +141,35 @@ working" question on this board is answered by a human in the room.
 | Port | Device | Backing | Status |
 |---|---|---|---|
 | debug console | `ttyS0` | SoC UART0 @ `0x01c20000` | working (RX only unless TX is wired) |
-| RS232 1–4 | `ttyS1-4` | **FPGA UARTs** @ `0x04000240/250/260/270` | **blocked: FPGA not programmed** |
+| RS-232 1–4 | `ttyS1-4` | **FPGA UARTs** @ `0x04000240/250/260/270` | **working**, verified both ways |
 
-The FPGA UARTs are stock 16550As and need only `ns16550a` DT nodes on a shared
-IRQ (GIO7) once the FPGA is loaded — but **their register geometry is not the SoC
-UART's.** Each window is 16 bytes for 16 registers, so `reg-shift = <0>` and
-`reg-io-width = <1>`; `ttyS0` at `0x01c20000` is `reg-shift = <2>`. Getting that
-wrong gives you a port that probes and then talks to the wrong registers.
+The FPGA UARTs are stock 16550As on one shared interrupt (GIO7), appearing once
+the FPGA is loaded. Their geometry is not the SoC UART's: the 8-bit registers sit
+in the low byte of each 16-bit EMIF word, so `reg-shift = <1>` (confirmed by
+reading IIR `0xc1` and LSR `0x60` at `reg << 1` and by the scratch register
+holding writes). The input clock is **50 MHz**, from the vendor `c4serial.ko`'s
+`uartclk`; 115200 is then divisor 27, 0.4% off.
 
-They also do **hardware flow control**, which is not obvious from the part they
-claim to be. Control4 patched `8250.c` with a `UPF_C4_SUPPORT_AFE` flag purely for
-these, their comment explaining it exactly: *"the fpga supports flow control but is
-detected as a 16550A"*. Mainline has no equivalent flag, so `CRTSCTS` on these
-ports needs that patch forward-ported — RTS/CTS is not needed for a console, but
-is for anything driving a projector that asserts it.
+They do hardware flow control too. Control4 patched `8250.c` with a
+`UPF_C4_SUPPORT_AFE` flag purely for these (*"the fpga supports flow control but
+is detected as a 16550A"*). Mainline has no equivalent, so `CRTSCTS` on these
+ports would need that forward-ported. Nothing in openHC needs it yet.
 
-Their input clock is still unknown. The vendor's SoC ports run at 27 MHz but these
-are clocked inside the FPGA and no GPL source states the rate. `setserial -a
-/dev/ttyS1` on a vendor unit reports `baud_base`, which is `uartclk / 16` — that
-is the cheapest way to settle it. The DT currently carries 27 MHz as a **flagged
-placeholder**.
+**DTR and RTS are wired** to the DB9s. iod holds each port open from boot with
+both raised, as the stock `dtserver` does, since accessories like a GC-IRL
+learner are powered from them. MQTT `serial/N/dtr` and `serial/N/rts` drop or
+raise either one.
 
-**CE1 (`0x04000000`+) isn't readable from userspace `devmem`.** It needs a
-kernel driver, or at least AEMIF CS1 timing configured, before the window responds.
+To talk to a port from a PC, use a full **3-wire null-modem** cable (TX↔RX
+crossed, GND to GND). A cable that carries only one direction makes the port
+look half-dead when nothing in openHC is wrong.
 
 ## IR-out (8) — FPGA
 
-FPGA at `0x04000220` and `0x04000230`. Also needs the FPGA programmed, and then a
-small bespoke driver whose register semantics come from the on-device
-`c4irout.ko`.
+Two engines at `0x04000220` and `0x04000230`, either of which can drive any of the
+eight jacks through its output-enable mask. `ohc-iox-irout.c` registers one lirc
+device per jack ("openHC IR out N"). Layout and verification are on the
+[IR register map](/iox/ir-register-map/) page.
 
 ## Buttons
 

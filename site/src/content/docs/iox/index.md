@@ -99,11 +99,14 @@ address of `192.168.0.10`. That's exploitable:
 
 ```sh
 ifconfig <lan-if> alias 192.168.0.10 255.255.255.0
-netboot.py --board ioxv1 --iface <lan-if> serve
+ohc-flash netboot --board ioxv1 --mac <box-mac> --image openhc-ioxv1-kernel.img
 ```
 
-A MAC-filtered DHCP responder races the real LAN server — NAK logic helps it win —
-and offers the board `192.168.0.50/24`. That puts it on the same subnet as the
+A MAC-filtered DHCP responder races the real LAN server and offers the board
+`192.168.0.50/24`. It ACKs every request from that MAC, even one that picked the
+router's offer, because the client keeps whichever ACK lands first. Once the
+router has a lease for the MAC it answers faster than anything on Wi-Fi, so
+delete that lease to keep winning. That puts it on the same subnet as the
 alias, so the board's hardcoded TFTP goes **direct**, with no dead gateway hop, and
 lands on us. The board boots our kernel over the main LAN with **no
 point-to-point adapter and no U-Boot prompt**.
@@ -113,16 +116,30 @@ projects running at once, a USB-Ethernet adapter and a USB-UART cannot both be
 assumed available. The end goal is a **pure network** bring-up — netconsole over
 the on-board Ethernet plus SSH, so debugging visibility never depends on a UART.
 
-(Recovery to stock still needs a real U-Boot prompt, which needs TX wired, or an
-isolating dumb switch.)
+To boot **stock** without a U-Boot prompt, serve the stock kernel instead: dump
+`kernel1` raw with its OOB, apply the 1-bit ECC to get a CRC-clean uImage, and
+`tst` boots it with the stock rootfs (it runs `setbootargs` first). A refusing
+TFTP server does not work: on an error U-Boot prints "Starting again" and loops.
 
 ## Current state
 
 **The openHC kernel boots on real silicon.** Linux 7.1.8 reaches userspace and
 prints `openhc-ioxv1 login:`.
 
-**SSH and GPIO work.** dm9000 brings up `eth0`, dropbear runs, and `gpiochip0`
-exposes 104 lines. All eight relays click and the front data and link LEDs light.
+**Everything on the board works**, from a RAM netboot:
+
+| Function | State |
+|---|---|
+| Ethernet, SSH, iod, web UI | working |
+| 8 relays, 8 contacts | working through iod and MQTT (contacts active-low) |
+| 4× RS-232 (`ttyS1`–`ttyS4`) | verified both ways against a PC, raw and through iod |
+| 8 IR outputs | verified on jack 1 against a GC-IRL learner (NEC at 38 kHz); jacks 2–8 untested |
+| LEDs | data, link and the tri-colour status LED; power is hardwired |
+| Flash install | not yet: it runs from RAM |
+
+iod holds every RS-232 port open from boot with DTR and RTS up, as the stock
+`dtserver` does, because accessories like the GC-IRL are powered from those
+lines. `serial/N/dtr` and `serial/N/rts` drop either one.
 
 Two fixes were required to get there, and both are the kind that present as
 something else entirely:

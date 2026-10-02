@@ -26,7 +26,10 @@ every boot, which means:
 * loading Control4's file restores vendor behaviour exactly.
 
 The only irreplaceable artefact is **a copy of `fpga_fw.bin`**. Take one before
-doing anything else.
+doing anything else. Every stock unit carries three identical copies, one in each
+update bank and one in the recovery rootfs (md5 `096f05cc…`), and `S12fpga`
+already reads it from the recovery copy at boot. Read it with the 1-bit NAND ECC
+in place, or the copy has holes.
 
 ## The pin map is the whole problem
 

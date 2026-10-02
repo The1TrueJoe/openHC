@@ -26,7 +26,7 @@ them was invisible while CI only ever built one board. The row below says
 | **ea1-v1** | Intel CE5310 | **Proven** | Netboots Linux 7.1.8, reaches a shell, Wi-Fi and SSH up. Secure-boot fuse clear. |
 | **ea3-v2** | Intel CE5310 | **Proven** | 7.1.8 via `bootlinux`, e1000 + eMMC + SSH, **persistent self-boot** from eMMC. Fuse blown; takes over via the CEFDK autoscript. |
 | **ca1** | i.MX6SL | **Proven** | Boots our 7.1.8 kernel. openHC on eMMC ext4, Node, Rust dashboard, captive-portal Wi-Fi setup. |
-| **ioxv1** | TI DM355 | **Proven (partial)** | Kernel boots to a login prompt, dm9000 Ethernet + SSH up, all 8 relays click, front LEDs light. Serial ports and IR still blocked on the FPGA. |
+| **ioxv1** | TI DM355 | **Proven** | Netboots 7.1.8 into RAM (no flash install yet). The FPGA loads itself at boot from the unit's own NAND, giving four RS-232 ports (verified both ways against a PC) and eight IR outputs (verified against a GC-IRL learner at 38 kHz). Relays, contacts, the tri-colour status LED, data/link LEDs, iod and the web UI all work. |
 | ea1-v2 | Intel CE5310 | Builds | Never booted; boot differences unconfirmed. `board.env` inherited from the ea1-v1, not read off this variant. |
 | ea1-v2-poe | Intel CE5310 | Builds | Never booted. `board.env` is the EA1's IO with the EA3's networking, per its defconfig — unverified. |
 | ea3-v1 | Intel CE5310 | Builds | Never booted. Its fuse state is unknown and may match the EA1's. `board.env` is the ea3-v2's plus the radio it kept. |
@@ -66,8 +66,8 @@ EA5, but neither board has been in hand.
   fields are still inferred, so the platform driver doesn't register a PCM.
 - **The BCM53125 switch under mainline DSA.** The board glue builds, but DSA has
   never attached on hardware — the second rear jack is still unusable.
-- **The FPGA on the IO Extender**, which gates its four RS-232 ports and eight
-  IR outputs.
+- **A flash install on the IO Extender.** It runs from RAM over TFTP; IR jacks
+  2–8 have not had an emitter on them yet.
 - **The Zigbee NCP on the CA-1**, which answers nothing at any baud.
 
 ## How to read a claim on this site

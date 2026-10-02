@@ -157,12 +157,23 @@ A serial console on `ttyS0` at 115200 sees GRUB itself if it doesn't come back.
 Bring-up is RAM-only: the stock U-Boot's `run tst` DHCPs, TFTPs a kernel and boots
 it without touching flash. There's no persistent install path yet.
 
+The board's `tst` TFTPs `hammer/uImage` from a hardcoded `192.168.0.10`, so the
+serving machine has to hold that address. `ohc-flash netboot` answers DHCP for
+that one MAC and serves the image; on macOS it runs without `sudo`:
+
 ```sh
-make image BOARD=ioxv1
-# then serve it; the board fetches hammer/uImage from ${serverip}:69
+sudo ifconfig en0 alias 192.168.0.10 255.255.255.0   # once per boot of the Mac
+ohc-flash netboot --board ioxv1 --mac 00:0f:ff:xx:xx:xx \
+    --image openhc-ioxv1-kernel.img --minutes 600
+# power-cycle the IO Extender; it comes up at 192.168.0.50
 ```
 
-The armed command is `run tst; run oldbootcmd` with the original saved.
+Nothing proprietary has to be supplied: at boot, `S12fpga` copies the FPGA
+bitstream read-only from the unit's own recovery rootfs on NAND.
+
+If the LAN router already holds a lease for the box's MAC it usually answers
+first, and the board then TFTPs through the gateway and never reaches you.
+Delete or block that lease on the router.
 
 To boot it over the main LAN with no point-to-point adapter and no U-Boot prompt,
 see [the LAN TFTP-answer trick](/iox/#booting-it-with-no-serial-console-at-all).
