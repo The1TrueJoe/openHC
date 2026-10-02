@@ -103,4 +103,6 @@ pub const KNOWN: &[&str] = &[
     // Listed so a release trimmed to just them still opens.
     "openhc-hc800-kernel.img",
     "openhc-initrd.gz",
+    // The IO Extender: one legacy uImage, kernel + appended DTB + initramfs.
+    "openhc-ioxv1-kernel.img",
 ];

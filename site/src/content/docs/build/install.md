@@ -156,12 +156,11 @@ A serial console on `ttyS0` at 115200 sees GRUB itself if it doesn't come back.
 
 ### Install to NAND
 
-`tools/ohc-ioxv1` installs openHC over SSH, with no serial console and no button,
-from either stock Control4 or a running openHC:
+`ohc-flash` installs openHC over SSH, with no serial console and no button,
+from either stock Control4 or a running openHC (method `nand`):
 
 ```sh
-tools/ohc-ioxv1 install <host> openhc-ioxv1-kernel.img   # ~2-3 minutes
-tools/ohc-ioxv1 status  <host>                           # bootcmd and ohc_try
+ohc-flash install <host> --images openhc-ioxv1-<version>.zip   # ~2-3 minutes
 ```
 
 The image goes in a 32 MiB slot at `0x10000000`, the start of the half of the
@@ -179,8 +178,9 @@ counted attempts, then stock Control4, with nobody touching the box. From stock,
 `install` again takes it back.
 
 ```sh
-tools/ohc-ioxv1 arm   <host>   # try openHC again after a fallback (ohc_try=0)
-tools/ohc-ioxv1 stock <host>   # make U-Boot boot stock Control4 again
+ohc-flash boot      <host>   # boot openHC again, e.g. after a fallback
+ohc-flash uninstall <host>   # make U-Boot boot stock Control4 again
+ohc-flash restore   <host>   # factory: U-Boot's default bootcmd, our variables gone, slot erased
 ```
 
 ### Netboot (development)

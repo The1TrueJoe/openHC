@@ -6,60 +6,52 @@ locked.
 
 📖 **[Documentation and the full hardware research →](https://the1truejoe.github.io/openHC/)**
 
-## Supported boards
+## Supported controllers
 
-| Board | SoC | Status |
-|---|---|---|
-| **ea1-v1** | Intel CE5310 | proven — netboots, Wi-Fi + SSH |
-| **ea3-v2** | Intel CE5310 | proven — persistent self-boot from eMMC |
-| **ca1** | i.MX6 SoloLite | proven — openHC on eMMC, web dashboard |
-| **ioxv1** | TI DM355 | proven — netboots; relays, contacts, 4× RS-232, 8 IR outputs, status LEDs |
-| ea1-v2, ea1-v2-poe, ea3-v1 | Intel CE5310 | build; not yet booted |
-| **hc800** | Atom D525 | proven — persistent install, relays, contacts, IR, web UI |
+| Controller | Supported |
+|---|:---:|
+| EA-1 (v1) | ✅ |
+| EA-1 (v2) | ❌ |
+| EA-1 (v2, PoE) | ❌ |
+| EA-3 (v1) | ❌ |
+| EA-3 (v2) | ✅ |
+| CA-1 | ✅ |
+| HC-800 | ✅ |
+| IO Extender (v1) | ✅ |
 
-## Install on a controller
+## The flasher
 
-The easiest path needs no serial cable and no button. Download the
-[latest release](https://github.com/The1TrueJoe/openHC/releases) — the flasher
-for your OS, plus the image bundle for your board — and run:
+Everything goes through the flasher: installing openHC, going back into it, and
+restoring a controller to factory. It works over the network, with no serial
+cable and no lid off, and it identifies the controller before touching it.
+
+**GUI:** download `ohc-flasher` for macOS, Windows or Linux from the
+[latest release](https://github.com/The1TrueJoe/openHC/releases), along with the
+image bundle for your controller (`openhc-<board>-<version>.zip`), and run it.
+
+**Command line:** build `ohc-flash` from this repository:
 
 ```sh
-ohc-flash discover
+cd flasher
+cargo build --release -p ohc-flash-cli
 ```
 
-```sh
-ohc-flash identify <ip>
-```
+Both need `sshpass` to log into a controller (`brew install sshpass`, or your
+distribution's package).
 
 ```sh
+ohc-flash discover                                # find controllers on the network
+ohc-flash identify <ip>                           # what it is, and what is running
+ohc-flash plan <board>                            # what an install would do
 ohc-flash install <ip> --images openhc-<board>-<version>.zip
+ohc-flash boot <ip>                               # go back into an installed openHC
+ohc-flash uninstall <ip>                          # boot stock Control4 again
+ohc-flash restore <ip>                            # back to factory
 ```
 
-It identifies the board first and **refuses to guess** — a wrong guess flashes the
-wrong image at real hardware. `ohc-flash plan <board>` prints what an install
-would do without doing it.
-
-The GUI (`ohc-flasher`) is the same engine with a front end, and is the
-recommended way in if you are not scripting.
-
-> **Before you install anything, read
-> [Recovery](https://the1truejoe.github.io/openHC/shared/recovery/).** Every board
-> has a documented path back to stock Control4, and each one depends on not having
-> written to one specific region.
-
-**The HC-800 and the IO Extender are manual.** The HC-800 install is two files and
-a one-line edit to GRUB's `menu.lst`; the IO Extender installs to NAND over SSH
-with `tools/ohc-ioxv1 install`, from stock or openHC. Both are covered in
-[Installing on a controller](https://the1truejoe.github.io/openHC/build/install/).
-
-## Going back to stock
-
-| Board | How |
-|---|---|
-| EA family | press the recessed factory-restore button — it reimages kernel, rootfs and bootloader |
-| CA-1 | delete `boot.scr` from the eMMC's vfat partition |
-| HC-800 | set `default` back to `1` in `menu.lst` |
-| IO Extender | `tools/ohc-ioxv1 stock <host>`, or automatic after three failed openHC boots |
+`ohc-flash help` lists every option. Before installing, read
+[Recovery](https://the1truejoe.github.io/openHC/shared/recovery/) for how your
+controller gets back to stock.
 
 ## Build it yourself
 
@@ -69,7 +61,7 @@ Needs Docker and Python 3; nothing else is installed on the host.
 make image BOARD=ea3-v2
 ```
 
-`make help` lists the boards and prints the per-board notes. Full detail:
+`make help` lists the boards. Full detail:
 [Building an image](https://the1truejoe.github.io/openHC/build/).
 
 ## Layout
@@ -77,8 +69,8 @@ make image BOARD=ea3-v2
 ```
 board/      Buildroot BR2_EXTERNAL root — one directory per board, plus the
             shared common/ and ea-common/ trees they compose from
-packages/   Buildroot packages and the Rust workspace (ohc-webd, ohc-portal)
-flasher/    the installer — Rust workspace, GUI + CLI over one engine
+packages/   Buildroot packages and the Rust workspace (iod, webd, sysmond)
+flasher/    the flasher — Rust workspace, GUI + CLI over one engine
 build/      Dockerised Buildroot
 site/       this project's documentation site (Astro + Starlight)
 ```

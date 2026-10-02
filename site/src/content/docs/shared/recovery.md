@@ -20,6 +20,24 @@ region, per board.
 | **HC-800** | two vendor GRUB entries and a factory-restore partition, untouched by our install | **sda2** and the vendor's two `menu.lst` entries |
 | **IOX v1** | **dual flash banks plus a recovery image**, untouched; openHC lives in the half of the NAND stock never partitioned, and three failed openHC boots fall back to stock automatically | the recovery bank |
 
+## `ohc-flash restore`
+
+One command to put a controller back the way it shipped:
+
+```sh
+ohc-flash restore <host>
+```
+
+- **IO Extender:** sets U-Boot's compiled-in `bootcmd`, deletes every variable
+  openHC added, and erases the openHC slot. Verified on a unit: it comes back with
+  the factory environment and boots stock.
+- **HC-800:** restores the stock `menu.lst` from the backup the install kept and
+  deletes openHC's two files from the spare kernel partition.
+- **EA family and CA-1:** the install replaced stock's root filesystem, which only
+  Control4's own recovery can re-image, and that is started by the recessed
+  factory-restore button. `restore` says so and changes nothing; the per-board
+  sections below cover the button.
+
 ## EA family
 
 ### What the factory-restore button actually does
@@ -154,7 +172,7 @@ The way back needs no serial console:
   watchdog; openHC feeds it) or a box that never gets a network leaves the count
   climbing, and at 3 U-Boot runs the stock `oldbootcmd`. Tested on the unit with a
   kernel that panics on every boot: three attempts, then stock Control4.
-- **On purpose.** `tools/ohc-ioxv1 stock <host>` sets `bootcmd` back to stock.
+- **On purpose.** `ohc-flash uninstall <host>` sets `bootcmd` back to stock.
 - **Before any of this,** take a raw backup of every partition (`nanddump -n -o`,
   one file each). The NAND ECC is 1-bit, stored inverted; a backup read with the
   wrong ECC setting has holes in it.

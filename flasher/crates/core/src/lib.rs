@@ -9,6 +9,7 @@ pub mod board;
 pub mod cefdk;
 pub mod hc800;
 pub mod image;
+pub mod iox;
 pub mod method;
 
 pub use board::{Board, Family, Identity, Running};

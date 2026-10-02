@@ -135,7 +135,7 @@ prints `openhc-ioxv1 login:`.
 | 4× RS-232 (`ttyS1`–`ttyS4`) | verified both ways against a PC, raw and through iod |
 | 8 IR outputs | all eight verified against a GC-IRL learner (NEC at 38 kHz), no crosstalk |
 | LEDs | data, link and the tri-colour status LED; power is hardwired |
-| Flash install | `tools/ohc-ioxv1 install`, from stock or openHC, over SSH; falls back to stock after 3 failed boots |
+| Flash install | `ohc-flash install`, from stock or openHC, over SSH; falls back to stock after 3 failed boots |
 
 iod holds every RS-232 port open from boot with DTR and RTS up, as the stock
 `dtserver` does, because accessories like the GC-IRL are powered from those
