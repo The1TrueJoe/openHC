@@ -28,6 +28,10 @@ pub enum Method {
     /// survives a power cut. This is the only method here that writes the
     /// bootloader partition.
     Grub,
+    /// IO Extender: write openHC to the half of the NAND stock never
+    /// partitioned and make U-Boot boot it, falling back to stock after three
+    /// failed boots. Works from stock or openHC, over SSH.
+    Nand,
 }
 
 impl Method {
@@ -38,6 +42,7 @@ impl Method {
             Method::Serial => "serial",
             Method::Kexec => "kexec",
             Method::Grub => "grub",
+            Method::Nand => "nand",
         }
     }
 
@@ -48,6 +53,7 @@ impl Method {
             Method::Serial => "via the CEFDK shell — needs a serial console and the ID button",
             Method::Kexec => "run it from RAM — writes nothing to disk, reverts on a power cycle",
             Method::Grub => "install to the kernel partition — survives a power cut (HC-800)",
+            Method::Nand => "install to the unused half of the NAND — falls back to stock on its own (IOX)",
         }
     }
 
@@ -56,6 +62,7 @@ impl Method {
             Method::Network | Method::Serial => &[Family::Ea],
             Method::Uboot => &[Family::Ca],
             Method::Kexec | Method::Grub => &[Family::Hc],
+            Method::Nand => &[Family::Iox],
         }
     }
 
@@ -87,7 +94,7 @@ impl Method {
                 board.name, board.family
             ));
         }
-        if matches!(self, Method::Network | Method::Uboot | Method::Kexec | Method::Grub)
+        if matches!(self, Method::Network | Method::Uboot | Method::Kexec | Method::Grub | Method::Nand)
             && !matches!(id.running, Stock | Openhc)
         {
             return Err("needs a running system to log into".into());
@@ -104,7 +111,7 @@ impl Method {
 /// on the board where both apply, the one that writes nothing is the one a user
 /// should land on without having to choose it.
 pub const METHODS: &[Method] =
-    &[Method::Network, Method::Uboot, Method::Kexec, Method::Grub, Method::Serial];
+    &[Method::Network, Method::Uboot, Method::Kexec, Method::Grub, Method::Nand, Method::Serial];
 
 /// Choose a method for an identity, optionally forced. Returns the chosen
 /// method and the reasons the others were rejected (for display).
@@ -219,6 +226,30 @@ pub fn plan(board: &Board, method: Method) -> Plan {
                 needs_button: false,
                 reversible: format!(
                     "openHC re-points the default at the stock entry on every boot, so a reset of any kind already returns to Control4. To remove it entirely, delete the entry from menu.lst. {RESTORE_PART} is never written, and holding the ID button at power-on boots entry {ENTRY_FACTORY} regardless of what menu.lst says"
+                ),
+            }
+        }
+        Method::Nand => {
+            use crate::iox::*;
+            Plan {
+                method,
+                steps: vec![
+                    "upload the image (padded to whole erase blocks) to a RAM staging area".into(),
+                    format!("erase {SLOT_BLOCKS} blocks at NAND {SLOT_OFF:#x} and write it, refusing a slot with a bad block"),
+                    "read the slot back through ECC and compare its hash with the staged image".into(),
+                    format!(
+                        "only then set U-Boot's environment: ohcboot, ohc_try=0, and bootcmd=`{OPENHC_BOOTCMD}` last"
+                    ),
+                    "NOT a reboot: the box keeps running until you restart it".into(),
+                ],
+                writes: vec![
+                    format!("NAND {SLOT_OFF:#x}..+{SLOT_LEN:#x}, in the half stock never partitioned"),
+                    "U-Boot environment (both redundant copies)".into(),
+                ],
+                needs_serial: false,
+                needs_button: false,
+                reversible: format!(
+                    "no stock partition, bootloader or recovery image is touched. {MAX_TRIES} openHC boots in a row that never bring the uplink up (panic, hang, no network) make U-Boot boot stock on its own; `ohc-flash uninstall` sets bootcmd back to `{STOCK_BOOTCMD}`"
                 ),
             }
         }

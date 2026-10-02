@@ -126,7 +126,7 @@ TFTP server does not work: on an error U-Boot prints "Starting again" and loops.
 **The openHC kernel boots on real silicon.** Linux 7.1.8 reaches userspace and
 prints `openhc-ioxv1 login:`.
 
-**Everything on the board works**, from a RAM netboot:
+**Everything on the board works**, installed on the NAND:
 
 | Function | State |
 |---|---|
@@ -135,7 +135,7 @@ prints `openhc-ioxv1 login:`.
 | 4× RS-232 (`ttyS1`–`ttyS4`) | verified both ways against a PC, raw and through iod |
 | 8 IR outputs | all eight verified against a GC-IRL learner (NEC at 38 kHz), no crosstalk |
 | LEDs | data, link and the tri-colour status LED; power is hardwired |
-| Flash install | not yet: it runs from RAM |
+| Flash install | `ohc-flash install`, from stock or openHC, over SSH; falls back to stock after 3 failed boots |
 
 iod holds every RS-232 port open from boot with DTR and RTS up, as the stock
 `dtserver` does, because accessories like the GC-IRL are powered from those
@@ -178,8 +178,14 @@ The stock flash holds three complete systems, each a kernel plus a 64 MB JFFS2
 rootfs: update banks 0 and 1 (A/B; `bootsystem` in the U-Boot env picks one)
 and a factory **recovery** pair. Beside them sit the writable `jffs2.img`,
 `Internal` and `Persistent Logs` partitions. The chip is 512 MB but the stock
-table covers only the first 256 MB. The top half is empty apart from the
-bad-block tables in its last two blocks.
+table covers only the first 256 MB. The top half is where openHC installs: a
+32 MiB slot at `0x10000000` holds the image, and the last two blocks hold the
+bad-block tables. openHC's device tree names that half `openhc` (writable) and
+keeps every stock partition read-only.
+
+The ECC is DaVinci **1-bit**, three bytes per 512-byte sector at OOB 40–51,
+stored inverted. U-Boot, the stock kernel and openHC all agree on it now, so an
+image openHC writes is one U-Boot reads.
 
 ## Vendor drivers, for reference
 

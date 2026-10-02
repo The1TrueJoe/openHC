@@ -22,7 +22,7 @@ use eframe::egui::{self, Color32, RichText};
 use ohc_flash_core::board::Running;
 use ohc_flash_core::board::Family;
 use ohc_flash_core::{board, image, method, Board, Identity, Method};
-use ohc_flash_engine::{hc800, network, updates, Event, GhRelease, Progress, Release};
+use ohc_flash_engine::{hc800, iox, network, updates, Event, GhRelease, Progress, Release};
 use ohc_flash_transport as tp;
 
 /// This flasher's own version, baked in by CI (`OHC_VERSION`) so it can tell
@@ -958,7 +958,7 @@ impl App {
 
         ui.add_space(12.0);
         match chosen {
-            Some(m @ (Method::Network | Method::Kexec | Method::Grub)) => {
+            Some(m @ (Method::Network | Method::Kexec | Method::Grub | Method::Nand)) => {
                 let plan = method::plan(b, m);
                 // Said before anything else, because on the HC-800 the default
                 // method writes to no partition at all, and that is the single
@@ -1641,6 +1641,9 @@ fn run_install(
             // is driving a window; the CLI has --boot-once for it.
             return hc800::install_grub(ssh, rel, false, p).map_err(|e| format!("{e:#}"));
         }
+        Method::Nand => {
+            return iox::install_nand(ssh, rel, p).map_err(|e| format!("{e:#}"));
+        }
         _ => {}
     }
 
@@ -1703,7 +1706,7 @@ fn gate(
                 raw: vec![],
             };
             match method::choose(&probe, None).0 {
-                Some(Method::Network | Method::Kexec | Method::Grub) => None,
+                Some(Method::Network | Method::Kexec | Method::Grub | Method::Nand) => None,
                 Some(other) => Some(format!("the {} method is command-line only", other.name())),
                 None => Some("no install method applies to this controller".into()),
             }

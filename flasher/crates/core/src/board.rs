@@ -343,6 +343,25 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
     Identity::none(Running::Openhc)
 }
 
+/// Identify from U-Boot's own `platform` variable. The IO Extender's stock image
+/// has no SMBIOS and its U-Boot writes `platform=iox`, which `fw_printenv` reads
+/// the same way from stock Control4 and from openHC.
+pub fn from_uboot_platform(platform: Option<&str>, running: Running) -> Identity {
+    match platform.map(str::trim) {
+        Some("iox") => {
+            let b = by_name("ioxv1");
+            Identity {
+                board: b,
+                candidates: b.into_iter().collect(),
+                running,
+                version: None,
+                raw: vec![("platform".into(), "iox".into())],
+            }
+        }
+        _ => Identity::none(running),
+    }
+}
+
 /// Identify from SMBIOS, i.e. `/sys/class/dmi/id/{sys_vendor,product_name}`.
 ///
 /// This is the HC-800's route and effectively only the HC-800's: the embedded

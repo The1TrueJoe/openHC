@@ -51,6 +51,11 @@ BR2_TARGET_ROOTFS_JFFS2_NANDFLASH_128K=y
 BR2_PACKAGE_MTD=y
 # Host mkimage: post-image.sh wraps zImage+dtb into the U-Boot uImage.
 BR2_PACKAGE_HOST_UBOOT_TOOLS=y
+# Target fw_printenv/fw_setenv: the NAND install keeps a boot-attempt counter
+# (ohc_try) in U-Boot's environment, and S98ohcboot clears it once the box is
+# up. /etc/fw_env.config describes the two redundant 128 KiB environments.
+BR2_PACKAGE_UBOOT_TOOLS=y
+BR2_PACKAGE_UBOOT_TOOLS_FWPRINTENV=y
 
 # --- mDNS identity: avahi (no D-Bus, light) ---
 

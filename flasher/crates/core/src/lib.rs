@@ -6,10 +6,12 @@
 //! dependencies beyond `serde` and every non-trivial fact has a test.
 
 pub mod board;
+pub mod ca1;
 pub mod cefdk;
 pub mod mfh;
 pub mod hc800;
 pub mod image;
+pub mod iox;
 pub mod method;
 
 pub use board::{Board, Family, Identity, Running};

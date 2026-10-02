@@ -2,7 +2,7 @@
 //! for power users and scripts.
 
 use ohc_flash_core::{board, cefdk, image, method, Method};
-use ohc_flash_engine::{hc800, netboot, network, Progress, Release};
+use ohc_flash_engine::{ca1, ea, hc800, iox, netboot, network, Progress, Release};
 use ohc_flash_transport as tp;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -32,7 +32,7 @@ fn main() -> ExitCode {
         "log" => log(rest),
         "reset" => reset(rest),
         "uninstall" => uninstall(rest),
-        "factory-restore" => factory_restore(rest),
+        "restore" | "factory-restore" => restore(rest),
         "wrap" => wrap(rest),
         "help" | "-h" | "--help" => { help(); true }
         other => { eprintln!("unknown command '{other}'\n"); help(); false }
@@ -67,6 +67,9 @@ fn help() {
                                     and --boot-once makes that install hand the GRUB\n\
                                     default back to Control4 as openHC starts (safer\n\
                                     for a box you cannot reach).\n\
+                                    IO Extender: --method nand writes the half of the\n\
+                                    NAND stock never uses, from stock or openHC; three\n\
+                                    failed openHC boots fall back to stock on their own.\n\
                                     --netconsole <ip>[:port] ships the boot log to you\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
@@ -83,22 +86,20 @@ fn help() {
                                     that passes --netconsole; the boot log cannot be\n\
                                     recovered afterwards)\n\
            reset [HOST]             sysrq-reboot, through the kernel rather than init\n\
-           boot [HOST]              HC-800: re-enter an INSTALLED openHC. Every openHC\n\
-                                    boot hands the GRUB default back to Control4, so\n\
-                                    this is how you go back in after a reset\n\
-           uninstall [HOST] [--yes]  HC-800: remove openHC and restore the stock\n\
-                                    menu.lst from the backup the install kept\n\
-           factory-restore [HOST] [--yes]\n\
-                                    HC-800: boot Control4's own factory-restore\n\
-                                    system (menu.lst entry 0, /dev/sda2) — the\n\
-                                    software equivalent of holding the ID button.\n\
-                                    Pushes no image; the box wipes openHC itself\n\
+           boot [HOST]              re-enter an INSTALLED openHC (HC-800: after any reset;\n\
+                                    IO Extender: after a fallback to stock)\n\
+           uninstall [HOST] [--yes]  boot stock again. HC-800: restore the stock menu.lst;\n\
+                                    IO Extender: U-Boot boots stock (openHC stays, for boot)\n\
+           restore [HOST] [--yes]    back to factory, on any board (alias factory-restore).\n\
+                                    IO Extender: U-Boot's default boot, slot erased. HC-800\n\
+                                    and CA-1: Control4's own recovery re-images the box.\n\
+                                    EA: removes openHC's autoscript, then Control4's recovery\n\
            wrap <bzImage> <out> [--header FILE]\n\
                                     wrap a bzImage in a CEFDK container\n\
            netboot --mac <MAC> --image <FILE> [--board NAME]\n\
                    [--client-ip A] [--server-ip A] [--bootfile NAME] [--minutes N]\n\
                                     answer ONE box's DHCP and TFTP it a kernel, for a\n\
-                                    unit whose console is unreachable. Needs root.\n\
+                                    unit whose console is unreachable.\n\
                                     --board supplies the addresses a bootloader has\n\
                                     hardcoded (ioxv1: serverip 192.168.0.10).\n\n\
          The GUI (`ohc-flasher`) is the primary front end for non-CLI users.\n"
@@ -390,15 +391,17 @@ fn netconsole_arg(rest: &[String]) -> Option<(String, u16)> {
     }
 }
 
-/// `boot [HOST]` — re-enter an installed openHC on an HC-800.
+/// `boot [HOST]` — re-enter an installed openHC (HC-800, IO Extender).
 fn boot(rest: &[String]) -> bool {
+    use ohc_flash_core::board::Family;
     let Some((_host, ssh)) = connect(rest) else { return false };
     let id = tp::identify(&ssh);
-    match id.board.map(|b| b.family) {
-        Some(ohc_flash_core::board::Family::Hc) => {}
-        _ => { eprintln!("  `boot` is an HC-800 command; this is {}", id.describe()); return false }
-    }
-    if let Err(e) = hc800::boot_installed(&ssh, &Progress::stdout()) {
+    let r = match id.board.map(|b| b.family) {
+        Some(Family::Hc) => hc800::boot_installed(&ssh, &Progress::stdout()),
+        Some(Family::Iox) => iox::boot_installed(&ssh, &Progress::stdout()),
+        _ => { eprintln!("  `boot` is for the HC-800 and IO Extender; this is {}", id.describe()); return false }
+    };
+    if let Err(e) = r {
         eprintln!("  {e:#}");
         return false;
     }
@@ -525,43 +528,47 @@ fn reset(rest: &[String]) -> bool {
     true
 }
 
-/// `factory-restore [HOST]` — boot Control4's own recovery system (HC-800
-/// menu.lst entry 0, `/dev/sda2`), the software equivalent of the ID button.
-/// Pushes no image; removes openHC by handing the box back to its own
-/// untouched restore process.
-fn factory_restore(rest: &[String]) -> bool {
-    let Some((host, ssh)) = connect(rest) else { return false };
+/// `uninstall [HOST]` — boot stock again (HC-800, IO Extender).
+fn uninstall(rest: &[String]) -> bool {
+    use ohc_flash_core::board::Family;
+    let Some((_host, ssh)) = connect(rest) else { return false };
     let id = tp::identify(&ssh);
-    match id.board.map(|b| b.family) {
-        Some(ohc_flash_core::board::Family::Hc) => {}
-        _ => { eprintln!("  `factory-restore` is an HC-800 command; this is {}", id.describe()); return false }
-    }
-    if !rest.iter().any(|a| a == "--yes") && !confirm(&format!(
-        "boot {host}'s factory-restore system and let Control4 wipe openHC back to stock"
-    )) {
+    let (what, f): (&str, fn(&tp::ssh::Ssh, &Progress) -> anyhow::Result<()>) = match id.board.map(|b| b.family) {
+        Some(Family::Hc) => ("remove the openHC entry and restore the stock menu.lst", hc800::uninstall),
+        Some(Family::Iox) => ("set U-Boot's bootcmd back to stock", iox::uninstall),
+        _ => { eprintln!("  `uninstall` is for the HC-800 and IO Extender; this is {}", id.describe()); return false }
+    };
+    if !rest.iter().any(|a| a == "--yes") && !confirm(what) {
         return false;
     }
-    if let Err(e) = hc800::factory_restore(&ssh, &Progress::stdout()) {
+    if let Err(e) = f(&ssh, &Progress::stdout()) {
         eprintln!("  {e:#}");
         return false;
     }
     true
 }
 
-/// `uninstall [HOST]` — put an HC-800's boot chain back the way it shipped.
-fn uninstall(rest: &[String]) -> bool {
+/// `restore [HOST]` — put a board back the way it shipped, on any board.
+///
+/// IO Extender: U-Boot's factory bootcmd, our variables gone, the slot erased.
+/// HC-800, EA and CA-1: openHC replaced stock's root there, so each hands the box
+/// to Control4's own recovery, started by software instead of the button.
+fn restore(rest: &[String]) -> bool {
+    use ohc_flash_core::board::Family;
     let Some((_host, ssh)) = connect(rest) else { return false };
     let id = tp::identify(&ssh);
-    match id.board.map(|b| b.family) {
-        Some(ohc_flash_core::board::Family::Hc) => {}
-        _ => { eprintln!("  `uninstall` is an HC-800 command; this is {}", id.describe()); return false }
-    }
-    if !rest.iter().any(|a| a == "--yes")
-        && !confirm("remove the openHC entry and restore the stock menu.lst")
-    {
+    println!("  target: {}", id.describe());
+    let (what, f): (&str, fn(&tp::ssh::Ssh, &Progress) -> anyhow::Result<()>) = match id.board.map(|b| b.family) {
+        Some(Family::Iox) => ("restore U-Boot's factory boot and erase the openHC slot", iox::restore),
+        Some(Family::Hc) => ("boot Control4's factory-restore system and let it wipe openHC", hc800::factory_restore),
+        Some(Family::Ea) => ("remove openHC's autoscript and let Control4's recovery re-image the box", ea::restore),
+        Some(Family::Ca) => ("delete openHC's boot files and run Control4's factoryrestore once", ca1::restore),
+        None => { eprintln!("  refusing to restore an unidentified board"); return false }
+    };
+    if !rest.iter().any(|a| a == "--yes") && !confirm(what) {
         return false;
     }
-    if let Err(e) = hc800::uninstall(&ssh, &Progress::stdout()) {
+    if let Err(e) = f(&ssh, &Progress::stdout()) {
         eprintln!("  {e:#}");
         return false;
     }
@@ -625,6 +632,20 @@ fn install(rest: &[String]) -> bool {
             _ => hc800::install_grub(&ssh, &rel, rest.iter().any(|a| a == "--boot-once"), &p),
         };
         if let Err(e) = r { eprintln!("  {e:#}"); return false; }
+        return true;
+    }
+
+    if m == Method::Nand {
+        if !yes && !confirm("write openHC to the NAND and point U-Boot at it") {
+            return false;
+        }
+        if let Err(e) = iox::install_nand(&ssh, &rel, &Progress::stdout()) {
+            eprintln!("  {e:#}");
+            return false;
+        }
+        if let Ok(st) = iox::status(&ssh) {
+            for (k, v) in st { println!("    {k} = {v}"); }
+        }
         return true;
     }
 

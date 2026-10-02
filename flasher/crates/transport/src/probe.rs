@@ -82,6 +82,15 @@ pub fn identify(ssh: &Ssh) -> Identity {
             return id;
         }
     }
+    // U-Boot's own `platform` variable: how a stock IO Extender, which has no
+    // /proc/c4board and no SMBIOS, says what it is.
+    let platform = ssh.run("fw_printenv -n platform 2>/dev/null", false).ok();
+    let running = if ssh.read_file("/opt/ohc/board.env").is_some() { Running::Openhc } else { Running::Stock };
+    let mut id = board::from_uboot_platform(platform.as_deref(), running);
+    if id.board.is_some() {
+        id.version = version_of(ssh);
+        return id;
+    }
     Identity { board: None, candidates: vec![], running: Running::Unknown, version: version_of(ssh), raw: vec![] }
 }
 

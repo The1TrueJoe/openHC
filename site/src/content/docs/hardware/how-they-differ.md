@@ -22,7 +22,7 @@ Every board answered differently, and the answer was never the obvious one.
 | **EA3** | CEFDK `script` autorun → `bootlinux` | same — the autorun runs *before* the verifying path | SPI-NOR MFH item + a raw eMMC gap |
 | **CA-1** | a `boot.scr` on the eMMC's vfat partition | nothing — `bootcmd` never calls `hab_auth_img` | one file on a FAT partition |
 | **HC-800** | a third entry in GRUB's `menu.lst` | nothing anywhere in the chain | two files + one text edit |
-| **IOX v1** | U-Boot `run tst` (DHCP + TFTP into RAM) | nothing | no |
+| **IOX v1** | U-Boot `bootcmd` → `nboot` from the NAND half stock never partitioned (or `run tst` to netboot) | nothing | a 32 MiB slot stock doesn't use, plus U-Boot environment variables |
 
 Three of those five need no signature bypass because **nothing in the chain
 signs anything**. The EA3 is the only board where a signature check actively
