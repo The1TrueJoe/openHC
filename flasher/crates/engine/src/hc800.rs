@@ -429,26 +429,44 @@ pub fn boot_installed(ssh: &Ssh, p: &Progress) -> Result<()> {
         }
     }
 
-    // Only the first line changes. The rest of the file is padding that GRUB's
-    // `savedefault` rewrites in place, by sector — replacing the whole file
-    // would move its blocks and quietly break that.
-    ssh.run(
-        &format!(
-            "sed -i '1s/.*/{}/' {gm}/boot/grub/default && sync && umount {gm}",
-            hc::ENTRY_OPENHC
-        ),
-        true,
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    p.emit(Event::step(format!("saved default -> entry {} (openHC)", hc::ENTRY_OPENHC)));
+    let saved = menu.lines().any(|l| l.trim_start().starts_with("default") && l.contains("saved"));
+    if saved {
+        // Boot-once install. Only the first line changes. The rest of the file
+        // is padding that GRUB's `savedefault` rewrites in place, by sector —
+        // replacing the whole file would move its blocks and quietly break that.
+        ssh.run(
+            &format!(
+                "sed -i '1s/.*/{}/' {gm}/boot/grub/default && sync && umount {gm}",
+                hc::ENTRY_OPENHC
+            ),
+            true,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        p.emit(Event::step(format!("saved default -> entry {} (openHC)", hc::ENTRY_OPENHC)));
+    } else {
+        // Persistent install: menu.lst already names our entry, so this is
+        // just a reboot. Refuse if it names something else rather than edit it.
+        let want = hc::ENTRY_OPENHC.to_string();
+        let ok = menu.lines().any(|l| {
+            let mut w = l.split_whitespace();
+            w.next() == Some("default") && w.next() == Some(want.as_str())
+        });
+        let _ = ssh.run(&format!("umount {gm}"), false);
+        if !ok {
+            bail!("menu.lst's default is not entry {want} — reinstall (--method grub) to make openHC the default");
+        }
+        p.emit(Event::detail(format!("persistent install: default is already entry {want}")));
+    }
 
     p.emit(Event::step("rebooting — this connection will drop".into()));
     let _ = ssh.run("sync; reboot", false);
-    p.emit(Event::resolved(
+    p.emit(Event::resolved(if saved {
         "on its way. openHC will hand the default straight back to Control4 as it boots, so this \
          is a one-shot: any later reset returns to stock"
-            .into(),
-    ));
+            .into()
+    } else {
+        "on its way. openHC is the default, so it also comes back after any later reset".into()
+    }));
     Ok(())
 }
 

@@ -61,12 +61,12 @@ fn help() {
                                     reboots into RAM, then writes p1 and reboots into it\n\
                                     (--no-wait stops after stage 1; --self-install uses\n\
                                     the tiny boot-init instead).\n\
-                                    HC-800: --method kexec (default) writes NOTHING and\n\
-                                    runs openHC from RAM; --method grub installs it to\n\
-                                    the kernel partition so it survives a power cut,\n\
-                                    and --boot-once makes that install hand the GRUB\n\
-                                    default back to Control4 as openHC starts (safer\n\
-                                    for a box you cannot reach).\n\
+                                    HC-800: --method grub (default) installs it to the\n\
+                                    kernel partition as the GRUB default, so it survives\n\
+                                    a power cut; --boot-once makes that install hand the\n\
+                                    default back to Control4 as openHC starts (safer for\n\
+                                    a box you cannot reach); --method kexec writes\n\
+                                    NOTHING and runs openHC from RAM.\n\
                                     IO Extender: --method nand writes the half of the\n\
                                     NAND stock never uses, from stock or openHC; three\n\
                                     failed openHC boots fall back to stock on their own.\n\

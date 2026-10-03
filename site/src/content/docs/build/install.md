@@ -116,10 +116,35 @@ Everything goes over SSH from stock Control4 or a running openHC. Nothing needs
 a serial console or the ID button, and the factory-restore partition (`sda2`) is
 never written. All four flows below were run on a unit on 2026-10-02.
 
+### Install (the default)
+
+```sh
+ohc-flash install <host> --images openhc-hc800-<version>.zip      # --method grub, persistent
+ohc-flash boot    <host>      # reboot into it
+```
+
+This copies the images onto `sda3` (the ext3 kernel partition, ~165 MB free)
+and appends a third GRUB entry as the GRUB `default`, so every boot, power cuts
+included, runs openHC. That is the flasher's default on every board. Both
+vendor entries and the `factorydefault` lines stay byte-identical, and GRUB 0.97
+loads the full 43 MB image from there.
+
+If a kernel won't load, `fallback 1` boots stock. A kernel that loads and then
+panics reboots into itself; holding the ID button at power-on gets you out of
+that. The button runs Control4's factory restore, which wipes our files from
+`sda3`, so the next boot falls back to stock.
+
+`--boot-once` is the cautious variant for a box you can't reach. It sets
+`default saved`, and openHC's entry runs `savedefault 1` before it boots, so
+every openHC boot hands the default straight back to Control4. A panic, power
+cut or reset then always lands on stock, which answers SSH, and
+`ohc-flash boot` re-enters openHC by changing one byte. Re-running `install`
+rebuilds the entry, so it switches between the two modes.
+
 ### Try it from RAM (writes nothing)
 
 ```sh
-ohc-flash install <host> --images openhc-hc800-<version>.zip            # --method kexec is the default
+ohc-flash install <host> --images openhc-hc800-<version>.zip --method kexec
 ```
 
 The tool mounts a tmpfs sized to the release at `/mnt/ohc-stage`, copies the
@@ -130,22 +155,7 @@ returns the box to stock. The release is about 43 MB (13.8 MB kernel + 29.7 MB
 initramfs), which no longer fits in the stock image's 32 MB `/tmp`. That's why
 the tool stages in its own tmpfs.
 
-### Install to disk
-
-```sh
-ohc-flash install <host> --images openhc-hc800-<version>.zip --method grub --boot-once
-ohc-flash boot    <host>      # reboot into it
-```
-
-This copies the images onto `sda3` (the ext3 kernel partition, ~165 MB free)
-and appends a third GRUB entry. Both vendor entries and the `factorydefault`
-lines stay byte-identical. GRUB 0.97 loads the full 43 MB image from there.
-
-`--boot-once` sets `default saved`, and openHC's entry runs `savedefault 1`
-before it boots. Every openHC boot therefore hands the default straight back to
-Control4, so a panic, power cut or reset always lands on stock, which answers
-SSH. `ohc-flash boot` re-enters openHC; it changes one byte. Without
-`--boot-once`, openHC is the default on every boot. Re-running `install` rebuilds the entry, so it switches between the two modes.
+### Undo
 
 ```sh
 ohc-flash uninstall <host>   # put back the as-shipped menu.lst, delete our files from sda3

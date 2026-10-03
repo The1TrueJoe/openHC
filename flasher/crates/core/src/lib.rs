@@ -41,8 +41,8 @@ mod tests {
     //
     // These are the decisions that decide whether a bootloader partition gets
     // written, so they are worth pinning even though they look obvious. The
-    // ordering one especially: `kexec` sitting ahead of `grub` is the reason a
-    // user who never picks a method lands on the option that writes nothing.
+    // ordering one especially: the flasher's default on every board is a
+    // persistent install, so `grub` sits ahead of `kexec`.
 
     fn ident(name: &str, running: Running) -> Identity {
         let b = board::by_name(name).expect("board in the table");
@@ -50,9 +50,11 @@ mod tests {
     }
 
     #[test]
-    fn hc800_defaults_to_the_method_that_writes_nothing() {
-        let (m, _) = method::choose(&ident("hc800", Running::Stock), None);
-        assert_eq!(m, Some(Method::Kexec));
+    fn hc800_defaults_to_a_persistent_install() {
+        for r in [Running::Stock, Running::Openhc] {
+            let (m, _) = method::choose(&ident("hc800", r), None);
+            assert_eq!(m, Some(Method::Grub), "running {r:?}");
+        }
         assert!(Method::Kexec.writes_nothing());
         assert!(!Method::Grub.writes_nothing());
     }
