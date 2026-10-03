@@ -15,6 +15,12 @@ name: sgx-gpu
 
 on:
   workflow_dispatch:
+  # workflow_dispatch only registers from the default branch, so until this lands
+  # on main, a path-filtered push trigger is how it runs on a feature branch.
+  push:
+    paths:
+      - .github/workflows/sgx-gpu.yml
+      - board/ea/common/kernel/drivers/gpu/drm/sgx545ce/tools/**
 
 jobs:
   i386-sysroot:
