@@ -267,6 +267,31 @@ jobs:
           BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
             OHC_VERSION="${{ steps.ver.outputs.version }}" bash ./build/build.sh
 
+      # The HC-800's first install starts openHC from the RUNNING Control4 image
+      # with kexec (writes nothing). Control4 never shipped the userspace tool,
+      # and the vendor userland is 32-bit glibc, so the bundle carries a static
+      # i686 kexec the flasher pushes when the box has none. Same recipe as
+      # tools.yml, built here so every hc800 release is self-sufficient instead
+      # of depending on a separate artifact that expires.
+      - name: Static i686 kexec (HC-800 stock-side launch)
+        if: success() && matrix.board == 'hc800'
+        env:
+          KEXEC_VERSION: "2.0.31"
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
+          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
+          ( cd "kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
+              --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
+              --without-zlib --without-lzma --without-xen >/dev/null && make -j"$(nproc)" >/dev/null )
+          out="output/build/${{ matrix.board }}/images/kexec-i686-static"
+          cp "kexec-tools-${KEXEC_VERSION}/build/sbin/kexec" "$out"
+          file "$out" | grep -q "ELF 32-bit.*Intel 80386" || { echo "not i386"; exit 1; }
+          file "$out" | grep -q "statically linked" || { echo "not static"; exit 1; }
+          ls -l "$out"
+
       # Bundle the images into one zip the flasher can consume directly
       # (Release::open reads the canonical filenames inside — bzImage,
       # rootfs.ext2, ...). output/ also holds the multi-GB build tree and

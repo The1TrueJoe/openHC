@@ -137,6 +137,17 @@ impl Ssh {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// Evaluate a shell `test` expression on the box, e.g. `-s /path`.
+    ///
+    /// Use this, not `run("test ...", false).is_ok()`: `run` without `check`
+    /// returns Ok whatever the exit status, so that idiom is always true. An
+    /// unreachable box reads as false.
+    pub fn test(&self, expr: &str) -> bool {
+        self.run(&format!("test {expr} && echo ohc-yes"), false)
+            .map(|o| o.trim() == "ohc-yes")
+            .unwrap_or(false)
+    }
+
     /// Cheap reachability + auth probe.
     pub fn ok(&self) -> bool {
         self.run("echo ohc-ok", false).map(|o| o.trim() == "ohc-ok").unwrap_or(false)

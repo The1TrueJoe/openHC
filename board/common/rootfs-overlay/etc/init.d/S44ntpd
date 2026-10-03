@@ -1,0 +1,33 @@
+#!/bin/sh
+# openHC time — SHARED (board/common).
+#
+# Load the RTC at boot (so logs are not dated 1970 before the network is up),
+# then let busybox ntpd step and track the clock, and write each step back to the
+# RTC so the next cold boot starts close. Inert where busybox has no ntpd.
+#
+# Why it exists: the HC-800's RTC read 2002 — a flat CMOS cell — and with no NTP
+# nothing ever corrected it, so every TLS connection failed certificate
+# validation. board.env OHC_NTP_SERVERS overrides the pool.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+PID=/var/run/ntpd.pid
+
+start() {
+    [ -e /dev/rtc0 ] && hwclock -s -u 2>/dev/null
+    NTPD=$(command -v ntpd) || return 0
+    args=""
+    for s in ${OHC_NTP_SERVERS:-0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org}; do args="$args -p $s"; done
+    # -S runs on every step/stratum change; the hook writes the RTC.
+    start-stop-daemon -S -q -b -m -p "$PID" --exec "$NTPD" -- -n $args -S /etc/ohc-ntp-hook
+    echo "time: ntpd started"
+}
+stop() {
+    [ -f "$PID" ] && start-stop-daemon -K -q -p "$PID"
+    rm -f "$PID"
+    [ -e /dev/rtc0 ] && hwclock -w -u 2>/dev/null
+}
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

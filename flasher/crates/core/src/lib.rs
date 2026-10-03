@@ -41,8 +41,8 @@ mod tests {
     //
     // These are the decisions that decide whether a bootloader partition gets
     // written, so they are worth pinning even though they look obvious. The
-    // ordering one especially: `kexec` sitting ahead of `grub` is the reason a
-    // user who never picks a method lands on the option that writes nothing.
+    // ordering one especially: the flasher's default on every board is a
+    // persistent install, so `grub` sits ahead of `kexec`.
 
     fn ident(name: &str, running: Running) -> Identity {
         let b = board::by_name(name).expect("board in the table");
@@ -50,9 +50,11 @@ mod tests {
     }
 
     #[test]
-    fn hc800_defaults_to_the_method_that_writes_nothing() {
-        let (m, _) = method::choose(&ident("hc800", Running::Stock), None);
-        assert_eq!(m, Some(Method::Kexec));
+    fn hc800_defaults_to_a_persistent_install() {
+        for r in [Running::Stock, Running::Openhc] {
+            let (m, _) = method::choose(&ident("hc800", r), None);
+            assert_eq!(m, Some(Method::Grub), "running {r:?}");
+        }
         assert!(Method::Kexec.writes_nothing());
         assert!(!Method::Grub.writes_nothing());
     }
@@ -143,6 +145,65 @@ mod tests {
         let f = hc800::default_file(hc800::ENTRY_OPENHC);
         assert_eq!(f.lines().next().unwrap(), hc800::ENTRY_OPENHC.to_string());
         assert!(f.len() > 32, "needs padding for savedefault to rewrite in place");
+    }
+
+    /// The stock HC-800 menu.lst, as read off sda1 (backups/hc800/hc800-sda1.img).
+    const HC800_STOCK_MENU: &str = "serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1\n\
+        terminal serial\n\nsupport_factorydefault\t1\nfactorydefault\t\t0\ndefault\t\t\t1\n\
+        fallback\t\t1\ntimeout\t\t\t0\nhiddenmenu\n\n\
+        title\t\tHC-800 Factory Default Image\nroot\t\t(hd0,1)\n\
+        kernel\t\t/boot/bzImage root=restore_fs_hc800 type=ext3 ro console=ttyS0,115200 quiet \nboot\n\n\
+        title\t\tHC-800 Image\nroot\t\t(hd0,2)\n\
+        kernel\t\t/boot/bzImage root=root_fs_hc800 type=ext4 ro console=ttyS0,115200 quiet consoleblank=0 vt.cur_default=1 \nboot\n";
+
+    #[test]
+    fn factory_restore_runs_once_and_hands_back_to_the_vendor_entry() {
+        let (m, idx) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
+        // NEVER `default 0`: restore.sh does not touch menu.lst, so that is a
+        // restore that loops forever (seen on the unit, 2026-10-02).
+        assert!(m.contains("default\t\tsaved\n"));
+        assert!(!m.lines().any(|l| l.starts_with("default") && l.contains('0')));
+        assert_eq!(idx, 2);
+        let once = &m[m.find(hc800::FACTORY_ONCE_TITLE).unwrap()..];
+        let sd = once.find(&format!("savedefault\t{}", hc800::ENTRY_VENDOR)).expect("must hand back");
+        assert!(sd < once.find("\nboot").unwrap(), "savedefault must precede boot:\n{once}");
+        assert!(once.contains("root=restore_fs_hc800"), "must be entry 0's restore:\n{once}");
+        // The button's lines and both vendor entries are byte-identical.
+        let stock_entries = &HC800_STOCK_MENU[HC800_STOCK_MENU.find("title").unwrap()..];
+        assert!(m.contains(stock_entries));
+        assert!(m.contains("support_factorydefault\t1\nfactorydefault\t\t0\n"));
+    }
+
+    #[test]
+    fn factory_restore_drops_openhc_and_does_not_stack() {
+        let installed = format!("{HC800_STOCK_MENU}{}", hc800::menu_entry(true));
+        let (once, idx) = hc800::factory_once_menu(&installed).unwrap();
+        assert!(!once.contains("title\t\topenHC"), "sda3 is reformatted; the entry would dangle");
+        assert_eq!(idx, 2);
+        let (twice, idx2) = hc800::factory_once_menu(&once).unwrap();
+        assert_eq!(idx2, 2);
+        assert_eq!(once, twice, "running it again must not add a second copy");
+    }
+
+    #[test]
+    fn an_install_after_a_restore_still_puts_openhc_at_its_index() {
+        // Post-restore menu: stock + the spent once-entry at index 2. Dropping
+        // it before appending is what keeps openHC at ENTRY_OPENHC; otherwise
+        // "boot openHC" would boot the factory restore.
+        let (after_restore, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
+        let cleaned = hc800::drop_entry(&after_restore, hc800::FACTORY_ONCE_TITLE);
+        assert_eq!(hc800::titles(&cleaned), hc800::titles(HC800_STOCK_MENU));
+        let installed = format!("{cleaned}{}", hc800::menu_entry(true));
+        assert_eq!(hc800::titles(&installed)[hc800::ENTRY_OPENHC as usize], "openHC");
+        assert!(installed.contains("support_factorydefault\t1\nfactorydefault\t\t0\n"));
+    }
+
+    #[test]
+    fn factory_restore_refuses_a_menu_without_the_button_lines() {
+        for line in ["support_factorydefault\t1\n", "\nfactorydefault\t\t0\n"] {
+            let m = HC800_STOCK_MENU.replacen(line, "\n", 1);
+            assert!(hc800::factory_once_menu(&m).is_err(), "accepted a menu without {line:?}");
+        }
     }
 
     // ---- identification -----------------------------------------------------

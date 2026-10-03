@@ -31,8 +31,11 @@ ohc-flash restore <host>
 - **IO Extender:** sets U-Boot's compiled-in `bootcmd`, deletes every variable
   openHC added, and erases the openHC slot. Verified on a unit: it comes back with
   the factory environment and boots stock.
-- **HC-800:** points `menu.lst` at Control4's own factory-restore system
-  (entry 0, `/dev/sda2`), the software equivalent of the ID button.
+- **HC-800:** runs Control4's own factory-restore system (entry 0's kernel line
+  on `/dev/sda2`) exactly once, the software equivalent of the ID button. It
+  appends a copy of entry 0 that `savedefault`s back to the stock entry and sets
+  `default saved`. It never writes `default 0`: `restore.sh` reboots without
+  touching `menu.lst`, so that would restore forever. Verified on a unit 2026-10-02.
 - **EA family:** runs the box's `ohc-restore stock`, which removes openHC's single
   MFH item from SPI-NOR (read-back verified) and kexecs p2's recovery kernel to
   re-image p1, the same reimage the recessed button starts.

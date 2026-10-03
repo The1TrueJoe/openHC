@@ -102,9 +102,9 @@ jobs:
       # portal too — it is in the artifact, and `cargo check` would not have
       # produced a binary for it. The portal binary now lives in the `wifi`
       # crate (merged with the shared Wi-Fi lib), so build that crate to get it.
-      - name: Build iod + portal for ${{ matrix.board }}
+      - name: Build iod + portal + ohc-zigbee for ${{ matrix.board }}
         working-directory: packages
-        run: cargo build --release -p iod -p wifi --target ${{ matrix.target }}
+        run: cargo build --release -p iod -p wifi -p zigbee --target ${{ matrix.target }}
 
       - uses: actions/setup-node@v4
         with:
@@ -158,5 +158,6 @@ jobs:
             packages/target/${{ matrix.target }}/release/iod
             packages/target/${{ matrix.target }}/release/webd
             packages/target/${{ matrix.target }}/release/portal
+            packages/target/${{ matrix.target }}/release/ohc-zigbee
           retention-days: 14
           if-no-files-found: error
