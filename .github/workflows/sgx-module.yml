@@ -13,13 +13,13 @@ name: sgx-module
 on:
   workflow_dispatch:
   push:
-    branches: [ea1-gpu]
+    branches: [ea1-gpu-2026]
     paths:
       - board/ea/common/kernel/drivers/gpu/drm/sgx545ce
       - .github/workflows/sgx-module.yml
 
 env:
-  BUILDROOT_REF: 2024.02.9
+  BUILDROOT_REF: 2026.02.3
 
 jobs:
   pvrsrvkm:
@@ -42,9 +42,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: output/build/ea1-v1
-          key: out-ea1-v1-${{ env.BUILDROOT_REF }}-r2-restore
+          key: out-ea1-v1-${{ env.BUILDROOT_REF }}-r3-restore
           restore-keys: |
-            out-ea1-v1-${{ env.BUILDROOT_REF }}-r2-
+            out-ea1-v1-${{ env.BUILDROOT_REF }}-r3-
 
       - name: Fail if no cached tree (run a full image build first)
         run: |
