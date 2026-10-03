@@ -1,0 +1,88 @@
+# Fast iteration for the SGX545 kernel driver (pvrsrvkm.ko).
+#
+# A full image build is ~2.5h (webkit + every package). But a driver-only change
+# needs only the KERNEL rebuilt: restore the cached Buildroot output tree (host
+# toolchain + already-built packages; build.sh trims build/linux-* so the kernel
+# is always re-extracted + re-mirrored + rebuilt anyway) and run `linux-rebuild`.
+# That is ~5-10 min and yields a fresh pvrsrvkm.ko with the current submodule
+# source. Since a driver-only change does not alter the bzImage, the .ko can be
+# hot-swapped on the running kernel (same vermagic) without a reflash. See
+# [[c4-ea-sgx-wpe-64bit]].
+name: sgx-module
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ea1-gpu]
+    paths:
+      - board/ea/common/kernel/drivers/gpu/drm/sgx545ce
+      - .github/workflows/sgx-module.yml
+
+env:
+  BUILDROOT_REF: 2024.02.9
+
+jobs:
+  pvrsrvkm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - name: Restore Buildroot downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: dl
+          key: dl-${{ env.BUILDROOT_REF }}-restore
+          restore-keys: |
+            dl-${{ env.BUILDROOT_REF }}-
+
+      - name: Restore the Buildroot output tree (host toolchain + packages)
+        id: outcache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/build/ea1-v1
+          key: out-ea1-v1-${{ env.BUILDROOT_REF }}-r2-restore
+          restore-keys: |
+            out-ea1-v1-${{ env.BUILDROOT_REF }}-r2-
+
+      - name: Fail if no cached tree (run a full image build first)
+        run: |
+          if [ ! -d output/build/ea1-v1/host/bin ]; then
+            echo "No cached ea1-v1 output tree (host toolchain missing)."
+            echo "Run images.yml board=ea1-v1 once so this job has a tree to rebuild against."
+            exit 1
+          fi
+
+      - name: Clone Buildroot + apply openHC's buildroot patches
+        run: |
+          set -e
+          git clone --depth 1 --branch "$BUILDROOT_REF" \
+            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          for p in build/buildroot-patches/*.patch; do
+            [ -e "$p" ] || continue
+            patch -d "$HOME/buildroot" -p1 --forward --batch < "$p" || true
+          done
+
+      - name: Rebuild the kernel + SGX driver (linux-rebuild)
+        run: |
+          set -euxo pipefail
+          BUILDROOT_DIR="$HOME/buildroot" BOARD=ea1-v1 bash ./build/build.sh linux-rebuild
+          ko=output/build/ea1-v1/build/linux-7.1.8/drivers/gpu/drm/sgx545ce/pvrsrvkm.ko
+          ls -l "$ko"
+          mkdir -p out
+          cp "$ko" out/pvrsrvkm.ko
+          # the drm core deps too, in case they are needed as a matched set
+          for m in drm.ko drm_panel_orientation_quirks.ko; do
+            f=$(find output/build/ea1-v1/build/linux-7.1.8 -name "$m" | head -1)
+            [ -n "$f" ] && cp "$f" out/ || true
+          done
+          # bzImage too (unchanged for driver-only edits, but handy)
+          cp output/build/ea1-v1/build/linux-7.1.8/arch/x86/boot/bzImage out/ 2>/dev/null || true
+          ls -l out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pvrsrvkm
+          path: out/
+          retention-days: 7
