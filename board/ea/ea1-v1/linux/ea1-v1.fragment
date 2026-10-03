@@ -8,25 +8,10 @@
 # pci=routeirq enables the CE5300 UART interrupt link (LUAR/GSI 38) for the IO-MCU
 # on ttyS1 — see board/ea/common/linux/common.fragment.
 #
-# --- RAM reclaim (EA1) --------------------------------------------------------
-# CEFDK withholds ~90% of DRAM. MEASURED on this EA1 (10.0.0.127): MemTotal only
-# 180384 kB because e820 hands Linux just [0x00100000-0x0c7fffff] (200 MB) and
-# marks [0x0c800000-0x7fffffff] (1.8 GB) "device reserved" — the Intel CE media
-# carve-out. That range is REAL, IDLE DRAM (read-only over /dev/mem it still holds
-# CEFDK's boot-time address-walk pattern up to ~0x7f000000). The e820 split, ACPI
-# window and low-memory layout are byte-identical to the EA3-v2, whose reclaim is
-# PROVEN on hardware, so the same line applies.
-#
-# memmap=exactmap is MANDATORY: the additive form is silently dropped (e820
-# sanitisation resolves overlaps toward the HIGHER type, so "reserved" beats added
-# "RAM"). Each entry is load-bearing — see ea3-v2.fragment for the full derivation
-# (60K#0x11000 = ACPI tables; claiming them as RAM gives AE_NO_ACPI_TABLES + hang).
-# 1536M@0x10000000 ends at 0x70000000, matching the EA3's proven margin. Do NOT
-# widen past 0x70000000 without re-measuring: a memmap past real DRAM is
-# unrecoverable remotely.
-#
-# GRADING: the e820/DRAM facts are measured on this EA1; the memmap line is the
-# EA3-v2's PROVEN line on a verified-identical map, but has NOT yet been booted
-# with it on an EA1 — confirm on hardware (a kexec is recoverable) and promote to
-# "proven" once MemTotal reads back ~1.7 GB.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
+# The RAM reclaim (memmap=exactmap, which brings MemTotal from ~176 MB to ~1.7 GB
+# — PROVEN on this EA1) is NOT here: the EA1 boots through the S00kexec bootstrap,
+# whose kexec --command-line replaces CONFIG_CMDLINE, so a memmap set here would
+# never reach the real kernel. It lives in board.env's OHC_KEXEC_CMDLINE_EXTRA,
+# which S00kexec appends. (The EA3 boots direct, so its reclaim IS in its fragment
+# CONFIG_CMDLINE — see ea3-v2.fragment for the full per-entry derivation.)
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"

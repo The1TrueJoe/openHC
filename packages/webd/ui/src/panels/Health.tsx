@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Activity } from 'lucide-react';
-import { rest, type Telemetry } from '../api';
+import { useEffect, useRef, useState } from 'react';
+import { Activity, Fan } from 'lucide-react';
+import { rest, type FanStatus, type History, type Telemetry } from '../api';
 
 /* Board health, polled from sysmond over REST.
    Not MQTT: a temperature every five seconds is telemetry, not state an
@@ -8,15 +8,20 @@ import { rest, type Telemetry } from '../api';
    over the last hour" — which is the question this data exists for. */
 export function HealthSection() {
   const [t, setT] = useState<Telemetry | null>(null);
+  const [hist, setHist] = useState<History | null>(null);
   const [absent, setAbsent] = useState(false);
 
   useEffect(() => {
     let live = true;
-    const tick = () =>
+    const tick = () => {
       rest
         .telemetry()
         .then((d) => live && setT(d))
         .catch(() => live && setAbsent(true));
+      /* History is the same ring, served whole; a failure here is not fatal —
+         the readings still render, just without their trend lines. */
+      rest.history().then((h) => live && setHist(h)).catch(() => {});
+    };
     tick();
     /* 5 s matches sysmond's own sampling period; asking faster returns the same
        sample twice. */
@@ -34,6 +39,23 @@ export function HealthSection() {
   const val = (i: number) => t.values?.[i] ?? null;
   const warm = (c: number) => (c >= 70 ? 'text-alarm' : c >= 55 ? 'text-warm' : 'text-live');
 
+  /* Trend for a sensor series, matched by slug+kind rather than index — the two
+     endpoints share a series list, but matching by identity survives a sensor
+     that binds late and shifts the order. */
+  const trend = (slug: string, kind: string): (number | null)[] | null => {
+    if (!hist) return null;
+    const i = hist.series.findIndex((s) => s.slug === slug && s.kind === kind);
+    if (i < 0) return null;
+    return hist.samples.map((s) => s.v[i] ?? null);
+  };
+  const machineTrend = (pick: (s: History['samples'][number]) => number | null) =>
+    hist ? hist.samples.map(pick) : null;
+
+  /* Order so like sits with like: temps, then fans, then speeds. */
+  const order = { temp: 0, fan: 1, pwm: 2 } as const;
+  const indexed = t.series.map((s, i) => ({ s, i }));
+  indexed.sort((a, b) => order[a.s.kind] - order[b.s.kind]);
+
   return (
     <section className="hair rounded-xl border bg-panel p-4">
       <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -41,29 +63,40 @@ export function HealthSection() {
         Health
       </h2>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {t.series.map((s, i) => {
+        {indexed.map(({ s, i }) => {
           const v = val(i);
-          if (s.kind === 'pwm') return null;
           const isTemp = s.kind === 'temp';
+          const isPwm = s.kind === 'pwm';
+          /* pwm is a 0-255 duty register; a user thinks in percent. */
+          const pct = isPwm && v !== null ? Math.round((v / 255) * 100) : null;
+          const display =
+            v === null ? '—'
+              : isTemp ? `${v}°C`
+              : isPwm ? `${pct}%`
+              /* A fan header with nothing plugged into it reads 0. Saying
+                 "no fan" stops that looking like a stalled one. */
+              : v === 0 ? 'no fan'
+              : `${v} rpm`;
+          const tone =
+            v === null ? 'text-muted'
+              : isTemp ? warm(v)
+              : isPwm ? 'text-ink'
+              : v ? 'text-live' : 'text-muted';
+          /* Plot pwm as percent so its sparkline shares the readout's scale. */
+          const raw = trend(s.slug, s.kind);
+          const series = isPwm && raw ? raw.map((x) => (x === null ? null : Math.round((x / 255) * 100))) : raw;
           return (
-            <Stat
-              key={`${s.kind}-${s.slug}`}
-              label={s.label}
-              sub={s.chip}
-              value={
-                v === null ? '—'
-                  : isTemp ? `${v}°C`
-                  /* A fan header with nothing plugged into it reads 0. Saying
-                     "no fan" stops that looking like a stalled one. */
-                  : v === 0 ? 'no fan'
-                  : `${v} rpm`
-              }
-              tone={v === null ? 'text-muted' : isTemp ? warm(v) : v ? 'text-live' : 'text-muted'}
-            />
+            <Stat key={`${s.kind}-${s.slug}`} label={s.label} sub={s.chip} value={display} tone={tone} series={series} />
           );
         })}
         {t.cpu !== null && (
-          <Stat label="CPU" sub={t.load1 !== null ? `load ${t.load1.toFixed(2)}` : ''} value={`${t.cpu}%`} tone="text-ink" />
+          <Stat
+            label="CPU"
+            sub={t.load1 !== null ? `load ${t.load1.toFixed(2)}` : ''}
+            value={`${t.cpu}%`}
+            tone="text-ink"
+            series={machineTrend((s) => s.cpu)}
+          />
         )}
         {t.mem_used_pct !== null && (
           <Stat
@@ -71,11 +104,132 @@ export function HealthSection() {
             sub={t.mem_total_kb ? `${Math.round(t.mem_total_kb / 1024)} MB` : ''}
             value={`${t.mem_used_pct}%`}
             tone="text-ink"
+            series={machineTrend((s) => s.mem_used_pct)}
           />
         )}
         {t.uptime_s !== null && <Stat label="Uptime" sub="" value={fmtUptime(t.uptime_s)} tone="text-ink" />}
       </div>
+      <FanControl />
     </section>
+  );
+}
+
+/* Fan control. Only on boards whose sysmond reports a controllable fan (the EA
+   family, where ohc-fand exists); everywhere else `available:false` and this
+   renders nothing — the same rule the rest of the UI uses for absent hardware. */
+function FanControl() {
+  const [fan, setFan] = useState<FanStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const refresh = () => rest.fan().then(setFan).catch(() => setFan({ available: false }));
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!fan?.available) return null;
+
+  const act = async (fn: () => Promise<{ ok: boolean; error?: string }>) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fn();
+      if (!r.ok) setErr(r.error ?? 'failed');
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const manual = fan.mode === 'manual';
+  const pct = fan.pct ?? 0;
+
+  return (
+    <div className="hair mt-3 rounded-xl border bg-raised p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <Fan size={15} className="text-muted" />
+          Fan
+        </div>
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+            manual ? 'bg-warm/15 text-warm' : 'bg-live/15 text-live'
+          }`}
+        >
+          {manual ? `Manual · ${pct}%` : `Auto · ${pct}%`}
+        </span>
+      </div>
+
+      <Slider value={pct} disabled={busy} onCommit={(p) => act(() => rest.fanSet(p))} />
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {[0, 25, 50, 75, 100].map((p) => (
+          <button
+            key={p}
+            disabled={busy}
+            onClick={() => act(() => rest.fanSet(p))}
+            className={`hair rounded-lg border px-2.5 py-1 text-xs tabular-nums transition hover:border-accent/50 disabled:opacity-50 ${
+              manual && pct === p ? 'border-accent/60 text-ink' : 'text-muted'
+            }`}
+          >
+            {p}%
+          </button>
+        ))}
+        <button
+          disabled={busy || !manual}
+          onClick={() => act(() => rest.fanAuto())}
+          className="ml-auto hair rounded-lg border px-2.5 py-1 text-xs transition hover:border-accent/50 disabled:opacity-40"
+        >
+          Release to automatic
+        </button>
+      </div>
+      {/* The thermal fail-safe is not optional, so say the manual hold has a
+          floor the board enforces regardless. */}
+      <p className="mt-2 text-xs text-muted">
+        {manual
+          ? 'Held manually. A critical temperature still forces 100%.'
+          : 'Following the temperature curve.'}
+      </p>
+      {err && <p className="mt-1 text-xs text-alarm">{err}</p>}
+    </div>
+  );
+}
+
+/* A drag-to-set slider that only commits on release — dragging it would
+   otherwise fire a shell-out per pixel. */
+function Slider({ value, disabled, onCommit }: { value: number; disabled: boolean; onCommit: (p: number) => void }) {
+  const [local, setLocal] = useState(value);
+  const dragging = useRef(false);
+  useEffect(() => {
+    if (!dragging.current) setLocal(value);
+  }, [value]);
+  return (
+    <input
+      type="range"
+      min={0}
+      max={100}
+      step={5}
+      value={local}
+      disabled={disabled}
+      onChange={(e) => {
+        dragging.current = true;
+        setLocal(Number(e.target.value));
+      }}
+      onMouseUp={() => {
+        dragging.current = false;
+        onCommit(local);
+      }}
+      onTouchEnd={() => {
+        dragging.current = false;
+        onCommit(local);
+      }}
+      onKeyUp={() => onCommit(local)}
+      className="w-full accent-accent disabled:opacity-50"
+    />
   );
 }
 
@@ -88,12 +242,87 @@ function fmtUptime(s: number) {
   return `${mm}m`;
 }
 
-function Stat({ label, sub, value, tone }: { label: string; sub: string; value: string; tone: string }) {
+function Stat({
+  label,
+  sub,
+  value,
+  tone,
+  series,
+}: {
+  label: string;
+  sub: string;
+  value: string;
+  tone: string;
+  series?: (number | null)[] | null;
+}) {
   return (
     <div className="hair rounded-xl border bg-raised p-4">
       <div className="text-xs text-muted">{label}</div>
       <div className={`mt-1 text-2xl font-semibold tabular-nums ${tone}`}>{value}</div>
-      {sub && <div className="mt-0.5 text-xs text-muted">{sub}</div>}
+      {series && series.some((v) => v !== null) ? (
+        <Spark values={series} className={`mt-2 ${tone}`} />
+      ) : (
+        sub && <div className="mt-0.5 text-xs text-muted">{sub}</div>
+      )}
+      {series && series.some((v) => v !== null) && sub && <div className="mt-0.5 text-xs text-muted">{sub}</div>}
     </div>
+  );
+}
+
+/* A hand-drawn SVG sparkline — no chart library. Normalised to its own min/max
+   so a two-degree wobble is visible; a flat series draws a flat line rather than
+   dividing by zero. Nulls break the line into segments (a sensor that bound late
+   has no value at the old end of the ring). */
+function Spark({ values, className }: { values: (number | null)[]; className?: string }) {
+  const W = 120;
+  const H = 28;
+  const nums = values.filter((v): v is number => v !== null);
+  if (!nums.length) return null;
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const span = max - min || 1;
+  const n = values.length;
+  const x = (i: number) => (n <= 1 ? 0 : (i / (n - 1)) * W);
+  const y = (v: number) => H - 2 - ((v - min) / span) * (H - 4);
+
+  // Build polyline segments, broken on nulls.
+  const segs: string[] = [];
+  let cur: string[] = [];
+  values.forEach((v, i) => {
+    if (v === null) {
+      if (cur.length) segs.push(cur.join(' '));
+      cur = [];
+    } else {
+      cur.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+    }
+  });
+  if (cur.length) segs.push(cur.join(' '));
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      className={`block h-7 w-full ${className ?? ''}`}
+      aria-hidden="true"
+    >
+      {segs.map((pts, i) =>
+        pts.includes(' ') ? (
+          <polyline
+            key={i}
+            points={pts}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+            opacity={0.85}
+          />
+        ) : (
+          /* A single point can't be a line; draw a dot so it isn't invisible. */
+          <circle key={i} cx={pts.split(',')[0]} cy={pts.split(',')[1]} r={1.3} fill="currentColor" />
+        ),
+      )}
+    </svg>
   );
 }

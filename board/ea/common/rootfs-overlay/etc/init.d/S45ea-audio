@@ -1,0 +1,57 @@
+#!/bin/sh
+# Load the CE5300 ASoC audio stack (the `audio-dsp` feature, built =m to keep the
+# EA-3 bzImage inside CEFDK's bootlinux window — see
+# board/ea/common/features/audio-dsp/linux.fragment).
+#
+# WHY an init script and not modules-load.d: this image has no systemd and no
+# modules-load.d reader, so modules are loaded by modprobe from init, the same way
+# S39ea-switch loads b53. Features have no rootfs-overlay hook of their own, so the
+# autoload lives in the EA family overlay; it is a NO-OP on EA boards built without
+# audio-dsp (the .ko simply are not in the image, so each modprobe fails
+# harmlessly — same guard style as S39ea-switch / S41wifi-ap).
+#
+# WHY before S95librespot: librespot (and shairport) open /dev/snd/*, which only
+# exists once the card is registered. Each modprobe pulls snd / snd-pcm /
+# snd-soc-core by modules.dep; the four openHC drivers bind by name/alias, not by
+# symbol dep, so they are loaded explicitly and in order:
+#   ce5300-i2s   — CPU DAI + PCM component (binds its PCI device)
+#   adau1451-c4  — codec component
+#   ce5300-ea-board — registers the ce5300-ea-audio platform device (+ codec i2c
+#                     client); its initcall runs as module_init on load
+#   ce5300-ea3   — machine driver, binds ce5300-ea-audio and registers the card
+# Deferred probe makes the order forgiving, but this is the natural bring-up order.
+
+MODS="ce5300-i2s adau1451-c4 ce5300-ea-board ce5300-ea3"
+
+start() {
+    loaded=0
+    for m in $MODS; do
+        if modprobe "$m" >/dev/null 2>&1; then
+            loaded=$((loaded + 1))
+        fi
+    done
+    if [ "$loaded" -eq 0 ]; then
+        echo "ea-audio: no audio-dsp modules in this image, skipping"
+        return 0
+    fi
+    # Best-effort wait for the card to appear so S95librespot finds a PCM device.
+    i=0
+    while [ $i -lt 10 ]; do
+        [ -e /dev/snd/pcmC0D0p ] && { echo "ea-audio: card ready"; return 0; }
+        sleep 1; i=$((i + 1))
+    done
+    echo "ea-audio: modules loaded (card not up yet)"
+}
+
+stop() {
+    for m in ce5300-ea3 ce5300-ea-board adau1451-c4 ce5300-i2s; do
+        modprobe -r "$m" >/dev/null 2>&1 || true
+    done
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
