@@ -240,8 +240,12 @@ there:
   `00:0f:ff:00:00:60:2d:6a` and the existing network, on two back-to-back
   connections.
 
-ZHA will offer to form a new network. That replaces the Control4 one in the
-NCP, so anything still paired to it has to be re-paired.
+The Control4 network was cleared on 2026-10-03 (`leaveNetwork` → `NETWORK_DOWN`,
+then `NOT_JOINED` on a fresh session), after a zigpy-cli backup of it. The NCP
+now has no network, and ZHA forms its own on first setup. With bellows on this
+firmware, `leaveNetwork` returns `SUCCESS` and then sends `NETWORK_DOWN` as a
+callback, so the stock `bellows leave` CLI waits forever. Call the API with a
+timeout instead.
 
 ## IO: an LM3S1162 on ttyS3
 
