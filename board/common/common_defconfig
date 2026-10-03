@@ -17,6 +17,12 @@ BR2_OPTIMIZE_S=y
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
+# The toolchain is built against this kernel's own headers, and Buildroot checks
+# the series it was told to expect. 2026.02's newest choice is 6.19; for the
+# newest choice the check is "at least" (loose), so 6.19 accepts 7.1. Left
+# unset it defaults to "really old" (2.6), which the strict check rejects:
+#   Incorrect selection of kernel headers: expected 2.6.x, got 7.1.x
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_19=y
 
 # --- init / login ---
 # Password login on serial + ssh. root's password is "openhc"; board/common/
@@ -32,6 +38,13 @@ BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 BR2_PACKAGE_DROPBEAR=y
 BR2_PACKAGE_AVAHI=y
 BR2_PACKAGE_AVAHI_DAEMON=y
+# D-Bus on every board, so avahi is built one way everywhere and its config can
+# simply say enable-dbus=yes. Without it, a D-Bus-less avahi rejects the key
+# outright and will not start, while the audio images need D-Bus for
+# shairport-sync's avahi-client to register AirPlay — one build, no per-image
+# special cases. dbus-daemon is ~1 MB; the tightest image (ioxv1, ~17 MB in a
+# 32 MiB NAND slot) has room.
+BR2_PACKAGE_DBUS=y
 
 # --- on-target debugging + GPIO userspace ---
 BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y

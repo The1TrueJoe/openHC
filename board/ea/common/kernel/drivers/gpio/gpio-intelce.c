@@ -28,9 +28,9 @@
 #define BANK_STRIDE		0x20
 #define GPIOS_PER_BANK		32
 
-#define REG_OUT			0x00
-#define REG_OUT_EN		0x04
-#define REG_INPUT		0x08
+#define INTELCE_GPIO_OUT	0x00
+#define INTELCE_GPIO_OUT_EN	0x04
+#define INTELCE_GPIO_INPUT	0x08
 
 struct intelce_gpio {
 	struct gpio_chip chip;
@@ -48,13 +48,13 @@ static int intelce_gpio_get(struct gpio_chip *chip, unsigned off)
 {
 	struct intelce_gpio *g = gpiochip_get_data(chip);
 
-	return !!(readl(bank_reg(g, off, REG_INPUT)) & BIT_OF(off));
+	return !!(readl(bank_reg(g, off, INTELCE_GPIO_INPUT)) & BIT_OF(off));
 }
 
 static int intelce_gpio_set(struct gpio_chip *chip, unsigned off, int val)
 {
 	struct intelce_gpio *g = gpiochip_get_data(chip);
-	void __iomem *reg = bank_reg(g, off, REG_OUT);
+	void __iomem *reg = bank_reg(g, off, INTELCE_GPIO_OUT);
 	unsigned long flags;
 	u32 v;
 
@@ -72,7 +72,7 @@ static int intelce_gpio_set(struct gpio_chip *chip, unsigned off, int val)
 static int intelce_gpio_direction_input(struct gpio_chip *chip, unsigned off)
 {
 	struct intelce_gpio *g = gpiochip_get_data(chip);
-	void __iomem *reg = bank_reg(g, off, REG_OUT_EN);
+	void __iomem *reg = bank_reg(g, off, INTELCE_GPIO_OUT_EN);
 	unsigned long flags;
 
 	spin_lock_irqsave(&g->lock, flags);
@@ -84,7 +84,7 @@ static int intelce_gpio_direction_input(struct gpio_chip *chip, unsigned off)
 static int intelce_gpio_direction_output(struct gpio_chip *chip, unsigned off, int val)
 {
 	struct intelce_gpio *g = gpiochip_get_data(chip);
-	void __iomem *reg = bank_reg(g, off, REG_OUT_EN);
+	void __iomem *reg = bank_reg(g, off, INTELCE_GPIO_OUT_EN);
 	unsigned long flags;
 
 	intelce_gpio_set(chip, off, val);
@@ -99,7 +99,7 @@ static int intelce_gpio_get_direction(struct gpio_chip *chip, unsigned off)
 	struct intelce_gpio *g = gpiochip_get_data(chip);
 
 	/* OUT_EN bit set => output */
-	if (readl(bank_reg(g, off, REG_OUT_EN)) & BIT_OF(off))
+	if (readl(bank_reg(g, off, INTELCE_GPIO_OUT_EN)) & BIT_OF(off))
 		return GPIO_LINE_DIRECTION_OUT;
 	return GPIO_LINE_DIRECTION_IN;
 }

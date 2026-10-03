@@ -34,11 +34,9 @@ DM355 on. Not-yet-upstream. See https://the1truejoe.github.io/openHC/iox/kernel-
  create mode 100644 drivers/clk/davinci/pll-dm355.c
  create mode 100644 drivers/clk/davinci/psc-dm355.c
 
-diff --git a/drivers/clk/davinci/Makefile b/drivers/clk/davinci/Makefile
-index f9d5c9a..d0127c2 100644
 --- a/drivers/clk/davinci/Makefile
 +++ b/drivers/clk/davinci/Makefile
-@@ -5,7 +5,9 @@ obj-$(CONFIG_ARCH_DAVINCI_DA8XX)	+= da8xx-cfgchip.o
+@@ -5,7 +5,9 @@
  
  obj-y += pll.o
  obj-$(CONFIG_ARCH_DAVINCI_DA850)	+= pll-da850.o
@@ -48,9 +46,6 @@ index f9d5c9a..d0127c2 100644
  obj-$(CONFIG_ARCH_DAVINCI_DA850)	+= psc-da850.o
 +obj-$(CONFIG_ARCH_DAVINCI_DM355)	+= psc-dm355.o
  endif
-diff --git a/drivers/clk/davinci/pll-dm355.c b/drivers/clk/davinci/pll-dm355.c
-new file mode 100644
-index 0000000..d859d7b
 --- /dev/null
 +++ b/drivers/clk/davinci/pll-dm355.c
 @@ -0,0 +1,97 @@
@@ -151,11 +146,9 @@ index 0000000..d859d7b
 +
 +	return 0;
 +}
-diff --git a/drivers/clk/davinci/pll.c b/drivers/clk/davinci/pll.c
-index f73b0ac..8f59645 100644
 --- a/drivers/clk/davinci/pll.c
 +++ b/drivers/clk/davinci/pll.c
-@@ -846,12 +846,19 @@ CLK_OF_DECLARE(da850_pll0, "ti,da850-pll0", of_da850_pll0_init);
+@@ -846,12 +846,19 @@
  
  static const struct of_device_id davinci_pll_of_match[] = {
  	{ .compatible = "ti,da850-pll1", .data = of_da850_pll1_init },
@@ -175,11 +168,9 @@ index f73b0ac..8f59645 100644
  	{ }
  };
  
-diff --git a/drivers/clk/davinci/pll.h b/drivers/clk/davinci/pll.h
-index ad286ba..b86b50a 100644
 --- a/drivers/clk/davinci/pll.h
 +++ b/drivers/clk/davinci/pll.h
-@@ -125,5 +125,8 @@ int of_davinci_pll_init(struct device *dev, struct device_node *node,
+@@ -125,5 +125,8 @@
  int da850_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
  void of_da850_pll0_init(struct device_node *node);
  int of_da850_pll1_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
@@ -188,9 +179,6 @@ index ad286ba..b86b50a 100644
 +int dm355_pll2_init(struct device *dev, void __iomem *base, struct regmap *cfgchip);
  
  #endif /* __CLK_DAVINCI_PLL_H___ */
-diff --git a/drivers/clk/davinci/psc-dm355.c b/drivers/clk/davinci/psc-dm355.c
-new file mode 100644
-index 0000000..cea26bc
 --- /dev/null
 +++ b/drivers/clk/davinci/psc-dm355.c
 @@ -0,0 +1,105 @@
@@ -299,11 +287,9 @@ index 0000000..cea26bc
 +	.num_parent_clks	= ARRAY_SIZE(dm355_psc_parent_clks),
 +	.psc_init		= &of_dm355_psc_init,
 +};
-diff --git a/drivers/clk/davinci/psc.c b/drivers/clk/davinci/psc.c
-index ff60352..e55f302 100644
 --- a/drivers/clk/davinci/psc.c
 +++ b/drivers/clk/davinci/psc.c
-@@ -501,12 +501,18 @@ int of_davinci_psc_clk_init(struct device *dev,
+@@ -501,12 +501,18 @@
  static const struct of_device_id davinci_psc_of_match[] = {
  	{ .compatible = "ti,da850-psc0", .data = &of_da850_psc0_init_data },
  	{ .compatible = "ti,da850-psc1", .data = &of_da850_psc1_init_data },
@@ -322,11 +308,9 @@ index ff60352..e55f302 100644
  	{ }
  };
  
-diff --git a/drivers/clk/davinci/psc.h b/drivers/clk/davinci/psc.h
-index 7426728..460d3bd 100644
 --- a/drivers/clk/davinci/psc.h
 +++ b/drivers/clk/davinci/psc.h
-@@ -98,5 +98,7 @@ extern const struct davinci_psc_init_data da850_psc0_init_data;
+@@ -98,5 +98,7 @@
  extern const struct davinci_psc_init_data da850_psc1_init_data;
  extern const struct davinci_psc_init_data of_da850_psc0_init_data;
  extern const struct davinci_psc_init_data of_da850_psc1_init_data;
@@ -334,6 +318,3 @@ index 7426728..460d3bd 100644
 +extern const struct davinci_psc_init_data of_dm355_psc_init_data;
  
  #endif /* __CLK_DAVINCI_PSC_H__ */
--- 
-2.50.1 (Apple Git-155)
-
