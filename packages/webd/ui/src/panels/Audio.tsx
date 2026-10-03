@@ -41,8 +41,10 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   /* A board with named outputs runs N endpoints mapped onto its jacks; the
      single-output selector and the master volume do not apply there (each
      endpoint has its own volume, controlled from the phone). */
-  const map = live?.map ?? a.map;
-  if (map) return <MapPanel map={map} />;
+  // REST only (iod does not mirror the map on the bus), and only when it has
+  // the shape we render — never a half-built object.
+  const map = a.map;
+  if (map && Array.isArray(map.outputs) && Array.isArray(map.endpoints)) return <MapPanel map={map} />;
 
   return (
     <div className="space-y-4">

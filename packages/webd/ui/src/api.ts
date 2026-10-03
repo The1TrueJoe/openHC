@@ -196,7 +196,6 @@ export interface IoState {
     output?: string;
     volume?: number;
     receiver?: Record<string, { running?: boolean }>;
-    map?: AudioMap;
   };
 }
 

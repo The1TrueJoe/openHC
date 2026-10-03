@@ -316,17 +316,17 @@ async fn audio_volume(c: &Arc<Config>, percent: u8, device: Option<&str>) -> Out
     Ok(json!({ "volume": now, "card": card, "control": control }))
 }
 
-/// Replace the endpoint lists (boards with named outputs). The new map is
-/// mirrored like any other state, so every open page sees the change.
+/// Replace the endpoint lists (boards with named outputs). The map is NOT put
+/// on the state bus: the bus mirrors leaf by leaf, and a nested document with
+/// arrays reaches a browser as objects keyed "0", "1"… (the panel crashed on
+/// exactly that). Pages read it from /api/audio, which they already poll.
 async fn audio_endpoints(
-    c: &Arc<Config>,
+    _c: &Arc<Config>,
     spotify: Option<String>,
     airplay: Option<String>,
     routes: Option<String>,
 ) -> Out {
-    let m = crate::audio::set_map(spotify, airplay, routes).await.map_err(Fault::Bad)?;
-    c.bus.set("audio/map", m.clone());
-    Ok(m)
+    crate::audio::set_map(spotify, airplay, routes).await.map_err(Fault::Bad)
 }
 
 /// Path to the return-to-stock helper. Present only on boards whose `ohc.features`
