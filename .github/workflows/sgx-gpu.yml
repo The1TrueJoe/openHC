@@ -1,0 +1,94 @@
+# Build the 32-bit PowerVR SGX545 GPU sub-stack for the EA boards.
+#
+# The EA userspace is x86_64 (modern 64-bit — see packages/build.sh), but the only
+# SGX545 DDK that exists is Intel's 32-bit Cedarview 1.7 (Imagination never shipped
+# a 64-bit build for this core). So the GPU/WPE stack runs as i386 processes under
+# the x86_64 kernel's IA32 emulation, against the in-tree sgx545ce kernel driver's
+# DRM compat path. Buildroot can't multilib in one tree, so the i386 bits are built
+# HERE and dropped into /opt/sgx-i386 of the x86_64 image (a self-contained sysroot
+# with its own loader + libc), launched via that loader.
+#
+# This job produces that sysroot as an artifact, plus the DDK smoke-test binaries
+# (sgxinit, gles2tri, gpubench) so the GPU path can be proven on hardware before
+# WPE is wired on top. Dispatch-only for now.
+name: sgx-gpu
+
+on:
+  workflow_dispatch:
+
+jobs:
+  i386-sysroot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - name: Enable i386 multiarch + tools
+        run: |
+          set -euxo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          # gcc-multilib gives -m32; the :i386 runtimes are what the box needs.
+          sudo apt-get install -y --no-install-recommends \
+            gcc-multilib \
+            libc6:i386 libc6-dev:i386 \
+            libdrm2:i386 libdrm-dev:i386 \
+            libstdc++6:i386
+
+      - name: Fetch + verify the Cedarview DDK 1.7 (i386 blobs)
+        run: |
+          set -euxo pipefail
+          url=https://old-releases.ubuntu.com/ubuntu/pool/multiverse/c/cedarview-graphics-drivers/cedarview-graphics-drivers_20120717.orig.tar.gz
+          curl -fsSL -o ddk.tar.gz "$url"
+          echo "c23e7261631860f3bc132c294e269ea982e34e37b5e838fafea0e7070da8fd83  ddk.tar.gz" | sha256sum -c -
+          mkdir -p ddk && tar xzf ddk.tar.gz -C ddk
+
+      - name: Assemble the i386 sysroot
+        run: |
+          set -euxo pipefail
+          SR=sgx-i386
+          mkdir -p "$SR/lib" "$SR/usr/lib" "$SR/bin" "$SR/etc"
+          # DDK userspace blobs (preserve soname chains).
+          cp -a ddk/usr/lib/*.so* "$SR/usr/lib/"
+          # libIMGegl dlopens the WSEGL by the fixed DRIWSEGL name; point it at the
+          # LinuxFB WSEGL (framebuffer target — this board has no KMS/GBM).
+          ln -sf libpvrPVR2D_LINUXFBWSEGL.so.1.7.862890 "$SR/usr/lib/libpvrPVR2D_DRIWSEGL.so"
+          cp -a board/ea/common/packages/sgx545-um/powervr.ini "$SR/etc/powervr.ini" 2>/dev/null || true
+          # i386 glibc loader + runtime, and libdrm, copied out of the multiarch tree.
+          cp -a /lib/i386-linux-gnu/ld-linux.so.2 "$SR/lib/" 2>/dev/null || cp -a /usr/lib/i386-linux-gnu/ld-linux.so.2 "$SR/lib/"
+          for l in libc libm libdl libpthread librt libgcc_s libstdc++ libdrm; do
+            cp -a /lib/i386-linux-gnu/${l}.so* "$SR/usr/lib/" 2>/dev/null || true
+            cp -a /usr/lib/i386-linux-gnu/${l}.so* "$SR/usr/lib/" 2>/dev/null || true
+          done
+          ls -l "$SR/usr/lib" | head -60
+
+      - name: Cross-compile the DDK smoke tests (i686)
+        run: |
+          set -euxo pipefail
+          T=board/ea/common/kernel/drivers/gpu/drm/sgx545ce/tools
+          INC=ddk/usr/include
+          LIB=sgx-i386/usr/lib
+          CF="-m32 -O2 -Wall -I$INC -DMESA_EGL_NO_X11_HEADERS=1"
+          # sgxinit: pure dlopen, no DDK link needed.
+          gcc $CF "$T/sgxinit.c" -ldl -o sgx-i386/bin/sgxinit
+          # busidshim: the ld.so.preload bus-id corrector.
+          gcc -m32 -O2 -shared -fPIC "$T/busidshim.c" -ldl -o "$LIB/sgx-busidshim.so"
+          # gles2tri + gpubench: link the DDK EGL/GLES (soname symlinks are in $LIB).
+          gcc $CF "$T/gles2tri.c" -L"$LIB" -Wl,-rpath-link,"$LIB" -lEGL -lGLESv2 -o sgx-i386/bin/gles2tri
+          gcc $CF "$T/gpubench.c" -L"$LIB" -Wl,-rpath-link,"$LIB" -lEGL -lGLESv2 -o sgx-i386/bin/gpubench || echo "gpubench optional: skipped"
+          # sgxregs is a shell script; ship it too.
+          cp -a "$T/sgxregs.sh" sgx-i386/bin/sgxregs
+          chmod +x sgx-i386/bin/*
+          file sgx-i386/bin/* || true
+
+      - name: Package
+        run: |
+          set -euxo pipefail
+          tar czf sgx-i386-sysroot.tar.gz sgx-i386
+          ls -l sgx-i386-sysroot.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sgx-i386-sysroot
+          path: sgx-i386-sysroot.tar.gz
+          retention-days: 7
