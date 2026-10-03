@@ -20,9 +20,13 @@ REPO="$(cd "$HERE/.." && pwd)"
 
 case "$BOARD" in
   ca1*)             TARGET=armv7-unknown-linux-musleabihf ;;
-  ea1*|ea3*|ea5*)   TARGET=i686-unknown-linux-musl ;;
-  # The HC-800 is the one 64-bit board: openHC builds it x86_64 even though
-  # Control4 shipped a 32-bit kernel on the same silicon.
+  # EA runs a modern 64-bit userspace. The Buildroot rootfs is x86_64 (glibc) and
+  # the daemons are x86_64 static-musl, so they match the base and the IA32
+  # emulation layer is reserved for the one thing that genuinely needs it: the
+  # 32-bit PowerVR SGX545 GLES/WPE sub-stack (no 64-bit DDK exists for this core).
+  # Static musl has no loader dependency, so it runs cleanly on the glibc rootfs.
+  ea1*|ea3*|ea5*)   TARGET=x86_64-unknown-linux-musl ;;
+  # The HC-800 is x86_64 too (Control4 shipped a 32-bit kernel on the same silicon).
   hc800*)           TARGET=x86_64-unknown-linux-musl ;;
   ioxv1*)           TARGET=armv5te-unknown-linux-musleabi ;;
   *) echo "build.sh: unknown board '$BOARD'"; exit 1 ;;
