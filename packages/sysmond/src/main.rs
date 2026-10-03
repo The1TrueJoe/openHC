@@ -14,6 +14,16 @@
 //!
 //! So: iod owns IO and speaks MQTT; sysmond owns metrics and speaks REST, with
 //! history. Two daemons, two surfaces, each shaped like the thing it carries.
+//!
+//! THE WEB UI READS IT OVER MQTT ANYWAY (owner's call: nothing in the web UI
+//! polls REST). sysmond still owns sampling and the ring; after each sample it
+//! also EXPORTS two small files to /run/ohc/sysmond/ — `now.json` (the latest
+//! sample, exactly what /api/now returns) and, once a minute, `history.json`
+//! (the ring downsampled to one sample a minute, so six hours is ~360 points,
+//! a few tens of kB rather than the full ring) — and iod, the only MQTT speaker,
+//! republishes them as the retained topics `health/now` and `health/history`.
+//! Files rather than a socket keep sysmond free of an MQTT client and iod free
+//! of an HTTP one. The REST surface below stays for other API consumers.
 mod fan;
 mod history;
 mod sensors;
@@ -57,9 +67,13 @@ claim knowledge of where the thermistors physically sit.",
     responses((status = 200, description = "One sample, with the series that describes it"))
 )]
 async fn now(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let st = app.store.lock().unwrap();
+    Json(now_json(&app.store.lock().unwrap()))
+}
+
+/// The latest sample with its labels — /api/now, and the exported now.json.
+fn now_json(st: &history::Store) -> serde_json::Value {
     let latest = st.latest();
-    Json(serde_json::json!({
+    serde_json::json!({
         "at": latest.map(|s| s.at),
         "series": st.series,
         "values": latest.map(|s| s.v.clone()),
@@ -68,7 +82,35 @@ async fn now(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
         "mem_used_pct": latest.and_then(|s| s.mem_used_pct),
         "uptime_s": sensors::uptime_secs(),
         "mem_total_kb": sensors::mem().map(|(t, _)| t),
-    }))
+    })
+}
+
+/// The ring, keeping every `step`th sample (newest always kept) — the exported
+/// history.json that iod publishes as `health/history`.
+fn history_json(st: &history::Store, period: u64, step: usize) -> serde_json::Value {
+    let all = st.since(0);
+    let n = all.len();
+    let picked: Vec<_> = all
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| (n - 1 - i) % step.max(1) == 0)
+        .map(|(_, s)| s)
+        .collect();
+    serde_json::json!({
+        "period_s": period * step.max(1) as u64,
+        "held": picked.len(),
+        "series": st.series,
+        "samples": picked,
+    })
+}
+
+/// Write `name` under the export dir atomically (temp + rename), so iod never
+/// reads half a file. Failures are not fatal: REST still serves the same data.
+fn export(dir: &std::path::Path, name: &str, v: &serde_json::Value) {
+    let tmp = dir.join(format!(".{name}.tmp"));
+    if std::fs::write(&tmp, v.to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join(name));
+    }
 }
 
 /// History. `series` is sent ONCE and the samples are positional against it —
@@ -176,9 +218,16 @@ fn main() {
         .expect("tokio");
     rt.block_on(async move {
         let collector = app.clone();
+        let export_dir = std::path::PathBuf::from(
+            std::env::var("SYSMOND_EXPORT_DIR").unwrap_or_else(|_| "/run/ohc/sysmond".into()),
+        );
+        let _ = std::fs::create_dir_all(&export_dir);
+        // One history point a minute, whatever the sampling period.
+        let step = (60 / period.max(1)).max(1) as usize;
         tokio::spawn(async move {
             let mut cpu = sensors::Cpu::default();
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(period));
+            let mut n: usize = 0;
             loop {
                 tick.tick().await;
                 let at = std::time::SystemTime::now()
@@ -188,11 +237,13 @@ fn main() {
                 let r = sensors::readings();
                 let (total, avail) = sensors::mem().unwrap_or((0, 0));
                 let mem_pct = (total > 0).then(|| ((total - avail) * 100 / total) as u8);
-                collector
-                    .store
-                    .lock()
-                    .unwrap()
-                    .push(at, &r, cpu.sample(), sensors::load1(), mem_pct);
+                let mut st = collector.store.lock().unwrap();
+                st.push(at, &r, cpu.sample(), sensors::load1(), mem_pct);
+                export(&export_dir, "now.json", &now_json(&st));
+                if n % step == 0 {
+                    export(&export_dir, "history.json", &history_json(&st, period, step));
+                }
+                n = n.wrapping_add(1);
             }
         });
 

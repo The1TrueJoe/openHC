@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable } from 'lucide-react';
 import {
-  io, rest, type AudioEndpoint, type AudioMap, type AudioReceiver, type AudioStatus, type Capabilities,
+  io, type AudioEndpoint, type AudioMap, type AudioReceiver, type AudioStatus, type Capabilities,
 } from '../api';
 import { useIoState } from '../App';
 
@@ -13,21 +13,13 @@ import { useIoState } from '../App';
    shown only when a receiver actually exposes it, which in this image is never;
    see packages/iod/src/audio.rs for the board-side wiring that would change that.
 
-   Structure comes over REST (/api/audio) and is polled; the fast-moving bits —
-   selected output, volume, receiver running — also arrive live over MQTT, so a
-   change made elsewhere (or by amixer on the box) shows up here too. */
+   Structure is seeded once from the capabilities the app loaded; everything
+   that changes — selected output, volume, receiver running, and on boards with
+   named outputs the whole endpoint map — arrives live over MQTT. Nothing here
+   polls REST. */
 export function AudioPanel({ caps }: { caps: Capabilities }) {
-  // Seed from capabilities so the first paint is instant, then keep it fresh.
-  const [a, setA] = useState<AudioStatus | null>(caps.audio ?? null);
+  const a: AudioStatus | null = caps.audio ?? null;
   const live = useIoState().audio;
-
-  useEffect(() => {
-    let alive = true;
-    const tick = () => rest.audio().then((d) => alive && setA(d)).catch(() => { /* keep last */ });
-    tick();
-    const id = setInterval(tick, 5000);
-    return () => { alive = false; clearInterval(id); };
-  }, []);
 
   /* Same rule as every other panel: nothing behind it, nothing drawn. The rail
      entry is already gated on caps.audio, but a board that lost its card between
@@ -41,9 +33,10 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   /* A board with named outputs runs N endpoints mapped onto its jacks; the
      single-output selector and the master volume do not apply there (each
      endpoint has its own volume, controlled from the phone). */
-  // REST only (iod does not mirror the map on the bus), and only when it has
-  // the shape we render — never a half-built object.
-  const map = a.map;
+  // Live map from MQTT (retained, so it is there on connect), falling back to
+  // the capabilities snapshot; rendered only once it has the full shape — the
+  // retained topics arrive leaf by leaf.
+  const map = live?.map ?? a.map;
   if (map && Array.isArray(map.outputs) && Array.isArray(map.endpoints)) return <MapPanel map={map} />;
 
   return (

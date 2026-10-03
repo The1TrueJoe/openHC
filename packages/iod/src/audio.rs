@@ -370,6 +370,19 @@ pub fn map() -> Option<Value> {
     Some(v)
 }
 
+/// Mirror the endpoint map onto the state bus: `audio/map` (the whole document,
+/// published as JSON) and `audio/spotify|airplay|routes` (the plain lists).
+/// No-op on boards without named outputs.
+pub fn publish_map(bus: &crate::events::Bus) {
+    let Some(m) = map() else { return };
+    for k in ["spotify", "airplay", "routes"] {
+        if let Some(v) = m.get(k) {
+            bus.set(&format!("audio/{k}"), v.clone());
+        }
+    }
+    bus.set("audio/map", m);
+}
+
 /// Characters a mapping value may not contain: ohc-audio's config file is
 /// sourced by the shell, so these would be syntax rather than text.
 const FORBIDDEN: &[char] = &['$', '`', '\\', '"', '\n', '\r'];

@@ -196,7 +196,14 @@ export interface IoState {
     output?: string;
     volume?: number;
     receiver?: Record<string, { running?: boolean }>;
+    /** Boards with named outputs: the endpoint map, live. */
+    map?: AudioMap;
   };
+  /** sysmond telemetry, republished by iod: the latest sample, the ring at one
+   *  point a minute, and the fan. */
+  health?: { now?: Telemetry; history?: History; fan?: FanStatus };
+  /** Return-to-stock availability (boards with the ohc-restore helper). */
+  system?: { restore?: { available: boolean; openhc?: boolean; detail?: string } };
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -237,7 +244,8 @@ export interface Telemetry {
 export interface History {
   period_s: number;
   held: number;
-  capacity: number;
+  /** The REST ring reports its capacity; the minute-resolution copy on MQTT does not. */
+  capacity?: number;
   series: Series[];
   samples: {
     at: number;
@@ -301,13 +309,20 @@ export const rest = {
     j<{ started: boolean; note?: string }>(`${HTTP}/api/system/restore/stock`, { method: 'POST' }),
 };
 
-/** `ON`/`OFF` become booleans, digits become numbers, everything else stays a
- *  string. iod publishes scalars bare so a shell script can read them without
- *  a JSON parser; this is the other half of that bargain. */
-function decode(raw: string): boolean | number | string {
+/** `ON`/`OFF` become booleans, digits become numbers, JSON objects/arrays are
+ *  parsed, everything else stays a string. iod publishes scalars bare so a
+ *  shell script can read them without a JSON parser, and anything structured as
+ *  JSON (mqtt/topics.rs `payload`); this is the other half of that bargain.
+ *  Without the JSON half, a structured value (the audio endpoint map) arrived
+ *  as a string and the panel rendering it crashed. */
+function decode(raw: string): unknown {
   if (raw === 'ON') return true;
   if (raw === 'OFF') return false;
   if (raw !== '' && !Number.isNaN(Number(raw))) return Number(raw);
+  const c = raw[0];
+  if (c === '{' || c === '[') {
+    try { return JSON.parse(raw); } catch { /* not JSON after all: keep the text */ }
+  }
   return raw;
 }
 
@@ -417,6 +432,11 @@ export class Io {
    *  iod validates it, saves it persistently and restarts the endpoints. */
   setAudioEndpoints = (kind: 'spotify' | 'airplay' | 'routes', list: string) =>
     this.#publish(`audio/${kind}`, list);
+  /** Fan: a percent holds it there, 'auto' hands it back to the curve. */
+  setFan = (v: number | 'auto') =>
+    this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));
+  /** Return to stock. One-way; iod acts only on the literal "confirm". */
+  restoreStock = () => this.#publish('system/restore', 'confirm');
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {

@@ -13,6 +13,7 @@ mod board;
 mod events;
 mod gpio;
 mod gpio_io;
+mod health;
 mod ir;
 mod led;
 mod lirc;
@@ -124,7 +125,31 @@ async fn audio_poller(cfg: Arc<Config>) {
         for r in audio::receivers() {
             cfg.bus.set(&format!("audio/receiver/{}/running", r.id), serde_json::json!(r.running));
         }
+        // Boards with named outputs: the endpoint map (structured, for the UI;
+        // includes each endpoint's running flag) and the three lists as plain
+        // strings (what a Home Assistant text entity reads back after writing
+        // cmd/audio/<kind>). The bus drops unchanged values, so a steady map
+        // costs nothing.
+        audio::publish_map(&cfg.bus);
         tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+
+/// Health and system state for MQTT: sysmond's exported telemetry, the fan, and
+/// whether a return-to-stock is available. Telemetry moves every five seconds;
+/// the restore status is a helper fork, so it is refreshed far less often.
+async fn health_poller(cfg: Arc<Config>) {
+    use std::time::Duration;
+    let mut n: u32 = 0;
+    loop {
+        health::publish(&cfg.bus).await;
+        if n % 12 == 0 {
+            if let Ok(v) = ops::restore_status().await {
+                cfg.bus.set("system/restore", v);
+            }
+        }
+        n = n.wrapping_add(1);
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
@@ -237,6 +262,7 @@ fn main() {
         if audio::capability().is_some() {
             eprintln!("iod: audio present — serving outputs/receivers");
             tokio::task::spawn_local(audio_poller(cfg.clone()));
+            tokio::task::spawn_local(health_poller(cfg.clone()));
         }
 
         // Serve MQTT, bridge outward, or both — and restart either when the

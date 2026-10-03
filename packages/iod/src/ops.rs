@@ -227,6 +227,12 @@ pub enum Cmd {
     /// AirPlay and input-route lists, each `"name@output;..."` (routes:
     /// `"input@output;..."`). A list left out is kept. Validated against the
     /// board's real outputs/inputs, saved persistently, endpoints restarted.
+    /// Hold the fan at a manual percent (0..=100). Boards with a fan helper only.
+    #[serde(rename = "fan.set")]
+    FanSet { pct: i64 },
+    /// Return the fan to its automatic curve.
+    #[serde(rename = "fan.auto")]
+    FanAuto,
     #[serde(rename = "audio.endpoints")]
     AudioEndpoints {
         #[serde(default)]
@@ -270,6 +276,16 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::AudioOutput { device } => audio_output(c, &device).await,
         Cmd::AudioVolume { percent, device } => audio_volume(c, percent, device.as_deref()).await,
         Cmd::AudioEndpoints { spotify, airplay, routes } => audio_endpoints(c, spotify, airplay, routes).await,
+        Cmd::FanSet { pct } => {
+            let r = crate::health::fan_set(pct).await.map_err(Fault::Bad)?;
+            c.bus.set("health/fan", crate::health::fan_status().await);
+            Ok(r)
+        }
+        Cmd::FanAuto => {
+            let r = crate::health::fan_auto().await.map_err(Fault::Bad)?;
+            c.bus.set("health/fan", crate::health::fan_status().await);
+            Ok(r)
+        }
     }
 }
 
@@ -316,17 +332,17 @@ async fn audio_volume(c: &Arc<Config>, percent: u8, device: Option<&str>) -> Out
     Ok(json!({ "volume": now, "card": card, "control": control }))
 }
 
-/// Replace the endpoint lists (boards with named outputs). The map is NOT put
-/// on the state bus: the bus mirrors leaf by leaf, and a nested document with
-/// arrays reaches a browser as objects keyed "0", "1"… (the panel crashed on
-/// exactly that). Pages read it from /api/audio, which they already poll.
+/// Replace the endpoint lists (boards with named outputs), then mirror the new
+/// map at once rather than waiting for the poller, so every open page sees it.
 async fn audio_endpoints(
-    _c: &Arc<Config>,
+    c: &Arc<Config>,
     spotify: Option<String>,
     airplay: Option<String>,
     routes: Option<String>,
 ) -> Out {
-    crate::audio::set_map(spotify, airplay, routes).await.map_err(Fault::Bad)
+    let m = crate::audio::set_map(spotify, airplay, routes).await.map_err(Fault::Bad)?;
+    crate::audio::publish_map(&c.bus);
+    Ok(m)
 }
 
 /// Path to the return-to-stock helper. Present only on boards whose `ohc.features`
@@ -336,7 +352,7 @@ const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
 
 /// Read-only: is a software return-to-stock available here, and what does the MFH
 /// currently say? Shells out to `ohc-restore status` and passes its stdout through.
-async fn restore_status() -> Out {
+pub async fn restore_status() -> Out {
     if !std::path::Path::new(RESTORE_BIN).exists() {
         return Ok(json!({ "available": false, "reason": "no restore support on this board" }));
     }

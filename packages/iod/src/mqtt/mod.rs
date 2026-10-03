@@ -142,6 +142,13 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
         ["audio", "volume"] => b.parse::<u8>().ok().map(|percent| Cmd::AudioVolume { percent, device: None }),
         // Endpoint lists, plain "name@output;..." so a Home Assistant text
         // entity can drive them. An empty payload clears that list.
+        // Fan: "auto" releases it, a number holds it at that percent.
+        ["health", "fan"] => match b.to_ascii_lowercase().as_str() {
+            "auto" => Some(Cmd::FanAuto),
+            n => n.parse::<i64>().ok().map(|pct| Cmd::FanSet { pct }),
+        },
+        // Return to stock is one-way, so the payload must literally say so.
+        ["system", "restore"] if b == "confirm" => Some(Cmd::RestoreStock { confirm: true }),
         ["audio", "spotify"] => Some(Cmd::AudioEndpoints { spotify: Some(b.to_string()), airplay: None, routes: None }),
         ["audio", "airplay"] => Some(Cmd::AudioEndpoints { spotify: None, airplay: Some(b.to_string()), routes: None }),
         ["audio", "routes"] => Some(Cmd::AudioEndpoints { spotify: None, airplay: None, routes: Some(b.to_string()) }),
@@ -214,6 +221,11 @@ mod tests {
         assert!(parse_cmd("audio/volume", "loud").is_none());
         assert!(matches!(parse_cmd("audio/spotify", "Den@hdmi"),
             Some(Cmd::AudioEndpoints { spotify: Some(_), airplay: None, routes: None })));
+        assert!(matches!(parse_cmd("health/fan", "auto"), Some(Cmd::FanAuto)));
+        assert!(matches!(parse_cmd("health/fan", "40"), Some(Cmd::FanSet { pct: 40 })));
+        assert!(parse_cmd("health/fan", "fast").is_none());
+        assert!(matches!(parse_cmd("system/restore", "confirm"), Some(Cmd::RestoreStock { confirm: true })));
+        assert!(parse_cmd("system/restore", "yes").is_none());
         assert!(matches!(parse_cmd("audio/routes", ""),
             Some(Cmd::AudioEndpoints { routes: Some(_), .. })));
     }
