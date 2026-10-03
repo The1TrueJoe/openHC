@@ -212,14 +212,21 @@ jobs:
       # does NOT save when the job fails — and a failed build is exactly when
       # the toolchain is most worth keeping. A typo in a driver should cost one
       # kernel rebuild, not another 15 minutes of gcc.
+      # CACHE EPOCH — bump this when a PACKAGE's config changes in a way
+      # Buildroot's per-package stamps do not notice (a cached package is not
+      # rebuilt just because the defconfig that selects its options changed). The
+      # kernel is safe (linux-dirclean runs every build), but packages are not:
+      # r2 forces one clean rebuild after round 2 added dbus, so avahi rebuilds
+      # with libavahi-client (shairport-sync needs it) instead of riding the
+      # pre-round-2 dbus-less avahi in the cache.
       - name: Restore Buildroot output tree
         id: outcache
         uses: actions/cache/restore@v4
         with:
           path: output/build/${{ matrix.board }}
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r2-${{ github.run_id }}
           restore-keys: |
-            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-
+            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r2-
 
       - name: Fetch Buildroot
         run: |
@@ -323,7 +330,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r2-${{ github.run_id }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.

@@ -14,6 +14,7 @@
 //!
 //! So: iod owns IO and speaks MQTT; sysmond owns metrics and speaks REST, with
 //! history. Two daemons, two surfaces, each shaped like the thing it carries.
+mod fan;
 mod history;
 mod sensors;
 
@@ -26,7 +27,10 @@ use std::sync::{Arc, Mutex};
 #[derive(OpenApi)]
 #[openapi(
     info(title = "sysmond", description = "Board telemetry: temperatures, fans, CPU, memory and uptime, with history."),
-    tags((name = "Telemetry", description = "Sensors and machine-wide figures, sampled on a timer."))
+    tags(
+        (name = "Telemetry", description = "Sensors and machine-wide figures, sampled on a timer."),
+        (name = "Fan", description = "Fan presence, mode and manual control — EA family only.")
+    )
 )]
 struct ApiDoc;
 
@@ -107,6 +111,49 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true, "service": "sysmond" }))
 }
 
+/// Fan status. `available` is false on boards with no fan helper (the UI then
+/// shows no control, only the readings), true with `mode` (auto|manual) and the
+/// fan's current duty `pct` otherwise.
+#[utoipa::path(
+    get, path = "/api/fan", tag = "Fan",
+    summary = "Fan presence, mode and current duty",
+    description = "Shells out to the board's ohc-fand helper, present only on boards with a \
+controllable fan. The EA fan's pwm lives under /sys/class/pwm, not hwmon, so its duty comes from \
+the helper rather than the telemetry series.",
+    responses((status = 200, description = "{ available, mode, pct }"))
+)]
+async fn fan_status() -> Json<serde_json::Value> {
+    Json(fan::status())
+}
+
+#[derive(serde::Deserialize)]
+struct FanSet {
+    /// Duty percent 0-100; clamped before the helper sees it.
+    pct: i64,
+}
+
+/// Set a manual fan override that PERSISTS — the daemon's curve stops fighting
+/// it. The thermal fail-safe still forces 100% on a critical temperature.
+#[utoipa::path(
+    post, path = "/api/fan/set", tag = "Fan",
+    summary = "Hold the fan at a manual percent",
+    request_body = inline(serde_json::Value),
+    responses((status = 200, description = "{ ok, mode, pct } or { ok:false, error }"))
+)]
+async fn fan_set(Json(req): Json<FanSet>) -> Json<serde_json::Value> {
+    Json(fan::set(req.pct))
+}
+
+/// Release the fan back to its automatic temperature curve.
+#[utoipa::path(
+    post, path = "/api/fan/auto", tag = "Fan",
+    summary = "Return the fan to automatic control",
+    responses((status = 200, description = "{ ok, mode } or { ok:false, error }"))
+)]
+async fn fan_auto() -> Json<serde_json::Value> {
+    Json(fan::auto())
+}
+
 fn main() {
     let bind = std::env::var("SYSMOND_BIND").unwrap_or_else(|_| "0.0.0.0:7071".into());
     // Six hours at five seconds is ~4300 samples. Compact, so a few hundred kB.
@@ -157,6 +204,9 @@ fn main() {
             .routes(routes!(health))
             .routes(routes!(now))
             .routes(routes!(history_h))
+            .routes(routes!(fan_status))
+            .routes(routes!(fan_set))
+            .routes(routes!(fan_auto))
             .with_state(app)
             .split_for_parts();
         // Served so webd can merge it — see webd's /api/openapi.json.

@@ -35,7 +35,14 @@ command -v kexec >/dev/null 2>&1 || { echo "S00kexec: no kexec tool" >&2; exit 0
 # Boot the staged kernel directly on p1 (no initramfs -- it has mmc+ext4
 # built in). ohc_kexec=1 is both the re-entry guard above and the marker the
 # rest of the system can test to know it is the real kernel.
-CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1"
+#
+# OHC_KEXEC_CMDLINE_EXTRA (board.env) is appended per board. This is where the
+# EA1's memmap=exactmap RAM reclaim lives: the staged kernel's CONFIG_CMDLINE is
+# IGNORED here because this --command-line replaces it, so a reclaim set only in
+# the board fragment would never take effect on the kexec boot path. PROVEN on an
+# EA1: this line brings MemTotal from ~176 MB to ~1.7 GB.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}"
 
 echo "S00kexec: handing off to the staged kernel ($KERNEL)"
 if kexec -l "$KERNEL" --command-line="$CMDLINE"; then
