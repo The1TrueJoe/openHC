@@ -37,8 +37,13 @@ LIBRESPOT_DEPENDENCIES = host-pkgconf alsa-lib
 #                           OpenSSL link and no dependence on ca-certificates
 # 0.8.0 needs Rust 1.85 (edition 2024) — Buildroot 2026.02.3 ships 1.88; the
 # 2024.02 tree's 1.74 is why this sat on 0.4.2.
-LIBRESPOT_CARGO_BUILD_OPTS = --no-default-features \
+LIBRESPOT_CARGO_FEATURES = --no-default-features \
 	--features alsa-backend,with-libmdns,rustls-tls-webpki-roots
+LIBRESPOT_CARGO_BUILD_OPTS = $(LIBRESPOT_CARGO_FEATURES)
+# The install step is a separate `cargo install`, which compiles again with
+# its OWN options: without these it falls back to the default features
+# (native-tls -> openssl-sys) and fails on a box with no OpenSSL.
+LIBRESPOT_CARGO_INSTALL_OPTS = $(LIBRESPOT_CARGO_FEATURES)
 
 # Link DYNAMICALLY. Rust's *-linux-musl targets default to +crt-static, which
 # makes the linker look for libasound.a — Buildroot ships only the shared
