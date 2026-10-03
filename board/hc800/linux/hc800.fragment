@@ -41,7 +41,7 @@ CONFIG_MODULES=n
 # and the bootloader's is appended, and the later value of a repeated key wins —
 # so a launcher can still override panic= when it wants to.
 CONFIG_CMDLINE_BOOL=y
-CONFIG_CMDLINE="panic=10"
+CONFIG_CMDLINE="panic=10 snd_hda_intel.patch=hda-hc800.fw"
 CONFIG_CMDLINE_EXTEND=y
 
 # ── serial: five 8250 UARTs, and ttyS4 is the one that gets lost ──────────
@@ -159,6 +159,21 @@ CONFIG_SND_PCI=y
 CONFIG_SND_HDA_INTEL=y
 CONFIG_SND_HDA_GENERIC=y
 CONFIG_SND_HDA_CODEC_REALTEK=y
+#
+# FOUR INDEPENDENT OUTPUTS need two codec hints the BIOS cannot express, so the
+# driver loads them from /lib/firmware/hda-hc800.fw at probe
+# (snd_hda_intel.patch= is on CONFIG_CMDLINE above; the file is in the
+# initramfs, which is already unpacked when the HDA probe runs):
+#   indep_hp       the second rear analog jack (pin 0x1b, which the BIOS calls
+#                  "HP Out, Ext Front" — it is a rear RCA) gets its own DAC and
+#                  PCM ("Alt Analog", device 2) instead of mirroring line out 1
+#   indep_dig_outs coax (0x1e) and HDMI (0x11) are two PCMs, not one mirrored —
+#                  patches/linux/0001, not in mainline
+# HWDEP + RECONFIG also give /sys/class/sound/hwC0D2/{hints,reconfig} for
+# poking the codec live without a rebuild.
+CONFIG_SND_HDA_HWDEP=y
+CONFIG_SND_HDA_RECONFIG=y
+CONFIG_SND_HDA_PATCH_LOADER=y
 
 # ── ICH7 platform glue: LPC → GPIO, SMBus, watchdog ───────────────────────
 # lpc_ich is the MFD that spawns gpio_ich; without it there is no GPIO chip and

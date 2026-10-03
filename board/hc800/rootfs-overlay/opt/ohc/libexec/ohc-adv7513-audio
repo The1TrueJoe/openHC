@@ -1,0 +1,45 @@
+#!/bin/sh
+# ohc-adv7513-audio — keep the HC-800's HDMI encoder set up for audio.
+#
+# HDMI PICTURE needs no driver here (the ADV7513 runs in a strapped default mode
+# off the DS90CF386 deserialiser; see board.env "video output"). HDMI AUDIO does:
+# the encoder must take its audio from S/PDIF — the codec's 0x11 "Digital Out at
+# Int HDMI" — and carry an N value matching the sample rate. It was found
+# already set that way (0x0A=0x10, 0x0B=0x80, N=0x001880=6272 for 44.1 kHz), but
+# the ADV family resets much of its register map when the sink's hot-plug line
+# drops, so this re-asserts those registers whenever a sink is present. Writes
+# happen only when a value differs, so a steady state is pure reads.
+#
+# Run by ohc-audio (board.env OHC_AUDIO_HELPERS) under ohc-run.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+BUS="${OHC_VIDEO_I2C_BUS:-6}"
+ADV=0x39                      # main map (the 8-bit 0x72 in board.env)
+command -v i2cget >/dev/null || { echo "i2c-tools missing"; exit 1; }
+
+want() {  # want REG VALUE [MASK] — set REG so (REG & MASK) == VALUE
+    reg=$1 val=$2 mask=${3:-0xff}
+    cur=$(i2cget -y "$BUS" "$ADV" "$reg" 2>/dev/null) || return 1
+    if [ $((cur & mask)) -ne $((val & mask)) ]; then
+        new=$(( (cur & ~mask & 0xff) | (val & mask) ))
+        i2cset -y "$BUS" "$ADV" "$reg" "$new" && printf 'adv7513: %s %s -> 0x%02x\n' "$reg" "$cur" "$new"
+    fi
+}
+
+last=
+while :; do
+    hpd=$(i2cget -y "$BUS" "$ADV" 0x42 2>/dev/null) || { sleep 10; continue; }
+    if [ $((hpd & 0x40)) -ne 0 ]; then
+        [ "$last" = 1 ] || echo "adv7513: sink present"
+        last=1
+        want 0x0a 0x10 0x70    # audio select [6:4] = 001: S/PDIF input
+        want 0x0b 0x80 0x80    # S/PDIF enable
+        want 0x01 0x00 0x0f    # N = 6272 (0x001880): 44.1 kHz
+        want 0x02 0x18
+        want 0x03 0x80
+        want 0xaf 0x02 0x02    # HDMI (not DVI) mode, or no audio packets at all
+    else
+        [ "$last" = 0 ] || echo "adv7513: no sink (hot-plug low)"
+        last=0
+    fi
+    sleep 3
+done

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Network audio endpoints — SHARED (board/common). Inert unless board.env names
+# outputs (OHC_AUDIO_OUTPUTS); then ohc-audio runs every Spotify Connect / AirPlay
+# endpoint and input route, and S95librespot / S99shairport-sync stand down.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+[ -n "$OHC_AUDIO_OUTPUTS" ] || exit 0
+case "$1" in
+    start|stop|restart) /opt/ohc/bin/ohc-audio "$1" ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

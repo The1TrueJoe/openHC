@@ -140,6 +140,11 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
         // plain percent so a Home Assistant number entity can drive it.
         ["audio", "output"] if !b.is_empty() => Some(Cmd::AudioOutput { device: b.to_string() }),
         ["audio", "volume"] => b.parse::<u8>().ok().map(|percent| Cmd::AudioVolume { percent, device: None }),
+        // Endpoint lists, plain "name@output;..." so a Home Assistant text
+        // entity can drive them. An empty payload clears that list.
+        ["audio", "spotify"] => Some(Cmd::AudioEndpoints { spotify: Some(b.to_string()), airplay: None, routes: None }),
+        ["audio", "airplay"] => Some(Cmd::AudioEndpoints { spotify: None, airplay: Some(b.to_string()), routes: None }),
+        ["audio", "routes"] => Some(Cmd::AudioEndpoints { spotify: None, airplay: None, routes: Some(b.to_string()) }),
         _ => None,
     }
 }
@@ -207,6 +212,10 @@ mod tests {
         assert!(matches!(parse_cmd("audio/volume", "60"),
                          Some(Cmd::AudioVolume { percent: 60, device: None })));
         assert!(parse_cmd("audio/volume", "loud").is_none());
+        assert!(matches!(parse_cmd("audio/spotify", "Den@hdmi"),
+            Some(Cmd::AudioEndpoints { spotify: Some(_), airplay: None, routes: None })));
+        assert!(matches!(parse_cmd("audio/routes", ""),
+            Some(Cmd::AudioEndpoints { routes: Some(_), .. })));
     }
 
     #[test]

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Music, Speaker, Radio, Volume2, CircleDot, Circle } from 'lucide-react';
-import { io, rest, type AudioReceiver, type AudioStatus, type Capabilities } from '../api';
+import { Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable } from 'lucide-react';
+import {
+  io, rest, type AudioEndpoint, type AudioMap, type AudioReceiver, type AudioStatus, type Capabilities,
+} from '../api';
 import { useIoState } from '../App';
 
 /* Audio: the ALSA output the box renders to, and the two network receivers that
@@ -35,6 +37,12 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   // Live overrides win over the slower REST snapshot where present.
   const selected = live?.output ?? a.selected ?? '';
   const volume = live?.volume ?? a.volume;
+
+  /* A board with named outputs runs N endpoints mapped onto its jacks; the
+     single-output selector and the master volume do not apply there (each
+     endpoint has its own volume, controlled from the phone). */
+  const map = live?.map ?? a.map;
+  if (map) return <MapPanel map={map} />;
 
   return (
     <div className="space-y-4">
@@ -182,7 +190,7 @@ function ReceiverCard({ r, running }: { r: AudioReceiver; running: boolean }) {
       )}
 
       {/* Transport is shown ONLY if the receiver exposes it. Neither does in
-          this image (librespot v0.4.2 has no control API; shairport-sync is
+          this image (librespot has no control API; shairport-sync is
           built without MPRIS), so this is the honest "not available" line rather
           than dead buttons. */}
       {r.installed && !r.supports_transport && (
@@ -203,4 +211,221 @@ function nowPlaying(v: unknown): { title: string; artist?: string } | null {
   const title = str('title') ?? str('track') ?? str('name');
   if (!title) return null;
   return { title, artist: str('artist') ?? str('album_artist') };
+}
+
+/* ── boards with named outputs ──────────────────────────────────────────────
+
+   The jacks are fixed (board.env); what you edit is which endpoints exist and
+   where each one plays. Three lists — Spotify Connect, AirPlay, and line-in
+   routes — each saved as one "name@output;..." string that iod validates and
+   ohc-audio persists, restarting the endpoints. */
+
+/** Characters iod refuses (the config is shell-sourced) — caught here first so
+ *  the user sees why rather than a silent no-op. */
+const FORBIDDEN = /[$`\\"\n\r;@]/;
+
+type Row = { left: string; right: string };
+
+function parseList(list: string): Row[] {
+  return list
+    .split(';')
+    .map((e) => e.trim())
+    .filter(Boolean)
+    .map((e) => {
+      const at = e.lastIndexOf('@');
+      return at < 0 ? { left: e, right: '' } : { left: e.slice(0, at).trim(), right: e.slice(at + 1).trim() };
+    });
+}
+
+const serialise = (rows: Row[]) => rows.map((r) => `${r.left.trim()}@${r.right}`).join(';');
+
+function MapPanel({ map }: { map: AudioMap }) {
+  const label = (id: string) => map.outputs.find((o) => o.id === id)?.label ?? id;
+  return (
+    <div className="space-y-4">
+      <section className="hair rounded-xl border bg-panel p-4">
+        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+          <Speaker size={15} className="text-muted" />
+          Outputs and inputs
+        </h2>
+        <div className="flex flex-wrap gap-2 text-xs">
+          {map.outputs.map((o) => (
+            <span key={o.id} className="hair rounded-lg border bg-raised px-2.5 py-1.5" title={o.device}>
+              {o.label}
+            </span>
+          ))}
+          {map.inputs.map((i) => (
+            <span key={i.id} className="hair rounded-lg border bg-raised px-2.5 py-1.5 text-muted" title={i.device}>
+              {i.label} (input)
+            </span>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-muted">
+          Any number of endpoints can share an output; they mix. Volume is per endpoint, from the app
+          playing to it.
+        </p>
+      </section>
+
+      <ListEditor
+        title="Spotify Connect"
+        icon={<Music size={15} className="text-muted" />}
+        kind="spotify"
+        list={map.spotify}
+        leftLabel="Name in the Spotify app"
+        lefts={null}
+        outputs={map.outputs}
+        running={map.endpoints.filter((e) => e.kind === 'spotify')}
+        label={label}
+      />
+      <ListEditor
+        title="AirPlay"
+        icon={<Radio size={15} className="text-muted" />}
+        kind="airplay"
+        list={map.airplay}
+        leftLabel="Name on Apple devices"
+        lefts={null}
+        outputs={map.outputs}
+        running={map.endpoints.filter((e) => e.kind === 'airplay')}
+        label={label}
+      />
+      {map.inputs.length > 0 && (
+        <ListEditor
+          title="Input routes"
+          icon={<Cable size={15} className="text-muted" />}
+          kind="routes"
+          list={map.routes}
+          leftLabel="Input"
+          lefts={map.inputs}
+          outputs={map.outputs}
+          running={map.endpoints.filter((e) => e.kind === 'route')}
+          label={label}
+          hint="A route plays the input live on the output, mixed with anything else playing there."
+        />
+      )}
+    </div>
+  );
+}
+
+function ListEditor({
+  title, icon, kind, list, leftLabel, lefts, outputs, running, label, hint,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  kind: 'spotify' | 'airplay' | 'routes';
+  list: string;
+  leftLabel: string;
+  lefts: AudioMap['inputs'] | null;
+  outputs: AudioMap['outputs'];
+  running: AudioEndpoint[];
+  label: (id: string) => string;
+  hint?: string;
+}) {
+  const [rows, setRows] = useState<Row[]>(() => parseList(list));
+  const [saved, setSaved] = useState(list);
+  const [busy, setBusy] = useState(false);
+  // A save elsewhere (another page, MQTT) replaces our copy unless we have edits.
+  useEffect(() => {
+    if (list !== saved) {
+      setSaved(list);
+      setRows(parseList(list));
+      setBusy(false);
+    }
+  }, [list, saved]);
+
+  const dirty = serialise(rows) !== serialise(parseList(saved));
+  const bad = rows.find((r) => !r.left.trim() || !r.right || (!lefts && FORBIDDEN.test(r.left)));
+  const isUp = (r: Row, i: number) => {
+    const e = running[i];
+    return !!e && e.running && (e.name ?? e.input) === r.left.trim() && e.output === r.right;
+  };
+  const set = (i: number, p: Partial<Row>) => setRows(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+
+  return (
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        {icon}
+        {title}
+        <span className="ml-auto text-xs font-normal text-muted">{rows.length}</span>
+      </h2>
+      {hint && <p className="mb-3 text-xs text-muted">{hint}</p>}
+
+      <div className="space-y-2">
+        {rows.map((r, i) => (
+          <div key={i} className="flex flex-wrap items-center gap-2">
+            {isUp(r, i) ? (
+              <CircleDot size={13} className="text-live" aria-label="running" />
+            ) : (
+              <Circle size={13} className="text-muted" aria-label="not running" />
+            )}
+            {lefts ? (
+              <select
+                value={r.left}
+                onChange={(e) => set(i, { left: e.target.value })}
+                aria-label={leftLabel}
+                className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50"
+              >
+                {!r.left && <option value="">Input…</option>}
+                {lefts.map((l) => (
+                  <option key={l.id} value={l.id}>{l.label}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={r.left}
+                onChange={(e) => set(i, { left: e.target.value })}
+                placeholder={leftLabel}
+                aria-label={leftLabel}
+                className="hair min-w-0 flex-1 rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50"
+              />
+            )}
+            <span className="text-xs text-muted">→</span>
+            <select
+              value={r.right}
+              onChange={(e) => set(i, { right: e.target.value })}
+              aria-label="Output"
+              className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50"
+            >
+              {!r.right && <option value="">Output…</option>}
+              {outputs.map((o) => (
+                <option key={o.id} value={o.id}>{label(o.id)}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setRows(rows.filter((_, j) => j !== i))}
+              className="rounded-lg p-2 text-muted hover:text-ink"
+              aria-label="Remove"
+              title="Remove"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+        {!rows.length && <p className="text-xs text-muted">None.</p>}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setRows([...rows, { left: lefts?.[0]?.id ?? '', right: outputs[0]?.id ?? '' }])}
+          className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs text-ink hover:border-accent/50"
+        >
+          <Plus size={13} /> Add
+        </button>
+        <button
+          disabled={!dirty || !!bad || busy}
+          onClick={() => {
+            setBusy(true);
+            io.setAudioEndpoints(kind, serialise(rows));
+          }}
+          className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs transition hover:bg-accent/30 disabled:opacity-40"
+        >
+          {busy ? 'Applying…' : 'Save'}
+        </button>
+        {dirty && bad && (
+          <span className="text-xs text-alarm">
+            {lefts ? 'Every route needs an input and an output.' : 'Names cannot be empty or contain $ ` \\ " ; @'}
+          </span>
+        )}
+      </div>
+    </section>
+  );
 }

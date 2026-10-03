@@ -1,0 +1,47 @@
+#!/bin/sh
+# AirPlay receiver, single instance — replaces Buildroot's S99shairport-sync
+# (this overlay file is copied over it).
+#
+# Two changes from Buildroot's script:
+#  * a board with named outputs (board.env OHC_AUDIO_OUTPUTS) runs its AirPlay
+#    endpoints through ohc-audio / S95ohcaudio instead, so this stands down;
+#  * otherwise it honours the web UI's output selection the way S95librespot
+#    does: iod's audio.output writes OHC_AUDIO_DEVICE to /etc/ohc/audio-output,
+#    and it is passed to the ALSA backend ("-- -d <device>"). Unset means the
+#    default PCM. Picked up on (re)start.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+[ -n "$OHC_AUDIO_OUTPUTS" ] && exit 0
+[ -r /etc/ohc/audio-output ] && . /etc/ohc/audio-output
+DAEMON=/usr/bin/shairport-sync
+PIDFILE=/var/run/shairport-sync/shairport-sync.pid
+NAME="$(hostname)"
+
+case "$1" in
+    start)
+	[ -x "$DAEMON" ] || exit 0
+	printf "Starting shairport-sync: "
+	mkdir -p /var/run/shairport-sync
+	if [ -n "$OHC_AUDIO_DEVICE" ]; then
+		start-stop-daemon -S -q -m -b -p "$PIDFILE" -x "$DAEMON" -- \
+			-a "$NAME" -o alsa -- -d "$OHC_AUDIO_DEVICE"
+	else
+		start-stop-daemon -S -q -m -b -p "$PIDFILE" -x "$DAEMON" -- -a "$NAME" -o alsa
+	fi
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	;;
+    stop)
+	printf "Stopping shairport-sync: "
+	start-stop-daemon -K -q -p "$PIDFILE"
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	rm -f "$PIDFILE"
+	;;
+    restart)
+	$0 stop
+	sleep 1
+	$0 start
+	;;
+    *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+	;;
+esac

@@ -223,6 +223,19 @@ pub enum Cmd {
         #[serde(default)]
         device: Option<String>,
     },
+    /// Boards with named outputs (the HC-800): replace the Spotify Connect,
+    /// AirPlay and input-route lists, each `"name@output;..."` (routes:
+    /// `"input@output;..."`). A list left out is kept. Validated against the
+    /// board's real outputs/inputs, saved persistently, endpoints restarted.
+    #[serde(rename = "audio.endpoints")]
+    AudioEndpoints {
+        #[serde(default)]
+        spotify: Option<String>,
+        #[serde(default)]
+        airplay: Option<String>,
+        #[serde(default)]
+        routes: Option<String>,
+    },
 }
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -256,6 +269,7 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::AudioStatus => audio_status().await,
         Cmd::AudioOutput { device } => audio_output(c, &device).await,
         Cmd::AudioVolume { percent, device } => audio_volume(c, percent, device.as_deref()).await,
+        Cmd::AudioEndpoints { spotify, airplay, routes } => audio_endpoints(c, spotify, airplay, routes).await,
     }
 }
 
@@ -300,6 +314,19 @@ async fn audio_volume(c: &Arc<Config>, percent: u8, device: Option<&str>) -> Out
     let now = crate::audio::volume_get(device).await.unwrap_or(percent.min(100));
     c.bus.set("audio/volume", json!(now));
     Ok(json!({ "volume": now, "card": card, "control": control }))
+}
+
+/// Replace the endpoint lists (boards with named outputs). The new map is
+/// mirrored like any other state, so every open page sees the change.
+async fn audio_endpoints(
+    c: &Arc<Config>,
+    spotify: Option<String>,
+    airplay: Option<String>,
+    routes: Option<String>,
+) -> Out {
+    let m = crate::audio::set_map(spotify, airplay, routes).await.map_err(Fault::Bad)?;
+    c.bus.set("audio/map", m.clone());
+    Ok(m)
 }
 
 /// Path to the return-to-stock helper. Present only on boards whose `ohc.features`

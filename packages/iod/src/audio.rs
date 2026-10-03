@@ -21,9 +21,9 @@
 //! ## What is NOT here, and why
 //!
 //! **Transport (play/pause/next).** Neither receiver exposes it in this image.
-//! librespot v0.4.2 (see packages/librespot/librespot.mk) has no control API; it
+//! librespot (v0.8.0, packages/librespot/librespot.mk) has no control API; it
 //! takes `--onevent`/`--emit-sink-events` hooks only. shairport-sync is built
-//! with the bare `BR2_PACKAGE_SHAIRPORT_SYNC=y` (board/ea/common/features/audio),
+//! with the bare `BR2_PACKAGE_SHAIRPORT_SYNC=y` (board/common/features/audio),
 //! which does not select the D-Bus/MPRIS or metadata sub-options, so there is no
 //! MPRIS object to call. Faking transport that is not there would be worse than
 //! omitting it, so it is omitted. See the TODO at the bottom of this file for the
@@ -329,6 +329,113 @@ pub fn now_playing(receiver_id: &str) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
+// ── the endpoint map (boards with named outputs) ─────────────────────────────
+//
+// On a board whose board.env names its outputs (OHC_AUDIO_OUTPUTS — the
+// HC-800), /opt/ohc/bin/ohc-audio runs N Spotify Connect + N AirPlay endpoints
+// and input routes, each mapped onto a named output, and writes what it started
+// to a state file. iod reports that file and edits the mapping through
+// `ohc-audio save`; it never generates ALSA config or starts receivers itself.
+
+const OHC_AUDIO_BIN: &str = "/opt/ohc/bin/ohc-audio";
+
+fn map_state_path() -> PathBuf {
+    std::env::var_os("OHC_AUDIO_MAP_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/run/ohc/audio/state.json"))
+}
+
+/// Is the supervisor for this endpoint tag alive? ohc-run writes its own pid.
+fn tag_running(tag: &str) -> bool {
+    let dir = map_state_path().parent().map(Path::to_path_buf).unwrap_or_default();
+    std::fs::read_to_string(dir.join(format!("{tag}.pid")))
+        .ok()
+        .and_then(|p| p.trim().parse::<u32>().ok())
+        .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists())
+}
+
+/// The endpoint map as ohc-audio last wrote it, each endpoint with `running`
+/// filled in. `None` on a board without named outputs.
+pub fn map() -> Option<Value> {
+    let text = std::fs::read_to_string(map_state_path()).ok()?;
+    let mut v: Value = serde_json::from_str(&text).ok()?;
+    if let Some(eps) = v.get_mut("endpoints").and_then(Value::as_array_mut) {
+        for e in eps.iter_mut() {
+            let up = e.get("tag").and_then(Value::as_str).is_some_and(tag_running);
+            if let Some(o) = e.as_object_mut() {
+                o.insert("running".into(), json!(up));
+            }
+        }
+    }
+    Some(v)
+}
+
+/// Characters a mapping value may not contain: ohc-audio's config file is
+/// sourced by the shell, so these would be syntax rather than text.
+const FORBIDDEN: &[char] = &['$', '`', '\\', '"', '\n', '\r'];
+
+fn ids(map: &Value, key: &str) -> Vec<String> {
+    map.get(key)
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|o| o.get("id")?.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Check a `"a@b;c@d"` list: every entry `left@right`, `right` one of `rights`,
+/// and `left` (when `lefts` is given) one of `lefts`. Empty is allowed.
+pub fn check_list(list: &str, lefts: Option<&[String]>, rights: &[String]) -> Result<(), String> {
+    if let Some(c) = list.chars().find(|c| FORBIDDEN.contains(c)) {
+        return Err(format!("{c:?} is not allowed in an endpoint list"));
+    }
+    for entry in list.split(';').map(str::trim).filter(|e| !e.is_empty()) {
+        let (left, right) = entry
+            .rsplit_once('@')
+            .ok_or_else(|| format!("'{entry}' needs the form name@output"))?;
+        let (left, right) = (left.trim(), right.trim());
+        if left.is_empty() {
+            return Err(format!("'{entry}' has an empty name"));
+        }
+        if !rights.iter().any(|r| r == right) {
+            return Err(format!("'{entry}': no output '{right}' (have: {})", rights.join(", ")));
+        }
+        if let Some(lefts) = lefts {
+            if !lefts.iter().any(|l| l == left) {
+                return Err(format!("'{entry}': no input '{left}' (have: {})", lefts.join(", ")));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replace any of the three lists (None = keep the current one), validate
+/// against the board's real outputs/inputs, save through `ohc-audio save`
+/// (which restarts the endpoints), and return the new map.
+pub async fn set_map(
+    spotify: Option<String>,
+    airplay: Option<String>,
+    routes: Option<String>,
+) -> Result<Value, String> {
+    let cur = map().ok_or("this board has no audio endpoint map")?;
+    let outs = ids(&cur, "outputs");
+    let ins = ids(&cur, "inputs");
+    let keep = |v: Option<String>, k: &str| {
+        v.unwrap_or_else(|| cur.get(k).and_then(Value::as_str).unwrap_or("").to_string())
+    };
+    let (s, a, r) = (keep(spotify, "spotify"), keep(airplay, "airplay"), keep(routes, "routes"));
+    check_list(&s, None, &outs).map_err(|e| format!("spotify: {e}"))?;
+    check_list(&a, None, &outs).map_err(|e| format!("airplay: {e}"))?;
+    check_list(&r, Some(&ins), &outs).map_err(|e| format!("routes: {e}"))?;
+    let out = tokio::process::Command::new(OHC_AUDIO_BIN)
+        .args(["save", &s, &a, &r])
+        .output()
+        .await
+        .map_err(|e| format!("cannot run {OHC_AUDIO_BIN}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    map().ok_or_else(|| "ohc-audio wrote no state".into())
+}
+
 /// The audio capability section, or `None` when the box has no audio at all.
 ///
 /// Present when there is at least one output OR at least one receiver installed —
@@ -338,14 +445,21 @@ pub fn capability() -> Option<Value> {
     let outputs = outputs();
     let receivers = receivers();
     let any_receiver = receivers.iter().any(|r| r.installed);
-    if outputs.is_empty() && !any_receiver {
+    let map = map();
+    if outputs.is_empty() && !any_receiver && map.is_none() {
         return None;
     }
-    Some(json!({
+    let mut v = json!({
         "outputs": outputs,
         "receivers": receivers,
         "selected": selected(),
-    }))
+    });
+    // Present only on boards with named outputs; the UI switches to the
+    // endpoint editor when it sees it.
+    if let Some(m) = map {
+        v["map"] = m;
+    }
+    Some(v)
 }
 
 /// The full live status, for the REST read and the MQTT state mirror. Builds on
@@ -375,15 +489,13 @@ pub async fn status() -> Option<Value> {
 // ─────────────────────────────────────────────────────────────────────────────
 // TODO (board-side, for whoever owns board/ — iod must not edit init scripts):
 //
-//   1. The receiver init scripts must source iod's selection file so a pick in
-//      the UI actually moves the audio. DONE for librespot (packages/librespot/
-//      S95librespot now sources /etc/ohc/audio-output and adds --device). Still
-//      TODO for shairport-sync, whose init is Buildroot's: pass -d "$OHC_AUDIO_DEVICE"
-//      (e.g. via an init override or by templating /etc/shairport-sync.conf's
-//      alsa output_device from the same file). Until then its output follows the
-//      default PCM and the panel's "restart to apply" note stands for it.
-//      NOTE: the audio userspace is board/ea/common/features/audio (all EA); the
-//      EA3 DSP kernel half is board/ea/common/features/audio-dsp.
+//   1. DONE: both single-instance receivers source iod's selection file —
+//      packages/librespot/S95librespot (--device) and the S99shairport-sync
+//      override in board/common/rootfs-overlay (-- -d). Boards with named
+//      outputs (OHC_AUDIO_OUTPUTS) skip both and run ohc-audio's endpoint map
+//      instead ([`map`] / [`set_map`] above). The audio userspace is the shared
+//      board/common/features/audio; the EA3 DSP kernel half is
+//      board/ea/common/features/audio-dsp.
 //
 //   2. now-playing + transport: build shairport-sync with --with-mpris-interface
 //      (BR2 sub-option) OR add a librespot `--onevent` hook that writes
@@ -426,6 +538,26 @@ mod tests {
         // `/proc/asound/cards` on a box with no card is "--- no soundcards ---".
         assert!(parse_cards("--- no soundcards ---\n").is_empty());
         assert!(parse_cards("").is_empty());
+    }
+
+    #[test]
+    fn endpoint_lists_are_validated_against_real_outputs() {
+        let outs: Vec<String> = ["analog1", "hdmi"].iter().map(|s| s.to_string()).collect();
+        let ins: Vec<String> = vec!["linein".into()];
+        assert!(check_list("", None, &outs).is_ok());
+        assert!(check_list("Living Room@analog1; Den@hdmi;", None, &outs).is_ok());
+        // An @ inside the name is fine — the LAST @ splits.
+        assert!(check_list("me@home@hdmi", None, &outs).is_ok());
+        assert!(check_list("Kitchen@coax", None, &outs).is_err());
+        assert!(check_list("no-output-here", None, &outs).is_err());
+        assert!(check_list("@hdmi", None, &outs).is_err());
+        // Shell syntax never reaches the sourced config file.
+        assert!(check_list("$(reboot)@hdmi", None, &outs).is_err());
+        assert!(check_list("a`b`@hdmi", None, &outs).is_err());
+        assert!(check_list("a\"b@hdmi", None, &outs).is_err());
+        // Routes: the left side must be a real input.
+        assert!(check_list("linein@hdmi", Some(&ins), &outs).is_ok());
+        assert!(check_list("mic@hdmi", Some(&ins), &outs).is_err());
     }
 
     #[test]

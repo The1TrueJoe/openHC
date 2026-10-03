@@ -6,6 +6,8 @@
 #   ohc boot                    full bring-up at boot (called from /etc/init.d)
 #   ohc start | stop | status
 #   ohc tz [zone] | mdns        run one step by hand
+#   ohc audio [args]            the audio endpoint map (ohc-audio; boards with
+#                               named outputs) — e.g. ohc audio status
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
 export PATH
 ROOT=/opt/ohc; BIN=$ROOT/bin; RUN=/var/run/ohc; LOG=$ROOT/log
@@ -45,5 +47,6 @@ case "$1" in
   status) "$BIN/ohc-mdns" --status; "$BIN/ohc-tz" --status ;;
   tz)    shift; "$BIN/ohc-tz" "$@" ;;
   mdns)  "$BIN/ohc-mdns" ;;
-  *) echo "usage: ohc {boot|start|stop|status|tz [zone]|mdns}" ; exit 1 ;;
+  audio) shift; exec "$BIN/ohc-audio" "$@" ;;
+  *) echo "usage: ohc {boot|start|stop|status|tz [zone]|mdns|audio ...}" ; exit 1 ;;
 esac

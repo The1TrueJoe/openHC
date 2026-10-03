@@ -15,7 +15,7 @@
 #                                      marked NO_PRESENCE, association 3.
 #   0x14  Line Out,  Ext Rear       RCA green
 #   0x1a  Line In,   Ext Rear       RCA blue
-#   0x1b  HP Out,    Ext Front      RCA green
+#   0x1b  "HP" Out   (rear RCA — "Analog 2"; the BIOS label says front)
 #   0x1e  SPDIF Out, Ext Rear       RCA black (coax)
 #
 # Everything else — 0x12, 0x15..0x19, 0x1c, 0x1f — reads the canonical
@@ -26,7 +26,7 @@
 # and before the services in S50.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 CARD="${OHC_AUDIO_CARD:-0}"
-LEVEL="${OHC_AUDIO_BOOT_LEVEL:-70%}"
+LEVEL="${OHC_AUDIO_BOOT_LEVEL:-100%}"
 
 # amixer returns non-zero for a control this codec does not have, which is not
 # an error worth failing a boot over — the point is to set what exists.
@@ -46,24 +46,34 @@ case "${1:-start}" in
             exit 0
         }
 
-        printf "audio: unmuted "
+        # Analog 2 on its own DAC. The control exists because of the indep_hp
+        # hint (/lib/firmware/hda-hc800.fw); with it off, Analog 2 mirrors
+        # Analog 1 and its PCM (device 2) refuses to open. Must be set before
+        # anything opens a PCM, which is why it is here and not in ohc-audio.
+        amixer -c "$CARD" -q cset name='Independent HP' Enabled >/dev/null 2>&1 \
+            && printf "audio: independent HP " || printf "audio: (no Independent HP control) "
+
+        printf "unmuted "
         set_one Master     "$LEVEL"
+        set_one 'Line Out' "$LEVEL"
         set_one Front      "$LEVEL"
         set_one Headphone  "$LEVEL"
 
         # NOT `Line`. That control is the line INPUT's analog passthrough to the
-        # outputs, not an output level — unmuting it at 70% pipes whatever is on
-        # the rear line-in jack straight to the speakers, which is a surprise at
-        # best and a feedback loop at worst.
-        #
-        # Checked against the vendor image on a live unit, which deliberately
-        # leaves it at 0% and muted while holding Master/Front/Headphone at 100%.
-        # Capture level belongs to whatever is doing the capturing.
-        amixer -c "$CARD" -q sset Line 0% mute >/dev/null 2>&1 && printf "Line=muted " 
-        # IEC958 is the S/PDIF switch, not a volume — it takes on/off only, and
-        # there are TWO digital outs behind it on this board (coax 0x1e and the
-        # internal HDMI 0x11), which is why the codec exposes four PCMs.
-        amixer -c "$CARD" -q sset IEC958 on >/dev/null 2>&1 && printf "IEC958 "
+        # outputs, not an output level — unmuting it pipes whatever is on the
+        # rear line-in jack straight to the outputs, which is a surprise at best
+        # and a feedback loop at worst. Line-in reaches an output only through an
+        # ohc-audio route.
+        amixer -c "$CARD" -q sset Line 0% mute >/dev/null 2>&1 && printf "Line=muted "
+        # Line-in capture at 0 dB, capture enabled, no boost: what ohc-audio
+        # routes (and arecord) read.
+        amixer -c "$CARD" -q sset Capture 0dB cap >/dev/null 2>&1 && printf "Capture=0dB "
+        amixer -c "$CARD" -q sset 'Line Boost' 0 >/dev/null 2>&1
+        # IEC958 switches, one per digital output: index 0 is the primary
+        # digital PCM (HDMI), index 16 the coax one the indep_dig_outs hint
+        # splits off (hda puts an S/PDIF secondary behind an HDMI primary at 16).
+        amixer -c "$CARD" -q sset IEC958,0 on >/dev/null 2>&1 && printf "IEC958(hdmi) "
+        amixer -c "$CARD" -q sset IEC958,16 on >/dev/null 2>&1 && printf "IEC958(coax) "
         echo
 
         # Persist so alsactl restores this on the next boot if state is ever

@@ -31,6 +31,7 @@ __pycache__/
 !/board/common/rootfs-overlay/opt/ohc/bin/ohc
 !/board/common/rootfs-overlay/opt/ohc/bin/ohc-mdns
 !/board/common/rootfs-overlay/opt/ohc/bin/ohc-tz
+!/board/common/rootfs-overlay/opt/ohc/bin/ohc-audio
 *.tsbuildinfo
 
 # Device backups (eMMC dumps) — never commit these

@@ -92,6 +92,38 @@ export interface AudioReceiver {
   now_playing?: unknown;
 }
 
+/** A named jack on a board with an endpoint map (board.env OHC_AUDIO_OUTPUTS). */
+export interface AudioPort {
+  id: string;
+  label: string;
+  device: string;
+  pcm: string;
+}
+
+/** One running thing in the map: a Spotify Connect or AirPlay endpoint on an
+ *  output, or a live route from an input to an output. */
+export interface AudioEndpoint {
+  kind: 'spotify' | 'airplay' | 'route';
+  name?: string;
+  input?: string;
+  output: string;
+  tag: string;
+  running: boolean;
+}
+
+/** ohc-audio's endpoint map. The three lists are `"name@output;..."` (routes:
+ *  `"input@output;..."`) — what you edit; `endpoints` is what is running. */
+export interface AudioMap {
+  config: string;
+  rate: number;
+  spotify: string;
+  airplay: string;
+  routes: string;
+  outputs: AudioPort[];
+  inputs: AudioPort[];
+  endpoints: AudioEndpoint[];
+}
+
 /** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
  *  only present when genuinely available, so the panel shows them conditionally. */
 export interface AudioStatus {
@@ -100,6 +132,8 @@ export interface AudioStatus {
   /** The chosen output id, or null when the receivers follow the default PCM. */
   selected: string | null;
   volume?: number;
+  /** Present on boards with named outputs: N endpoints mapped onto jacks. */
+  map?: AudioMap;
 }
 
 /** What is carrying the IO. The kernel driver owns the link, so iod cannot ask
@@ -162,6 +196,7 @@ export interface IoState {
     output?: string;
     volume?: number;
     receiver?: Record<string, { running?: boolean }>;
+    map?: AudioMap;
   };
 }
 
@@ -379,6 +414,10 @@ export class Io {
   /** Output volume, 0..100. Clamped and read back by iod. */
   setAudioVolume = (percent: number) =>
     this.#publish('audio/volume', String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** Replace one endpoint list (`"name@output;..."`, routes `"input@output;..."`).
+   *  iod validates it, saves it persistently and restarts the endpoints. */
+  setAudioEndpoints = (kind: 'spotify' | 'airplay' | 'routes', list: string) =>
+    this.#publish(`audio/${kind}`, list);
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {

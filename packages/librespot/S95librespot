@@ -9,6 +9,10 @@
 # distinguishable (openhc-<board>-<MAC>, set by S09hostname).
 
 DAEMON=/usr/bin/librespot
+# A board with named outputs (board.env OHC_AUDIO_OUTPUTS) runs its endpoints
+# through ohc-audio / S95ohcaudio instead — N instances, one per mapping.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+[ -n "$OHC_AUDIO_OUTPUTS" ] && exit 0
 PIDFILE=/var/run/librespot.pid
 NAME="$(hostname)"
 # The web UI's output selector (iod audio.output) writes OHC_AUDIO_DEVICE here;
