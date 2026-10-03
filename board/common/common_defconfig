@@ -17,6 +17,12 @@ BR2_OPTIMIZE_S=y
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
+# The toolchain is built against this kernel's own headers, and Buildroot checks
+# the series it was told to expect. 2026.02's newest choice is 6.19; for the
+# newest choice the check is "at least" (loose), so 6.19 accepts 7.1. Left
+# unset it defaults to "really old" (2.6), which the strict check rejects:
+#   Incorrect selection of kernel headers: expected 2.6.x, got 7.1.x
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_19=y
 
 # --- init / login ---
 # Password login on serial + ssh. root's password is "openhc"; board/common/
