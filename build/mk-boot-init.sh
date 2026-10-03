@@ -47,5 +47,24 @@ for a in sh mount umount mkdir dd gunzip gzip sync switch_root cat ls; do
 done
 ln -sf /bin/busybox "$WORK/sbin/switch_root"
 
+# kexec-tools, so /init can hand straight off to the reclaimed-RAM kernel
+# (board.env OHC_KEXEC_CMDLINE_EXTRA -> the EA1 memmap=exactmap) in ONE boot.
+# OPTIONAL: without it /init just switch_roots and p1's own S00kexec does the
+# kexec on the next init pass instead, so a target without kexec still boots.
+# KEXEC_ZLIB pulls libz, which is NOT in the loader set globbed above and lives
+# under usr/lib, so copy it explicitly.
+for kx in "$TARGET/usr/sbin/kexec" "$TARGET/sbin/kexec"; do
+    [ -x "$kx" ] && { cp -a "$kx" "$WORK/sbin/kexec"; break; }
+done
+if [ -x "$WORK/sbin/kexec" ]; then
+    for d in lib usr/lib; do
+        for f in "$TARGET/$d/"libz.so*; do
+            [ -e "$f" ] && cp -aL "$f" "$WORK/lib/" 2>/dev/null || true
+        done
+    done
+else
+    echo "mk-boot-init: WARNING no kexec in target; /init will fall back to switch_root" >&2
+fi
+
 ( cd "$WORK" && find . | cpio -o -H newc 2>/dev/null | gzip -9 ) > "$OUT"
 echo "mk-boot-init: $OUT ($(wc -c < "$OUT") bytes)"

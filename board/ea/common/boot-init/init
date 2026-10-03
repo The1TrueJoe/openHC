@@ -16,6 +16,10 @@
 #     512 MB image), then pivot. Nothing else ever loads the full rootfs into
 #     RAM.
 #
+# Once p1 is valid, and only when the kexec handoff is enabled, /init re-enters
+# the full kernel with the board's reclaimed-RAM command line before pivoting
+# (see the kexec block below); otherwise it just switch_roots.
+#
 # One fixed autoscript covers install and every boot after, so openHC needs no
 # MTD tools and the unit stays factory-restore-friendly. The staged image lives
 # in the raw region ahead of p1 (see ROOTFS_STAGE_MB), which factory-restore
@@ -77,6 +81,40 @@ if ! valid_p1; then
         exec /bin/sh
     fi
 fi
+
+# --- reclaimed-RAM / full-kernel handoff (kexec), when enabled ---------------
+# The EA1 only sees ~176 MB until the kernel is re-entered with the memmap=exactmap
+# RAM reclaim (board.env OHC_KEXEC_CMDLINE_EXTRA) -> ~1.78 GB. CEFDK's autoscript
+# cmdline is frozen at install time and cannot carry it, so the reclaim has to go
+# on a kexec --command-line. p1 is mounted at $NEW right now (we just validated it
+# and it holds the staged kernel + board.env anyway), so do the handoff HERE, in
+# the bootstrap, and the reclaimed-RAM kernel comes up in ONE boot instead of
+# switch_root -> p1 /sbin/init -> S00kexec -> kexec.
+#
+# Same gates and same cmdline as /etc/init.d/S00kexec, so the two agree and each
+# is a safe fallback for the other: kexec ONLY when the enable flag + staged
+# kernel + kexec tool are all present and we are not already the kexec'd kernel
+# (ohc_kexec= on /proc/cmdline -> never hand off twice, no loop). If any of that
+# is missing, or kexec itself fails, we FALL THROUGH to the plain switch_root
+# below -- the proven path -- and p1's own S00kexec still gets its turn. Recover
+# a bad staged kernel exactly as before: delete /boot/ohc-kexec.enable.
+case " $(/bin/cat /proc/cmdline 2>/dev/null) " in
+    *" ohc_kexec="*) : ;;        # already the reclaimed-RAM kernel -> do not re-enter
+    *)
+        if [ -f "$NEW/boot/ohc-kexec.enable" ] && [ -f "$NEW/boot/bzImage" ] \
+           && command -v kexec >/dev/null 2>&1; then
+            OHC_KEXEC_CMDLINE_EXTRA=
+            [ -r "$NEW/opt/ohc/board.env" ] && . "$NEW/opt/ohc/board.env"
+            CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}"
+            echo "openHC: handing off to the reclaimed-RAM kernel ($NEW/boot/bzImage)"
+            if kexec -l "$NEW/boot/bzImage" --command-line="$CMDLINE"; then
+                /bin/sync
+                kexec -e      # does not return on success
+            fi
+            echo "openHC: kexec failed; continuing via switch_root" >&2
+        fi
+        ;;
+esac
 
 echo "openHC: booting the persistent rootfs on $ROOT"
 /bin/mount --move /proc "$NEW/proc" 2>/dev/null
