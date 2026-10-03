@@ -30,10 +30,13 @@ drivers/spi/Makefile|obj-y += spi-ea-b53-board.o
 drivers/spi/Makefile|obj-y += spi-ea-ce5xx.o
 
 # --- audio (ASoC lives outside drivers/; the hook mirrors sound/ too) ---
-# The codec goes in the existing codecs/ dir. The platform + machine drivers get
-# their own directory, so sound/soc/Makefile has to be told to descend into it.
-sound/soc/codecs/Makefile|obj-y += adau1451-c4.o
-sound/soc/Makefile|obj-y += ce5300/
+# The codec goes in the existing codecs/ dir. The platform + machine + glue drivers
+# get their own directory, so sound/soc/Makefile is told to descend into it.
+# obj-m, not obj-y: the SoC core and these drivers are built as modules so the
+# ea3 bzImage stays inside CEFDK's bootlinux window — they load from p1 via
+# S45ea-audio (same move as the switch's b53). See features/audio-dsp/linux.fragment.
+sound/soc/codecs/Makefile|obj-m += adau1451-c4.o
+sound/soc/Makefile|obj-m += ce5300/
 
 # --- GPU: PowerVR SGX545 (the sgx545ce submodule mirrored in beside it) ---
 # Unlike the drivers above (openHC's own single .c files, obj-y), this is a large
