@@ -107,11 +107,15 @@ impl Method {
 /// needs no cable and no button" falls out of the ordering rather than a
 /// special case.
 ///
-/// Kexec sits ahead of Grub for the same reason Network sits ahead of Serial:
-/// on the board where both apply, the one that writes nothing is the one a user
-/// should land on without having to choose it.
+/// Every board's default is a PERSISTENT install — what the box runs after a
+/// power cut — so on the HC-800 Grub sits ahead of Kexec. Kexec (writes
+/// nothing, gone on a power cycle) is there to pick with `--method kexec` for
+/// trying an image. Grub was proven safe to land on by default: `fallback 1`
+/// catches a kernel that will not load, and both the ID button and
+/// `ohc-flash restore` run Control4's factory restore once, which wipes our
+/// files from sda3 and leaves the next boot falling back to stock.
 pub const METHODS: &[Method] =
-    &[Method::Network, Method::Uboot, Method::Kexec, Method::Grub, Method::Nand, Method::Serial];
+    &[Method::Network, Method::Uboot, Method::Grub, Method::Kexec, Method::Nand, Method::Serial];
 
 /// Choose a method for an identity, optionally forced. Returns the chosen
 /// method and the reasons the others were rejected (for display).
@@ -191,11 +195,11 @@ pub fn plan(board: &Board, method: Method) -> Plan {
         Method::Kexec => Plan {
             method,
             steps: vec![
-                "copy bzImage + rootfs.cpio.gz to /tmp on the running system".into(),
+                "mount a tmpfs sized to the release at /mnt/ohc-stage and copy bzImage + rootfs.cpio.gz (+ a static kexec if the box has none) into it".into(),
                 "kexec -l (stage into the running kernel — still nothing written)".into(),
                 "kexec -e (jump straight into openHC, skipping BIOS and GRUB)".into(),
             ],
-            writes: vec!["nothing. /tmp is a tmpfs; no partition is opened for writing".into()],
+            writes: vec!["nothing. The stage is a tmpfs (RAM); no partition is opened for writing".into()],
             needs_serial: false,
             needs_button: false,
             reversible: "a power cycle. GRUB, the vendor root and the factory-restore image are \
@@ -210,22 +214,25 @@ pub fn plan(board: &Board, method: Method) -> Plan {
                     format!("mount {KERNEL_PART} ({KERNEL_LABEL}) and copy the kernel + initramfs to /boot"),
                     format!("mount {GRUB_PART} ({GRUB_LABEL}) and append entry {ENTRY_OPENHC} to menu.lst"),
                     format!(
-                        "switch `default {ENTRY_VENDOR}` to `default saved`, so the openHC entry's \
-                         `savedefault {ENTRY_VENDOR}` makes every openHC boot a BOOT-ONCE"
+                        "set `default {ENTRY_OPENHC}`, so every boot runs openHC (with --boot-once: \
+                         `default saved`, and the entry's `savedefault {ENTRY_VENDOR}` hands each boot \
+                         back to Control4)"
                     ),
-                    format!(
-                        "point the saved default at entry {ENTRY_OPENHC}. NOT a reboot: the box \
-                         keeps running whatever it is running until you restart it"
-                    ),
+                    "NOT a reboot: the box keeps running whatever it is running until you restart \
+                     it (`ohc-flash boot` does that)"
+                        .into(),
                 ],
                 writes: vec![
                     format!("{KERNEL_PART}: {KERNEL_FILE}, {INITRD_FILE} (files, on the spare kernel partition)"),
-                    format!("{GRUB_PART}: /boot/grub/menu.lst and /boot/grub/default"),
+                    format!("{GRUB_PART}: /boot/grub/menu.lst (and /boot/grub/default with --boot-once)"),
                 ],
                 needs_serial: false,
                 needs_button: false,
                 reversible: format!(
-                    "openHC re-points the default at the stock entry on every boot, so a reset of any kind already returns to Control4. To remove it entirely, delete the entry from menu.lst. {RESTORE_PART} is never written, and holding the ID button at power-on boots entry {ENTRY_FACTORY} regardless of what menu.lst says"
+                    "`ohc-flash uninstall` puts back the as-shipped menu.lst; `ohc-flash restore` runs \
+                     Control4's factory restore once. `fallback {ENTRY_VENDOR}` catches a kernel that will \
+                     not load, and holding the ID button at power-on boots entry {ENTRY_FACTORY} (the \
+                     factory restore) regardless of menu.lst. {RESTORE_PART} is never written"
                 ),
             }
         }

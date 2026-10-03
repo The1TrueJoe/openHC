@@ -23,8 +23,22 @@
 //! does not reset anything — the app is already running — and the same sequence
 //! simply confirms it. Verified on an EA1: a bare ASH RST returns RSTACK (0xc1).
 //!
+//! NETWORK RADIO MODE. With `OHC_ZIGBEE_TCP_PORT` set, the held port is also
+//! served over TCP — the same thing ser2net does — so a zigpy stack elsewhere
+//! (Home Assistant's ZHA: radio type EZSP, path `socket://<box>:<port>`) drives
+//! the NCP as if it were plugged in locally. One client at a time; a new
+//! connection replaces the old one, so an HA restart is never locked out by a
+//! half-open socket from its previous life.
+//!
+//! This exists because of the HC-800. Its EM357 runs EmberZNet 4.7.2 (EZSP
+//! protocol 4), and zigbee2mqtt's drivers need EZSP 13+ (`ember`) — the EM35x
+//! cannot run anything that new. zigpy's bellows still speaks EZSP v4. Verified
+//! 2026-10-02: `bellows info` over `socket://` read the NCP's version, EUI64 and
+//! its existing coordinator network.
+//!
 //! Config (board.env): OHC_ZIGBEE_TTY (required; absent => nothing to do),
-//! OHC_ZIGBEE_BAUD (default 115200).
+//! OHC_ZIGBEE_BAUD (default 115200), OHC_ZIGBEE_TCP_PORT (unset => hold only),
+//! OHC_ZIGBEE_TCP_BIND (default 0.0.0.0).
 
 use std::io;
 use std::os::unix::io::RawFd;
@@ -155,10 +169,99 @@ fn main() {
         println!("ohc-zigbee: NCP did not answer on {dev} after 4 tries — holding the port anyway");
     }
 
+    if let Some(port) = std::env::var("OHC_ZIGBEE_TCP_PORT").ok().and_then(|p| p.parse::<u16>().ok()) {
+        let bind = std::env::var("OHC_ZIGBEE_TCP_BIND").unwrap_or_else(|_| "0.0.0.0".into());
+        serve_tcp(fd, &dev, &bind, port);
+    }
+
     // Hold the fd (and DTR) open forever. Deliberately no reads past bring-up: the
     // radio owner (zigbee2mqtt) reads the EZSP stream, and a tty's input is a
     // single queue — a read here would steal its bytes.
     loop {
         sleep(Duration::from_secs(3600));
+    }
+}
+
+/// Relay the tty to one TCP client at a time, forever. Never returns unless the
+/// listener cannot be created (then the caller falls back to holding the port).
+fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::os::unix::io::AsRawFd;
+
+    let listener = match TcpListener::bind((bind, port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ohc-zigbee: cannot listen on {bind}:{port}: {e} — holding the port only");
+            return;
+        }
+    };
+    let _ = listener.set_nonblocking(true);
+    println!("ohc-zigbee: serving {dev} on tcp {bind}:{port} (zigpy: socket://<this box>:{port})");
+
+    let mut client: Option<TcpStream> = None;
+    let mut buf = [0u8; 4096];
+    loop {
+        let mut fds = vec![
+            libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: tty, events: libc::POLLIN, revents: 0 },
+        ];
+        if let Some(c) = &client {
+            fds.push(libc::pollfd { fd: c.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+        }
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 1000) };
+        if n < 0 {
+            sleep(Duration::from_millis(50));
+            continue;
+        }
+
+        // A new connection always wins: the old one is most likely a client
+        // that died without closing (an HA restart), not one still in use.
+        if fds[0].revents & libc::POLLIN != 0 {
+            if let Ok((s, peer)) = listener.accept() {
+                let _ = s.set_nodelay(true);
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
+                if client.is_some() {
+                    println!("ohc-zigbee: {peer} replaces the previous client");
+                } else {
+                    println!("ohc-zigbee: client {peer}");
+                }
+                // Stale NCP output belongs to nobody; do not hand it to the
+                // new client mid-frame.
+                unsafe { libc::tcflush(tty, libc::TCIFLUSH) };
+                client = Some(s);
+                continue;
+            }
+        }
+
+        // tty -> client. Read even with no client, so the queue cannot back up
+        // into the NCP; with no client the bytes have no owner and are dropped.
+        if fds[1].revents & libc::POLLIN != 0 {
+            let r = unsafe { libc::read(tty, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if r > 0 {
+                if let Some(c) = &mut client {
+                    if c.write_all(&buf[..r as usize]).is_err() {
+                        println!("ohc-zigbee: client gone (write failed)");
+                        client = None;
+                    }
+                }
+            }
+        }
+
+        // client -> tty
+        if fds.len() > 2 && fds[2].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            let gone = match client.as_mut().map(|c| c.read(&mut buf)) {
+                Some(Ok(0)) | Some(Err(_)) | None => true,
+                Some(Ok(r)) => {
+                    write_all(tty, &buf[..r]);
+                    false
+                }
+            };
+            if gone {
+                println!("ohc-zigbee: client disconnected");
+                client = None;
+            }
+        }
     }
 }
