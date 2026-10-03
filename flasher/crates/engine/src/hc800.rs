@@ -263,9 +263,16 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
         .with_context(|| format!("{menu} is unreadable — refusing to write a bootloader blind"))?;
     // A spent factory-restore-once entry from `restore` would otherwise sit at
     // ENTRY_OPENHC and push our entry past it. See hc::drop_entry.
-    let before = hc::drop_entry(&on_disk, hc::FACTORY_ONCE_TITLE);
-    if before != on_disk {
+    let no_once = hc::drop_entry(&on_disk, hc::FACTORY_ONCE_TITLE);
+    if no_once != on_disk {
         p.emit(Event::detail(format!("dropped the spent `{}` entry", hc::FACTORY_ONCE_TITLE)));
+    }
+    // An existing openHC entry is rebuilt, not kept: the mode lives in it (a
+    // boot-once entry carries `savedefault`), so keeping it meant a reinstall
+    // could never switch between boot-once and persistent.
+    let before = hc::drop_entry(&no_once, "openHC");
+    if before != no_once {
+        p.emit(Event::detail("replacing the existing openHC entry".into()));
     }
 
     // The two lines Control4 patched in are what the hardware factory-default
@@ -277,12 +284,6 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
             bail!("menu.lst has no `{line}` line — the factory-default button depends on it");
         }
     }
-    if before.contains("title\t\topenHC") || before.contains("title openHC") {
-        p.emit(Event::warn("menu.lst already has an openHC entry; replacing the images only".into()));
-        ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
-        return Ok(());
-    }
-
     // One backup on the box itself, alongside the one that should already be on
     // the operator's machine. Cheap, and the file is ~1 KB. Never overwritten:
     // the FIRST one is the as-shipped file, which is what uninstall should put
@@ -321,6 +322,14 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
         bail!("menu.lst has no `default` line at all — not the file this tool expects");
     }
     out.push_str(&hc::menu_entry(boot_once));
+    // `default` is a NUMBER: refuse to write a file where it names anything
+    // but our entry (with a stray extra vendor entry it would be a factory
+    // restore or a stock boot instead).
+    let titles = hc::titles(&out);
+    if titles.get(hc::ENTRY_OPENHC as usize).map(String::as_str) != Some("openHC") {
+        let _ = ssh.run(&format!("umount {gm}"), false);
+        bail!("openHC would not be entry {} ({titles:?}) — not writing menu.lst", hc::ENTRY_OPENHC);
+    }
 
     ssh.put_stream(out.as_bytes(), &format!("cat > {menu}")).map_err(|e| anyhow::anyhow!("{e}"))?;
     if boot_once {

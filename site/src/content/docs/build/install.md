@@ -145,7 +145,7 @@ lines stay byte-identical. GRUB 0.97 loads the full 43 MB image from there.
 before it boots. Every openHC boot therefore hands the default straight back to
 Control4, so a panic, power cut or reset always lands on stock, which answers
 SSH. `ohc-flash boot` re-enters openHC; it changes one byte. Without
-`--boot-once`, openHC is the default on every boot.
+`--boot-once`, openHC is the default on every boot. Re-running `install` rebuilds the entry, so it switches between the two modes.
 
 ```sh
 ohc-flash uninstall <host>   # put back the as-shipped menu.lst, delete our files from sda3
