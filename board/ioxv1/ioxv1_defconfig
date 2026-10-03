@@ -57,7 +57,7 @@ BR2_PACKAGE_HOST_UBOOT_TOOLS=y
 BR2_PACKAGE_UBOOT_TOOLS=y
 BR2_PACKAGE_UBOOT_TOOLS_FWPRINTENV=y
 
-# --- mDNS identity: avahi (no D-Bus, light) ---
+# --- mDNS identity: avahi + D-Bus, from board/common/common_defconfig ---
 
 # --- rootfs overlay, image wrap, kernel patches ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and

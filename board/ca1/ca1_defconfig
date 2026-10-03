@@ -90,7 +90,7 @@ BR2_PACKAGE_WIRELESS_REGDB=y
 BR2_PACKAGE_HOSTAPD=y
 BR2_PACKAGE_DNSMASQ=y
 
-# --- mDNS identity: avahi (no D-Bus, light), matching the other boards ---
+# --- mDNS identity: avahi + D-Bus, from board/common/common_defconfig ---
 
 # --- rear RS-232/485 port ---
 # The rear combo port (ttymxc2) is owned by iod, like every other serial/IO
@@ -100,10 +100,12 @@ BR2_PACKAGE_DNSMASQ=y
 # boot by the gpio-hogs in the DTS — switching it at runtime needs those hogs
 # converted to a real consumer first (see the DTS).
 
-# Mosquitto is OFF: Buildroot 2024.02.9's package fails to apply its own bundled
-# patch against the tarball mosquitto.org currently serves. A package/upstream
-# mismatch, not a local config issue. Revisit when a broker is actually needed.
-# BR2_PACKAGE_MOSQUITTO=y
+# Mosquitto: the local broker zigbee2mqtt publishes to (rootfs-overlay
+# etc/mosquitto/mosquitto.conf replaces the stock config). It was off under
+# Buildroot 2024.02.9, whose package no longer applied its own bundled patch to
+# the tarball mosquitto.org serves; 2026.02.3 ships 2.0.22 with a checked hash.
+BR2_PACKAGE_MOSQUITTO=y
+BR2_PACKAGE_MOSQUITTO_BROKER=y
 
 # Node.js (zigbee2mqtt / zwave-js) and its C++ toolchain come from the shared
 # 'zigbee' feature (board/common/features/zigbee), which ca1 enables in its

@@ -21,8 +21,7 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INSTALL_LIBSTDCPP=y
 
 # NOTE on the broker: openHC's IO already speaks MQTT (iod, a rumqttc client), and
-# zigbee2mqtt publishes to a broker too. Buildroot 2024.02.9's mosquitto package
-# is currently broken (its bundled patch no longer applies to the upstream
-# tarball), so a broker is NOT enabled here — a board either points these clients
-# at an off-box broker or enables one once the package is fixed. Tracked, not
-# solved, here.
+# zigbee2mqtt publishes to a broker too. The broker is per board, not here: the
+# CA-1 enables mosquitto (fixed by the move to Buildroot 2026.02.3). The HC-800's
+# EM357 runs EmberZNet 4.7.2 (EZSP v4), which zigbee2mqtt's drivers cannot speak,
+# so it has no use for one.

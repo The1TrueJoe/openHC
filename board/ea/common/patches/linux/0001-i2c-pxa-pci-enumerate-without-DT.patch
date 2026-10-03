@@ -20,9 +20,9 @@ which is fine for the LM75 + DS1339 on i2c-0.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
---- a/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:30
-+++ b/drivers/i2c/busses/i2c-pxa-pci.c	2026-08-11 02:31:16
-@@ -6,13 +6,21 @@
+--- a/drivers/i2c/busses/i2c-pxa-pci.c
++++ b/drivers/i2c/busses/i2c-pxa-pci.c
+@@ -6,15 +6,23 @@
   * The CE4100's I2C device is more or less the same one as found on PXA.
   * It does not support target mode, the register slightly moved. This PCI
   * device provides three bars, every contains a single I2C controller.
@@ -38,16 +38,18 @@ Author: Joseph Telaak <joseph@telaak.dev>
  #include <linux/pci.h>
  #include <linux/platform_device.h>
  #include <linux/platform_data/i2c-pxa.h>
+-#include <linux/of.h>
+-#include <linux/of_address.h>
 +#include <linux/clk.h>
 +#include <linux/clk-provider.h>
 +#include <linux/clkdev.h>
--#include <linux/of.h>
--#include <linux/of_address.h>
  
 -#define CE4100_PCI_I2C_DEVS	3
 +#define CE4100_PCI_I2C_DEVS	4
  
-@@ -25,7 +30,8 @@
+ struct ce4100_devices {
+ 	struct platform_device *pdev[CE4100_PCI_I2C_DEVS];
+@@ -25,7 +33,8 @@
  	struct platform_device *pdev;
  	struct i2c_pxa_platform_data pdata;
  	struct resource res[2];
@@ -57,7 +59,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	static int devnum;
  	int ret;
  
-@@ -40,43 +44,37 @@
+@@ -40,44 +49,38 @@
  	res[1].start = dev->irq;
  	res[1].end = dev->irq;
  
@@ -98,7 +100,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	}
  	pdev->dev.parent = &dev->dev;
 -	pdev->dev.of_node = child;
-+
+ 
 +	/*
 +	 * i2c-pxa calls devm_clk_get() unconditionally. With CONFIG_COMMON_CLK=y
 +	 * — which the `switch` feature needs, for spi-pxa2xx-pci — that becomes a
@@ -123,10 +125,11 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +	ret = clk_register_clkdev(clk, NULL, clkname);
 +	if (ret)
 +		goto err;
- 
++
  	ret = platform_device_add_resources(pdev, res, ARRAY_SIZE(res));
  	if (ret)
-@@ -108,10 +81,6 @@
+ 		goto err;
+@@ -108,10 +111,6 @@
  	if (ret)
  		return ret;
  
