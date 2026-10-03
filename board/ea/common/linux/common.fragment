@@ -296,3 +296,10 @@ CONFIG_MTD_BLOCK=y
 CONFIG_MTD_SPI_NOR=y
 CONFIG_SPI_MEM=y
 # CONFIG_MTD_OF_PARTS is not set
+
+# --- warnings are not errors ---
+# The mainline x86 defconfigs set WERROR. Buildroot used to force it off (its
+# linux.mk fixups through 2025.x); 2026.02 dropped that, so say it here: this
+# kernel builds the vendor SGX DDK (32-bit-era code, hundreds of size/format
+# warnings on x86_64) and a newer gcc must not fail the image over a warning.
+# CONFIG_WERROR is not set
