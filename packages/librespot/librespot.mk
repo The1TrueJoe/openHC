@@ -40,6 +40,13 @@ LIBRESPOT_DEPENDENCIES = host-pkgconf alsa-lib
 LIBRESPOT_CARGO_BUILD_OPTS = --no-default-features \
 	--features alsa-backend,with-libmdns,rustls-tls-webpki-roots
 
+# Link DYNAMICALLY. Rust's *-linux-musl targets default to +crt-static, which
+# makes the linker look for libasound.a — Buildroot ships only the shared
+# alsa-lib, so the link fails with "cannot find -lasound". librespot is a normal
+# dynamically linked target binary like any other Buildroot package; say so.
+LIBRESPOT_CARGO_ENV = \
+	CARGO_TARGET_$(call UPPERCASE,$(RUSTC_TARGET_NAME))_RUSTFLAGS="-C target-feature=-crt-static"
+
 define LIBRESPOT_INSTALL_INIT_SYSV
 	$(INSTALL) -D -m 0755 $(LIBRESPOT_PKGDIR)/S95librespot \
 		$(TARGET_DIR)/etc/init.d/S95librespot
