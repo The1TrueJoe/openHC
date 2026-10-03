@@ -195,6 +195,37 @@ pub fn factory_once_menu(menu: &str) -> Result<(String, u8), String> {
     Ok((out, entries.len() as u8))
 }
 
+/// The `title` of every entry in `menu`, in GRUB's order (index = entry number).
+pub fn titles(menu: &str) -> Vec<String> {
+    menu.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("title"))
+        .map(|t| t.trim().to_string())
+        .collect()
+}
+
+/// `menu` with the entry titled exactly `title` removed (from its `title` line
+/// up to the next one), every other line untouched.
+///
+/// The install uses this to drop a spent [`FACTORY_ONCE_TITLE`] entry: once
+/// the restore it started has run, the saved default already points at the
+/// vendor entry, and leaving it in place would push a newly appended openHC
+/// entry to index 3 while everything that boots openHC names
+/// [`ENTRY_OPENHC`] — so "boot openHC" would start a factory restore instead.
+pub fn drop_entry(menu: &str, title: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for l in menu.lines() {
+        if let Some(t) = l.trim_start().strip_prefix("title") {
+            skipping = t.trim() == title;
+        }
+        if !skipping {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// GRUB Legacy's `default saved` reads this file, and `savedefault` rewrites
 /// its first line in place.
 ///

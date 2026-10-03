@@ -13,7 +13,7 @@ use crate::event::{Event, Progress};
 const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
 
 pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
-    if ssh.run(&format!("test -x {RESTORE_BIN}"), false).is_err() {
+    if !ssh.test(&format!("-x {RESTORE_BIN}")) {
         if ssh.read_file("/opt/ohc/board.env").is_none() {
             bail!("this box is running stock Control4; there is nothing of openHC's boot to remove from here");
         }

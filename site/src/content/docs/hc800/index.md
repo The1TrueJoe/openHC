@@ -157,8 +157,18 @@ Points that matter for the port:
   constrains the EA image.
 - **The console is already serial**, at the same 115200 as every other board, and
   GRUB itself talks to it.
-- **`timeout 0` + `hiddenmenu`** means no interactive menu appears. Selecting a
-  different entry means **editing `default`**, not catching a prompt.
+- **`timeout 0` + `hiddenmenu`** means no menu is shown. To select a different
+  entry, edit `default`. But the menu is NOT unreachable: `terminal serial`
+  makes GRUB read keys from `ttyS0` alone (a USB keyboard does nothing), and
+  it checks for ESC once, about 7 s after the BIOS prints `2038MB OK`.
+  `serial --unit=0` resets the UART FIFO just before that check, so the ESC has
+  to arrive within a few milliseconds of it. Sending ESC every ~5 ms from
+  `2038MB OK` opens the menu every time ("GNU GRUB 0.97 … Control4 specific
+  edition"), and `ESC [ B` + Enter picks an entry. That is how a unit stuck
+  booting entry 0 on every boot was brought back without opening it. ESCs
+  spaced 80–600 ms apart never land. Use ONE USB-serial adapter at a time: two
+  clone FT232Rs reporting the same serial number made macOS's driver stall
+  and replay stale data.
 - **Adding a third entry doesn't disturb the first two.** The factory-restore
   path stays byte-identical, so recovery is untouched.
 

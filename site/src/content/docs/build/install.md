@@ -112,33 +112,56 @@ See [CA-1 recovery](/ca1/#recovery-when-a-bad-bootscr-hangs-the-box).
 
 ## HC-800
 
-Three file operations, fully reversible, and the vendor rootfs is never written.
+Everything goes over SSH from stock Control4 or a running openHC. Nothing needs
+a serial console or the ID button, and the factory-restore partition (`sda2`) is
+never written. All four flows below were run on a unit on 2026-10-02.
+
+### Try it from RAM (writes nothing)
 
 ```sh
-make image BOARD=hc800
+ohc-flash install <host> --images openhc-hc800-<version>.zip            # --method kexec is the default
 ```
 
-That prints the exact commands. In outline:
+The tool mounts a tmpfs sized to the release at `/mnt/ohc-stage`, copies the
+kernel and initramfs into it, and `kexec`s into openHC from whatever is running.
+The stock image ships no `kexec`, so the hc800 bundle carries a static i686 one
+(`kexec-i686-static`) that the tool pushes when the box has none. A power cycle
+returns the box to stock. The release is about 43 MB (13.8 MB kernel + 29.7 MB
+initramfs), which no longer fits in the stock image's 32 MB `/tmp`. That's why
+the tool stages in its own tmpfs.
+
+### Install to disk
 
 ```sh
-# 1. kernel + initrd onto the ext3 kernel-only partition
-ssh root@<ip> 'mkdir -p /mnt/k && mount /dev/sda3 /mnt/k'
-cat openhc-bzImage   | ssh root@<ip> 'cat > /mnt/k/boot/openhc-bzImage'
-cat openhc-initrd.gz | ssh root@<ip> 'cat > /mnt/k/boot/openhc-initrd.gz'
-ssh root@<ip> 'umount /mnt/k'
-
-# 2. append our stanza to sda1's menu.lst as a THIRD entry, back up the original,
-#    and point default at it (entries are 0-based, so ours is 2)
-ssh root@<ip> 'mkdir -p /mnt/g && mount /dev/sda1 /mnt/g &&
-                cp /mnt/g/boot/grub/menu.lst /mnt/g/boot/grub/menu.lst.stock'
-cat menu.lst.openhc | ssh root@<ip> 'cat >> /mnt/g/boot/grub/menu.lst'
-ssh root@<ip> 'sed -i "s/^default.*/default\t\t2/" /mnt/g/boot/grub/menu.lst &&
-                umount /mnt/g && reboot'
+ohc-flash install <host> --images openhc-hc800-<version>.zip --method grub --boot-once
+ohc-flash boot    <host>      # reboot into it
 ```
 
-Both vendor entries stay byte-identical and the factory-restore partition on
-`sda2` is never touched. **Recovery is setting `default` back to `1`**, or
-restoring `menu.lst.stock`.
+This copies the images onto `sda3` (the ext3 kernel partition, ~165 MB free)
+and appends a third GRUB entry. Both vendor entries and the `factorydefault`
+lines stay byte-identical. GRUB 0.97 loads the full 43 MB image from there.
+
+`--boot-once` sets `default saved`, and openHC's entry runs `savedefault 1`
+before it boots. Every openHC boot therefore hands the default straight back to
+Control4, so a panic, power cut or reset always lands on stock, which answers
+SSH. `ohc-flash boot` re-enters openHC; it changes one byte. Without
+`--boot-once`, openHC is the default on every boot.
+
+```sh
+ohc-flash uninstall <host>   # put back the as-shipped menu.lst, delete our files from sda3
+ohc-flash restore   <host>   # Control4's own factory restore, once, then stock
+```
+
+`restore` is the software ID button. It appends a copy of the factory entry
+that `savedefault`s back to the stock entry, and points the saved default at
+it. The box runs Control4's restore once (about 5 minutes, re-imaging
+`sda3`/`sda4` from `sda2`) and reboots into a clean stock image. It never writes
+`default 0`: Control4's `restore.sh` reboots without touching `menu.lst`, so
+that restores forever. An earlier version of the tool did exactly that.
+
+The first `menu.lst.pre-openhc` the tool writes is the as-shipped file, and it
+is never overwritten. Keep a byte copy of `sda1` off the box too. It is the one
+partition with no on-disk recovery.
 
 :::caution[Plain `scp` doesn't work against these units]
 Modern OpenSSH `scp` speaks SFTP and the vendor's dropbear has no `sftp-server`,

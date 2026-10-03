@@ -12,9 +12,18 @@ use ohc_flash_transport::ssh::Ssh;
 use crate::event::{Event, Progress};
 use crate::release::Release;
 
-/// Where images are staged on the box. A tmpfs on openHC; real disk on the
-/// stock image, which is why [`kexec`] cleans up after itself there.
-const STAGE: &str = "/tmp";
+/// Where images are staged on the box: a tmpfs of our own, sized to the
+/// release, on whichever OS is running. RAM only, so a kexec launch still writes
+/// no disk.
+///
+/// Not `/tmp`: the stock image's is a 32 MB tmpfs, and an hc800 release grew
+/// past that (13.8 MB kernel + 29.7 MB initramfs once zigbee2mqtt's Node.js
+/// runtime landed), at which point the old staging failed with a short write.
+const STAGE: &str = "/mnt/ohc-stage";
+
+/// Headroom on top of the images when sizing [`STAGE`]: the pushed kexec
+/// (~1.5 MB) plus slack.
+const STAGE_SLACK_MB: usize = 16;
 
 /// Pull the kernel and initramfs out of a release, accepting either the raw
 /// Buildroot names or the bundle's prefixed ones — the CI zip carries both.
@@ -33,6 +42,16 @@ fn images(rel: &Release) -> Result<(&[u8], &[u8])> {
 /// Push both images to `$STAGE`, returning their remote paths.
 fn stage(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<(String, String)> {
     let (kernel, initrd) = images(rel)?;
+    let mb = (kernel.len() + initrd.len()) / 1_048_576 + 1 + STAGE_SLACK_MB;
+    // A stale stage from an earlier run is unmounted first, so its size and
+    // contents are never what this run relies on.
+    ssh.run(
+        &format!(
+            "umount {STAGE} 2>/dev/null; mkdir -p {STAGE} && mount -t tmpfs -o size={mb}m ohc-stage {STAGE}"
+        ),
+        true,
+    )
+    .map_err(|e| anyhow::anyhow!("cannot mount a {mb} MB tmpfs at {STAGE}: {e}"))?;
     let kp = format!("{STAGE}/openhc-bzImage");
     let ip = format!("{STAGE}/openhc-initrd.gz");
     p.emit(Event::step(format!(
@@ -115,18 +134,23 @@ pub fn kexec(ssh: &Ssh, rel: &Release, netconsole: Option<(&str, u16)>, p: &Prog
 
     // The vendor image's kernel is CONFIG_KEXEC=y but Control4 never shipped
     // the userspace tool, so a stock box needs one pushed. openHC has its own.
+    // The hc800 release bundles a static i686 one (images.yml), pushed here.
     let kexec_bin = if ssh.run("command -v kexec", false).map(|s| !s.trim().is_empty()).unwrap_or(false)
     {
         "kexec".to_string()
-    } else {
-        let staged = format!("{STAGE}/kexec-i686-static");
-        if ssh.run(&format!("test -x {staged}"), false).is_err() {
-            bail!(
-                "no kexec on this system. The stock Control4 image has none; build the static \
-                 i686 one (.github/workflows/tools.yml) and put it at {staged}"
-            );
-        }
+    } else if let Some(bin) = rel.get("kexec-i686-static") {
+        let staged = format!("{STAGE}/kexec");
+        ssh.put_stream(bin, &format!("cat > {staged} && chmod +x {staged}"))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        p.emit(Event::detail(format!("pushed the release's static i686 kexec ({} KB)", bin.len() / 1024)));
         staged
+    } else {
+        let _ = ssh.run(&format!("umount {STAGE}"), false);
+        bail!(
+            "no kexec on this system, and this release does not carry kexec-i686-static. \
+             The stock Control4 image ships none; use an hc800 release built after the \
+             bundle started including it, or the artifact from .github/workflows/tools.yml"
+        );
     };
 
     // Stop our own watchdog before the handover. kexec -e runs no shutdown
@@ -163,13 +187,20 @@ pub fn kexec(ssh: &Ssh, rel: &Release, netconsole: Option<(&str, u16)>, p: &Prog
     }
 
     p.emit(Event::step("kexec -l (staging into the running kernel)".into()));
-    ssh.run(&format!("{kexec_bin} -l {kp} --initrd={ip} --append='{append}'"), true)
-        .map_err(|e| anyhow::anyhow!("kexec -l refused the image: {e}"))?;
+    if let Err(e) = ssh.run(&format!("{kexec_bin} -l {kp} --initrd={ip} --append='{append}'"), true) {
+        let _ = ssh.run(&format!("umount {STAGE}"), false);
+        bail!("kexec -l refused the image: {e}");
+    }
 
     p.emit(Event::step("kexec -e — this connection will drop".into()));
-    // The box goes away mid-command, so a non-zero exit here is the expected
-    // outcome and not an error worth reporting.
-    let _ = ssh.run(&format!("sync; {kexec_bin} -e"), false);
+    // Detached, a second after this session returns. Run in the foreground,
+    // kexec -e never closes the TCP connection — the kernel underneath it is
+    // simply gone — so ssh waited on a dead socket indefinitely (seen on the
+    // unit: openHC at a login prompt, the flasher still "running").
+    let _ = ssh.run(
+        &format!("sync; nohup sh -c 'sleep 1; {kexec_bin} -e' >/dev/null 2>&1 </dev/null &"),
+        false,
+    );
     p.emit(Event::resolved(
         "openHC is starting. It takes a fresh DHCP lease, so find it by MAC, not by its old address"
             .into(),
@@ -227,9 +258,15 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
         .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;
 
     let menu = format!("{gm}/boot/grub/menu.lst");
-    let before = ssh
+    let on_disk = ssh
         .read_file(&menu)
         .with_context(|| format!("{menu} is unreadable — refusing to write a bootloader blind"))?;
+    // A spent factory-restore-once entry from `restore` would otherwise sit at
+    // ENTRY_OPENHC and push our entry past it. See hc::drop_entry.
+    let before = hc::drop_entry(&on_disk, hc::FACTORY_ONCE_TITLE);
+    if before != on_disk {
+        p.emit(Event::detail(format!("dropped the spent `{}` entry", hc::FACTORY_ONCE_TITLE)));
+    }
 
     // The two lines Control4 patched in are what the hardware factory-default
     // button reads. If they are not where we expect, this is not the menu.lst
@@ -247,9 +284,12 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
     }
 
     // One backup on the box itself, alongside the one that should already be on
-    // the operator's machine. Cheap, and the file is ~1 KB.
-    ssh.run(&format!("cp {menu} {menu}.pre-openhc"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
-    p.emit(Event::detail(format!("kept {menu}.pre-openhc")));
+    // the operator's machine. Cheap, and the file is ~1 KB. Never overwritten:
+    // the FIRST one is the as-shipped file, which is what uninstall should put
+    // back — a later copy would be whatever an earlier restore or install left.
+    ssh.run(&format!("[ -s {menu}.pre-openhc ] || cp {menu} {menu}.pre-openhc"), true)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    p.emit(Event::detail(format!("{menu}.pre-openhc in place")));
 
     // The `default` line, which is the whole difference between the two modes:
     //
@@ -346,11 +386,24 @@ pub fn boot_installed(ssh: &Ssh, p: &Progress) -> Result<()> {
     ssh.run(&format!("mkdir -p {gm} && mount {} {gm}", hc::GRUB_PART), true)
         .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;
 
-    let menu = ssh.read_file(&format!("{gm}/boot/grub/menu.lst"));
-    let has_entry = menu.as_deref().is_some_and(|m| m.contains("title\t\topenHC"));
-    if !has_entry {
-        let _ = ssh.run(&format!("umount {gm}"), false);
-        bail!("no openHC entry in menu.lst — install it first (--method grub)");
+    let menu = ssh.read_file(&format!("{gm}/boot/grub/menu.lst")).unwrap_or_default();
+    let titles = hc::titles(&menu);
+    match titles.iter().position(|t| t == "openHC") {
+        None => {
+            let _ = ssh.run(&format!("umount {gm}"), false);
+            bail!("no openHC entry in menu.lst — install it first (--method grub)");
+        }
+        // The saved default below is a NUMBER. If the entry is not where that
+        // number points, this would boot something else — a factory restore,
+        // for one.
+        Some(i) if i != hc::ENTRY_OPENHC as usize => {
+            let _ = ssh.run(&format!("umount {gm}"), false);
+            bail!(
+                "the openHC entry is entry {i}, not {} ({titles:?}) — reinstall (--method grub) to fix the order",
+                hc::ENTRY_OPENHC
+            );
+        }
+        Some(_) => {}
     }
     for f in [hc::KERNEL_FILE, hc::INITRD_FILE] {
         let km = "/mnt/ohc-kernel";
@@ -427,7 +480,7 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     // 1. The default file, pointing at the one-shot entry. Rewrite only the
     //    first line if it exists (savedefault rewrites it in place by sector);
     //    create it padded if not.
-    let have = ssh.run(&format!("test -s {dflt}"), false).is_ok();
+    let have = ssh.test(&format!("-s {dflt}"));
     if have {
         ssh.run(&format!("sed -i '1s/.*/{once}/' {dflt}"), true).map_err(|e| bail_umount(format!("{e}")))?;
     } else {
@@ -490,7 +543,7 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
     let menu = format!("{gm}/boot/grub/menu.lst");
     let backup = format!("{menu}.pre-openhc");
 
-    let have_backup = ssh.run(&format!("test -s {backup}"), false).is_ok();
+    let have_backup = ssh.test(&format!("-s {backup}"));
     if have_backup {
         ssh.run(&format!("cp {backup} {menu}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
         p.emit(Event::step("menu.lst restored from the pre-install backup".into()));

@@ -184,6 +184,19 @@ mod tests {
     }
 
     #[test]
+    fn an_install_after_a_restore_still_puts_openhc_at_its_index() {
+        // Post-restore menu: stock + the spent once-entry at index 2. Dropping
+        // it before appending is what keeps openHC at ENTRY_OPENHC; otherwise
+        // "boot openHC" would boot the factory restore.
+        let (after_restore, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
+        let cleaned = hc800::drop_entry(&after_restore, hc800::FACTORY_ONCE_TITLE);
+        assert_eq!(hc800::titles(&cleaned), hc800::titles(HC800_STOCK_MENU));
+        let installed = format!("{cleaned}{}", hc800::menu_entry(true));
+        assert_eq!(hc800::titles(&installed)[hc800::ENTRY_OPENHC as usize], "openHC");
+        assert!(installed.contains("support_factorydefault\t1\nfactorydefault\t\t0\n"));
+    }
+
+    #[test]
     fn factory_restore_refuses_a_menu_without_the_button_lines() {
         for line in ["support_factorydefault\t1\n", "\nfactorydefault\t\t0\n"] {
             let m = HC800_STOCK_MENU.replacen(line, "\n", 1);

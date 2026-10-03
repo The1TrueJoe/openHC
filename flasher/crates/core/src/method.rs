@@ -191,11 +191,11 @@ pub fn plan(board: &Board, method: Method) -> Plan {
         Method::Kexec => Plan {
             method,
             steps: vec![
-                "copy bzImage + rootfs.cpio.gz to /tmp on the running system".into(),
+                "mount a tmpfs sized to the release at /mnt/ohc-stage and copy bzImage + rootfs.cpio.gz (+ a static kexec if the box has none) into it".into(),
                 "kexec -l (stage into the running kernel — still nothing written)".into(),
                 "kexec -e (jump straight into openHC, skipping BIOS and GRUB)".into(),
             ],
-            writes: vec!["nothing. /tmp is a tmpfs; no partition is opened for writing".into()],
+            writes: vec!["nothing. The stage is a tmpfs (RAM); no partition is opened for writing".into()],
             needs_serial: false,
             needs_button: false,
             reversible: "a power cycle. GRUB, the vendor root and the factory-restore image are \
