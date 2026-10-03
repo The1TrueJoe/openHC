@@ -1,7 +1,8 @@
 #!/bin/sh
-# Load the CE5300 ASoC audio stack (the `audio-dsp` feature, built =m to keep the
-# EA-3 bzImage inside CEFDK's bootlinux window — see
-# board/ea/common/features/audio-dsp/linux.fragment).
+# Load the CE5300 ASoC audio stack, built =m to keep the EA bzImage inside
+# CEFDK's bootlinux window. Two mutually-exclusive backends share this script:
+# the `audio-dsp` feature (EA3, ADAU1451 analog out) and the `audio-hdmi` feature
+# (EA1, SoC HDMI audio) — see board/ea/common/features/audio-{dsp,hdmi}/linux.fragment.
 #
 # WHY an init script and not modules-load.d: this image has no systemd and no
 # modules-load.d reader, so modules are loaded by modprobe from init, the same way
@@ -21,7 +22,13 @@
 #   ce5300-ea3   — machine driver, binds ce5300-ea-audio and registers the card
 # Deferred probe makes the order forgiving, but this is the natural bring-up order.
 
-MODS="ce5300-i2s adau1451-c4 ce5300-ea-board ce5300-ea3"
+# EA3 (audio-dsp) modules first, then EA1 (audio-hdmi) modules. Each board image
+# ships only its own feature's .ko, so the other family's modprobes fail
+# harmlessly (same best-effort guard as S39ea-switch). EA1 order: the HDMI
+# platform/cpu-DAI component (ce5300-hdmi), the glue that registers both platform
+# devices (ce5300-ea1-board), then the machine/card (ce5300-ea1). Deferred probe
+# makes the order forgiving.
+MODS="ce5300-i2s adau1451-c4 ce5300-ea-board ce5300-ea3 ce5300-hdmi ce5300-ea1-board ce5300-ea1"
 
 start() {
     loaded=0
@@ -44,7 +51,7 @@ start() {
 }
 
 stop() {
-    for m in ce5300-ea3 ce5300-ea-board adau1451-c4 ce5300-i2s; do
+    for m in ce5300-ea1 ce5300-ea1-board ce5300-hdmi ce5300-ea3 ce5300-ea-board adau1451-c4 ce5300-i2s; do
         modprobe -r "$m" >/dev/null 2>&1 || true
     done
 }

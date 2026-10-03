@@ -1,0 +1,52 @@
+# --- audio-hdmi: CE5300 integrated HDMI transmitter -> HDMI audio ----------
+#
+# EA1's audio path. EA1 has NO ADAU1451 SigmaDSP (that is EA3's `audio-dsp`
+# feature) and no I2C codec at all; its only audio output is HDMI audio emitted
+# by the SoC's integrated HDMI transmitter. So this feature is the HDMI-side
+# twin of `audio-dsp`: same ALSA SoC core, a different machine + platform/DAI,
+# and NO codec/I2C/GPIO glue.
+#
+# Pairs with features/audio/defconfig (the shared ALSA + librespot + shairport
+# userspace, selected family-wide). This fragment supplies only the kernel half.
+#
+# Three openHC drivers are copied into the tree via objs.mk (NOT patched), so
+# they carry NO Kconfig symbol and cannot be gated by obj-$(CONFIG_...) — they
+# are gated solely by CONFIG_SND_SOC below deciding whether sound/soc is built
+# at all (see board/ea/common/kernel/objs.mk and the ce5300 Makefile, which
+# lists them as literal obj-m). Inventing a CONFIG_ symbol here would silently
+# build nothing, exactly the trap documented for audio-dsp.
+#
+# MODULES, not built-in — same reason as audio-dsp and the `switch` feature: an
+# x86_64 EA bzImage with the whole ALSA SoC core built in (snd + snd-pcm +
+# snd-soc-core + our drivers) runs ~290 KB over CEFDK's 7,417,856-byte bootlinux
+# window. As modules the SoC core and drivers load from p1 after mount
+# (S45ea-audio modprobes them), so that weight lands in the rootfs instead. The
+# drivers bind by STRING NAME (COMP_CPU/COMP_PLATFORM, platform_device name), not
+# by EXPORT_SYMBOL or a direct cross-module call, so splitting into separate .ko
+# is safe.
+#
+# A board built WITHOUT this feature leaves SND_SOC unset, so sound/soc is never
+# descended and none of the .ko exist — S45ea-audio's modprobes fail harmlessly.
+CONFIG_SOUND=m
+CONFIG_SND=m
+CONFIG_SND_PCM=m
+CONFIG_SND_SOC=m
+
+# A kernel high-resolution-timer PCM is handy as a sanity sink while the HDMI
+# backend is still un-RE'd (see HDMI-AUDIO-RE.md) and is otherwise harmless.
+CONFIG_SND_HRTIMER=m
+
+# The machine driver (ce5300-ea1.c) currently links the HDMI cpu DAI to the
+# ASoC core's built-in snd-soc-dummy-dai (COMP_DUMMY), which needs no extra
+# symbol — snd-soc-core registers the dummy component itself. When the real
+# HDMI backend lands it should move to the generic HDMI codec shim, at which
+# point uncomment the line below and register an "hdmi-audio-codec" platform
+# device (hdmi_codec_pdata + hdmi_codec_ops) from the EA1 board glue.
+#CONFIG_SND_SOC_HDMI_CODEC=m
+
+# No I2C / REGMAP_I2C / mute-GPIO config here, unlike audio-dsp: EA1 has no I2C
+# codec and no DAC soft-mute line. The i2c-pxa-pci 4-controller patch that
+# audio-dsp depends on is irrelevant to HDMI audio.
+
+# Userspace mixer/PCM access: /dev/snd/*.
+CONFIG_SND_MIXER_OSS=n

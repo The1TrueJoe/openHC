@@ -14,3 +14,12 @@
 obj-m += ce5300-i2s.o
 obj-m += ce5300-ea3.o
 obj-m += ce5300-ea-board.o
+# EA1 HDMI-audio (the `audio-hdmi` feature). ce5300-hdmi is the platform + cpu-DAI
+# skeleton, ce5300-ea1 the machine driver, ce5300-ea1-board the glue that
+# registers both platform devices from its module_init. Same obj-m gating as the
+# EA3 drivers above: no Kconfig symbol, built when CONFIG_SND_SOC=m descends
+# sound/soc. On a board without audio-hdmi (SND_SOC unset) none of these build;
+# on EA3 they build but are never loaded (S45ea-audio modprobe is best-effort).
+obj-m += ce5300-hdmi.o
+obj-m += ce5300-ea1.o
+obj-m += ce5300-ea1-board.o

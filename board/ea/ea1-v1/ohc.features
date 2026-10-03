@@ -1,2 +1,4 @@
-# EA1 adds only its radio; everything shared is in ea/common/ohc.features.
+# EA1 adds its radio, plus HDMI audio output (EA1 has no DSP; everything else
+# shared is in ea/common/ohc.features).
 wifi
+audio-hdmi
