@@ -1,0 +1,136 @@
+From b5d88fa6c36bf17d506c235812e20191e4675986 Mon Sep 17 00:00:00 2001
+From: Adhemerval Zanella <adhemerval.zanella@linaro.org>
+Date: Tue, 9 Sep 2025 17:47:21 -0300
+Subject: [PATCH] math: Fix x86_64 build for -Os (BZ 33367)
+
+The compiler might not inline the trunc function call for
+USE_TRUNC_BUILTIN [1].
+
+This patch adds an optimized __trunc/__truncf for x86 used
+on modf ifunc variant to avoid the trunc libcall.
+
+Checked on x86_64, x86_64-v2, x86_64-v3, and x86_64-v4. Used -O2 and
+-Os options. Performed a full make check on x86_64 with both
+ optimizations.
+
+[1] https://gcc.gnu.org/bugzilla/show_bug.cgi?id=121861
+Reviewed-by: H.J. Lu <hjl.tools@gmail.com>
+---
+ sysdeps/x86/fpu/math_private.h                | 27 +++++++++++++++++++
+ sysdeps/x86_64/fpu/multiarch/s_modf-avx.c     |  3 +++
+ sysdeps/x86_64/fpu/multiarch/s_modf-sse4_1.c  |  3 +++
+ sysdeps/x86_64/fpu/multiarch/s_modf.c         |  2 ++
+ sysdeps/x86_64/fpu/multiarch/s_modff-avx.c    |  3 +++
+ sysdeps/x86_64/fpu/multiarch/s_modff-sse4_1.c |  3 +++
+ sysdeps/x86_64/fpu/multiarch/s_modff.c        |  2 ++
+ 7 files changed, 43 insertions(+)
+
+diff --git a/sysdeps/x86/fpu/math_private.h b/sysdeps/x86/fpu/math_private.h
+index 132f0118096..d30d580ceac 100644
+--- a/sysdeps/x86/fpu/math_private.h
++++ b/sysdeps/x86/fpu/math_private.h
+@@ -19,6 +19,7 @@
+ #ifndef X86_MATH_PRIVATE_H
+ #define X86_MATH_PRIVATE_H 1
+ 
++#include <math.h>
+ #include_next <math_private.h>
+ 
+ __extern_always_inline long double
+@@ -29,4 +30,30 @@ __NTH (__ieee754_atan2l (long double y, long double x))
+   return ret;
+ }
+ 
++__extern_always_inline double
++__trunc (double x)
++{
++#ifdef __AVX__
++  asm ("vroundsd $11, %1, %1, %0" : "=v" (x) : "v" (x));
++#elif defined __SSE4_1__
++  asm ("roundsd $11, %1, %0" : "=x" (x) : "x" (x));
++#else
++  x = trunc (x);
++#endif
++  return x;
++}
++
++__extern_always_inline float
++__truncf (float x)
++{
++#ifdef __AVX__
++  asm ("vroundss $11, %1, %1, %0" : "=v" (x) : "v" (x));
++#elif defined __SSE4_1__
++  asm ("roundss $11, %1, %0" : "=x" (x) : "x" (x));
++#else
++  x = truncf (x);
++#endif
++  return x;
++}
++
+ #endif
+diff --git a/sysdeps/x86_64/fpu/multiarch/s_modf-avx.c b/sysdeps/x86_64/fpu/multiarch/s_modf-avx.c
+index ab4f03db0ee..0982280d252 100644
+--- a/sysdeps/x86_64/fpu/multiarch/s_modf-avx.c
++++ b/sysdeps/x86_64/fpu/multiarch/s_modf-avx.c
+@@ -1,3 +1,6 @@
++#include <math_private.h>
++
+ #define __modf __modf_avx
++#define trunc __trunc
+ 
+ #include <sysdeps/ieee754/dbl-64/s_modf.c>
+diff --git a/sysdeps/x86_64/fpu/multiarch/s_modf-sse4_1.c b/sysdeps/x86_64/fpu/multiarch/s_modf-sse4_1.c
+index 00aa8cd7365..f6fb996f979 100644
+--- a/sysdeps/x86_64/fpu/multiarch/s_modf-sse4_1.c
++++ b/sysdeps/x86_64/fpu/multiarch/s_modf-sse4_1.c
+@@ -1,3 +1,6 @@
++#include <math_private.h>
++
+ #define __modf __modf_sse41
++#define trunc __trunc
+ 
+ #include <sysdeps/ieee754/dbl-64/s_modf.c>
+diff --git a/sysdeps/x86_64/fpu/multiarch/s_modf.c b/sysdeps/x86_64/fpu/multiarch/s_modf.c
+index e365bfcef7d..a108ae5dc6c 100644
+--- a/sysdeps/x86_64/fpu/multiarch/s_modf.c
++++ b/sysdeps/x86_64/fpu/multiarch/s_modf.c
+@@ -38,4 +38,6 @@ libm_alias_double (__modf, modf)
+ #  define __modf __modf_sse2
+ # endif
+ #endif
++#include <math_private.h>
++#define trunc __trunc
+ #include <sysdeps/ieee754/dbl-64/s_modf.c>
+diff --git a/sysdeps/x86_64/fpu/multiarch/s_modff-avx.c b/sysdeps/x86_64/fpu/multiarch/s_modff-avx.c
+index 07cb9c10360..b2afe1efe3c 100644
+--- a/sysdeps/x86_64/fpu/multiarch/s_modff-avx.c
++++ b/sysdeps/x86_64/fpu/multiarch/s_modff-avx.c
+@@ -1,3 +1,6 @@
++#include <math_private.h>
++
+ #define __modff __modff_avx
++#define truncf __truncf
+ 
+ #include <sysdeps/ieee754/flt-32/s_modff.c>
+diff --git a/sysdeps/x86_64/fpu/multiarch/s_modff-sse4_1.c b/sysdeps/x86_64/fpu/multiarch/s_modff-sse4_1.c
+index 060c5e39796..0352c3ea4ba 100644
+--- a/sysdeps/x86_64/fpu/multiarch/s_modff-sse4_1.c
++++ b/sysdeps/x86_64/fpu/multiarch/s_modff-sse4_1.c
+@@ -1,3 +1,6 @@
++#include <math_private.h>
++
+ #define __modff __modff_sse41
++#define truncf __truncf
+ 
+ #include <sysdeps/ieee754/flt-32/s_modff.c>
+diff --git a/sysdeps/x86_64/fpu/multiarch/s_modff.c b/sysdeps/x86_64/fpu/multiarch/s_modff.c
+index a4b54290377..62d7645bc76 100644
+--- a/sysdeps/x86_64/fpu/multiarch/s_modff.c
++++ b/sysdeps/x86_64/fpu/multiarch/s_modff.c
+@@ -38,4 +38,6 @@ libm_alias_float (__modf, modf)
+ #  define __modff __modff_sse2
+ # endif
+ #endif
++#include <math_private.h>
++#define truncf __truncf
+ #include <sysdeps/ieee754/flt-32/s_modff.c>
