@@ -13,3 +13,9 @@ CONFIG_SEQ=y
 # etc/init.d/S02watchdog kicks /dev/watchdog through this applet, and -F (run in
 # the foreground) is what lets start-stop-daemon own the pidfile.
 CONFIG_WATCHDOG=y
+
+# etc/init.d/S44ntpd keeps the clock right. Without it a box whose RTC has lost
+# its time (the HC-800 came up in 2002, a dead CMOS cell) fails every TLS
+# handshake — npm, any https fetch — on "certificate not yet valid".
+CONFIG_NTPD=y
+CONFIG_HWCLOCK=y

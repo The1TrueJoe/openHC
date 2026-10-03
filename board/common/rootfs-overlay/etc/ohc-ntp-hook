@@ -1,0 +1,6 @@
+#!/bin/sh
+# busybox ntpd -S hook: $1 is "step", "stratum" or "periodic". Persist a step to
+# the RTC so the next cold boot does not start years off.
+[ "$1" = step ] || [ "$1" = stratum ] || exit 0
+[ -e /dev/rtc0 ] && hwclock -w -u 2>/dev/null
+exit 0

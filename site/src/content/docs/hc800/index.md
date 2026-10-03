@@ -157,8 +157,18 @@ Points that matter for the port:
   constrains the EA image.
 - **The console is already serial**, at the same 115200 as every other board, and
   GRUB itself talks to it.
-- **`timeout 0` + `hiddenmenu`** means no interactive menu appears. Selecting a
-  different entry means **editing `default`**, not catching a prompt.
+- **`timeout 0` + `hiddenmenu`** means no menu is shown. To select a different
+  entry, edit `default`. But the menu is NOT unreachable: `terminal serial`
+  makes GRUB read keys from `ttyS0` alone (a USB keyboard does nothing), and
+  it checks for ESC once, about 7 s after the BIOS prints `2038MB OK`.
+  `serial --unit=0` resets the UART FIFO just before that check, so the ESC has
+  to arrive within a few milliseconds of it. Sending ESC every ~5 ms from
+  `2038MB OK` opens the menu every time ("GNU GRUB 0.97 … Control4 specific
+  edition"), and `ESC [ B` + Enter picks an entry. That is how a unit stuck
+  booting entry 0 on every boot was brought back without opening it. ESCs
+  spaced 80–600 ms apart never land. Use ONE USB-serial adapter at a time: two
+  clone FT232Rs reporting the same serial number made macOS's driver stall
+  and replay stale data.
 - **Adding a third entry doesn't disturb the first two.** The factory-restore
   path stays byte-identical, so recovery is untouched.
 
@@ -203,6 +213,39 @@ system cannot tell those apart** — the fd map looks identical either way.
 
 `ttyS4` was sitting at 9600 when read, but nothing had it open — that's the
 untouched 8250 default, not a measurement of the NCP's rate.
+
+## Zigbee: an EM357 on EmberZNet 4.7.2, served as a network radio
+
+The NCP runs at **115200** (a bare ASH RST is answered with RSTACK at that rate
+and no other) and needs no bootloader dance. An EZSP version query returns
+**protocol 4, stackVersion 0x4720: EmberZNet 4.7.2 build 88**, from around 2012.
+It also comes up as a coordinator on a formed network, channel 19, PAN 0x48B8.
+That is the Control4 mesh it was paired into, stored in the NCP's own flash.
+
+That firmware decides the stack. zigbee2mqtt cannot drive it: zigbee-herdsman's
+`ember` driver needs EZSP 13+ (EmberZNet 7.4), its deprecated `ezsp` driver
+needed 8+, and Silicon Labs dropped EM35x support well before either. zigpy's
+**bellows still speaks EZSP v4**. So `ohc-zigbee` serves the port over TCP
+(`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA drives the radio from
+there:
+
+- ZHA → add integration → radio type **EZSP**, path
+  `socket://<box>:6638`. Or just accept the discovered device: the box advertises
+  `_zigbee-coordinator._tcp` with `radio_type=ezsp` and `serial_number=<eth MAC>`,
+  the two keys ZHA's discovery reads.
+- One client at a time. A new connection replaces the old one, so an HA restart
+  isn't locked out by its own half-open socket. Connects and disconnects go to
+  syslog (`ohc-zigbee:`).
+- Verified 2026-10-02: `bellows info` over `socket://` read the version, EUI64
+  `00:0f:ff:00:00:60:2d:6a` and the existing network, on two back-to-back
+  connections.
+
+The Control4 network was cleared on 2026-10-03 (`leaveNetwork` → `NETWORK_DOWN`,
+then `NOT_JOINED` on a fresh session), after a zigpy-cli backup of it. The NCP
+now has no network, and ZHA forms its own on first setup. With bellows on this
+firmware, `leaveNetwork` returns `SUCCESS` and then sends `NETWORK_DOWN` as a
+callback, so the stock `bellows leave` CLI waits forever. Call the API with a
+timeout instead.
 
 ## IO: an LM3S1162 on ttyS3
 
@@ -525,7 +568,6 @@ the EA family and with the HC-250.
   the panel.
 - **Whether the two rear RS-232 jacks are wired to the host 8250s or bridged
   through the MCU's UART1/UART2.**
-- **The Zigbee NCP's real baud rate**, never opened during this pull.
 - **Whether the ADV7513/THS8200 video path terminates at a connector** on this
   revision.
 - **BIOS boot-device options**, whether USB boot is available, which would give a

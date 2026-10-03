@@ -103,6 +103,8 @@ pub const KNOWN: &[&str] = &[
     // Listed so a release trimmed to just them still opens.
     "openhc-hc800-kernel.img",
     "openhc-initrd.gz",
+    // Static i686 kexec for launching from the stock HC-800 image, which has none.
+    "kexec-i686-static",
     // The IO Extender: one legacy uImage, kernel + appended DTB + initramfs.
     "openhc-ioxv1-kernel.img",
 ];
