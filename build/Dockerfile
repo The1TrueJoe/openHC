@@ -30,7 +30,7 @@ FROM debian:bookworm-slim AS build-env
 # them, because an ARG invalidates the layer cache from its DECLARATION
 # onward, not from first use. Declared here, changing the job count re-ran
 # apt-get and re-cloned Buildroot before reaching any of the real work.
-ARG BUILDROOT_REF=2024.02.9
+ARG BUILDROOT_REF=2026.02.3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential bc bison flex git rsync unzip wget cpio file figlet \

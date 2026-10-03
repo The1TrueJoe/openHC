@@ -45,28 +45,28 @@ never uninstalls a deselected package's files, so libWPEBackend-fdo and the
 libwayland-* already in target/ survive until a clean build. They are inert --
 libWPEBackend-default.so.1 points at the PowerVR backend -- just dead weight.
 
---- a/package/wpewebkit/wpewebkit.mk	2026-08-28 19:13:38
-+++ b/package/wpewebkit/wpewebkit.mk	2026-08-28 19:13:38
-@@ -17,7 +17,7 @@
- WPEWEBKIT_CPE_ID_PRODUCT = wpe_webkit
- WPEWEBKIT_DEPENDENCIES = host-gperf host-python3 host-ruby host-unifdef \
- 	harfbuzz cairo icu jpeg libepoxy libgcrypt libgles libsoup3 libtasn1 \
--	libpng libxslt wayland-protocols webp wpebackend-fdo
-+	libpng libxslt libwpe webp
- 
- WPEWEBKIT_CMAKE_BACKEND = ninja
- 
---- a/package/wpewebkit/Config.in	2026-08-28 19:13:38
-+++ b/package/wpewebkit/Config.in	2026-08-28 19:13:38
-@@ -41,7 +41,6 @@
+Rebased onto Buildroot 2026.02.3 (WPE WebKit 2.50.5). Two differences from the
+2024.02 version: cairo is no longer an unconditional dependency (2.46+ renders
+with a bundled Skia on little-endian targets, which Buildroot already handles),
+and 2.50 grew the new "WPE Platform" API, whose DRM and Wayland platforms carry
+their own dependencies (libinput/udev, wayland). This board uses the classic
+libwpe backend interface (wpebackend-pvr), so -DENABLE_WPE_PLATFORM=OFF is set
+explicitly rather than trusting an upstream default that has moved before.
+
+diff --git a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
+index c4ee5a27..23d501c3 100644
+--- a/package/wpewebkit/Config.in
++++ b/package/wpewebkit/Config.in
+@@ -39,7 +39,7 @@ config BR2_PACKAGE_WPEWEBKIT
+ 	depends on BR2_TOOLCHAIN_GCC_AT_LEAST_11
  	depends on BR2_USE_WCHAR # icu, libsoup3
- 	depends on BR2_PACKAGE_HAS_LIBGLES # libepoxy
- 	depends on BR2_PACKAGE_HAS_LIBEGL # libepoxy
--	depends on BR2_PACKAGE_HAS_LIBEGL_WAYLAND # wpebackend-fdo
+ 	depends on BR2_PACKAGE_HAS_LIBGLES
+-	depends on BR2_PACKAGE_HAS_LIBEGL # wpebackend-fdo
++	depends on BR2_PACKAGE_HAS_LIBEGL # libepoxy
  	depends on BR2_PACKAGE_WPEWEBKIT_ARCH_SUPPORTS
- 	select BR2_PACKAGE_CAIRO
- 	select BR2_PACKAGE_CAIRO_PNG
-@@ -53,12 +52,10 @@
+ 	select BR2_HOST_CMAKE_AT_LEAST_3_20
+ 	select BR2_PACKAGE_CAIRO if BR2_ENDIAN = "BIG"
+@@ -54,13 +54,11 @@ config BR2_PACKAGE_WPEWEBKIT
  	select BR2_PACKAGE_LIBPNG
  	select BR2_PACKAGE_LIBSOUP3
  	select BR2_PACKAGE_LIBTASN1
@@ -76,7 +76,29 @@ libWPEBackend-default.so.1 points at the PowerVR backend -- just dead weight.
 -	select BR2_PACKAGE_WAYLAND_PROTOCOLS
  	select BR2_PACKAGE_WEBP
  	select BR2_PACKAGE_WEBP_DEMUX
+ 	select BR2_PACKAGE_WEBP_MUX
 -	select BR2_PACKAGE_WPEBACKEND_FDO
  	help
  	  WPE (Web Platform for Embedded) port of the WebKit engine,
  	  to allow embedders to create simple and performant systems
+diff --git a/package/wpewebkit/wpewebkit.mk b/package/wpewebkit/wpewebkit.mk
+index 1f5f4aa5..cd416ba8 100644
+--- a/package/wpewebkit/wpewebkit.mk
++++ b/package/wpewebkit/wpewebkit.mk
+@@ -17,7 +17,7 @@ WPEWEBKIT_CPE_ID_VENDOR = wpewebkit
+ WPEWEBKIT_CPE_ID_PRODUCT = wpe_webkit
+ WPEWEBKIT_DEPENDENCIES = host-gperf host-python3 host-ruby host-unifdef \
+ 	harfbuzz icu jpeg libepoxy libgcrypt libgles libsoup3 libtasn1 \
+-	libpng libxslt wayland-protocols webp wpebackend-fdo
++	libpng libxslt libwpe webp
+ 
+ WPEWEBKIT_CMAKE_BACKEND = ninja
+ 
+@@ -32,6 +32,7 @@ WPEWEBKIT_CONF_OPTS = \
+ 	-DENABLE_INTROSPECTION=OFF \
+ 	-DENABLE_MINIBROWSER=OFF \
+ 	-DENABLE_WEB_RTC=OFF \
++	-DENABLE_WPE_PLATFORM=OFF \
+ 	-DUSE_ATK=OFF
+ 
+ # WPE WebKit uses a bundled copy of Skia since 2.46.0 for

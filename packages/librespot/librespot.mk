@@ -9,7 +9,7 @@
 #
 ################################################################################
 
-LIBRESPOT_VERSION = v0.4.2
+LIBRESPOT_VERSION = v0.8.0
 LIBRESPOT_SITE = https://github.com/librespot-org/librespot.git
 LIBRESPOT_SITE_METHOD = git
 
@@ -27,7 +27,18 @@ LIBRESPOT_DEPENDENCIES = host-pkgconf alsa-lib
 # Only the ALSA backend. The defaults drag in pulseaudio, portaudio, jackaudio
 # and gstreamer -- none of which exist on this image, and each of which turns a
 # missing header into a confusing Rust link error rather than a clear one.
-LIBRESPOT_CARGO_BUILD_OPTS = --no-default-features --features alsa-backend
+#
+# v0.8.0 (was v0.4.2, the last release on Spotify's retired API). 0.6+ made the
+# TLS stack and the zeroconf responder explicit features, so with
+# --no-default-features both must be named or the build fails / the device is
+# never discoverable:
+#   with-libmdns            self-contained mDNS responder (no D-Bus/avahi needed)
+#   rustls-tls-webpki-roots pure-Rust TLS with Mozilla's roots compiled in, so no
+#                           OpenSSL link and no dependence on ca-certificates
+# 0.8.0 needs Rust 1.85 (edition 2024) — Buildroot 2026.02.3 ships 1.88; the
+# 2024.02 tree's 1.74 is why this sat on 0.4.2.
+LIBRESPOT_CARGO_BUILD_OPTS = --no-default-features \
+	--features alsa-backend,with-libmdns,rustls-tls-webpki-roots
 
 define LIBRESPOT_INSTALL_INIT_SYSV
 	$(INSTALL) -D -m 0755 $(LIBRESPOT_PKGDIR)/S95librespot \
