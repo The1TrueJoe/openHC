@@ -31,7 +31,12 @@ CONF="$CONF_DIR/avahi-daemon.conf"
 SERVICES="$CONF_DIR/services"
 # Advertised so `ohc discover` can show which units are out of date
 # without opening an HTTP connection to each one.
-OHC_VERSION=$(cat /opt/ohc/VERSION 2>/dev/null || echo unknown)
+# /etc/openhc-release (written by the post-build hook) is the source of truth
+# for both; no board.env sets OHC_BOARD and /opt/ohc/VERSION does not exist, so
+# reading those advertised "unknown" on every unit.
+rel() { sed -n "s/^$1=//p" /etc/openhc-release 2>/dev/null | head -1; }
+OHC_VERSION=$(rel version); OHC_VERSION=${OHC_VERSION:-unknown}
+OHC_BOARD=${OHC_BOARD:-$(rel board)}
 BACKUP=/opt/ohc/backup
 
 mdns_name() {

@@ -33,6 +33,9 @@ advertise() {
   </service>
 </service-group>
 EOF
+    # avahi reads this as its own unprivileged user; an init-time umask of 077
+    # left it "Permission denied" and the record silently unpublished.
+    chmod 0644 "$SVC"
     avahi-daemon -r >/dev/null 2>&1   # reload static services; harmless if not running
 }
 

@@ -214,6 +214,35 @@ system cannot tell those apart** — the fd map looks identical either way.
 `ttyS4` was sitting at 9600 when read, but nothing had it open — that's the
 untouched 8250 default, not a measurement of the NCP's rate.
 
+## Zigbee: an EM357 on EmberZNet 4.7.2, served as a network radio
+
+The NCP runs at **115200** (a bare ASH RST is answered with RSTACK at that rate
+and no other) and needs no bootloader dance. An EZSP version query returns
+**protocol 4, stackVersion 0x4720: EmberZNet 4.7.2 build 88**, from around 2012.
+It also comes up as a coordinator on a formed network, channel 19, PAN 0x48B8.
+That is the Control4 mesh it was paired into, stored in the NCP's own flash.
+
+That firmware decides the stack. zigbee2mqtt cannot drive it: zigbee-herdsman's
+`ember` driver needs EZSP 13+ (EmberZNet 7.4), its deprecated `ezsp` driver
+needed 8+, and Silicon Labs dropped EM35x support well before either. zigpy's
+**bellows still speaks EZSP v4**. So `ohc-zigbee` serves the port over TCP
+(`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA drives the radio from
+there:
+
+- ZHA → add integration → radio type **EZSP**, path
+  `socket://<box>:6638`. Or just accept the discovered device: the box advertises
+  `_zigbee-coordinator._tcp` with `radio_type=ezsp` and `serial_number=<eth MAC>`,
+  the two keys ZHA's discovery reads.
+- One client at a time. A new connection replaces the old one, so an HA restart
+  isn't locked out by its own half-open socket. Connects and disconnects go to
+  syslog (`ohc-zigbee:`).
+- Verified 2026-10-02: `bellows info` over `socket://` read the version, EUI64
+  `00:0f:ff:00:00:60:2d:6a` and the existing network, on two back-to-back
+  connections.
+
+ZHA will offer to form a new network. That replaces the Control4 one in the
+NCP, so anything still paired to it has to be re-paired.
+
 ## IO: an LM3S1162 on ttyS3
 
 ```xml
@@ -535,7 +564,6 @@ the EA family and with the HC-250.
   the panel.
 - **Whether the two rear RS-232 jacks are wired to the host 8250s or bridged
   through the MCU's UART1/UART2.**
-- **The Zigbee NCP's real baud rate**, never opened during this pull.
 - **Whether the ADV7513/THS8200 video path terminates at a connector** on this
   revision.
 - **BIOS boot-device options**, whether USB boot is available, which would give a
