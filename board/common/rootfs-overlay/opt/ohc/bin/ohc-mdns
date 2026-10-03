@@ -114,6 +114,17 @@ set_conf() {   # set_conf <key> <value>
         sed -i "/^\[server\]/a $1=$2" "$CONF"
     fi
 }
+# D-Bus. shairport-sync (AirPlay) publishes through avahi-client, which reaches
+# the daemon over the system bus, so a D-Bus-built avahi must have it on; `warn`
+# keeps avahi up even if the bus is not. An avahi built WITHOUT D-Bus rejects
+# the key outright ("Invalid configuration key") and will not start, so there it
+# must be absent. libdbus present <=> avahi was built against it.
+if [ -e /usr/lib/libdbus-1.so.3 ] || [ -e /lib/libdbus-1.so.3 ]; then
+    set_conf enable-dbus warn
+else
+    sed -i '/^#*enable-dbus=/d' "$CONF"
+fi
+
 if [ -n "$IFACE" ]; then
     set_conf allow-interfaces "$IFACE"
     echo "ohc-mdns: publishing on $IFACE only"
