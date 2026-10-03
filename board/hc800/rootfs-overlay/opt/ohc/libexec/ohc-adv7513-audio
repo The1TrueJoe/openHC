@@ -10,7 +10,7 @@
 # drops, so this re-asserts those registers whenever a sink is present. Writes
 # happen only when a value differs, so a steady state is pure reads.
 #
-# Run by ohc-audio (board.env OHC_AUDIO_HELPERS) under ohc-run.
+# Run and supervised by ohc-audiod (board.env OHC_AUDIO_HELPERS).
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 BUS="${OHC_VIDEO_I2C_BUS:-6}"
 ADV=0x39                      # main map (the 8-bit 0x72 in board.env)

@@ -1,0 +1,28 @@
+#!/bin/sh
+# ohc-audiod — the audio daemon (SHARED, board/common). Inert unless the 'audio'
+# feature staged it.
+#
+# It owns audio end to end: on a board with named outputs (board.env
+# OHC_AUDIO_OUTPUTS) it runs every Spotify Connect / AirPlay endpoint and input
+# route itself; everywhere it publishes audio state on the box's MQTT broker
+# (<base>/state/audio/*), takes <base>/cmd/audio/*, and serves its configuration
+# over REST on :7072 (webd proxies it at /audio/). board.env is exported into
+# its environment, which is how it reads the outputs.
+DAEMON=/opt/ohc/bin/ohc-audiod
+PIDFILE=/var/run/ohc-audiod.pid
+
+case "$1" in
+    start)
+        [ -x "$DAEMON" ] || exit 0
+        start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec /bin/sh -- -c \
+            "set -a; . /opt/ohc/board.env; set +a; exec $DAEMON 2>&1 | logger -t ohc-audiod" \
+            && echo "audio: ohc-audiod on :7072"
+        ;;
+    stop)
+        [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE"
+        killall ohc-audiod 2>/dev/null
+        rm -f "$PIDFILE"
+        ;;
+    restart) "$0" stop; sleep 1; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

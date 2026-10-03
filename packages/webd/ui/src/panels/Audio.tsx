@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable } from 'lucide-react';
 import {
-  io, type AudioEndpoint, type AudioMap, type AudioReceiver, type AudioStatus, type Capabilities,
+  io, rest, type AudioEndpoints, type AudioInstance, type AudioMap, type AudioReceiver, type AudioStatus,
+  type Capabilities,
 } from '../api';
 import { useIoState } from '../App';
 
@@ -37,7 +38,7 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   // the capabilities snapshot; rendered only once it has the full shape — the
   // retained topics arrive leaf by leaf.
   const map = live?.map ?? a.map;
-  if (map && Array.isArray(map.outputs) && Array.isArray(map.endpoints)) return <MapPanel map={map} />;
+  if (map && Array.isArray(map.outputs) && Array.isArray(map.instances)) return <MapPanel map={map} />;
 
   return (
     <div className="space-y-4">
@@ -210,29 +211,18 @@ function nowPlaying(v: unknown): { title: string; artist?: string } | null {
 
 /* ── boards with named outputs ──────────────────────────────────────────────
 
-   The jacks are fixed (board.env); what you edit is which endpoints exist and
-   where each one plays. Three lists — Spotify Connect, AirPlay, and line-in
-   routes — each saved as one "name@output;..." string that iod validates and
-   ohc-audio persists, restarting the endpoints. */
-
-/** Characters iod refuses (the config is shell-sourced) — caught here first so
- *  the user sees why rather than a silent no-op. */
-const FORBIDDEN = /[$`\\"\n\r;@]/;
+   The jacks are fixed (board.env); what you configure is which endpoints exist
+   and where each one plays. That is CONFIGURATION, so it is saved over REST
+   (ohc-audiod, PUT /audio/api/audio/endpoints); what is running is live state
+   and arrives over MQTT (`<base>/state/audio/map`). */
 
 type Row = { left: string; right: string };
+type Kind = 'spotify' | 'airplay' | 'routes';
 
-function parseList(list: string): Row[] {
-  return list
-    .split(';')
-    .map((e) => e.trim())
-    .filter(Boolean)
-    .map((e) => {
-      const at = e.lastIndexOf('@');
-      return at < 0 ? { left: e, right: '' } : { left: e.slice(0, at).trim(), right: e.slice(at + 1).trim() };
-    });
-}
-
-const serialise = (rows: Row[]) => rows.map((r) => `${r.left.trim()}@${r.right}`).join(';');
+const rowsOf = (map: AudioMap, kind: Kind): Row[] =>
+  kind === 'routes'
+    ? map.routes.map((r) => ({ left: r.input, right: r.output }))
+    : map[kind].map((e) => ({ left: e.name, right: e.output }));
 
 function MapPanel({ map }: { map: AudioMap }) {
   const label = (id: string) => map.outputs.find((o) => o.id === id)?.label ?? id;
@@ -261,79 +251,67 @@ function MapPanel({ map }: { map: AudioMap }) {
         </p>
       </section>
 
-      <ListEditor
-        title="Spotify Connect"
-        icon={<Music size={15} className="text-muted" />}
-        kind="spotify"
-        list={map.spotify}
-        leftLabel="Name in the Spotify app"
-        lefts={null}
-        outputs={map.outputs}
-        running={map.endpoints.filter((e) => e.kind === 'spotify')}
-        label={label}
-      />
-      <ListEditor
-        title="AirPlay"
-        icon={<Radio size={15} className="text-muted" />}
-        kind="airplay"
-        list={map.airplay}
-        leftLabel="Name on Apple devices"
-        lefts={null}
-        outputs={map.outputs}
-        running={map.endpoints.filter((e) => e.kind === 'airplay')}
-        label={label}
-      />
+      <ListEditor title="Spotify Connect" icon={<Music size={15} className="text-muted" />} kind="spotify"
+        map={map} leftLabel="Name in the Spotify app" label={label} />
+      <ListEditor title="AirPlay" icon={<Radio size={15} className="text-muted" />} kind="airplay"
+        map={map} leftLabel="Name on Apple devices" label={label} />
       {map.inputs.length > 0 && (
-        <ListEditor
-          title="Input routes"
-          icon={<Cable size={15} className="text-muted" />}
-          kind="routes"
-          list={map.routes}
-          leftLabel="Input"
-          lefts={map.inputs}
-          outputs={map.outputs}
-          running={map.endpoints.filter((e) => e.kind === 'route')}
-          label={label}
-          hint="A route plays the input live on the output, mixed with anything else playing there."
-        />
+        <ListEditor title="Input routes" icon={<Cable size={15} className="text-muted" />} kind="routes"
+          map={map} leftLabel="Input" label={label}
+          hint="A route plays the input live on the output, mixed with anything else playing there." />
       )}
     </div>
   );
 }
 
 function ListEditor({
-  title, icon, kind, list, leftLabel, lefts, outputs, running, label, hint,
+  title, icon, kind, map, leftLabel, label, hint,
 }: {
   title: string;
   icon: React.ReactNode;
-  kind: 'spotify' | 'airplay' | 'routes';
-  list: string;
+  kind: Kind;
+  map: AudioMap;
   leftLabel: string;
-  lefts: AudioMap['inputs'] | null;
-  outputs: AudioMap['outputs'];
-  running: AudioEndpoint[];
   label: (id: string) => string;
   hint?: string;
 }) {
-  const [rows, setRows] = useState<Row[]>(() => parseList(list));
-  const [saved, setSaved] = useState(list);
+  const fromMap = rowsOf(map, kind);
+  const key = JSON.stringify(fromMap);
+  const [rows, setRows] = useState<Row[]>(fromMap);
+  const [base, setBase] = useState(key);
   const [busy, setBusy] = useState(false);
-  // A save elsewhere (another page, MQTT) replaces our copy unless we have edits.
+  const [err, setErr] = useState<string | null>(null);
+  // A save elsewhere (another page, the API) replaces our copy.
   useEffect(() => {
-    if (list !== saved) {
-      setSaved(list);
-      setRows(parseList(list));
+    if (key !== base) {
+      setBase(key);
+      setRows(JSON.parse(key));
+    }
+  }, [key, base]);
+
+  const isRoute = kind === 'routes';
+  const dirty = JSON.stringify(rows) !== base;
+  const bad = rows.find((r) => !r.left.trim() || !r.right);
+  const instKind: AudioInstance['kind'] = isRoute ? 'route' : kind;
+  const isUp = (r: Row) =>
+    map.instances.some((i) => i.kind === instKind && i.running && (i.name ?? i.input) === r.left.trim() && i.output === r.right);
+  const set = (i: number, p: Partial<Row>) => setRows(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+
+  const save = async () => {
+    setBusy(true);
+    setErr(null);
+    const next: AudioEndpoints = { spotify: map.spotify, airplay: map.airplay, routes: map.routes };
+    if (isRoute) next.routes = rows.map((r) => ({ input: r.left, output: r.right }));
+    else next[kind] = rows.map((r) => ({ name: r.left.trim(), output: r.right }));
+    try {
+      await rest.saveEndpoints(next);
+      setBase(JSON.stringify(rows));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(false);
     }
-  }, [list, saved]);
-
-  const dirty = serialise(rows) !== serialise(parseList(saved));
-  const bad = rows.find((r) => !r.left.trim() || !r.right || (!lefts && FORBIDDEN.test(r.left)));
-  const isUp = (r: Row, i: number) => {
-    const e = running[i];
-    return !!e && e.running && (e.name ?? e.input) === r.left.trim() && e.output === r.right;
   };
-  const set = (i: number, p: Partial<Row>) => setRows(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
 
   return (
     <section className="hair rounded-xl border bg-panel p-4">
@@ -347,50 +325,34 @@ function ListEditor({
       <div className="space-y-2">
         {rows.map((r, i) => (
           <div key={i} className="flex flex-wrap items-center gap-2">
-            {isUp(r, i) ? (
+            {isUp(r) ? (
               <CircleDot size={13} className="text-live" aria-label="running" />
             ) : (
               <Circle size={13} className="text-muted" aria-label="not running" />
             )}
-            {lefts ? (
-              <select
-                value={r.left}
-                onChange={(e) => set(i, { left: e.target.value })}
-                aria-label={leftLabel}
-                className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50"
-              >
+            {isRoute ? (
+              <select value={r.left} onChange={(e) => set(i, { left: e.target.value })} aria-label={leftLabel}
+                className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50">
                 {!r.left && <option value="">Input…</option>}
-                {lefts.map((l) => (
+                {map.inputs.map((l) => (
                   <option key={l.id} value={l.id}>{l.label}</option>
                 ))}
               </select>
             ) : (
-              <input
-                value={r.left}
-                onChange={(e) => set(i, { left: e.target.value })}
-                placeholder={leftLabel}
-                aria-label={leftLabel}
-                className="hair min-w-0 flex-1 rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50"
-              />
+              <input value={r.left} onChange={(e) => set(i, { left: e.target.value })} placeholder={leftLabel}
+                aria-label={leftLabel} maxLength={64}
+                className="hair min-w-0 flex-1 rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50" />
             )}
             <span className="text-xs text-muted">→</span>
-            <select
-              value={r.right}
-              onChange={(e) => set(i, { right: e.target.value })}
-              aria-label="Output"
-              className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50"
-            >
+            <select value={r.right} onChange={(e) => set(i, { right: e.target.value })} aria-label="Output"
+              className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50">
               {!r.right && <option value="">Output…</option>}
-              {outputs.map((o) => (
+              {map.outputs.map((o) => (
                 <option key={o.id} value={o.id}>{label(o.id)}</option>
               ))}
             </select>
-            <button
-              onClick={() => setRows(rows.filter((_, j) => j !== i))}
-              className="rounded-lg p-2 text-muted hover:text-ink"
-              aria-label="Remove"
-              title="Remove"
-            >
+            <button onClick={() => setRows(rows.filter((_, j) => j !== i))}
+              className="rounded-lg p-2 text-muted hover:text-ink" aria-label="Remove" title="Remove">
               <Trash2 size={14} />
             </button>
           </div>
@@ -400,26 +362,16 @@ function ListEditor({
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
-          onClick={() => setRows([...rows, { left: lefts?.[0]?.id ?? '', right: outputs[0]?.id ?? '' }])}
-          className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs text-ink hover:border-accent/50"
-        >
+          onClick={() => setRows([...rows, { left: isRoute ? map.inputs[0]?.id ?? '' : '', right: map.outputs[0]?.id ?? '' }])}
+          className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs text-ink hover:border-accent/50">
           <Plus size={13} /> Add
         </button>
-        <button
-          disabled={!dirty || !!bad || busy}
-          onClick={() => {
-            setBusy(true);
-            io.setAudioEndpoints(kind, serialise(rows));
-          }}
-          className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs transition hover:bg-accent/30 disabled:opacity-40"
-        >
-          {busy ? 'Applying…' : 'Save'}
+        <button disabled={!dirty || !!bad || busy} onClick={save}
+          className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs transition hover:bg-accent/30 disabled:opacity-40">
+          {busy ? 'Saving…' : 'Save'}
         </button>
-        {dirty && bad && (
-          <span className="text-xs text-alarm">
-            {lefts ? 'Every route needs an input and an output.' : 'Names cannot be empty or contain $ ` \\ " ; @'}
-          </span>
-        )}
+        {dirty && bad && <span className="text-xs text-alarm">Every row needs a name and an output.</span>}
+        {err && <span className="text-xs text-alarm">{err}</span>}
       </div>
     </section>
   );

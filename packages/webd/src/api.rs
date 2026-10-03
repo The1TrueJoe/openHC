@@ -72,6 +72,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .route("/iod/{*rest}", any(crate::proxy::handler))
         // Telemetry: sysmond, its own daemon and its own port.
         .route("/sys/{*rest}", any(crate::proxy::handler))
+        .route("/audio/{*rest}", any(crate::proxy::handler))
         // IO control is MQTT, and the browser speaks it here. Same origin as
         // the page, so one open port is enough for the whole GUI.
         .route("/mqtt", any(crate::proxy::handler))
@@ -217,6 +218,7 @@ async fn openapi() -> Response {
     for (addr, mount, group) in [
         (crate::proxy::iod_addr(), "/iod", "iod"),
         (crate::proxy::sysmond_addr(), "/sys", "sysmond"),
+        (crate::proxy::audiod_addr(), "/audio", "ohc-audiod"),
     ] {
         if let Some(sub) = fetch_spec(&addr).await {
             merge_spec(&mut doc, sub, mount, group);

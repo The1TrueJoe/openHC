@@ -20,6 +20,8 @@ const HTTP = `${location.origin}/iod`;
    HTTP gave /iod/sys/api/now, which 404s — webd proxies /sys to sysmond and
    /iod to iod, and they are not nested. */
 const SYS = `${location.origin}/sys`;
+/* ohc-audiod's configuration REST, proxied by webd at /audio. */
+const AUDIO = `${location.origin}/audio`;
 const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
@@ -100,28 +102,44 @@ export interface AudioPort {
   pcm: string;
 }
 
-/** One running thing in the map: a Spotify Connect or AirPlay endpoint on an
- *  output, or a live route from an input to an output. */
+/** A Spotify Connect or AirPlay endpoint: the name a phone shows, and the
+ *  output it plays on. */
 export interface AudioEndpoint {
-  kind: 'spotify' | 'airplay' | 'route';
-  name?: string;
-  input?: string;
+  name: string;
   output: string;
+}
+
+/** A live route from an input to an output. */
+export interface AudioRoute {
+  input: string;
+  output: string;
+}
+
+/** The configurable part of the map — what PUT /audio/api/audio/endpoints takes. */
+export interface AudioEndpoints {
+  spotify: AudioEndpoint[];
+  airplay: AudioEndpoint[];
+  routes: AudioRoute[];
+}
+
+/** One supervised process ohc-audiod runs for the map. */
+export interface AudioInstance {
   tag: string;
+  kind: 'spotify' | 'airplay' | 'route' | 'helper';
+  name: string | null;
+  input: string | null;
+  output: string | null;
   running: boolean;
 }
 
-/** ohc-audio's endpoint map. The three lists are `"name@output;..."` (routes:
- *  `"input@output;..."`) — what you edit; `endpoints` is what is running. */
-export interface AudioMap {
-  config: string;
+/** ohc-audiod's endpoint map: the board's outputs/inputs, the configured
+ *  endpoints, and what is running. Arrives over REST once and over MQTT
+ *  (`<base>/state/audio/map`) whenever it changes. */
+export interface AudioMap extends AudioEndpoints {
   rate: number;
-  spotify: string;
-  airplay: string;
-  routes: string;
   outputs: AudioPort[];
   inputs: AudioPort[];
-  endpoints: AudioEndpoint[];
+  instances: AudioInstance[];
 }
 
 /** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
@@ -133,7 +151,7 @@ export interface AudioStatus {
   selected: string | null;
   volume?: number;
   /** Present on boards with named outputs: N endpoints mapped onto jacks. */
-  map?: AudioMap;
+  map?: AudioMap | null;
 }
 
 /** What is carrying the IO. The kernel driver owns the link, so iod cannot ask
@@ -147,8 +165,6 @@ export interface McuInfo {
 }
 
 export interface MqttConfig {
-  serve: boolean;
-  listen_port: number;
   bridge: boolean;
   url: string;
   username: string;
@@ -274,6 +290,16 @@ export const rest = {
     j<History>(`${SYS}/api/history${seconds ? `?seconds=${seconds}` : ''}`),
   /** Fan presence/mode/duty. `available:false` on boards with no fan helper. */
   fan: () => j<FanStatus>(`${SYS}/api/fan`),
+  /** ohc-audiod: outputs, inputs, the endpoint map, the receivers. Loaded once;
+   *  live changes arrive over MQTT. */
+  audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
+  /** Replace the endpoint map (configuration). */
+  saveEndpoints: (e: AudioEndpoints) =>
+    j<AudioMap>(`${AUDIO}/api/audio/endpoints`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(e),
+    }),
   /** Manual override, 0-100. Persists until released; fail-safe still applies. */
   fanSet: (pct: number) =>
     j<{ ok: boolean; mode?: string; pct?: number; error?: string }>(`${SYS}/api/fan/set`, {
@@ -286,9 +312,6 @@ export const rest = {
     j<{ ok: boolean; mode?: string; error?: string }>(`${SYS}/api/fan/auto`, { method: 'POST' }),
   capabilities: () => j<Capabilities>(`${HTTP}/api/io`),
   mcu: () => j<McuInfo>(`${HTTP}/api/io/mcu`),
-  /** Full audio picture. 404s on a board with no audio (the panel then shows
-   *  nothing); outputs/receivers/volume/now-playing come back when present. */
-  audio: () => j<AudioStatus>(`${HTTP}/api/audio`),
   config: () => j<ConfigDoc>(`${HTTP}/api/config`),
   saveConfig: (mqtt: MqttWrite) =>
     j<{ ok: boolean }>(`${HTTP}/api/config`, {
@@ -428,10 +451,6 @@ export class Io {
   /** Output volume, 0..100. Clamped and read back by iod. */
   setAudioVolume = (percent: number) =>
     this.#publish('audio/volume', String(Math.max(0, Math.min(100, Math.round(percent)))));
-  /** Replace one endpoint list (`"name@output;..."`, routes `"input@output;..."`).
-   *  iod validates it, saves it persistently and restarts the endpoints. */
-  setAudioEndpoints = (kind: 'spotify' | 'airplay' | 'routes', list: string) =>
-    this.#publish(`audio/${kind}`, list);
   /** Fan: a percent holds it there, 'auto' hands it back to the curve. */
   setFan = (v: number | 'auto') =>
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));

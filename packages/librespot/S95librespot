@@ -10,7 +10,7 @@
 
 DAEMON=/usr/bin/librespot
 # A board with named outputs (board.env OHC_AUDIO_OUTPUTS) runs its endpoints
-# through ohc-audio / S95ohcaudio instead — N instances, one per mapping.
+# through ohc-audiod instead — N instances, one per mapping.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 [ -n "$OHC_AUDIO_OUTPUTS" ] && exit 0
 PIDFILE=/var/run/librespot.pid

@@ -4,7 +4,7 @@
 #
 # Two changes from Buildroot's script:
 #  * a board with named outputs (board.env OHC_AUDIO_OUTPUTS) runs its AirPlay
-#    endpoints through ohc-audio / S95ohcaudio instead, so this stands down;
+#    endpoints through ohc-audiod instead, so this stands down;
 #  * otherwise it honours the web UI's output selection the way S95librespot
 #    does: iod's audio.output writes OHC_AUDIO_DEVICE to /etc/ohc/audio-output,
 #    and it is passed to the ALSA backend ("-- -d <device>"). Unset means the

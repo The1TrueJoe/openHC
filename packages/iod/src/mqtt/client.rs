@@ -1,12 +1,13 @@
-//! The outbound bridge — iod as a CLIENT of somebody else's broker.
+//! iod as a client of the box's mosquitto.
 //!
-//! Optional, and independent of the served endpoint. A controller that runs
-//! standalone never starts this; one that belongs to a house running Home
-//! Assistant or Node-RED publishes into that broker as well, so the same topics
-//! appear in both places.
+//! Every board runs mosquitto, and every openHC daemon is a client of it with
+//! its own topics under one tree (`<prefix>/<host>/`): iod the IO, ohc-audiod
+//! the audio, sysmond the health. Reaching a house broker is mosquitto's own
+//! bridge (see bridge.rs), so this client only ever talks to loopback — no TLS,
+//! no credentials, no reconnect policy beyond rumqttc's own.
 //!
-//! The mapping is [`super::topics`], shared with the served endpoint so the two
-//! cannot drift. It leans on the distinction MQTT cares about:
+//! The mapping is [`super::topics`]. It leans on the distinction MQTT cares
+//! about:
 //!
 //! * **state** → `<prefix>/<id>/state/<path>`, RETAINED. A subscriber that
 //!   connects an hour late is immediately told every relay and contact.
@@ -20,134 +21,21 @@ use super::settings::Mqtt;
 use super::topics;
 use crate::ops;
 use crate::Config;
-use rumqttc::{AsyncClient, Event as MqEvent, Incoming, LastWill, MqttOptions, QoS, TlsConfiguration, Transport};
+use rumqttc::{AsyncClient, Event as MqEvent, Incoming, LastWill, MqttOptions, QoS};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The connection parameters, resolved from settings.
-struct Cfg {
-    host: String,
-    port: u16,
-    tls: bool,
-    user: Option<String>,
-    pass: Option<String>,
-    ca: Option<String>,
-    client_cert: Option<String>,
-    client_key: Option<String>,
-    prefix: String,
-    client_id: String,
-    discovery: String,
-}
-
-fn opt(s: &str) -> Option<String> {
-    Some(s).filter(|v| !v.is_empty()).map(str::to_string)
-}
-
-fn read_pem(path: &str) -> std::io::Result<Vec<u8>> {
-    std::fs::read(path)
-}
-
-/// The system CA bundle, for a broker with a publicly-issued certificate.
-///
-/// A minimal Buildroot image often has none of these, which is exactly why the
-/// caller turns a miss into a clear message rather than a TLS error.
-fn system_roots() -> Option<Vec<u8>> {
-    const PATHS: [&str; 4] = [
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/ssl/cert.pem",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        "/usr/share/ca-certificates/ca-certificates.crt",
-    ];
-    PATHS.iter().find_map(|p| std::fs::read(p).ok()).filter(|b| !b.is_empty())
-}
-
-/// Split `mqtt://user@host:1883` into host, port and whether it is TLS.
-fn split_url(url: &str) -> (String, u16, bool) {
-    let (scheme, rest) = url.split_once("://").unwrap_or(("mqtt", url));
-    let tls = scheme.eq_ignore_ascii_case("mqtts") || scheme.eq_ignore_ascii_case("ssl");
-    let rest = rest.trim_end_matches('/');
-    match rest.rsplit_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse().unwrap_or(if tls { 8883 } else { 1883 }), tls),
-        None => (rest.to_string(), if tls { 8883 } else { 1883 }, tls),
-    }
-}
-
-/// Run the bridge until cancelled, reconnecting on its own.
+/// Run until cancelled; rumqttc reconnects on its own.
 pub async fn run(cfg: Arc<Config>, m: Mqtt) {
-    let (host, port, tls) = split_url(&m.url);
-    if host.is_empty() {
-        eprintln!("iod/mqtt: bridge enabled but no broker URL set");
-        return;
-    }
-    let s = Cfg {
-        host, port, tls,
-        user: opt(&m.username), pass: opt(&m.password),
-        ca: opt(&m.ca_path),
-        client_cert: opt(&m.client_cert_path), client_key: opt(&m.client_key_path),
-        prefix: m.prefix.clone(), client_id: m.client_id.clone(), discovery: m.discovery.clone(),
-    };
-    if s.tls {
-        // rustls is built here with no default crypto provider (see Cargo.toml
-        // — the default one needs a C toolchain this workspace does not have),
-        // so the provider has to be chosen explicitly before any TLS handshake.
-        // Err just means something already installed one.
-        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
-    }
-    let base = topics::base(&s.prefix, &s.client_id);
-    let mut opts = MqttOptions::new(&s.client_id, &s.host, s.port);
+    let (host, port) = ohcmqtt::broker();
+    let base = topics::base(&m.prefix, &m.client_id);
+    // Its own client id on the shared broker: `<host>-iod`, beside
+    // `<host>-audiod` and `<host>-sysmond`.
+    let mut opts = MqttOptions::new(format!("{}-iod", m.client_id), &host, port);
     opts.set_keep_alive(Duration::from_secs(30));
-
-    if let (Some(u), Some(p)) = (&s.user, &s.pass) {
-        opts.set_credentials(u.clone(), p.clone());
-    }
-
-    if s.tls {
-        // Client auth is optional; a broker that wants mutual TLS gets it, one
-        // that only wants a username still works.
-        let client_auth = match (&s.client_cert, &s.client_key) {
-            (Some(c), Some(k)) => match (read_pem(c), read_pem(k)) {
-                (Ok(c), Ok(k)) => Some((c, k)),
-                _ => {
-                    eprintln!("iod/mqtt: cannot read client cert/key; continuing without client auth");
-                    None
-                }
-            },
-            _ => None,
-        };
-        let ca = match &s.ca {
-            Some(p) => match read_pem(p) {
-                Ok(b) => b,
-                Err(e) => {
-                    // Refuse rather than silently falling back to no
-                    // verification: an operator who configured a CA asked for
-                    // it to be checked.
-                    eprintln!("iod/mqtt: cannot read CA {p}: {e} — not connecting");
-                    return;
-                }
-            },
-            // rumqttc builds its root store from this field ALONE — an empty
-            // one is a hard error, not a fall back to system roots. So find the
-            // system bundle ourselves, and if the image ships none, say which
-            // knob fixes it instead of failing with "no valid cert in chain".
-            None => match system_roots() {
-                Some(b) => b,
-                None => {
-                    eprintln!("iod/mqtt: mqtts:// requested but no CA bundle found; \
-                               set IOD_MQTT_CA to your broker's CA PEM — not connecting");
-                    return;
-                }
-            },
-        };
-        opts.set_transport(Transport::Tls(TlsConfiguration::Simple {
-            ca,
-            alpn: None,
-            client_auth,
-        }));
-    }
-
-    // Last will, retained: if this controller drops off, subscribers are told
-    // rather than trusting relay states that stopped being updated.
+    // Last will, retained: if iod drops off, subscribers are told rather than
+    // trusting relay states that stopped being updated.
     opts.set_last_will(LastWill::new(format!("{base}/status"), "offline", QoS::AtLeastOnce, true));
 
     let (client, mut eventloop) = AsyncClient::new(opts, 64);
@@ -183,22 +71,28 @@ pub async fn run(cfg: Arc<Config>, m: Mqtt) {
     loop {
         match eventloop.poll().await {
             Ok(MqEvent::Incoming(Incoming::ConnAck(_))) => {
-                eprintln!("iod/mqtt: connected to {}:{}", s.host, s.port);
+                eprintln!("iod/mqtt: connected to {host}:{port} under {base}");
                 let _ = client.publish(format!("{base}/status"), QoS::AtLeastOnce, true, "online").await;
                 let _ = client.subscribe(format!("{base}/cmd/#"), QoS::AtLeastOnce).await;
                 // Retained state, republished on every reconnect: the broker
-                // may have been restarted and lost it.
+                // keeps it in RAM and may have restarted.
                 for (topic, body) in topics::retained(&base, &cfg.bus.state.doc()) {
                     let _ = client.publish(topic, QoS::AtLeastOnce, true, body).await;
                 }
-                if !s.discovery.is_empty() {
-                    announce(&cfg, &client, &s, &base).await;
+                if !m.discovery.is_empty() {
+                    announce(&cfg, &client, &m, &base).await;
                 }
             }
             Ok(MqEvent::Incoming(Incoming::Publish(p))) => {
                 let topic = p.topic.clone();
+                let tail = topic.trim_start_matches(&format!("{base}/cmd/")).to_string();
+                // Other daemons own their own command subtrees on the same
+                // broker (cmd/audio/* is ohc-audiod's, cmd/health/* sysmond's).
+                if tail.starts_with("audio/") || tail.starts_with("health/") {
+                    continue;
+                }
                 let body = String::from_utf8_lossy(&p.payload).to_string();
-                if let Some(cmd) = super::parse_cmd(topic.trim_start_matches(&format!("{base}/cmd/")), &body) {
+                if let Some(cmd) = super::parse_cmd(&tail, &body) {
                     if let Err(e) = ops::dispatch(&cfg, cmd).await {
                         eprintln!("iod/mqtt: {topic}: {e}");
                         let _ = client
@@ -212,10 +106,8 @@ pub async fn run(cfg: Arc<Config>, m: Mqtt) {
             }
             Ok(_) => {}
             Err(e) => {
-                // rumqttc reconnects on its own; this is only worth a line so a
-                // misconfigured broker is visible in the log.
                 eprintln!("iod/mqtt: {e}");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
     }
@@ -225,9 +117,11 @@ pub async fn run(cfg: Arc<Config>, m: Mqtt) {
 ///
 /// The payoff for doing the state/event split properly: the controller appears
 /// in HA by itself, with its relays as switches and its contacts as binary
-/// sensors, with no YAML written by hand.
-async fn announce(cfg: &Arc<Config>, client: &AsyncClient, s: &Cfg, base: &str) {
-    let id = &s.client_id;
+/// sensors, with no YAML written by hand. Topics use the PANEL number (relay 1
+/// is `relay/1`), the same identity iod publishes and parses — announcing the
+/// zero-based index here pointed every entity one relay off.
+async fn announce(cfg: &Arc<Config>, client: &AsyncClient, m: &Mqtt, base: &str) {
+    let id = &m.client_id;
     let device = json!({
         "identifiers": [id],
         "name": cfg.board.hostname,
@@ -237,29 +131,33 @@ async fn announce(cfg: &Arc<Config>, client: &AsyncClient, s: &Cfg, base: &str) 
     let avail = json!([{ "topic": format!("{base}/status") }]);
 
     for i in 0..cfg.board.io.relays {
-        let uid = format!("{id}_relay{i}");
-        let cfg_topic = format!("{}/switch/{uid}/config", s.discovery);
+        let n = topics::label(i as usize);
+        let uid = format!("{id}_relay{n}");
         let doc = json!({
-            "name": format!("Relay {}", i + 1),
+            "name": format!("Relay {n}"),
             "unique_id": uid,
-            "state_topic": format!("{base}/state/relay/{i}"),
-            "command_topic": format!("{base}/cmd/relay/{i}/set"),
+            "state_topic": format!("{base}/state/relay/{n}"),
+            "command_topic": format!("{base}/cmd/relay/{n}/set"),
             "payload_on": "ON", "payload_off": "OFF",
             "availability": avail, "device": device,
         });
-        let _ = client.publish(cfg_topic, QoS::AtLeastOnce, true, doc.to_string()).await;
+        let _ = client
+            .publish(format!("{}/switch/{uid}/config", m.discovery), QoS::AtLeastOnce, true, doc.to_string())
+            .await;
     }
     for i in 0..cfg.board.io.contacts {
-        let uid = format!("{id}_contact{i}");
-        let cfg_topic = format!("{}/binary_sensor/{uid}/config", s.discovery);
+        let n = topics::label(i as usize);
+        let uid = format!("{id}_contact{n}");
         let doc = json!({
-            "name": format!("Contact {}", i + 1),
+            "name": format!("Contact {n}"),
             "unique_id": uid,
-            "state_topic": format!("{base}/state/contact/{i}"),
+            "state_topic": format!("{base}/state/contact/{n}"),
             "payload_on": "ON", "payload_off": "OFF",
             "availability": avail, "device": device,
         });
-        let _ = client.publish(cfg_topic, QoS::AtLeastOnce, true, doc.to_string()).await;
+        let _ = client
+            .publish(format!("{}/binary_sensor/{uid}/config", m.discovery), QoS::AtLeastOnce, true, doc.to_string())
+            .await;
     }
     eprintln!(
         "iod/mqtt: announced {} relays and {} contacts to Home Assistant",

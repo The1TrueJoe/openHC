@@ -100,12 +100,8 @@ BR2_PACKAGE_DNSMASQ=y
 # boot by the gpio-hogs in the DTS — switching it at runtime needs those hogs
 # converted to a real consumer first (see the DTS).
 
-# Mosquitto: the local broker zigbee2mqtt publishes to (rootfs-overlay
-# etc/mosquitto/mosquitto.conf replaces the stock config). It was off under
-# Buildroot 2024.02.9, whose package no longer applied its own bundled patch to
-# the tarball mosquitto.org serves; 2026.02.3 ships 2.0.22 with a checked hash.
-BR2_PACKAGE_MOSQUITTO=y
-BR2_PACKAGE_MOSQUITTO_BROKER=y
+# Mosquitto, the broker zigbee2mqtt publishes to, comes from common_defconfig
+# now — every board runs one (iod, sysmond and ohc-audiod are its clients).
 
 # Node.js (zigbee2mqtt / zwave-js) and its C++ toolchain come from the shared
 # 'zigbee' feature (board/common/features/zigbee), which ca1 enables in its

@@ -369,31 +369,33 @@ the app playing to it.
 
 ### Endpoints
 
-`ohc-audio` (started by `S95ohcaudio`) turns `board.env`'s outputs into ALSA
-`dmix` devices (`ohc_analog1`, …) and the input into a `dsnoop`, all at 44.1 kHz,
-so nothing resamples. It then runs:
+`ohc-audiod` (packages/audiod, started by `S92ohcaudiod`) owns audio. It turns
+`board.env`'s outputs into ALSA `dmix` devices (`ohc_analog1`, …) and the input
+into a `dsnoop`, all at 44.1 kHz so nothing resamples, and supervises:
 
-- **Spotify Connect**: one librespot per `name@output`
-- **AirPlay**: one shairport-sync (classic AirPlay) per `name@output`. Each
-  instance's device ID is hashed from its name, so they're distinct devices.
-- **Input routes**: `alsaloop` from an input to an output, live.
+- **Spotify Connect** — one librespot per endpoint
+- **AirPlay** — one shairport-sync (classic AirPlay) per endpoint; each hashes
+  its device ID from its name, so they are distinct devices
+- **Input routes** — `alsaloop` from an input to an output, live
 
 Any number of endpoints can share an output; they mix. The default is one
-Spotify and one AirPlay endpoint per output. Change them in the web UI's Audio
-panel, or:
+Spotify and one AirPlay endpoint per output.
+
+The map is **configuration**, so it is REST — the web UI's Audio panel, or:
 
 ```sh
-ohc audio status
-ohc audio set spotify "Living Room@analog1;Patio@analog2"
-ohc audio set airplay "Living Room@analog1;Den@hdmi"
-ohc audio set routes  "linein@analog2"
+curl http://<box>/audio/api/audio
+curl -X PUT http://<box>/audio/api/audio/endpoints -H 'content-type: application/json' -d '{
+  "spotify": [{"name": "Living Room", "output": "analog1"}, {"name": "Patio", "output": "analog2"}],
+  "airplay": [{"name": "Den", "output": "hdmi"}],
+  "routes":  [{"input": "linein", "output": "analog2"}]
+}'
 ```
 
-Over MQTT the same lists are `cmd/audio/spotify`, `cmd/audio/airplay` and
-`cmd/audio/routes` (plain `name@output;...` payloads), and `/api/audio` reports
-the map, with which endpoints are running. Settings persist in
-`/data/ohc/audio.conf`. `/data` is the `openhc` directory on `sda4`, mounted by
-`S08ohcdata`, because the root filesystem here is RAM.
+What is **running** is live state, on the box's MQTT broker:
+`<base>/state/audio/map` (outputs, inputs, the lists, and every instance with
+its `running` flag). Saved to `/data/ohc/audio.json` — `/data` is the `openhc`
+directory on `sda4`, mounted by `S08ohcdata`, because the root here is RAM.
 
 ### HDMI audio
 

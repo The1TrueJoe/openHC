@@ -206,42 +206,6 @@ pub enum Cmd {
         #[serde(default)]
         b64: bool,
     },
-    /// The whole audio picture: ALSA outputs, the receivers, selection, volume,
-    /// and any now-playing the receivers actually feed us. Read-only — safe to
-    /// poll. Faults `no_such` on a board with no audio at all.
-    #[serde(rename = "audio.status")]
-    AudioStatus,
-    /// Point the network receivers at an ALSA output. Writes iod's selection
-    /// file; the receivers apply it on their next restart (see audio.rs).
-    #[serde(rename = "audio.output")]
-    AudioOutput { device: String },
-    /// Set the output volume, 0..=100, best-effort via `amixer`. `device`
-    /// defaults to the selected output.
-    #[serde(rename = "audio.volume")]
-    AudioVolume {
-        percent: u8,
-        #[serde(default)]
-        device: Option<String>,
-    },
-    /// Boards with named outputs (the HC-800): replace the Spotify Connect,
-    /// AirPlay and input-route lists, each `"name@output;..."` (routes:
-    /// `"input@output;..."`). A list left out is kept. Validated against the
-    /// board's real outputs/inputs, saved persistently, endpoints restarted.
-    /// Hold the fan at a manual percent (0..=100). Boards with a fan helper only.
-    #[serde(rename = "fan.set")]
-    FanSet { pct: i64 },
-    /// Return the fan to its automatic curve.
-    #[serde(rename = "fan.auto")]
-    FanAuto,
-    #[serde(rename = "audio.endpoints")]
-    AudioEndpoints {
-        #[serde(default)]
-        spotify: Option<String>,
-        #[serde(default)]
-        airplay: Option<String>,
-        #[serde(default)]
-        routes: Option<String>,
-    },
 }
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -272,77 +236,7 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::SerialBaud { index, baud } => serial_baud(c, index, baud),
         Cmd::SerialWrite { index, data, hex, b64 } => serial_write(c, index, &data, hex, b64),
         Cmd::SerialLine { index, line, on } => serial_line(c, index, line, on),
-        Cmd::AudioStatus => audio_status().await,
-        Cmd::AudioOutput { device } => audio_output(c, &device).await,
-        Cmd::AudioVolume { percent, device } => audio_volume(c, percent, device.as_deref()).await,
-        Cmd::AudioEndpoints { spotify, airplay, routes } => audio_endpoints(c, spotify, airplay, routes).await,
-        Cmd::FanSet { pct } => {
-            let r = crate::health::fan_set(pct).await.map_err(Fault::Bad)?;
-            c.bus.set("health/fan", crate::health::fan_status().await);
-            Ok(r)
-        }
-        Cmd::FanAuto => {
-            let r = crate::health::fan_auto().await.map_err(Fault::Bad)?;
-            c.bus.set("health/fan", crate::health::fan_status().await);
-            Ok(r)
-        }
     }
-}
-
-// ── audio ────────────────────────────────────────────────────────────────────
-//
-// The receivers are Spotify/AirPlay *receivers*: playback is driven from the
-// phone, so iod does not pretend to be a player. It reports what is true and
-// turns the two knobs that are genuinely ours — which ALSA output the receivers
-// render to, and the volume on it. See audio.rs for why transport is absent.
-
-/// Read-only snapshot: outputs, receivers, selection, volume, now-playing.
-async fn audio_status() -> Out {
-    crate::audio::status()
-        .await
-        .ok_or_else(|| Fault::NoSuch("this board has no audio".into()))
-}
-
-/// Select the active ALSA output for the network receivers.
-async fn audio_output(c: &Arc<Config>, device: &str) -> Out {
-    if crate::audio::capability().is_none() {
-        return Err(Fault::NoSuch("this board has no audio".into()));
-    }
-    let dev = crate::audio::select(device).map_err(Fault::Bad)?;
-    // Selection is STATE: a value at every instant, mirrored so every open page
-    // and any external control system sees the change — exactly like a relay.
-    c.bus.set("audio/output", json!(dev));
-    Ok(json!({
-        "output": dev,
-        "note": "receivers apply the new output on their next restart",
-    }))
-}
-
-/// Set the volume on an output. best-effort: amixer does not name a portable
-/// volume control, so this tries a short list and reports which one took it.
-async fn audio_volume(c: &Arc<Config>, percent: u8, device: Option<&str>) -> Out {
-    if crate::audio::capability().is_none() {
-        return Err(Fault::NoSuch("this board has no audio".into()));
-    }
-    let (card, control) = crate::audio::volume_set(device, percent).await.map_err(Fault::Io)?;
-    // Read it back rather than echoing the request: amixer may have clamped or
-    // snapped to a step, and the mirror must hold what the hardware actually is.
-    let now = crate::audio::volume_get(device).await.unwrap_or(percent.min(100));
-    c.bus.set("audio/volume", json!(now));
-    Ok(json!({ "volume": now, "card": card, "control": control }))
-}
-
-/// Replace the endpoint lists (boards with named outputs), then mirror the new
-/// map at once rather than waiting for the poller, so every open page sees it.
-async fn audio_endpoints(
-    c: &Arc<Config>,
-    spotify: Option<String>,
-    airplay: Option<String>,
-    routes: Option<String>,
-) -> Out {
-    let m = crate::audio::set_map(spotify, airplay, routes).await.map_err(Fault::Bad)?;
-    crate::audio::publish_map(&c.bus);
-    Ok(m)
 }
 
 /// Path to the return-to-stock helper. Present only on boards whose `ohc.features`
@@ -444,8 +338,8 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
                 .collect::<Vec<_>>(),
         }));
     }
-    // NO health/sensor data here: telemetry is sysmond's, over REST, with
-    // history. iod's surface is IO control. See sysmond/src/main.rs.
+    // NO health/sensor data here: telemetry is sysmond's (its own MQTT topics
+    // under <base>/state/health/*, and REST for history). iod's surface is IO.
     let leds = crate::led::list();
     if !leds.is_empty() {
         // Panel LEDs are not board.env geometry — they are whatever the kernel
@@ -462,12 +356,8 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
         // Each port carries its own permitted rates; see SerialPort::bauds.
         m.insert("serials".into(), json!(io.serials));
     }
-    // Audio is discovered at RUNTIME, not from board.env: the sound card and the
-    // receiver binaries are the ground truth, and HDMI audio on the other EA
-    // boards is future work. Absent when the box has neither — see audio.rs.
-    if let Some(audio) = crate::audio::capability() {
-        m.insert("audio".into(), audio);
-    }
+    // NO audio here either: that is ohc-audiod's, with its own REST (/audio/api
+    // via webd) and MQTT (<base>/state/audio/*).
     v
 }
 

@@ -49,7 +49,7 @@ case "${1:-start}" in
         # Analog 2 on its own DAC. The control exists because of the indep_hp
         # hint (/lib/firmware/hda-hc800.fw); with it off, Analog 2 mirrors
         # Analog 1 and its PCM (device 2) refuses to open. Must be set before
-        # anything opens a PCM, which is why it is here and not in ohc-audio.
+        # anything opens a PCM, which is why it is here and not in ohc-audiod.
         amixer -c "$CARD" -q cset name='Independent HP' Enabled >/dev/null 2>&1 \
             && printf "audio: independent HP " || printf "audio: (no Independent HP control) "
 
@@ -63,9 +63,9 @@ case "${1:-start}" in
         # outputs, not an output level — unmuting it pipes whatever is on the
         # rear line-in jack straight to the outputs, which is a surprise at best
         # and a feedback loop at worst. Line-in reaches an output only through an
-        # ohc-audio route.
+        # ohc-audiod input route.
         amixer -c "$CARD" -q sset Line 0% mute >/dev/null 2>&1 && printf "Line=muted "
-        # Line-in capture at 0 dB, capture enabled, no boost: what ohc-audio
+        # Line-in capture at 0 dB, capture enabled, no boost: what ohc-audiod
         # routes (and arecord) read.
         amixer -c "$CARD" -q sset Capture 0dB cap >/dev/null 2>&1 && printf "Capture=0dB "
         amixer -c "$CARD" -q sset 'Line Boost' 0 >/dev/null 2>&1
