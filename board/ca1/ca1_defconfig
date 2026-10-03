@@ -90,7 +90,7 @@ BR2_PACKAGE_WIRELESS_REGDB=y
 BR2_PACKAGE_HOSTAPD=y
 BR2_PACKAGE_DNSMASQ=y
 
-# --- mDNS identity: avahi (no D-Bus, light), matching the other boards ---
+# --- mDNS identity: avahi + D-Bus, from board/common/common_defconfig ---
 
 # --- rear RS-232/485 port ---
 # The rear combo port (ttymxc2) is owned by iod, like every other serial/IO
