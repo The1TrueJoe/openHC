@@ -9,19 +9,48 @@
 #     has it; and
 #   * board.env names a radio port (OHC_ZIGBEE_TTY).
 # Runs after S90ohcweb; the radio owner starts later and connects to the live NCP.
+#
+# With OHC_ZIGBEE_TCP_PORT set, ohc-zigbee also serves the port over TCP (a
+# network radio for zigpy / Home Assistant ZHA), and this script advertises it
+# over mDNS as _zigbee-coordinator._tcp — the record ZHA's discovery reads. ZHA
+# wants exactly two TXT keys, radio_type and serial_number.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 BIN=/opt/ohc/bin/ohc-zigbee
+SVC=/etc/avahi/services/ohc-zigbee.service
+
+advertise() {
+    [ -n "$OHC_ZIGBEE_TCP_PORT" ] && [ -d /etc/avahi/services ] || return 0
+    serial=$(cat /sys/class/net/"${OHC_ID_IFACE:-eth0}"/address 2>/dev/null | tr -d ':')
+    cat > "$SVC" <<EOF
+<?xml version="1.0" standalone="no"?><!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">openHC Zigbee on %h</name>
+  <service>
+    <type>_zigbee-coordinator._tcp</type>
+    <port>${OHC_ZIGBEE_TCP_PORT}</port>
+    <txt-record>radio_type=${OHC_ZIGBEE_RADIO_TYPE:-ezsp}</txt-record>
+    <txt-record>serial_number=${serial:-unknown}</txt-record>
+  </service>
+</service-group>
+EOF
+    avahi-daemon -r >/dev/null 2>&1   # reload static services; harmless if not running
+}
 
 start() {
     [ -x "$BIN" ] || return 0                # no zigbee feature on this board
     [ -n "$OHC_ZIGBEE_TTY" ] || return 0     # no radio configured
-    export OHC_ZIGBEE_TTY OHC_ZIGBEE_BAUD
-    start-stop-daemon -S -q -b -m -p /var/run/ohc-zigbee.pid --exec "$BIN" \
-        && echo "zigbee: NCP bring-up on $OHC_ZIGBEE_TTY"
+    export OHC_ZIGBEE_TTY OHC_ZIGBEE_BAUD OHC_ZIGBEE_TCP_PORT OHC_ZIGBEE_TCP_BIND
+    # stdout to syslog so "NCP up" / client connects are visible in logread.
+    start-stop-daemon -S -q -b -m -p /var/run/ohc-zigbee.pid --exec /bin/sh -- \
+        -c "exec $BIN 2>&1 | logger -t ohc-zigbee" \
+        && echo "zigbee: NCP bring-up on $OHC_ZIGBEE_TTY${OHC_ZIGBEE_TCP_PORT:+, tcp :$OHC_ZIGBEE_TCP_PORT}"
+    advertise
 }
 stop() {
     [ -f /var/run/ohc-zigbee.pid ] && start-stop-daemon -K -q -p /var/run/ohc-zigbee.pid
+    killall ohc-zigbee 2>/dev/null
     rm -f /var/run/ohc-zigbee.pid
+    if [ -f "$SVC" ]; then rm -f "$SVC"; avahi-daemon -r >/dev/null 2>&1; fi
 }
 case "$1" in
     start) start ;;
