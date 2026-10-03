@@ -30,11 +30,17 @@ CONFIG_SPI_PXA2XX=y
 # so there is no obj-y→module link dependency; the module binds the already-
 # registered device by deferred probe. S39ea-switch modprobes b53_spi BEFORE
 # S40net so DSA still attaches at boot. The SPI master stays =y (the bus the
-# device sits on); BRIDGE/VLAN_8021Q stay =y (small, DSA wants bridging present).
+# device sits on).
+#
+# BRIDGE + VLAN_8021Q are =m too: the bigger Buildroot 2026.02 toolchain compiles
+# the 7.1.8 kernel ~100 KB larger and the switch boards (ea3-v1, ea1-v2-poe) ran
+# over CEFDK's 7,417,856-byte bzImage window; CONFIG_BRIDGE built in is ~60 KB.
+# They are on-demand network features, so they move to p1 — S39ea-switch modprobes
+# them (DSA wants bridging present; loading before S40net keeps that true).
 CONFIG_NET_DSA=m
 CONFIG_B53=m
 CONFIG_B53_SPI_DRIVER=m
 CONFIG_NET_DSA_TAG_BRCM=m
 CONFIG_NET_DSA_TAG_BRCM_PREPEND=m
-CONFIG_BRIDGE=y
-CONFIG_VLAN_8021Q=y
+CONFIG_BRIDGE=m
+CONFIG_VLAN_8021Q=m

@@ -24,6 +24,11 @@ MOD=b53_spi
 DRV=/sys/bus/spi/drivers/b53-switch
 
 start() {
+    # bridge + 8021q are modules now (built in they pushed the 2026.02 bzImage over
+    # CEFDK's window — see features/switch/linux.fragment). DSA wants bridging
+    # present, so load them first; harmless if absent.
+    modprobe bridge >/dev/null 2>&1 || true
+    modprobe 8021q  >/dev/null 2>&1 || true
     # modprobe fails harmlessly on an EA board built without the switch feature
     # (b53_spi.ko is simply not in the image) — same guard style as S41wifi-ap.
     modprobe "$MOD" >/dev/null 2>&1 || {
