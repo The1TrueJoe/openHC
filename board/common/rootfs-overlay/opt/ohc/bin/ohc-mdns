@@ -205,7 +205,15 @@ fi
 # Verify we actually got the name we asked for. avahi renames silently on
 # conflict, and an identity that is only mostly right is worse than a loud
 # failure — every client bookmarks the wrong name.
-GOT=$(ps w | grep -v grep | sed -n 's/.*avahi-daemon: running \[\(.*\)\.local\].*/\1/p' | head -1)
+# Wait for the name to settle first: right after the restart, ps can still show
+# the instance S50avahi-daemon started under the bare (upper-case) hostname, and
+# the new one spends a moment probing before it reports `running`.
+i=0
+while :; do
+    GOT=$(ps w | grep -v grep | sed -n 's/.*avahi-daemon: running \[\(.*\)\.local\].*/\1/p' | head -1)
+    [ "$GOT" = "$NAME" ] || [ $i -ge 10 ] && break
+    sleep 1; i=$((i + 1))
+done
 if [ -n "$GOT" ] && [ "$GOT" != "$NAME" ]; then
     echo "ohc-mdns: WARNING advertising '${GOT}.local', wanted '${NAME}.local'"
     echo "  another responder claims that name — check for a second controller,"
