@@ -6,7 +6,7 @@
 //! a one-shot GRUB entry and a reboot — the same thing the flasher's
 //! `ohc-flash restore` does over SSH, using the SAME menu rewrite
 //! ([`hc::factory_once_menu`], from the flasher's core crate and unit-tested
-//! there), so the button, the web UI and the flasher cannot drift apart.
+//! there), so the web UI and the flasher cannot drift apart.
 //!
 //! The rules this board lives by (sda1 is the one unrecoverable failure):
 //!   * sda2, the MBR and the `support_factorydefault`/`factorydefault` lines are

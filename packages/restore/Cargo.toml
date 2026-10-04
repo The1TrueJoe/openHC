@@ -3,7 +3,7 @@ name = "restore"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "openHC return-to-stock, run on the box: the EA's MFH revert + p1 recovery kexec, the HC-800's one-shot GRUB factory restore, and the hold-the-button watcher."
+description = "openHC return-to-stock, run on the box: the EA's MFH revert + p1 recovery kexec, and the HC-800's one-shot GRUB factory restore."
 
 [dependencies]
 libc = "0.2"
@@ -12,10 +12,6 @@ sha2 = "0.10"
 # logic and unit-tested there), so `ohc-flash restore` and the on-box restore
 # are one implementation.
 ohc-flash-core = { path = "../../flasher/crates/core" }
-
-# Input devices are Linux-only; scoped so `cargo check` on a Mac still works.
-[target.'cfg(target_os = "linux")'.dependencies]
-evdev = "0.13"
 
 [[bin]]
 name = "ohc-restore"

@@ -242,15 +242,11 @@ from the same menu rewrite the flasher uses (`flasher/crates/core`, unit-tested)
 |---|---|
 | `ohc-flash restore <host>` | runs `ohc-restore stock --no-reboot`, reads the verified result, then reboots the box; a box without the tool gets the same rewrite over SSH |
 | Web UI → System → **Reset to stock** | iod's `cmd/system/restore` (`confirm`) → `ohc-restore stock` |
-| Hold the **ID button** 10 s | `S96ohc-restore-button` → `ohc-restore watch-button` |
-| Hold the **ID button** at power-on | Control4's GRUB factory-default button, unchanged |
+| Hold the **ID button** at power-on | Control4's GRUB factory-default button, unchanged — no openHC software involved |
 
-The ID button is an input device here (`gpio-keys-polled` owns the line and
-reports `KEY_F5`), so the watcher reads the key state rather than the GPIO. Same
-fail-safe as the EA's: it arms only after reading the button released, so one
-stuck or held through boot never starts a restore; the red Wi-Fi LED blinks while
-it counts. Configured in `board.env` (`OHC_RESTORE_BUTTON_INPUT`, `_KEY`, `_HOLD`,
-`_LED`). `ohc-restore status` prints the menu and a `state:` line (`openHC`,
+The ID button gets no second, runtime meaning: the power-on factory reset already
+returns the box to stock, so a long-press watcher would only add a way to wipe it
+by accident. `ohc-restore status` prints the menu and a `state:` line (`openHC`,
 `stock`, or `restore pending`).
 
 A serial console on `ttyS0` at 115200 sees GRUB itself if that fails.

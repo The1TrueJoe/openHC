@@ -171,10 +171,10 @@ Points that matter for the port:
   and replay stale data.
 - **Adding a third entry doesn't disturb the first two.** The factory-restore
   path stays byte-identical, so recovery is untouched.
-- **Back to stock from openHC:** `ohc-flash restore`, the web UI's *Reset to
-  stock*, or holding the ID button for 10 s all run the box's `ohc-restore
-  stock`, which arms Control4's factory restore for exactly one boot. See
-  [recovery](/shared/recovery/#hc-800).
+- **Back to stock from openHC:** `ohc-flash restore` and the web UI's *Reset
+  to stock* both run the box's `ohc-restore stock`, which arms Control4's
+  factory restore for exactly one boot. The ID button held at power-on is
+  still Control4's own factory reset. See [recovery](/shared/recovery/#hc-800).
 
 See [installing on the HC-800](/build/install/#hc-800) for the exact steps.
 

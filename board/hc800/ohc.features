@@ -6,4 +6,5 @@ zigbee      # EM357 NCP on ttyS4 (0x2f0); node (cp210x unused here)
 audio       # ALC888 HDA: Analog 1 + 2 (rear RCA), coax, HDMI, line in;
             # N Spotify Connect + N AirPlay endpoints via ohc-audiod
 restore     # on-box return to stock: ohc-restore arms Control4's factory
-            # restore for one boot; hold the ID button 10 s to run it
+            # restore for one boot (flasher + web UI); the ID button stays
+            # Control4's own power-on factory reset

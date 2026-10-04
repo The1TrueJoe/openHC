@@ -553,8 +553,7 @@ const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
 ///
 /// An openHC that carries `ohc-restore` does the menu rewrite itself — the
 /// same [`hc::factory_once_menu`], from this same core crate, that the web UI's
-/// restore control and the held ID button run — so there is one code path on
-/// the box. `--no-reboot` hands back the verified result before anything goes
+/// restore control runs — so there is one code path on the box. `--no-reboot` hands back the verified result before anything goes
 /// down; the reboot is then sent the way [`factory_restore`] sends it. Stock
 /// Control4 or an older openHC has no such tool and gets [`factory_restore`],
 /// the same rewrite done over SSH.

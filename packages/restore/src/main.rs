@@ -1,7 +1,7 @@
 //! ohc-restore — return a Control4 controller to stock, run on the box itself.
 //!
-//! One tool, one interface (`status`, `stock`, `watch-button`) for iod, the web
-//! UI's restore control, the front-button watcher and the flasher. The HC-800
+//! One tool, one interface (`status`, `stock`) for iod, the web UI's restore
+//! control, the EA's front-button watcher and the flasher. The HC-800
 //! has its own backend (hc800.rs: a one-shot GRUB entry into Control4's factory
 //! restore); everything below this point is the EA / CEFDK one.
 //!
@@ -29,15 +29,12 @@
 //!   install       re-append openHC's MFH item (undo `revert`). Writes mtd0.
 //!   stock         revert, then kexec p2's recovery kernel to reimage p1. The
 //!                 complete, one-way return to stock.
-//!   watch-button  hold the front button (an input device) N seconds -> `stock`.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
 mod mfh;
 mod hc800;
-#[cfg(target_os = "linux")]
-mod button;
 
 const MTD: &str = "/dev/mtd0";
 const ERASE_BLOCK: usize = 0x1_0000; // 64 KiB, confirmed on the S25FL127S
@@ -292,15 +289,6 @@ fn cmd_erasetest() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn watch_button(stock: fn() -> io::Result<()>) -> io::Result<()> {
-    button::watch(stock)
-}
-#[cfg(not(target_os = "linux"))]
-fn watch_button(_: fn() -> io::Result<()>) -> io::Result<()> {
-    Err(io::Error::other("watch-button needs Linux input devices"))
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or_default();
@@ -308,9 +296,8 @@ fn main() {
         let r = match cmd {
             "status" => hc800::status(),
             "stock" => hc800::stock(!args.iter().any(|a| a == "--no-reboot")),
-            "watch-button" => watch_button(|| hc800::stock(true)),
             _ => {
-                eprintln!("usage: ohc-restore {{status|stock [--no-reboot]|watch-button}}   (HC-800)");
+                eprintln!("usage: ohc-restore {{status|stock [--no-reboot]}}   (HC-800)");
                 std::process::exit(2);
             }
         };
@@ -321,7 +308,6 @@ fn main() {
         return;
     }
     let r = match cmd {
-        "watch-button" => watch_button(cmd_stock),
         "status" => cmd_status(),
         "erasetest" => cmd_erasetest(),
         "revert" => cmd_revert(),
