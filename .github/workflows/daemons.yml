@@ -124,7 +124,7 @@ jobs:
       - name: cargo test
         if: matrix.board == 'hc800'
         working-directory: packages
-        run: cargo test -p iod
+        run: cargo test -p iod -p switchd
 
       # portal too — it is in the artifact, and `cargo check` would not have
       # produced a binary for it. The portal binary now lives in the `wifi`

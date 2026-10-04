@@ -245,6 +245,69 @@ pub fn save(cfg: &SwitchConfig) -> std::io::Result<()> {
     std::fs::write(&path, body)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ports() -> Vec<String> {
+        vec!["lan1".into(), "lan2".into()]
+    }
+
+    #[test]
+    fn default_is_a_managed_bridge_of_every_port() {
+        let c = SwitchConfig::default_for(&ports());
+        assert!(matches!(c.mode, Mode::Managed));
+        assert_eq!(c.bridge.members, ports());
+        assert!(c.bridge.stp, "STP defaults on so two jacks on one net is loop-safe");
+        assert!(!c.bridge.vlan_filtering);
+        assert!(matches!(c.bridge.addressing, Addressing::Dhcp));
+        assert!(c.ports.values().all(|p| p.enabled));
+    }
+
+    #[test]
+    fn validate_rejects_configs_that_would_strand_the_box() {
+        let good = SwitchConfig::default_for(&ports());
+        assert!(good.validate(&ports()).is_empty());
+
+        // A bridge member that is not a real port.
+        let mut bad = SwitchConfig::default_for(&ports());
+        bad.bridge.members.push("lan9".into());
+        assert!(bad.validate(&ports()).iter().any(|e| e.contains("lan9")));
+
+        // Managed mode with no members = offline.
+        let mut empty = SwitchConfig::default_for(&ports());
+        empty.bridge.members.clear();
+        assert!(empty.validate(&ports()).iter().any(|e| e.contains("offline")));
+    }
+
+    #[test]
+    fn addressing_json_is_tagged() {
+        assert_eq!(
+            serde_json::to_value(Addressing::Dhcp).unwrap(),
+            serde_json::json!({ "mode": "dhcp" })
+        );
+        assert_eq!(
+            serde_json::to_value(Addressing::Static { addr: "10.0.0.5/24".into(), gw: Some("10.0.0.1".into()) }).unwrap(),
+            serde_json::json!({ "mode": "static", "addr": "10.0.0.5/24", "gw": "10.0.0.1" })
+        );
+        // gw omitted when absent.
+        assert_eq!(
+            serde_json::to_value(Addressing::Static { addr: "10.0.0.5/24".into(), gw: None }).unwrap(),
+            serde_json::json!({ "mode": "static", "addr": "10.0.0.5/24" })
+        );
+    }
+
+    #[test]
+    fn empty_json_deserialises_to_the_managed_default() {
+        // A hand-written or truncated `{}` must still be a reachable managed
+        // switch, not a half-configured one.
+        let c: SwitchConfig = serde_json::from_str("{}").unwrap();
+        assert!(matches!(c.mode, Mode::Managed));
+        assert!(c.bridge.stp);
+        assert_eq!(c.bridge.name, "br-lan");
+    }
+}
+
 /// The managed ports, from `OHC_DSA_PORTS` in board.env. Empty means this board
 /// has no managed switch and switchd has nothing to do.
 pub fn dsa_ports() -> Vec<String> {

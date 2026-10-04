@@ -71,9 +71,13 @@ fn exists(iface: &str) -> bool {
 fn apply_l3(res: &mut ApplyResult, iface: &str, a: &Addressing) {
     match a {
         Addressing::Dhcp => {
-            // Deferred — recorded as the handoff interface by the caller. Flush
-            // any stale static so a dhcp-after-static switch does not keep both.
-            ip(res, &[], &["addr", "flush", "dev", iface]);
+            // Deferred to S40net (one DHCP client per segment). Crucially we do
+            // NOT flush here: apply() re-runs on every daemon start and every
+            // config change, and `ip addr flush` on a DHCP interface would drop a
+            // LIVE lease — knocking the box off the network until the next
+            // renewal, on nothing more than a switchd restart. A stale static
+            // left over from a static→dhcp change is the lesser evil (udhcpc adds
+            // its lease alongside it, and it is gone on the next reboot anyway).
             res.l3_iface = Some(iface.to_string());
         }
         Addressing::Static { addr, gw } => {
@@ -214,12 +218,12 @@ pub fn apply(cfg: &SwitchConfig, ports: &[String]) -> ApplyResult {
     res
 }
 
-/// Tell S40net where the L3 address is and how to get it. One shell-sourced line
-/// each, so S40net stays a tiny `. /run/ohc/net.conf`.
-///   OHC_NET_L3_IFACE  the interface carrying the box address
-///   OHC_NET_L3_MODE   dhcp | static | none  (dhcp = S40net should lease it)
-fn write_handoff(res: &ApplyResult, cfg: &SwitchConfig) {
-    let (iface, mode) = match cfg.mode {
+/// The L3 handoff decision: which interface carries the box's address, and how
+/// (`dhcp` = S40net should lease it; `static`/`none` = switchd already handled
+/// it). Pure — no I/O — so the mode logic is unit-testable; `write_handoff`
+/// renders it to the file.
+pub fn handoff_target(cfg: &SwitchConfig, l3_iface: &Option<String>) -> (String, &'static str) {
+    match cfg.mode {
         Mode::Managed | Mode::Custom => {
             let m = match &cfg.bridge.addressing {
                 Addressing::Dhcp => "dhcp",
@@ -230,19 +234,70 @@ fn write_handoff(res: &ApplyResult, cfg: &SwitchConfig) {
         }
         Mode::Isolated => {
             // No single uplink. Name the first DHCP port if there is one, so the
-            // box still leases something; otherwise the first configured port.
+            // box still leases something; otherwise the interface that got a
+            // static address during this apply.
             let dhcp_port = cfg.ports.iter().find(|(_, pc)| {
                 pc.enabled && matches!(pc.addressing, Some(Addressing::Dhcp))
             });
             match dhcp_port {
                 Some((p, _)) => (p.clone(), "dhcp"),
-                None => (res.l3_iface.clone().unwrap_or_default(), "static"),
+                None => (l3_iface.clone().unwrap_or_default(), "static"),
             }
         }
-    };
+    }
+}
+
+/// Tell S40net where the L3 address is and how to get it. One shell-sourced line
+/// each, so S40net stays a tiny `. /run/ohc/net.conf`.
+///   OHC_NET_L3_IFACE  the interface carrying the box address
+///   OHC_NET_L3_MODE   dhcp | static | none  (dhcp = S40net should lease it)
+fn write_handoff(res: &ApplyResult, cfg: &SwitchConfig) {
+    let (iface, mode) = handoff_target(cfg, &res.l3_iface);
     if let Some(dir) = std::path::Path::new(HANDOFF).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let body = format!("OHC_NET_L3_IFACE={iface}\nOHC_NET_L3_MODE={mode}\n");
     let _ = std::fs::write(HANDOFF, body);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Addressing, Mode, PortConfig, SwitchConfig};
+
+    fn ports() -> Vec<String> {
+        vec!["lan1".into(), "lan2".into()]
+    }
+
+    #[test]
+    fn managed_dhcp_hands_off_the_bridge_for_leasing() {
+        let cfg = SwitchConfig::default_for(&ports()); // managed + bridge dhcp
+        assert_eq!(handoff_target(&cfg, &None), ("br-lan".to_string(), "dhcp"));
+    }
+
+    #[test]
+    fn managed_static_is_not_leased_by_s40net() {
+        let mut cfg = SwitchConfig::default_for(&ports());
+        cfg.bridge.addressing = Addressing::Static { addr: "10.0.0.9/24".into(), gw: None };
+        assert_eq!(handoff_target(&cfg, &None), ("br-lan".to_string(), "static"));
+    }
+
+    #[test]
+    fn isolated_names_the_first_dhcp_port() {
+        let mut cfg = SwitchConfig::default_for(&ports());
+        cfg.mode = Mode::Isolated;
+        cfg.ports.insert("lan1".into(), PortConfig { addressing: Some(Addressing::None), ..Default::default() });
+        cfg.ports.insert("lan2".into(), PortConfig { addressing: Some(Addressing::Dhcp), ..Default::default() });
+        assert_eq!(handoff_target(&cfg, &None), ("lan2".to_string(), "dhcp"));
+    }
+
+    #[test]
+    fn isolated_all_static_uses_the_applied_iface() {
+        let mut cfg = SwitchConfig::default_for(&ports());
+        cfg.mode = Mode::Isolated;
+        cfg.ports.insert("lan1".into(),
+            PortConfig { addressing: Some(Addressing::Static { addr: "10.0.0.5/24".into(), gw: None }), ..Default::default() });
+        // write_handoff passes the iface that took a static address this apply.
+        assert_eq!(handoff_target(&cfg, &Some("lan1".into())), ("lan1".to_string(), "static"));
+    }
 }
