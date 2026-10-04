@@ -85,6 +85,15 @@ impl State {
         self.inner.lock().ok()?.get(path).cloned()
     }
 
+    /// Every value under the exact path it was set at — what MQTT retains, one
+    /// topic per entry.
+    pub fn entries(&self) -> Vec<(String, Value)> {
+        match self.inner.lock() {
+            Ok(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// The whole document, as nested JSON: `relay/1` becomes `{"relay":{"1":…}}`
     /// so a client can hold it as one object.
     pub fn doc(&self) -> Value {
