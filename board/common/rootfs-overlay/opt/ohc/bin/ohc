@@ -6,6 +6,8 @@
 #   ohc boot                    full bring-up at boot (called from /etc/init.d)
 #   ohc start | stop | status
 #   ohc tz [zone] | mdns        run one step by hand
+#   ohc audio                   what ohc-audiod reports (outputs, endpoints, what
+#                               is running) — its REST, pretty enough to read
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
 export PATH
 ROOT=/opt/ohc; BIN=$ROOT/bin; RUN=/var/run/ohc; LOG=$ROOT/log
@@ -45,5 +47,6 @@ case "$1" in
   status) "$BIN/ohc-mdns" --status; "$BIN/ohc-tz" --status ;;
   tz)    shift; "$BIN/ohc-tz" "$@" ;;
   mdns)  "$BIN/ohc-mdns" ;;
-  *) echo "usage: ohc {boot|start|stop|status|tz [zone]|mdns}" ; exit 1 ;;
+  audio) wget -qO- http://127.0.0.1:7072/api/audio 2>/dev/null | sed 's/},{/},\n{/g' || echo "ohc-audiod not running" ;;
+  *) echo "usage: ohc {boot|start|stop|status|tz [zone]|mdns|audio ...}" ; exit 1 ;;
 esac

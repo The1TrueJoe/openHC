@@ -1,4 +1,6 @@
-//! `/iod/*` and `/sys/*` — reverse proxies onto the other daemons.
+//! `/iod/*`, `/sys/*`, `/audio/*` and `/mqtt` — reverse proxies onto the other
+//! daemons (iod, sysmond, ohc-audiod) and the box's mosquitto WebSocket
+//! listener.
 //!
 //! iod listens on its own port because it is a separate process with a
 //! different owner: it holds the UARTs, webd holds the filesystem. That is the
@@ -37,18 +39,34 @@ pub fn sysmond_addr() -> String {
     std::env::var("WEBD_SYSMOND_ADDR").unwrap_or_else(|_| "127.0.0.1:7071".into())
 }
 
-/// One proxy, two mounts. Which daemon a request goes to is decided by the
-/// prefix alone, so adding a third is a line here and a route in main.
-pub async fn handler(mut req: Request) -> Response {
-    let is_sys = req.uri().path().starts_with("/sys/");
-    let addr = if is_sys { sysmond_addr() } else { iod_addr() };
-    let mount = if is_sys { "/sys" } else { "/iod" };
-    let who = if is_sys { "sysmond" } else { "iod" };
+/// Where ohc-audiod listens — audio configuration.
+pub fn audiod_addr() -> String {
+    std::env::var("WEBD_AUDIOD_ADDR").unwrap_or_else(|_| "127.0.0.1:7072".into())
+}
 
-    // Strip the mount point: /iod/api/io upstream is /api/io. `/mqtt` is
-    // mounted at the same path upstream, so it passes through untouched — the
-    // browser's MQTT client connects to ws://<this host>/mqtt and never learns
-    // that iod is a separate process on another port.
+/// The box's mosquitto WebSocket listener (loopback; see
+/// board/common/rootfs-overlay/etc/mosquitto/mosquitto.conf).
+pub fn mqtt_ws_addr() -> String {
+    std::env::var("WEBD_MQTT_WS_ADDR").unwrap_or_else(|_| "127.0.0.1:9001".into())
+}
+
+/// One proxy, several mounts. Which upstream a request goes to is decided by
+/// the prefix alone, so adding another is a line here and a route in api.rs.
+pub async fn handler(mut req: Request) -> Response {
+    let path = req.uri().path().to_string();
+    let (addr, mount, who) = if path.starts_with("/sys/") {
+        (sysmond_addr(), "/sys", "sysmond")
+    } else if path.starts_with("/audio/") {
+        (audiod_addr(), "/audio", "ohc-audiod")
+    } else if path == "/mqtt" {
+        (mqtt_ws_addr(), "", "mosquitto")
+    } else {
+        (iod_addr(), "/iod", "iod")
+    };
+
+    // Strip the mount point: /iod/api/io upstream is /api/io. `/mqtt` passes
+    // through untouched — the browser's MQTT client connects to
+    // ws://<this host>/mqtt and never learns the broker is on another port.
     let path = req.uri().path();
     let rest = path.strip_prefix(mount).unwrap_or(path);
     let rest = if rest.is_empty() { "/" } else { rest };

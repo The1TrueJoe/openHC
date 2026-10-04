@@ -1,40 +1,38 @@
 import { useEffect, useRef, useState } from 'react';
 import { Activity, Fan } from 'lucide-react';
-import { rest, type FanStatus, type History, type Telemetry } from '../api';
+import { io, type History } from '../api';
+import { useIoState } from '../App';
 
-/* Board health, polled from sysmond over REST.
-   Not MQTT: a temperature every five seconds is telemetry, not state an
-   automation subscribes to, and a retained topic cannot answer "what did it do
-   over the last hour" — which is the question this data exists for. */
+type Sample = History['samples'][number];
+
+/* Board health, live over MQTT — nothing here polls REST.
+   sysmond samples every five seconds and keeps the ring; iod republishes its
+   latest sample as `health/now` and the ring, at one point a minute, as
+   `health/history` (both retained, so they are there on connect). Trend lines
+   are that minute history plus the live samples seen since its last point. */
 export function HealthSection() {
-  const [t, setT] = useState<Telemetry | null>(null);
-  const [hist, setHist] = useState<History | null>(null);
-  const [absent, setAbsent] = useState(false);
+  const h = useIoState().health;
+  const t = h?.now;
+  const hist = h?.history;
+  const histOk = !!hist && Array.isArray(hist.samples) && Array.isArray(hist.series);
+  const lastHistAt = histOk ? hist!.samples[hist!.samples.length - 1]?.at ?? 0 : 0;
 
+  /* The live tail: samples newer than the last history point, positional
+     against t.series (which can differ from the history's series if a sensor
+     bound late — trend() matches by identity, not index). */
+  const tail = useRef<Sample[]>([]);
+  const [, bump] = useState(0);
   useEffect(() => {
-    let live = true;
-    const tick = () => {
-      rest
-        .telemetry()
-        .then((d) => live && setT(d))
-        .catch(() => live && setAbsent(true));
-      /* History is the same ring, served whole; a failure here is not fatal —
-         the readings still render, just without their trend lines. */
-      rest.history().then((h) => live && setHist(h)).catch(() => {});
-    };
-    tick();
-    /* 5 s matches sysmond's own sampling period; asking faster returns the same
-       sample twice. */
-    const id = setInterval(tick, 5000);
-    return () => {
-      live = false;
-      clearInterval(id);
-    };
-  }, []);
+    if (!t?.at || !Array.isArray(t.values)) return;
+    const next = tail.current.filter((s) => s.at > lastHistAt && s.at !== t.at);
+    next.push({ at: t.at, v: t.values, cpu: t.cpu, load1: t.load1, mem_used_pct: t.mem_used_pct });
+    tail.current = next.slice(-30);
+    bump((n) => n + 1);
+  }, [t?.at, lastHistAt]);
 
   /* A board with no hwmon and no sysmond simply has no panel, the same way a
      board with no relays has no relay panel. */
-  if (absent || !t || !t.series.length) return null;
+  if (!t || !Array.isArray(t.series) || !t.series.length) return null;
 
   const val = (i: number) => t.values?.[i] ?? null;
   const warm = (c: number) => (c >= 70 ? 'text-alarm' : c >= 55 ? 'text-warm' : 'text-live');
@@ -42,14 +40,19 @@ export function HealthSection() {
   /* Trend for a sensor series, matched by slug+kind rather than index — the two
      endpoints share a series list, but matching by identity survives a sensor
      that binds late and shifts the order. */
+  const tailNow = tail.current.filter((s) => s.at > lastHistAt);
   const trend = (slug: string, kind: string): (number | null)[] | null => {
-    if (!hist) return null;
-    const i = hist.series.findIndex((s) => s.slug === slug && s.kind === kind);
-    if (i < 0) return null;
-    return hist.samples.map((s) => s.v[i] ?? null);
+    const hi = histOk ? hist!.series.findIndex((s) => s.slug === slug && s.kind === kind) : -1;
+    const ti = t.series.findIndex((s) => s.slug === slug && s.kind === kind);
+    const past = hi >= 0 ? hist!.samples.map((s) => s.v[hi] ?? null) : [];
+    const recent = ti >= 0 ? tailNow.map((s) => s.v[ti] ?? null) : [];
+    const all = [...past, ...recent];
+    return all.length > 1 ? all : null;
   };
-  const machineTrend = (pick: (s: History['samples'][number]) => number | null) =>
-    hist ? hist.samples.map(pick) : null;
+  const machineTrend = (pick: (s: Sample) => number | null) => {
+    const all = [...(histOk ? hist!.samples.map(pick) : []), ...tailNow.map(pick)];
+    return all.length > 1 ? all : null;
+  };
 
   /* Order so like sits with like: temps, then fans, then speeds. */
   const order = { temp: 0, fan: 1, pwm: 2 } as const;
@@ -118,32 +121,20 @@ export function HealthSection() {
    family, where ohc-fand exists); everywhere else `available:false` and this
    renders nothing — the same rule the rest of the UI uses for absent hardware. */
 function FanControl() {
-  const [fan, setFan] = useState<FanStatus | null>(null);
+  const fan = useIoState().health?.fan;
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const refresh = () => rest.fan().then(setFan).catch(() => setFan({ available: false }));
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 5000);
-    return () => clearInterval(id);
-  }, []);
+  // A command's effect arrives as a new health/fan; that ends the busy state.
+  useEffect(() => setBusy(false), [fan?.mode, fan?.pct]);
 
   if (!fan?.available) return null;
 
-  const act = async (fn: () => Promise<{ ok: boolean; error?: string }>) => {
+  const act = (v: number | 'auto') => {
     setBusy(true);
-    setErr(null);
-    try {
-      const r = await fn();
-      if (!r.ok) setErr(r.error ?? 'failed');
-      await refresh();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
+    io.setFan(v);
+    // Never stay stuck if the state does not change (e.g. same value again).
+    setTimeout(() => setBusy(false), 4000);
   };
+  const err = fan.error ?? null;
 
   const manual = fan.mode === 'manual';
   const pct = fan.pct ?? 0;
@@ -164,14 +155,14 @@ function FanControl() {
         </span>
       </div>
 
-      <Slider value={pct} disabled={busy} onCommit={(p) => act(() => rest.fanSet(p))} />
+      <Slider value={pct} disabled={busy} onCommit={(p) => act(p)} />
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {[0, 25, 50, 75, 100].map((p) => (
           <button
             key={p}
             disabled={busy}
-            onClick={() => act(() => rest.fanSet(p))}
+            onClick={() => act(p)}
             className={`hair rounded-lg border px-2.5 py-1 text-xs tabular-nums transition hover:border-accent/50 disabled:opacity-50 ${
               manual && pct === p ? 'border-accent/60 text-ink' : 'text-muted'
             }`}
@@ -181,7 +172,7 @@ function FanControl() {
         ))}
         <button
           disabled={busy || !manual}
-          onClick={() => act(() => rest.fanAuto())}
+          onClick={() => act('auto')}
           className="ml-auto hair rounded-lg border px-2.5 py-1 text-xs transition hover:border-accent/50 disabled:opacity-40"
         >
           Release to automatic

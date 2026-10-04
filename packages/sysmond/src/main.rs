@@ -14,6 +14,16 @@
 //!
 //! So: iod owns IO and speaks MQTT; sysmond owns metrics and speaks REST, with
 //! history. Two daemons, two surfaces, each shaped like the thing it carries.
+//!
+//! LIVE STATE IS ON MQTT TOO (owner's rule: anything a control system or the
+//! web UI watches change is MQTT; REST is for configuration and queries). Every
+//! board runs mosquitto, and sysmond is its own client of it (ohcmqtt): after
+//! each sample it publishes `<base>/state/health/now` (the latest sample,
+//! /api/now's shape) and `health/fan`, and once a minute `health/history` — the
+//! ring downsampled to a point a minute, so six hours is ~360 points rather than
+//! the full ring. `<base>/cmd/health/fan` takes `auto` or a percent. The REST
+//! surface below stays for queries (a full-resolution history window) and other
+//! API consumers.
 mod fan;
 mod history;
 mod sensors;
@@ -57,9 +67,13 @@ claim knowledge of where the thermistors physically sit.",
     responses((status = 200, description = "One sample, with the series that describes it"))
 )]
 async fn now(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let st = app.store.lock().unwrap();
+    Json(now_json(&app.store.lock().unwrap()))
+}
+
+/// The latest sample with its labels — /api/now, and `<base>/state/health/now`.
+fn now_json(st: &history::Store) -> serde_json::Value {
     let latest = st.latest();
-    Json(serde_json::json!({
+    serde_json::json!({
         "at": latest.map(|s| s.at),
         "series": st.series,
         "values": latest.map(|s| s.v.clone()),
@@ -68,7 +82,26 @@ async fn now(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
         "mem_used_pct": latest.and_then(|s| s.mem_used_pct),
         "uptime_s": sensors::uptime_secs(),
         "mem_total_kb": sensors::mem().map(|(t, _)| t),
-    }))
+    })
+}
+
+/// The ring, keeping every `step`th sample (newest always kept) — what goes
+/// out as `<base>/state/health/history`.
+fn history_json(st: &history::Store, period: u64, step: usize) -> serde_json::Value {
+    let all = st.since(0);
+    let n = all.len();
+    let picked: Vec<_> = all
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| (n - 1 - i) % step.max(1) == 0)
+        .map(|(_, s)| s)
+        .collect();
+    serde_json::json!({
+        "period_s": period * step.max(1) as u64,
+        "held": picked.len(),
+        "series": st.series,
+        "samples": picked,
+    })
 }
 
 /// History. `series` is sent ONCE and the samples are positional against it —
@@ -176,11 +209,30 @@ fn main() {
         .expect("tokio");
     rt.block_on(async move {
         let collector = app.clone();
+        // One history point a minute, whatever the sampling period.
+        let step = (60 / period.max(1)).max(1) as usize;
+        let base = ohcmqtt::Base::resolve();
+        let (client, events) = rumqttc::AsyncClient::new(ohcmqtt::options("sysmond", &base), 16);
+        let reconnected = std::sync::Arc::new(tokio::sync::Notify::new());
+        let fan_changed = std::sync::Arc::new(tokio::sync::Notify::new());
+        tokio::spawn(mqtt_loop(events, client.clone(), base.clone(), reconnected.clone(), fan_changed.clone()));
         tokio::spawn(async move {
             let mut cpu = sensors::Cpu::default();
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(period));
+            let mut n: usize = 0;
+            let mut retained = ohcmqtt::Retained::new();
             loop {
-                tick.tick().await;
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = reconnected.notified() => {
+                        retained.republish(&client, &base).await;
+                        continue;
+                    }
+                    _ = fan_changed.notified() => {
+                        retained.set(&client, &base, "health/fan", &fan::status()).await;
+                        continue;
+                    }
+                }
                 let at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -188,11 +240,17 @@ fn main() {
                 let r = sensors::readings();
                 let (total, avail) = sensors::mem().unwrap_or((0, 0));
                 let mem_pct = (total > 0).then(|| ((total - avail) * 100 / total) as u8);
-                collector
-                    .store
-                    .lock()
-                    .unwrap()
-                    .push(at, &r, cpu.sample(), sensors::load1(), mem_pct);
+                let (now, hist) = {
+                    let mut st = collector.store.lock().unwrap();
+                    st.push(at, &r, cpu.sample(), sensors::load1(), mem_pct);
+                    (now_json(&st), (n % step == 0).then(|| history_json(&st, period, step)))
+                };
+                retained.set(&client, &base, "health/now", &now).await;
+                if let Some(h) = hist {
+                    retained.set(&client, &base, "health/history", &h).await;
+                }
+                retained.set(&client, &base, "health/fan", &fan::status()).await;
+                n = n.wrapping_add(1);
             }
         });
 
@@ -229,6 +287,47 @@ fn main() {
             eprintln!("sysmond: server error: {e}");
         }
     });
+}
+
+/// The MQTT connection: online status, the fan command, and telling the
+/// collector to republish after a reconnect.
+async fn mqtt_loop(
+    mut events: rumqttc::EventLoop,
+    client: rumqttc::AsyncClient,
+    base: ohcmqtt::Base,
+    reconnected: std::sync::Arc<tokio::sync::Notify>,
+    fan_changed: std::sync::Arc<tokio::sync::Notify>,
+) {
+    use rumqttc::{Event, Incoming, QoS};
+    let fan_topic = base.cmd("health/fan");
+    loop {
+        match events.poll().await {
+            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
+                ohcmqtt::online(&client, "sysmond", &base).await;
+                let _ = client.subscribe(fan_topic.clone(), QoS::AtLeastOnce).await;
+                reconnected.notify_one();
+            }
+            Ok(Event::Incoming(Incoming::Publish(p))) if p.topic == fan_topic => {
+                let body = String::from_utf8_lossy(&p.payload).trim().to_ascii_lowercase();
+                let r = if body == "auto" {
+                    fan::auto()
+                } else if let Ok(pct) = body.parse::<i64>() {
+                    fan::set(pct)
+                } else {
+                    serde_json::json!({ "ok": false, "error": format!("not auto or a percent: {body:?}") })
+                };
+                if r.get("ok") == Some(&serde_json::json!(false)) {
+                    eprintln!("sysmond: cmd/health/fan: {r}");
+                }
+                fan_changed.notify_one();
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("sysmond: mqtt: {e}; retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        }
+    }
 }
 
 fn env_num(k: &str, d: u64) -> u64 {

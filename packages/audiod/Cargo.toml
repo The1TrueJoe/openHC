@@ -1,0 +1,20 @@
+[package]
+name = "audiod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC audio daemon: N Spotify Connect + N AirPlay endpoints and input routes mapped onto named outputs; state + control over MQTT, configuration over REST."
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "signal", "process", "sync", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rumqttc = { version = "0.25", default-features = false }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+ohcmqtt = { path = "../ohcmqtt" }
+
+[[bin]]
+name = "ohc-audiod"
+path = "src/main.rs"

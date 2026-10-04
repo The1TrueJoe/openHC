@@ -86,36 +86,9 @@ pub fn retained(base: &str, state: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-/// MQTT topic-filter matching: `+` is one level, `#` is the rest.
-pub fn matches(filter: &str, topic: &str) -> bool {
-    let (mut f, mut t) = (filter.split('/'), topic.split('/'));
-    loop {
-        match (f.next(), t.next()) {
-            (Some("#"), _) => return true,
-            (Some("+"), Some(_)) => continue,
-            (Some(a), Some(b)) if a == b => continue,
-            (None, None) => return true,
-            _ => return false,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wildcards_follow_mqtt_rules() {
-        assert!(matches("a/b/c", "a/b/c"));
-        assert!(matches("a/#", "a/b/c"));
-        assert!(matches("#", "a/b/c"));
-        assert!(matches("a/+/c", "a/b/c"));
-        assert!(!matches("a/+/c", "a/b/d"));
-        assert!(!matches("a/+", "a/b/c"));
-        assert!(!matches("a/b", "a/bc"));
-        // `#` matches the parent level too, per the spec.
-        assert!(matches("a/#", "a"));
-    }
 
     #[test]
     fn booleans_go_out_as_on_off() {

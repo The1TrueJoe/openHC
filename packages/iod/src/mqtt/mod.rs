@@ -5,17 +5,13 @@
 //! set of semantics to document, one to test, and one to get right. REST keeps
 //! the things MQTT is bad at: what the board IS, and its configuration.
 //!
-//! Two independent roles, both optional, neither implying the other:
-//!
-//! * **serve** — iod carries its own topics, over a WebSocket for the browser
-//!   and plain TCP for everything else. This is what the config GUI talks to.
-//! * **bridge** — iod also connects OUT to somebody else's broker.
-//!
-//! They are independent on purpose. If the GUI depended on the house broker,
-//! then a broker that was down or misconfigured would take out the very screen
-//! you would use to fix it.
+//! Every board runs mosquitto. iod is one client of it (client.rs), beside
+//! ohc-audiod and sysmond, each publishing its own topics under the same tree;
+//! the web UI reaches the broker over a WebSocket that webd proxies at /mqtt.
+//! Reaching a house broker is mosquitto's bridge, configured from iod's
+//! settings (bridge.rs).
+pub mod bridge;
 pub mod client;
-pub mod server;
 pub mod settings;
 pub mod topics;
 
@@ -24,46 +20,20 @@ use crate::Config;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-/// Start both roles, and restart them whenever the settings change.
+/// Keep the bridge and the client in line with the settings, restarting the
+/// client whenever they change (a renamed prefix/client id moves the tree).
 ///
 /// A settings save has to take effect without an init-script restart: the
-/// operator changing the broker is very often doing it THROUGH the GUI, and
-/// telling them to SSH in and bounce the daemon to apply their own edit would
-/// be a poor way to ship a settings page.
-///
-/// Restarting is done by dropping the tasks and starting new ones rather than
-/// mutating a live client, because a half-applied broker change — new host,
-/// old credentials — fails in ways that are tedious to diagnose.
+/// operator changing the broker is very often doing it THROUGH the GUI.
 pub async fn supervise(cfg: Arc<Config>, mut rx: watch::Receiver<settings::Mqtt>) {
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     loop {
-        for t in tasks.drain(..) {
-            t.abort();
-        }
         let m = rx.borrow().clone();
-
-        if m.serve {
-            if m.listen_port > 0 {
-                tasks.push(tokio::spawn(server::listen_tcp(cfg.clone(), m.clone(), m.listen_port)));
-            }
-            // The WebSocket endpoint needs no task: webd proxies it and axum
-            // spawns a session per connection.
-            eprintln!("iod/mqttd: serving topics under {}/{}", m.prefix, m.client_id);
-        } else {
-            // Worth saying out loud. With this off the config GUI's IO panels
-            // have nothing to talk to, and the symptom is a page that loads
-            // fine and then does nothing.
-            eprintln!("iod/mqttd: NOT serving — the config GUI's IO panels will not work");
-        }
-
-        if m.bridge && !m.url.is_empty() {
-            eprintln!("iod/mqtt: bridging to {}", m.url);
-            tasks.push(tokio::spawn(client::run(cfg.clone(), m.clone())));
-        }
-
+        bridge::apply(&m).await;
+        let task = tokio::task::spawn_local(client::run(cfg.clone(), m));
         if rx.changed().await.is_err() {
             return;
         }
+        task.abort();
         eprintln!("iod/mqtt: settings changed, restarting");
     }
 }
@@ -136,10 +106,8 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
             index: topics::index(n)? as usize,
             baud: b.parse().ok()?,
         }),
-        // Audio: the output device is a free string (e.g. `hw:DSP`), volume is a
-        // plain percent so a Home Assistant number entity can drive it.
-        ["audio", "output"] if !b.is_empty() => Some(Cmd::AudioOutput { device: b.to_string() }),
-        ["audio", "volume"] => b.parse::<u8>().ok().map(|percent| Cmd::AudioVolume { percent, device: None }),
+        // Return to stock is one-way, so the payload must literally say so.
+        ["system", "restore"] if b == "confirm" => Some(Cmd::RestoreStock { confirm: true }),
         _ => None,
     }
 }
@@ -199,14 +167,12 @@ mod tests {
     }
 
     #[test]
-    fn audio_output_and_volume_parse() {
-        assert!(matches!(parse_cmd("audio/output", "hw:DSP"),
-                         Some(Cmd::AudioOutput { device }) if device == "hw:DSP"));
-        // An empty body is not a device — ignore it rather than clearing the pick.
-        assert!(parse_cmd("audio/output", "").is_none());
-        assert!(matches!(parse_cmd("audio/volume", "60"),
-                         Some(Cmd::AudioVolume { percent: 60, device: None })));
-        assert!(parse_cmd("audio/volume", "loud").is_none());
+    fn restore_needs_the_literal_confirm() {
+        assert!(matches!(parse_cmd("system/restore", "confirm"), Some(Cmd::RestoreStock { confirm: true })));
+        assert!(parse_cmd("system/restore", "yes").is_none());
+        // Audio and health belong to their own daemons now.
+        assert!(parse_cmd("audio/volume", "60").is_none());
+        assert!(parse_cmd("health/fan", "auto").is_none());
     }
 
     #[test]

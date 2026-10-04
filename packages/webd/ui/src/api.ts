@@ -20,6 +20,8 @@ const HTTP = `${location.origin}/iod`;
    HTTP gave /iod/sys/api/now, which 404s — webd proxies /sys to sysmond and
    /iod to iod, and they are not nested. */
 const SYS = `${location.origin}/sys`;
+/* ohc-audiod's configuration REST, proxied by webd at /audio. */
+const AUDIO = `${location.origin}/audio`;
 const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
@@ -92,6 +94,54 @@ export interface AudioReceiver {
   now_playing?: unknown;
 }
 
+/** A named jack on a board with an endpoint map (board.env OHC_AUDIO_OUTPUTS). */
+export interface AudioPort {
+  id: string;
+  label: string;
+  device: string;
+  pcm: string;
+}
+
+/** A Spotify Connect or AirPlay endpoint: the name a phone shows, and the
+ *  output it plays on. */
+export interface AudioEndpoint {
+  name: string;
+  output: string;
+}
+
+/** A live route from an input to an output. */
+export interface AudioRoute {
+  input: string;
+  output: string;
+}
+
+/** The configurable part of the map — what PUT /audio/api/audio/endpoints takes. */
+export interface AudioEndpoints {
+  spotify: AudioEndpoint[];
+  airplay: AudioEndpoint[];
+  routes: AudioRoute[];
+}
+
+/** One supervised process ohc-audiod runs for the map. */
+export interface AudioInstance {
+  tag: string;
+  kind: 'spotify' | 'airplay' | 'route' | 'helper';
+  name: string | null;
+  input: string | null;
+  output: string | null;
+  running: boolean;
+}
+
+/** ohc-audiod's endpoint map: the board's outputs/inputs, the configured
+ *  endpoints, and what is running. Arrives over REST once and over MQTT
+ *  (`<base>/state/audio/map`) whenever it changes. */
+export interface AudioMap extends AudioEndpoints {
+  rate: number;
+  outputs: AudioPort[];
+  inputs: AudioPort[];
+  instances: AudioInstance[];
+}
+
 /** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
  *  only present when genuinely available, so the panel shows them conditionally. */
 export interface AudioStatus {
@@ -100,6 +150,8 @@ export interface AudioStatus {
   /** The chosen output id, or null when the receivers follow the default PCM. */
   selected: string | null;
   volume?: number;
+  /** Present on boards with named outputs: N endpoints mapped onto jacks. */
+  map?: AudioMap | null;
 }
 
 /** What is carrying the IO. The kernel driver owns the link, so iod cannot ask
@@ -113,8 +165,6 @@ export interface McuInfo {
 }
 
 export interface MqttConfig {
-  serve: boolean;
-  listen_port: number;
   bridge: boolean;
   url: string;
   username: string;
@@ -162,7 +212,14 @@ export interface IoState {
     output?: string;
     volume?: number;
     receiver?: Record<string, { running?: boolean }>;
+    /** Boards with named outputs: the endpoint map, live. */
+    map?: AudioMap;
   };
+  /** sysmond telemetry, republished by iod: the latest sample, the ring at one
+   *  point a minute, and the fan. */
+  health?: { now?: Telemetry; history?: History; fan?: FanStatus };
+  /** Return-to-stock availability (boards with the ohc-restore helper). */
+  system?: { restore?: { available: boolean; openhc?: boolean; detail?: string } };
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -203,7 +260,8 @@ export interface Telemetry {
 export interface History {
   period_s: number;
   held: number;
-  capacity: number;
+  /** The REST ring reports its capacity; the minute-resolution copy on MQTT does not. */
+  capacity?: number;
   series: Series[];
   samples: {
     at: number;
@@ -232,6 +290,16 @@ export const rest = {
     j<History>(`${SYS}/api/history${seconds ? `?seconds=${seconds}` : ''}`),
   /** Fan presence/mode/duty. `available:false` on boards with no fan helper. */
   fan: () => j<FanStatus>(`${SYS}/api/fan`),
+  /** ohc-audiod: outputs, inputs, the endpoint map, the receivers. Loaded once;
+   *  live changes arrive over MQTT. */
+  audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
+  /** Replace the endpoint map (configuration). */
+  saveEndpoints: (e: AudioEndpoints) =>
+    j<AudioMap>(`${AUDIO}/api/audio/endpoints`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(e),
+    }),
   /** Manual override, 0-100. Persists until released; fail-safe still applies. */
   fanSet: (pct: number) =>
     j<{ ok: boolean; mode?: string; pct?: number; error?: string }>(`${SYS}/api/fan/set`, {
@@ -244,9 +312,6 @@ export const rest = {
     j<{ ok: boolean; mode?: string; error?: string }>(`${SYS}/api/fan/auto`, { method: 'POST' }),
   capabilities: () => j<Capabilities>(`${HTTP}/api/io`),
   mcu: () => j<McuInfo>(`${HTTP}/api/io/mcu`),
-  /** Full audio picture. 404s on a board with no audio (the panel then shows
-   *  nothing); outputs/receivers/volume/now-playing come back when present. */
-  audio: () => j<AudioStatus>(`${HTTP}/api/audio`),
   config: () => j<ConfigDoc>(`${HTTP}/api/config`),
   saveConfig: (mqtt: MqttWrite) =>
     j<{ ok: boolean }>(`${HTTP}/api/config`, {
@@ -267,13 +332,20 @@ export const rest = {
     j<{ started: boolean; note?: string }>(`${HTTP}/api/system/restore/stock`, { method: 'POST' }),
 };
 
-/** `ON`/`OFF` become booleans, digits become numbers, everything else stays a
- *  string. iod publishes scalars bare so a shell script can read them without
- *  a JSON parser; this is the other half of that bargain. */
-function decode(raw: string): boolean | number | string {
+/** `ON`/`OFF` become booleans, digits become numbers, JSON objects/arrays are
+ *  parsed, everything else stays a string. iod publishes scalars bare so a
+ *  shell script can read them without a JSON parser, and anything structured as
+ *  JSON (mqtt/topics.rs `payload`); this is the other half of that bargain.
+ *  Without the JSON half, a structured value (the audio endpoint map) arrived
+ *  as a string and the panel rendering it crashed. */
+function decode(raw: string): unknown {
   if (raw === 'ON') return true;
   if (raw === 'OFF') return false;
   if (raw !== '' && !Number.isNaN(Number(raw))) return Number(raw);
+  const c = raw[0];
+  if (c === '{' || c === '[') {
+    try { return JSON.parse(raw); } catch { /* not JSON after all: keep the text */ }
+  }
   return raw;
 }
 
@@ -379,6 +451,11 @@ export class Io {
   /** Output volume, 0..100. Clamped and read back by iod. */
   setAudioVolume = (percent: number) =>
     this.#publish('audio/volume', String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** Fan: a percent holds it there, 'auto' hands it back to the curve. */
+  setFan = (v: number | 'auto') =>
+    this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));
+  /** Return to stock. One-way; iod acts only on the literal "confirm". */
+  restoreStock = () => this.#publish('system/restore', 'confirm');
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {

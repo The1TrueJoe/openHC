@@ -1,0 +1,6 @@
+[codec]
+0x10ec0888 0x14a4d102 2
+
+[hint]
+indep_hp = yes
+indep_dig_outs = yes

@@ -72,6 +72,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Seconds, before any multi-hour build: every board.env and init script
+      # must at least PARSE. board.env is sourced by nearly every init script
+      # (networking included), so one bad line there yields an image that
+      # boots to a login prompt with no network — found the hard way.
+      - name: Shell syntax (board.env, init scripts, helpers)
+        shell: bash
+        run: |
+          set -e
+          bad=0
+          while IFS= read -r f; do
+            sh -n "$f" || { echo "::error file=$f::shell syntax error"; bad=1; }
+          done < <(git ls-files 'board/**/board.env' 'board/**/etc/init.d/*' 'board/**/opt/ohc/bin/*' 'board/**/opt/ohc/libexec/*' \
+                   | while read -r f; do head -c 64 "$f" | grep -q '^#!.*sh' && echo "$f" || case "$f" in *board.env) echo "$f";; esac; done)
+          exit $bad
+
       - id: pick
         shell: bash
         run: |

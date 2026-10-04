@@ -3,3 +3,5 @@
 iomcu       # LM3S1162 on ttyS3: 4 relays, 4 contacts, 6 IR
 splash      # component/HDMI out via the THS8200, so there is a framebuffer
 zigbee      # EM357 NCP on ttyS4 (0x2f0); node (cp210x unused here)
+audio       # ALC888 HDA: rear line, front RCA, coax+HDMI digital, line in;
+            # N Spotify Connect + N AirPlay endpoints via ohc-audiod
