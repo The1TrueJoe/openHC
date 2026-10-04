@@ -1,0 +1,16 @@
+[package]
+name = "switchd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC managed-switch daemon: drives the BCM53125 (DSA/b53) ports — a bridged managed switch by default, or split into separate IP interfaces and VLANs. Live state over MQTT, configuration over REST."
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "signal", "process", "sync", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+rumqttc = { version = "0.25", default-features = false }
+ohcmqtt = { path = "../ohcmqtt" }

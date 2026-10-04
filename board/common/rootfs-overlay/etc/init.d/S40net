@@ -75,6 +75,32 @@ case "$1" in
   start)
     ip link set "$MASTER" up 2>/dev/null || { echo "Net: no $MASTER"; exit 0; }
 
+    # switchd (the managed-switch daemon) may have already built the L2 topology
+    # at S39 and left a one-line handoff naming the interface that carries the
+    # box's L3 address. When it has, defer to it entirely: bring that interface
+    # up and either lease it (dhcp) or leave switchd's static address in place.
+    # The port-by-port logic below is the fallback for when switchd is absent, or
+    # when it named an interface that never appeared (DSA did not attach) — in
+    # which case the named iface is missing and we fall straight through.
+    if [ -r /run/ohc/net.conf ]; then
+        . /run/ohc/net.conf
+        if [ -n "$OHC_NET_L3_IFACE" ] && [ -e "/sys/class/net/$OHC_NET_L3_IFACE" ]; then
+            ip link set "$OHC_NET_L3_IFACE" up 2>/dev/null
+            case "$OHC_NET_L3_MODE" in
+                dhcp)
+                    printf 'Net: %s (switchd): ' "$OHC_NET_L3_IFACE"
+                    wait_carrier "$OHC_NET_L3_IFACE"
+                    lease "$OHC_NET_L3_IFACE" && echo "up ($(addr_of "$OHC_NET_L3_IFACE"))" || echo "no lease"
+                    ;;
+                static)
+                    echo "Net: $OHC_NET_L3_IFACE (switchd): static $(addr_of "$OHC_NET_L3_IFACE")" ;;
+                *)  echo "Net: $OHC_NET_L3_IFACE (switchd): up, no L3 address" ;;
+            esac
+            [ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash restart >/dev/null 2>&1
+            exit 0
+        fi
+    fi
+
     have_ports=
     for p in $PORTS; do
         [ -e "/sys/class/net/$p" ] && have_ports=yes
