@@ -15,19 +15,44 @@ name: daemons
 
 on:
   push:
-    paths: &daemon-paths
+    paths:
       - 'packages/**'
       - '.github/workflows/daemons.yml'
   pull_request:
-    paths: *daemon-paths
   workflow_dispatch:
 
 concurrency:
   group: daemons-${{ github.ref }}
   cancel-in-progress: true
 
+# Checkout and artifact upload only; the token needs nothing more.
+permissions:
+  contents: read
+
 jobs:
+  # Pull requests are not path-filtered at the trigger (so `daemons-ok` always
+  # reports), so the filter lives here; push (filtered above), release and
+  # manual runs always build.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.src == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'packages/**'
+              - '.github/workflows/daemons.yml'
+
   build:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -164,3 +189,17 @@ jobs:
             packages/target/${{ matrix.target }}/release/ohc-restore
           retention-days: 14
           if-no-files-found: error
+
+  # The one check branch protection requires from this workflow. A required
+  # check must ALWAYS report: a workflow that never starts (path filter) would
+  # leave it pending forever, and a matrix job's check name changes with its
+  # matrix. Passes when the work passed or was skipped as irrelevant.
+  ok:
+    name: daemons-ok
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Everything needed passed
+        run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
