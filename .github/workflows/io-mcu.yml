@@ -17,11 +17,10 @@ name: io-mcu
 
 on:
   push:
-    paths: &mcu-paths
+    paths:
       - 'board/*/firmware/io-mcu/**'
       - '.github/workflows/io-mcu.yml'
   pull_request:
-    paths: *mcu-paths
   workflow_dispatch:
 
 concurrency:
@@ -29,7 +28,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pull requests are not path-filtered at the trigger (so `io-mcu-ok` always
+  # reports), so the filter lives here; push (filtered above), release and
+  # manual runs always build.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.src == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'board/*/firmware/io-mcu/**'
+              - '.github/workflows/io-mcu.yml'
+
   build:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -122,3 +143,16 @@ jobs:
             ${{ matrix.dir }}/build/*/io-mcu.map
           retention-days: 14
           if-no-files-found: error
+
+  # The one check branch protection requires from this workflow. A required
+  # check must ALWAYS report: a workflow that never starts (path filter) would
+  # leave it pending forever, and a matrix job's check name changes with its
+  # matrix. Passes when the work passed or was skipped as irrelevant.
+  ok:
+    name: io-mcu-ok
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Everything needed passed
+        run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false

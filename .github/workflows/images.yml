@@ -18,12 +18,13 @@
 name: images
 
 on:
-  # These are exactly the paths the `select` job below inspects, so a change
-  # outside them would only ever resolve to an empty board list. Filtering here
-  # means we do not spin up a runner to reach that conclusion.
+  # These are exactly the paths the `select` job below inspects, so a push
+  # outside them would only ever resolve to an empty board list. Pull requests
+  # are NOT filtered: `images-ok` must report on every PR for branch protection,
+  # and `select` resolves an unrelated change to no boards in seconds.
   push:
     branches: [main]
-    paths: &image-paths
+    paths:
       - 'board/**'
       - 'packages/**'
       - 'build/**'
@@ -31,7 +32,6 @@ on:
       - 'Makefile'
       - '.github/workflows/images.yml'
   pull_request:
-    paths: *image-paths
   workflow_dispatch:
     inputs:
       board:
@@ -394,3 +394,16 @@ jobs:
             output/build/${{ matrix.board }}/*.log
           retention-days: 7
           if-no-files-found: ignore
+
+  # The one check branch protection requires from this workflow. A required
+  # check must ALWAYS report: a workflow that never starts (path filter) would
+  # leave it pending forever, and a matrix job's check name changes with its
+  # matrix. Passes when the work passed or was skipped as irrelevant.
+  ok:
+    name: images-ok
+    needs: [select, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Everything needed passed
+        run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false

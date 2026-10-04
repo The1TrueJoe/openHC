@@ -20,9 +20,6 @@ on:
       - 'flasher/**'
       - '.github/workflows/flasher.yml'
   pull_request:
-    paths:
-      - 'flasher/**'
-      - '.github/workflows/flasher.yml'
   release:
     types: [published]
   workflow_dispatch:
@@ -45,7 +42,29 @@ defaults:
     working-directory: flasher
 
 jobs:
+  # Pull requests are not path-filtered at the trigger (so `flasher-ok` always
+  # reports), so the filter lives here; push (filtered above), release and
+  # manual runs always build.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.src == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'flasher/**'
+              - '.github/workflows/flasher.yml'
+
   build:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -193,3 +212,17 @@ jobs:
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
             "${{ env.ASSET }}" "${{ env.CLI_ASSET }}" --clobber
+
+  # The one check branch protection requires from this workflow. A required
+  # check must ALWAYS report: a workflow that never starts (path filter) would
+  # leave it pending forever, and a matrix job's check name changes with its
+  # matrix. Passes when the work passed or was skipped as irrelevant.
+  ok:
+    name: flasher-ok
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Everything needed passed
+        working-directory: /tmp
+        run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
