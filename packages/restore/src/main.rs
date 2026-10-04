@@ -1,4 +1,9 @@
-//! ohc-restore — return a Control4 EA controller to stock.
+//! ohc-restore — return a Control4 controller to stock, run on the box itself.
+//!
+//! One tool, one interface (`status`, `stock`) for iod, the web UI's restore
+//! control, the EA's front-button watcher and the flasher. The HC-800
+//! has its own backend (hc800.rs: a one-shot GRUB entry into Control4's factory
+//! restore); everything below this point is the EA / CEFDK one.
 //!
 //! openHC's install makes exactly ONE change to the boot path: it appends a
 //! `script` item to the CEFDK Master Flash Header (MFH) in SPI-NOR so CEFDK runs
@@ -29,6 +34,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
 mod mfh;
+mod hc800;
 
 const MTD: &str = "/dev/mtd0";
 const ERASE_BLOCK: usize = 0x1_0000; // 64 KiB, confirmed on the S25FL127S
@@ -286,6 +292,21 @@ fn cmd_erasetest() -> io::Result<()> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or_default();
+    if hc800::is_hc800() {
+        let r = match cmd {
+            "status" => hc800::status(),
+            "stock" => hc800::stock(!args.iter().any(|a| a == "--no-reboot")),
+            _ => {
+                eprintln!("usage: ohc-restore {{status|stock [--no-reboot]}}   (HC-800)");
+                std::process::exit(2);
+            }
+        };
+        if let Err(e) = r {
+            eprintln!("ohc-restore {cmd}: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let r = match cmd {
         "status" => cmd_status(),
         "erasetest" => cmd_erasetest(),

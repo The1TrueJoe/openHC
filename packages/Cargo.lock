@@ -523,6 +523,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohc-flash-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "ohcmqtt"
 version = "0.1.0"
 dependencies = [
@@ -652,6 +660,7 @@ name = "restore"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "ohc-flash-core",
  "sha2",
 ]
 

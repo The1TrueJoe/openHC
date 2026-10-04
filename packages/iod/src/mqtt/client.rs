@@ -58,7 +58,7 @@ pub async fn run(cfg: Arc<Config>, m: Mqtt) {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         // Republish everything so retained state is correct
                         // again rather than frozen at whatever was missed.
-                        for (topic, body) in topics::retained(&base, &cfg2.bus.state.doc()) {
+                        for (topic, body) in topics::retained(&base, &cfg2.bus.state.entries()) {
                             let _ = client.publish(topic, QoS::AtLeastOnce, true, body).await;
                         }
                     }
@@ -76,7 +76,7 @@ pub async fn run(cfg: Arc<Config>, m: Mqtt) {
                 let _ = client.subscribe(format!("{base}/cmd/#"), QoS::AtLeastOnce).await;
                 // Retained state, republished on every reconnect: the broker
                 // keeps it in RAM and may have restarted.
-                for (topic, body) in topics::retained(&base, &cfg.bus.state.doc()) {
+                for (topic, body) in topics::retained(&base, &cfg.bus.state.entries()) {
                     let _ = client.publish(topic, QoS::AtLeastOnce, true, body).await;
                 }
                 if !m.discovery.is_empty() {

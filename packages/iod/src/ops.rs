@@ -240,12 +240,13 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
 }
 
 /// Path to the return-to-stock helper. Present only on boards whose `ohc.features`
-/// has `restore` (the EA / CEFDK family); absent elsewhere, which is how the UI
-/// knows not to offer the control.
+/// has `restore` (the EA family and the HC-800); absent elsewhere, which is how
+/// the UI knows not to offer the control.
 const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
 
-/// Read-only: is a software return-to-stock available here, and what does the MFH
-/// currently say? Shells out to `ohc-restore status` and passes its stdout through.
+/// Read-only: is a software return-to-stock available here, and what does the boot
+/// chain currently say (the EA's MFH, the HC-800's menu.lst)? Shells out to
+/// `ohc-restore status` and passes its stdout through.
 pub async fn restore_status() -> Out {
     if !std::path::Path::new(RESTORE_BIN).exists() {
         return Ok(json!({ "available": false, "reason": "no restore support on this board" }));
@@ -259,13 +260,14 @@ pub async fn restore_status() -> Out {
     let openhc = text.contains("state: openHC");
     Ok(json!({
         "available": true,
-        "openhc": openhc,          // true = openHC's MFH item present (restorable)
+        "openhc": openhc,          // true = openHC's boot entry present (restorable)
         "detail": text.trim(),
     }))
 }
 
-/// Destructive, one-way: reverse openHC's MFH item and let CEFDK's recovery kernel
-/// reimage p1. Requires `confirm: true`. Spawned DETACHED so this call returns
+/// Destructive, one-way: `ohc-restore stock` hands the box to Control4's own
+/// factory recovery (EA: MFH revert + p1 reimage; HC-800: a one-shot GRUB entry
+/// into the factory restore). Requires `confirm: true`. Spawned DETACHED so this call returns
 /// before the box reboots itself out from under the connection.
 async fn restore_stock(confirm: bool) -> Out {
     if !confirm {

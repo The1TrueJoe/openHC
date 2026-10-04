@@ -20,8 +20,9 @@ export function SystemPanel({ caps }: { caps: Capabilities }) {
   );
 }
 
-/* Return to stock. Only appears on boards that actually support it (the EA /
-   CEFDK family, where iod has the ohc-restore helper); on anything else iod's
+/* Return to stock. Only appears on boards that actually support it (those built
+   with the `restore` feature, which ships ohc-restore: the EA family and the
+   HC-800); on anything else iod's
    retained `system/restore` says `available: false` and this renders nothing.
    It is the one destructive control in the UI, so it is two-step: an arm, then
    a confirm — and iod acts only on the literal payload "confirm". */
@@ -48,7 +49,7 @@ function RestoreSection() {
       <p className="text-xs text-muted">
         {avail.openhc === false
           ? 'This controller is already on the stock boot path.'
-          : 'Reverses the one boot-header change openHC made and hands the rootfs back to Control4’s recovery kernel. The controller reboots to the factory image and openHC is removed until reinstalled.'}
+          : 'Hands the controller to Control4’s own factory recovery: it reboots, re-images itself to the factory image, and comes back as stock Control4. openHC is removed until reinstalled.'}
       </p>
       {msg && <p className="mt-3 text-xs">{msg}</p>}
       {!msg && (

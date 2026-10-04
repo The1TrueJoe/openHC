@@ -3,11 +3,15 @@ name = "restore"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "openHC return-to-stock — reverse the one MFH item the install added (via /dev/mtd0) and hand p1 back to CEFDK's own recovery kernel."
+description = "openHC return-to-stock, run on the box: the EA's MFH revert + p1 recovery kexec, and the HC-800's one-shot GRUB factory restore."
 
 [dependencies]
 libc = "0.2"
 sha2 = "0.10"
+# The HC-800 menu.lst rewrite is the flasher's own (flasher/crates/core, pure
+# logic and unit-tested there), so `ohc-flash restore` and the on-box restore
+# are one implementation.
+ohc-flash-core = { path = "../../flasher/crates/core" }
 
 [[bin]]
 name = "ohc-restore"
