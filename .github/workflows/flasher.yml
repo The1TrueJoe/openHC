@@ -222,6 +222,7 @@ jobs:
     needs: [changes, build]
     if: always()
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Everything needed passed
         working-directory: /tmp

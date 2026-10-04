@@ -27,6 +27,10 @@ concurrency:
   group: io-mcu-${{ github.ref }}
   cancel-in-progress: true
 
+# Checkout and artifact upload only; the token needs nothing more.
+permissions:
+  contents: read
+
 jobs:
   # Pull requests are not path-filtered at the trigger (so `io-mcu-ok` always
   # reports), so the filter lives here; push (filtered above), release and
@@ -153,6 +157,7 @@ jobs:
     needs: [changes, build]
     if: always()
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Everything needed passed
         run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false

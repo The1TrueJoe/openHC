@@ -404,6 +404,7 @@ jobs:
     needs: [select, build]
     if: always()
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Everything needed passed
         run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
