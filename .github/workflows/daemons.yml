@@ -17,6 +17,7 @@ on:
   push:
     paths:
       - 'packages/**'
+      - 'flasher/crates/core/**'   # ohc-restore links the flasher's core crate
       - '.github/workflows/daemons.yml'
   pull_request:
   workflow_dispatch:
@@ -48,6 +49,7 @@ jobs:
           filters: |
             src:
               - 'packages/**'
+              - 'flasher/crates/core/**'
               - '.github/workflows/daemons.yml'
 
   build:
