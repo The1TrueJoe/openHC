@@ -1,0 +1,34 @@
+#!/bin/sh
+# openHC — HC-800 hold-the-ID-button return-to-stock watcher.
+#
+# Runs `ohc-restore watch-button`: holding the front ID button for
+# OHC_RESTORE_BUTTON_HOLD seconds arms Control4's factory restore for one boot
+# and reboots into it. Inert unless BOTH halves are present: the 'restore'
+# feature installed ohc-restore and board.env names OHC_RESTORE_BUTTON_INPUT.
+# Runs LATE (S96) so a press during boot cannot start a restore mid-bring-up,
+# and the watcher only arms after it has seen the button released.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+BIN=/opt/ohc/bin/ohc-restore
+PID=/var/run/ohc-restore-button.pid
+
+start() {
+    [ -x "$BIN" ] || return 0
+    [ -n "$OHC_RESTORE_BUTTON_INPUT" ] || return 0
+    # board.env exported, so the watcher sees the OHC_RESTORE_BUTTON_* knobs.
+    start-stop-daemon -S -q -b -m -p "$PID" --exec /bin/sh -- -c \
+        "set -a; . /opt/ohc/board.env; set +a; exec $BIN watch-button 2>&1 | logger -t ohc-restore-button" \
+        && echo "restore-button: hold the ID button ${OHC_RESTORE_BUTTON_HOLD:-10}s to return to stock"
+}
+stop() {
+    # start-stop-daemon -b made the shell a session leader, so signal its whole
+    # group: the watcher and logger with it, never an `ohc-restore stock` that
+    # some other caller is running.
+    [ -f "$PID" ] && kill -TERM -- "-$(cat "$PID")" 2>/dev/null
+    rm -f "$PID"
+}
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

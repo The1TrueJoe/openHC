@@ -36,6 +36,8 @@ ohc-flash restore <host>
   appends a copy of entry 0 that `savedefault`s back to the stock entry and sets
   `default saved`. It never writes `default 0`: `restore.sh` reboots without
   touching `menu.lst`, so that would restore forever. Verified on a unit 2026-10-02.
+  An openHC built with the `restore` feature does this itself (`ohc-restore stock`,
+  the same rewrite from the same code); stock Control4 gets it over SSH.
 - **EA family:** runs the box's `ohc-restore stock`, which removes openHC's single
   MFH item from SPI-NOR (read-back verified) and kexecs p2's recovery kernel to
   re-image p1, the same reimage the recessed button starts.
@@ -91,7 +93,8 @@ item to the CEFDK Master Flash Header (MFH) item-table in SPI-NOR — the table 
 offset `0x80000`, SHA-256 protected — redirecting CEFDK to openHC's autoscript.
 The stock kernel item, the stock kernel, and p2's entire factory payload are left
 untouched. So "return to stock" is just removing that one item. The tool is
-`ohc-restore` (shipped only on the EA, via the `restore` feature); its MFH edit is
+`ohc-restore` (the `restore` feature; this is its EA backend, the HC-800's is
+[below](#hc-800)); its MFH edit is
 the byte-for-byte inverse of the installer's append, unit-tested to reproduce the
 known-stock SHA against the real 16 MB backup. Its subcommands:
 
@@ -218,20 +221,37 @@ Full detail on the [CA-1 page](/ca1/#recovery-when-a-bad-bootscr-hangs-the-box).
 
 ## HC-800
 
-The easiest recovery of any board here: **change one digit.** Our install adds a
-third GRUB entry and moves `default` from `1` to `2`. Setting it back to `1` boots
-the vendor image again, and the vendor root on `sda4` and the factory-restore
-image on `sda2` are never written.
+The easiest recovery of any board here. Our install adds a third GRUB entry and
+points `default` at it; `sda2` (the factory-restore system) and Control4's two
+`menu.lst` entries are never written, and the original file is kept beside it as
+`menu.lst.pre-openhc`. `ohc-flash uninstall` puts those exact bytes back.
 
-Keep a copy of the original file, the install saves `menu.lst.stock` alongside it.
+**Return to stock** is Control4's own factory restore (entry 0, booting
+`restore_fs` on `sda2`), run **exactly once**: a copy of entry 0 that
+`savedefault`s back to the stock entry, plus `default saved`, with the `default`
+file written and read back first. Never `default 0`: `restore.sh` re-images
+`sda3`/`sda4` and reboots without touching `menu.lst`, so that restores forever.
+`menu.lst` is backed up, read back after writing, and refused if either
+`factorydefault` line is missing. The restore takes ~5 minutes and comes back as
+stock Control4 on a new DHCP lease. Proven on a unit 2026-10-02.
 
-The flasher can do that one-digit change for you: `ohc-flash factory-restore
-[HOST]` flips `menu.lst`'s `default` to Control4's own recovery entry (entry 0, on
-`/dev/sda2`) — the software equivalent of holding the ID button. It backs up
-`menu.lst`, read-back-verifies the change, guards the factory-default lines (never
-touches `sda2` or the MBR) and pushes no image. **This is code-complete and
-compiles, but has not yet been run against real HC-800 hardware** — treat it as
-unverified until it has.
+On an openHC built with the `restore` feature, `ohc-restore` does it on the box,
+from the same menu rewrite the flasher uses (`flasher/crates/core`, unit-tested):
+
+| Trigger | How |
+|---|---|
+| `ohc-flash restore <host>` | runs `ohc-restore stock --no-reboot`, reads the verified result, then reboots the box; a box without the tool gets the same rewrite over SSH |
+| Web UI → System → **Reset to stock** | iod's `cmd/system/restore` (`confirm`) → `ohc-restore stock` |
+| Hold the **ID button** 10 s | `S96ohc-restore-button` → `ohc-restore watch-button` |
+| Hold the **ID button** at power-on | Control4's GRUB factory-default button, unchanged |
+
+The ID button is an input device here (`gpio-keys-polled` owns the line and
+reports `KEY_F5`), so the watcher reads the key state rather than the GPIO. Same
+fail-safe as the EA's: it arms only after reading the button released, so one
+stuck or held through boot never starts a restore; the red Wi-Fi LED blinks while
+it counts. Configured in `board.env` (`OHC_RESTORE_BUTTON_INPUT`, `_KEY`, `_HOLD`,
+`_LED`). `ohc-restore status` prints the menu and a `state:` line (`openHC`,
+`stock`, or `restore pending`).
 
 A serial console on `ttyS0` at 115200 sees GRUB itself if that fails.
 

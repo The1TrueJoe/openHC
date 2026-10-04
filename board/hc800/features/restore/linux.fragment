@@ -1,0 +1,7 @@
+# openHC feature: restore (kernel half). The hold-to-restore watcher reads the
+# ID button as an input device (gpio-keys-polled -> /dev/input/event*), and
+# ohc-restore mounts sda1 (ext3, served by the ext4 driver) to edit menu.lst.
+# Asserted here so the feature cannot ship without what it opens.
+CONFIG_INPUT_EVDEV=y
+CONFIG_KEYBOARD_GPIO_POLLED=y
+CONFIG_EXT4_FS=y

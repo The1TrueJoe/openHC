@@ -326,7 +326,7 @@
         }
       },
       "summary": "Return-to-stock availability (retained, iod)",
-      "description": "`{available, openhc, detail}` on boards with the ohc-restore helper (EA family); `available:false` elsewhere."
+      "description": "`{available, openhc, detail}` on boards with the ohc-restore helper (EA family, HC-800); `available:false` elsewhere."
     },
     "systemRestoreStock": {
       "address": "openhc/{box}/cmd/system/restore",

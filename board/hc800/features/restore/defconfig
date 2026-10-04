@@ -1,0 +1,5 @@
+# openHC feature: restore — on-box return to stock for the HC-800. The work is
+# the ohc-restore Rust package (features/restore/packages): it rewrites sda1's
+# menu.lst so the next boot runs Control4's factory restore once, then reboots.
+# It needs only mount/umount/sync/reboot, which busybox already provides, so
+# this half adds no Buildroot package.
