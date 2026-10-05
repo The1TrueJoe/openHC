@@ -76,6 +76,16 @@ BR2_TARGET_ROOTFS_TAR=y
 # The 0001-wpewebkit-do-not-require-wpebackend-fdo buildroot patch (applied by
 # the workflow) removes the Wayland/fdo requirement so this builds on an EGL
 # with no Wayland support, which the SGX545 DDK is.
+# wpewebkit's bundled Skia JPEG codec (Source/ThirdParty/skia/src/codec/
+# SkJpeg*.cpp) is written against libjpeg-turbo: it uses the extended colorspaces
+# JCS_EXT_RGBA/JCS_EXT_BGRA/JCS_RGB565 and the libjpeg-v8 API jpeg_skip_scanlines
+# / jpeg_crop_scanline. Buildroot's `jpeg` virtual defaults to the IJG reference
+# libjpeg, which has none of those, so Skia fails to compile ("JCS_EXT_RGBA was
+# not declared", "jpeg_crop_scanline was not declared", bool->boolean). Force the
+# turbo provider. (The x86_64 `wpe` feature build needs the same, but that is the
+# feature's concern — set here so this standalone tree is self-contained.)
+BR2_PACKAGE_JPEG_TURBO=y
+
 BR2_PACKAGE_SGX545_UM=y
 BR2_PACKAGE_WPEWEBKIT=y
 BR2_PACKAGE_WPEBACKEND_PVR=y
