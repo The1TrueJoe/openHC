@@ -28,6 +28,18 @@
 BR2_i386=y
 BR2_x86_i686=y
 
+# --- force SSE2 + SSE floating-point math on this 32-bit target ---
+# ANGLE (bundled inside wpewebkit) has compile-time asserts that assume IEEE
+# single/double rounding, e.g. in Source/ThirdParty/ANGLE/src/common/mathutil.h:
+#   static_assert(0.49999997f + 0.5f == 1.0f);
+# The default i386 x87 FPU evaluates that in 80-bit excess precision, so the sum
+# is 0.99999997, not 1.0, and the assert FAILS the build. -mfpmath=sse evaluates
+# float/double in the SSE registers (true 32/64-bit IEEE, no excess precision)
+# and -msse2 enables SSE/SSE2 on top of the i686 baseline. This is safe: the
+# sysroot runs under IA32 emulation on the x86_64 EA1, whose CPU always has SSE2.
+# (x86_64 wpewebkit never hits this — 64-bit gcc already defaults to -mfpmath=sse.)
+BR2_TARGET_OPTIMIZATION="-msse2 -mfpmath=sse"
+
 # --- C library: glibc, not the fleet-default musl ---
 # The SGX545 DDK blobs (sgx545-um) are glibc-linked and a musl system cannot
 # load them at all — the same reason board/ea/common/common_defconfig selects

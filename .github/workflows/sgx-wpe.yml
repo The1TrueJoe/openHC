@@ -77,14 +77,19 @@ jobs:
       # our packages are force-rebuilt). Rolling run-id key + restore-keys picks
       # up the newest previous entry; restore/save split so a FAILED build still
       # saves the toolchain (a dep error should not cost another gcc from cold).
+      # EPOCH r4: forces a clean tree after adding -msse2 -mfpmath=sse to the
+      # board's BR2_TARGET_OPTIMIZATION. wpewebkit (ANGLE) caches its CXX flags at
+      # cmake-configure time, so an r3 tree that already configured wpewebkit would
+      # ignore the new flags and fail the same way; a cold r4 tree configures it
+      # with them. Paid once — thereafter r4 restores a correctly-built tree.
       - name: Restore Buildroot output tree
         id: outcache
         uses: actions/cache/restore@v4
         with:
           path: output/build/gpu-wpe-i386
-          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-${{ github.run_id }}
           restore-keys: |
-            out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r3-
+            out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-
 
       - name: Fetch Buildroot + apply openHC's buildroot patches
         run: |
@@ -184,7 +189,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: output/build/gpu-wpe-i386
-          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-${{ github.run_id }}
 
       # A build that fails deep in a package leaves the reason in Buildroot's log,
       # not the step output.
