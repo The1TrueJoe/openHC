@@ -87,6 +87,7 @@ int main(int argc, char **argv)
 		webkit_web_view_new(webkit_web_view_backend_new(backend, NULL, NULL));
 
 	WebKitSettings *settings = webkit_web_view_get_settings(view);
+#if !WEBKIT_CHECK_VERSION(2, 50, 0)
 	/*
 	 * ALWAYS, not ON_DEMAND: on this GPU the whole point is to keep
 	 * compositing off the Atom, and WebKit's heuristics for "does this
@@ -97,11 +98,19 @@ int main(int argc, char **argv)
 	 * hatch, not a supported mode: if a page renders with it and not
 	 * without, the fault is in the EGL path rather than in the page, which
 	 * is worth being able to establish in one run instead of a rebuild.
+	 *
+	 * Gone in WPE WebKit 2.50: webkit_settings_set_hardware_acceleration_policy
+	 * and the WEBKIT_HARDWARE_ACCELERATION_POLICY_* enum were removed (2.50
+	 * always renders through the GPU — exactly what ALWAYS asked for), so on
+	 * 2.50+ the default already does the right thing and there is nothing to
+	 * call. The WEBVIEW_NOACCEL bring-up hatch has no 2.50 equivalent; it
+	 * applies only to the older WebKit this guard still compiles against.
 	 */
 	webkit_settings_set_hardware_acceleration_policy(settings,
 		g_getenv("WEBVIEW_NOACCEL")
 			? WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER
 			: WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+#endif
 	/* An appliance surface has no user to right-click and no keyboard
 	 * shortcut to undo an accidental selection. */
 	webkit_settings_set_enable_developer_extras(settings, FALSE);
