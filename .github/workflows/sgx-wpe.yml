@@ -1,0 +1,200 @@
+# Build the i386 WPE WebKit UI sysroot for the EA display.
+#
+# The GPU/WPE userspace (libwpe, wpewebkit, wpebackend-pvr, webview + the SGX545
+# DDK blobs) is 32-bit: the only SGX545 DDK that exists is Intel's i386 Cedarview
+# 1.7, so sgx545-um `depends on BR2_i386`. The EA image is BR2_x86_64 and
+# Buildroot cannot multilib one tree, so these bits are built HERE in a separate
+# standalone i386 Buildroot tree (board/gpu-wpe-i386) and HARVESTED into a
+# self-contained glibc sysroot tarball. That tarball drops into /opt/sgx-i386 of
+# the x86_64 EA image and runs under IA32 emulation against the in-tree sgx545ce
+# kernel driver (same mechanism as the /opt/sgx-i386 smoke tests in sgx-gpu.yml).
+#
+# Getting the chain to COMPILE is fully verifiable here without hardware; that is
+# the deliverable. The on-screen render test needs the EA display and is separate.
+#
+# Modeled on images.yml (a full native Buildroot build with cached dl/ + output
+# tree), but with its OWN output-tree cache namespace (out-gpu-wpe-i386-*) so it
+# never collides with the per-board ea1-v1 caches that sgx-module.yml/images.yml
+# keep warm. The dl/ download pool is shared read-only (keyed on the ref).
+name: sgx-wpe
+
+on:
+  workflow_dispatch:
+  # workflow_dispatch only registers from the default branch, so until this
+  # lands on main a path-filtered push is how it runs on the feature branch.
+  push:
+    branches: [ea1-gpu-2026]
+    paths:
+      - .github/workflows/sgx-wpe.yml
+      - board/gpu-wpe-i386/**
+      - board/ea/common/packages/sgx545-um/**
+      - board/ea/common/packages/wpebackend-pvr/**
+      - board/ea/common/packages/webview/**
+      - build/buildroot-patches/**
+      - build/build.sh
+
+env:
+  BUILDROOT_REF: 2026.02.3
+
+jobs:
+  i386-wpe-sysroot:
+    runs-on: ubuntu-latest
+    # Buildroot + WebKit from cold is long; the hard ceiling is 6 h and a job
+    # killed at the limit leaves no artifact and no useful log tail.
+    timeout-minutes: 350
+    steps:
+      # board/Config.in sources the sgx545-um/wpebackend-pvr/webview Config.in
+      # (all in-tree, not in the submodule), and this build has no kernel so it
+      # never touches the sgx545ce submodule — but recurse for parity with the
+      # other build workflows and in case external.mk ever reaches it.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Same list as build/Dockerfile / images.yml.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex git rsync unzip wget cpio file figlet \
+            python3 libncurses-dev libssl-dev ca-certificates perl patch xz-utils
+
+      # The upstream tarball pool. Shared read-only with images.yml via the
+      # restore-keys prefix (keyed on the Buildroot ref, not the board), so we
+      # inherit whatever it has already fetched; we save our own additions
+      # (the WebKit dep tree pulls in a lot) under a wpe-namespaced key.
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-${{ env.BUILDROOT_REF }}-wpe-${{ github.run_id }}
+          restore-keys: |
+            dl-${{ env.BUILDROOT_REF }}-
+
+      # The expensive thing is the i386 glibc cross toolchain + the WebKit dep
+      # tree, identical from run to run. SEPARATE namespace from the ea1-v1
+      # caches. build.sh defends an incremental tree (wipes on toolchain change;
+      # our packages are force-rebuilt). Rolling run-id key + restore-keys picks
+      # up the newest previous entry; restore/save split so a FAILED build still
+      # saves the toolchain (a dep error should not cost another gcc from cold).
+      - name: Restore Buildroot output tree
+        id: outcache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/build/gpu-wpe-i386
+          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+          restore-keys: |
+            out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r3-
+
+      - name: Fetch Buildroot + apply openHC's buildroot patches
+        run: |
+          set -e
+          git clone --depth 1 --branch "$BUILDROOT_REF" \
+            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          # Same set images.yml / sgx-module.yml apply — notably
+          # 0001-wpewebkit-do-not-require-wpebackend-fdo, without which wpewebkit
+          # drags in Wayland/fdo and is unbuildable on the SGX545 DDK's EGL.
+          for p in build/buildroot-patches/*.patch; do
+            [ -e "$p" ] || continue
+            echo ">> buildroot patch: ${p##*/}"
+            patch -d "$HOME/buildroot" -p1 --forward --batch < "$p"
+          done
+
+      - name: Build the i386 WPE stack
+        run: |
+          set -e
+          BUILDROOT_DIR="$HOME/buildroot" BOARD=gpu-wpe-i386 bash ./build/build.sh
+
+      # Harvest output/build/gpu-wpe-i386/target — a complete i386 glibc sysroot
+      # (its own ld-linux.so.2 + libc, plus the WPE stack and DDK blobs) — and
+      # fail loudly if any of the deliverable's load-bearing pieces are missing.
+      - name: Harvest + verify the sysroot
+        if: success()
+        id: harvest
+        run: |
+          set -euxo pipefail
+          T=output/build/gpu-wpe-i386/target
+          [ -d "$T" ] || { echo "no target tree at $T — build layout changed?"; exit 1; }
+
+          missing=0
+          need_file() { [ -e "$T/$1" ] || { echo "MISSING: $1"; missing=1; }; }
+          need_glob() {
+            # shellcheck disable=SC2086
+            local hits; hits=$(ls -d $T/$1 2>/dev/null | wc -l)
+            [ "$hits" -gt 0 ] || { echo "MISSING (glob): $1"; missing=1; }
+          }
+          # webview launcher
+          need_file usr/bin/webview
+          # the PowerVR libwpe backend + the default-backend symlink libwpe loads
+          need_file usr/lib/libWPEBackend-pvr.so.1
+          need_file usr/lib/libWPEBackend-default.so.1
+          # WPE WebKit + libwpe
+          need_glob 'usr/lib/libWPEWebKit*.so*'
+          need_glob 'usr/lib/libwpe-1.0.so*'
+          # the DDK EGL/GLES provider (sgx545-um) blobs + the LinuxFB WSEGL alias
+          need_glob 'usr/lib/libEGL.so*'
+          need_glob 'usr/lib/libGLESv2.so*'
+          need_glob 'usr/lib/libIMGegl.so*'
+          need_glob 'usr/lib/libsrv_um.so*'
+          need_file usr/lib/libpvrPVR2D_DRIWSEGL.so
+          # i386 glibc loader — proves this really is a 32-bit sysroot
+          need_glob 'lib/ld-linux.so.2'
+
+          echo "=== ELF class of key objects (expect 32-bit 80386) ==="
+          file "$T/usr/bin/webview" "$T"/usr/lib/libWPEBackend-pvr.so.1 || true
+          file "$T"/usr/lib/libEGL.so* 2>/dev/null | head -2 || true
+          file "$T/usr/bin/webview" | grep -q "ELF 32-bit.*80386" \
+            || { echo "webview is not i386"; missing=1; }
+
+          [ "$missing" = 0 ] || { echo "sysroot is missing deliverable pieces"; exit 1; }
+
+          # Stage under a clear top-level name and archive.
+          rm -rf sgx-i386-wpe
+          cp -a "$T" sgx-i386-wpe
+          tar czf wpe-i386-sysroot.tar.gz sgx-i386-wpe
+          echo "=== tarball ==="
+          ls -l wpe-i386-sysroot.tar.gz
+          echo "=== key contents ==="
+          tar tzf wpe-i386-sysroot.tar.gz \
+            | grep -E 'usr/bin/webview$|libWPEBackend|libWPEWebKit|libwpe-1.0|libEGL|libGLESv2|libIMGegl|libsrv_um|ld-linux' \
+            | sort
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: wpe-i386-sysroot
+          path: wpe-i386-sysroot.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+
+      # Same trim as images.yml: build/linux-* is re-extracted every build (none
+      # here, no kernel) and images/ is pure output. target/ and staging/ MUST
+      # stay — package stamps live there and a restored tree without them never
+      # refills them.
+      - name: Trim the output tree before caching
+        if: always()
+        run: |
+          O=output/build/gpu-wpe-i386
+          [ -d "$O" ] || exit 0
+          rm -rf "$O"/build/linux-* "$O"/images
+          echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
+
+      - name: Save Buildroot output tree
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: output/build/gpu-wpe-i386
+          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+
+      # A build that fails deep in a package leaves the reason in Buildroot's log,
+      # not the step output.
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-gpu-wpe-i386
+          path: |
+            output/build/gpu-wpe-i386/build/*/config.log
+            output/build/gpu-wpe-i386/*.log
+          retention-days: 7
+          if-no-files-found: ignore

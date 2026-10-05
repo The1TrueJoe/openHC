@@ -26,7 +26,28 @@ SGX545_UM_LICENSE = Intel/Imagination binary redistribution
 SGX545_UM_LICENSE_FILES = usr/share/doc/powervr/license.txt
 SGX545_UM_REDISTRIBUTE = NO
 
-SGX545_UM_DEPENDENCIES = libdrm sgx545-ce
+# libdrm is a genuine link/runtime dependency of the DDK blobs.
+#
+# sgx545-ce (the SGX545 KERNEL driver) is only a BUILD-ORDER / version-pin
+# dependency — its comment up top ("Keep this and sgx545-ce on the same DDK")
+# is the whole of it; the i386 userspace needs none of its *output*, only the
+# DDK blobs+headers that THIS package installs itself. So gate it on the CE
+# package actually being part of the tree:
+#
+#   * the real EA image (BR2_x86_64, a kernel, the `sgx`+`wpe` features) selects
+#     the CE driver, so the pin is kept and the two stay on one DDK;
+#   * the standalone i386 sysroot build (board/gpu-wpe-i386 — no kernel, so
+#     BR2_PACKAGE_SGX545_CE can never be y) drops it and builds userspace-only.
+#
+# Gating on the symbol rather than on BR2_LINUX_KERNEL keeps this correct even
+# though sgx545-ce is currently an in-tree kernel driver (CONFIG_SGX545_CE) and
+# not a selected Buildroot package: an unset symbol simply means "no CE package
+# to order against", which is exactly the userspace-only case. Done here, in the
+# .mk, NOT in the sgx545ce submodule.
+SGX545_UM_DEPENDENCIES = libdrm
+ifeq ($(BR2_PACKAGE_SGX545_CE),y)
+SGX545_UM_DEPENDENCIES += sgx545-ce
+endif
 SGX545_UM_INSTALL_STAGING = YES
 
 # Tell Buildroot this package is the EGL/GLES provider, so anything that wants

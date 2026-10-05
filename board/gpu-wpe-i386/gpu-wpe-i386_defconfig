@@ -1,0 +1,70 @@
+# openHC — standalone i386 Buildroot tree that BUILDS the WPE WebKit UI stack.
+#
+# NOT a bootable board. It exists only to COMPILE the 32-bit GPU/WPE userspace
+# (libwpe, wpewebkit, wpebackend-pvr, webview + the SGX545 DDK blobs) and have
+# it HARVESTED from output/build/gpu-wpe-i386/target into a sysroot tarball that
+# is dropped into /opt/sgx-i386 of the x86_64 EA image and run under IA32
+# emulation. See .github/workflows/sgx-wpe.yml and board/ea/common/features/wpe.
+#
+# WHY A SEPARATE TREE: the only SGX545 DDK that exists is Intel's 32-bit
+# Cedarview 1.7, so sgx545-um `depends on BR2_i386`. The EA image is BR2_x86_64,
+# and Buildroot cannot multilib one tree, so these bits cannot be built in the
+# image's own tree. This board is that second tree.
+#
+# WHY STANDALONE (board/gpu-wpe-i386, NOT board/ea/...): build/build.sh routes
+# BOARD=ea* through the x86_64 family base board/ea/common/common_defconfig
+# (BR2_x86_64). Any OTHER board name gets COMMON_CFG="" and builds from the
+# fleet base board/common/common_defconfig + this file alone. The name
+# deliberately avoids the ea* prefix so we do NOT inherit the 64-bit family base.
+#
+# The fleet base (board/common/common_defconfig) is always prepended and sets
+# musl + a 7.1.8 kernel + "headers as kernel". kconfig takes the LAST assignment,
+# so everything below overrides it: i386, glibc, no kernel, bundled headers.
+
+# --- arch: i386 / i686 ---
+# BR2_i386 picks the 32-bit x86 architecture; BR2_x86_i686 is the CPU variant
+# (the conservative generic 686 ISA, which the EA1's Atom/Bonnell runs fine
+# under IA32 emulation). The DDK blobs are generic i386/i686 ELF.
+BR2_i386=y
+BR2_x86_i686=y
+
+# --- C library: glibc, not the fleet-default musl ---
+# The SGX545 DDK blobs (sgx545-um) are glibc-linked and a musl system cannot
+# load them at all — the same reason board/ea/common/common_defconfig selects
+# glibc. Selecting glibc in the C-library choice deselects musl (last wins).
+# BR2_TOOLCHAIN_BUILDROOT_MUSL is not set
+BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
+
+# C++, libstdc++ and wide characters for WPE WebKit (ICU, harfbuzz, libsoup3).
+# Without these wpewebkit is unselectable and kconfig drops it in SILENCE.
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_INSTALL_LIBSTDCPP=y
+BR2_USE_WCHAR=y
+
+# --- no kernel, no bootloader ---
+# We harvest /usr only; there is no hardware to boot here. Turning the kernel
+# off means the toolchain can no longer take its headers "as kernel", so pin a
+# bundled headers series instead. 6.19 is Buildroot 2026.02.3's newest bundled
+# choice and matches the series the fleet toolchain expects elsewhere; a bundled
+# version does NOT require BR2_LINUX_KERNEL (only "as kernel" does).
+# BR2_LINUX_KERNEL is not set
+BR2_KERNEL_HEADERS_6_19=y
+
+# --- rootfs: a tar is enough ---
+# The deliverable is output/build/gpu-wpe-i386/target/usr, harvested by the
+# workflow; we only need target/ populated, not a bootable image. A plain tar
+# avoids pulling in any image-assembly machinery.
+BR2_TARGET_ROOTFS_TAR=y
+
+# --- the WPE WebKit UI stack (same set as board/ea/common/features/wpe) ---
+# libwpe is pulled in automatically (wpebackend-pvr and the 0001 buildroot patch
+# both select/depend on it). wpewebkit's own long dependency chain — icu,
+# harfbuzz, freetype, fontconfig, libsoup3, libepoxy, libgcrypt, webp, jpeg,
+# libpng, libtasn1, libxslt, glib ... — is pulled in by its Config.in selects.
+# The 0001-wpewebkit-do-not-require-wpebackend-fdo buildroot patch (applied by
+# the workflow) removes the Wayland/fdo requirement so this builds on an EGL
+# with no Wayland support, which the SGX545 DDK is.
+BR2_PACKAGE_SGX545_UM=y
+BR2_PACKAGE_WPEWEBKIT=y
+BR2_PACKAGE_WPEBACKEND_PVR=y
+BR2_PACKAGE_WEBVIEW=y
