@@ -35,9 +35,14 @@ for pat in 'ld-linux*.so*' 'ld-musl*.so*' 'ld-*.so*' \
         [ -e "$f" ] && cp -aL "$f" "$WORK/lib/" 2>/dev/null || true
     done
 done
-# dropbear's extra shared deps (on top of the libc set above): zlib, and libutil
-# for its pty handling. Harmless if a given build does not need one.
-for pat in 'libz.so*' 'libutil.so*' 'libnss_files.so*' 'libnss_compat.so*'; do
+# dropbear's extra shared deps (on top of the libc set above). libcrypt is the
+# one that bites: dropbear links crypt() for shadow auth, and Buildroot's
+# libxcrypt installs libcrypt.so.2 under /usr/lib — which the /lib-only glob
+# above misses, so dropbear would fail to load and the RAM installer would come
+# up with NO ssh (strandable only over serial). Confirmed on an EA3: dropbear
+# NEEDED libcrypt.so.2, absent, boot-init never reachable. zlib + libutil are
+# dropbear's other common deps; harmless when unused.
+for pat in 'libcrypt.so*' 'libz.so*' 'libutil.so*' 'libnss_files.so*' 'libnss_compat.so*'; do
     for f in "$TARGET/lib/"$pat "$TARGET/usr/lib/"$pat; do
         [ -e "$f" ] && cp -aL "$f" "$WORK/lib/" 2>/dev/null || true
     done
