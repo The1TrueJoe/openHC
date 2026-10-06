@@ -115,6 +115,23 @@ int main(int argc, char **argv)
 	 * shortcut to undo an accidental selection. */
 	webkit_settings_set_enable_developer_extras(settings, FALSE);
 
+	/*
+	 * Force an OPAQUE base colour. A WPE WebKitWebView defaults to a
+	 * transparent background; WebKit's AcceleratedSurface then treats the
+	 * surface as non-opaque, asks the compositor for an alpha EGL config and
+	 * clears every frame to (0,0,0,0). On this board there is nothing behind
+	 * the view -- it draws straight to /dev/fb0 through the LinuxFB WSEGL,
+	 * which has no alpha-capable window config -- so a non-opaque surface
+	 * never lands on the panel (the WebProcess renders, "swaps", and fb0 stays
+	 * black). An appliance surface is fully opaque anyway; assert it so the
+	 * framebuffer window surface is the real, presentable one.
+	 */
+	{
+		WebKitColor opaque;
+		if (webkit_color_parse(&opaque, "#000000"))
+			webkit_web_view_set_background_color(view, &opaque);
+	}
+
 	g_signal_connect(view, "load-failed", G_CALLBACK(on_load_failed), NULL);
 	webkit_web_view_load_uri(view, url);
 
