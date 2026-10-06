@@ -4,7 +4,11 @@
 //! so these are plain environment variables — no board.env parser here:
 //!
 //!   OHC_AUDIO_OUTPUTS="analog1 analog2 coax hdmi"
-//!   OHC_AUDIO_OUT_analog1="hw:CARD=Intel,DEV=0|Analog 1"     device|label
+//!   OHC_AUDIO_OUT_analog1="hw:CARD=Intel,DEV=0|Analog 1"     device|label[|swap]
+//!
+//! `swap` exchanges left and right on that port, for a jack the board wires
+//! the other way round from the codec channel feeding it (the HC-800's Analog 2,
+//! driven from the ALC888's headphone pin, measured end to end).
 //!   OHC_AUDIO_INPUTS="linein"
 //!   OHC_AUDIO_IN_linein="hw:CARD=Intel,DEV=0|Line in"
 //!   OHC_AUDIO_RATE=44100
@@ -23,6 +27,9 @@ pub struct Port {
     pub device: String,
     /// The shared PCM endpoints play into (dmix for outputs, dsnoop for inputs).
     pub pcm: String,
+    /// Left and right exchanged between the PCM and the jack.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub swap: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -42,12 +49,16 @@ fn ports(list_var: &str, item_prefix: &str, pcm_prefix: &str) -> Vec<Port> {
         .split_whitespace()
         .filter_map(|id| {
             let raw = env(&format!("{item_prefix}{id}"));
-            let (device, label) = raw.split_once('|').unwrap_or((raw.as_str(), id));
+            let mut f = raw.split('|');
+            let device = f.next().unwrap_or("");
+            let label = f.next().filter(|l| !l.is_empty()).unwrap_or(id);
+            let swap = f.any(|o| o.trim() == "swap");
             (!device.is_empty()).then(|| Port {
                 id: id.to_string(),
                 label: label.to_string(),
                 device: device.to_string(),
                 pcm: format!("{pcm_prefix}{id}"),
+                swap,
             })
         })
         .collect()

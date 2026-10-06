@@ -35,11 +35,28 @@ pub fn asound_conf(b: &Board) -> String {
         for p in ports {
             key += 1;
             s += &format!(
-                "\n# {label}\npcm.{pcm}_{kind} {{\n    type {kind}\n    ipc_key {key}\n    ipc_perm 0666\n    slave {{\n        pcm \"{dev}\"\n        rate {rate}\n        format S16_LE\n        channels 2\n        period_size 1024\n        buffer_size 8192\n    }}\n}}\npcm.{pcm} {{\n    type plug\n    slave.pcm \"{pcm}_{kind}\"\n    hint.description \"{label}\"\n}}\n",
+                "\n# {label}\npcm.{pcm}_{kind} {{\n    type {kind}\n    ipc_key {key}\n    ipc_perm 0666\n    slave {{\n        pcm \"{dev}\"\n        rate {rate}\n        format S16_LE\n        channels 2\n        period_size 1024\n        buffer_size 8192\n    }}\n}}\n",
                 label = p.label.replace('"', "'"),
                 pcm = p.pcm,
                 dev = p.device,
                 rate = b.rate,
+            );
+            // A swapped port gets a route plugin between plug and the shared
+            // dmix/dsnoop, so everything that plays to it (or records from it)
+            // is corrected, whoever opened it.
+            let shared = if p.swap {
+                s += &format!(
+                    "pcm.{pcm}_swap {{\n    type route\n    slave {{\n        pcm \"{pcm}_{kind}\"\n        channels 2\n    }}\n    ttable.0.1 1\n    ttable.1.0 1\n}}\n",
+                    pcm = p.pcm
+                );
+                format!("{}_swap", p.pcm)
+            } else {
+                format!("{}_{kind}", p.pcm)
+            };
+            s += &format!(
+                "pcm.{pcm} {{\n    type plug\n    slave.pcm \"{shared}\"\n    hint.description \"{label}\"\n}}\n",
+                pcm = p.pcm,
+                label = p.label.replace('"', "'"),
             );
         }
     }
@@ -189,7 +206,7 @@ mod tests {
     }
     #[test]
     fn asound_has_a_dmix_per_output_and_dsnoop_per_input() {
-        let p = |id: &str, pcm: &str, d: &str| Port { id: id.into(), label: id.into(), device: d.into(), pcm: pcm.into() };
+        let p = |id: &str, pcm: &str, d: &str| Port { id: id.into(), label: id.into(), device: d.into(), pcm: pcm.into(), swap: false };
         let b = Board {
             outputs: vec![p("analog1", "ohc_analog1", "hw:CARD=Intel,DEV=0"), p("hdmi", "ohc_hdmi", "hw:CARD=Intel,DEV=3")],
             inputs: vec![p("linein", "ohc_in_linein", "hw:CARD=Intel,DEV=0")],
@@ -202,5 +219,17 @@ mod tests {
         assert!(a.contains("pcm \"hw:CARD=Intel,DEV=3\""));
         assert!(a.contains("pcm.!default \"ohc_analog1\""));
         assert_eq!(a.matches("ipc_key").count(), 3);
+    }
+    #[test]
+    fn a_swapped_port_routes_through_a_channel_swap() {
+        let b = Board {
+            outputs: vec![Port { id: "analog2".into(), label: "Analog 2".into(), device: "hw:CARD=Intel,DEV=2".into(), pcm: "ohc_analog2".into(), swap: true }],
+            inputs: vec![], rate: 44100, helpers: vec![],
+        };
+        let a = asound_conf(&b);
+        assert!(a.contains("pcm.ohc_analog2_swap {\n    type route"), "{a}");
+        assert!(a.contains("ttable.0.1 1") && a.contains("ttable.1.0 1"));
+        assert!(a.contains("pcm.ohc_analog2 {\n    type plug\n    slave.pcm \"ohc_analog2_swap\""));
+        assert!(a.contains("pcm \"ohc_analog2_dmix\""));
     }
 }
