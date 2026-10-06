@@ -308,7 +308,7 @@ static void vb_initialize(void *data)
 		 * assert the active state itself. Without it webview starts cleanly,
 		 * the WebProcess initialises EGL, and not one frame reaches /dev/fb0.
 		 */
-		wpe_view_backend_dispatch_set_activity_state(v->wpe,
+		wpe_view_backend_add_activity_state(v->wpe,
 			wpe_view_activity_state_visible |
 			wpe_view_activity_state_in_window |
 			wpe_view_activity_state_focused);
