@@ -447,6 +447,8 @@ async fn mqtt(app: Arc<App>) {
 
 /// ksmbd.mountd, in the foreground, restarted if it exits.
 async fn mountd() {
+    // ksmbd may be a module (the EA kernels build it as one); built in, this is a no-op.
+    let _ = Command::new("modprobe").arg("ksmbd").status().await;
     loop {
         let r = Command::new("ksmbd.mountd")
             .args(["-n", "-C", &smb::conf().display().to_string(), "-P", &smb::pwddb().display().to_string()])

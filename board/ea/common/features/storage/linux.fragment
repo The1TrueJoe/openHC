@@ -1,0 +1,21 @@
+# openHC feature: storage, EA kernel half — the shared fragment
+# (board/common/features/storage) as modules instead of built in.
+#
+# CEFDK's bootlinux window caps an EA bzImage at 7,417,856 bytes (see
+# board/ea/common/post-image.sh), and the storage stack built in put ea1-v2 at
+# 8.3 MB. As modules it costs the kernel image nothing: eudev loads the USB
+# disk drivers from the device's modalias, mount(2) loads a filesystem by its
+# fs-<type> alias, and ohc-storaged modprobes ksmbd before starting
+# ksmbd.mountd. ext4 stays built in — the 'emmc' feature boots from it.
+CONFIG_SCSI=m
+CONFIG_BLK_DEV_SD=m
+CONFIG_USB_STORAGE=m
+CONFIG_USB_UAS=m
+CONFIG_VFAT_FS=m
+CONFIG_EXFAT_FS=m
+CONFIG_NTFS3_FS=m
+CONFIG_HFSPLUS_FS=m
+CONFIG_NLS_CODEPAGE_437=m
+CONFIG_NLS_ISO8859_1=m
+CONFIG_NLS_UTF8=m
+CONFIG_SMB_SERVER=m
