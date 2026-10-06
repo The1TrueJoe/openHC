@@ -16,6 +16,8 @@ rumqttc = { version = "0.25", default-features = false }
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 ohcmqtt = { path = "../ohcmqtt" }
+roxmltree = "0.21.1"
+uuid = { version = "1.27.0", features = ["v4", "v5"] }
 
 [[bin]]
 name = "ohc-storaged"

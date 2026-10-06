@@ -16,12 +16,17 @@
 //!   web UI's file browser, `/api/files…` — list, download, upload (streamed),
 //!   new folder, rename, delete, confined to the mounted volumes (files.rs).
 //!
+//! Discovery: macOS finds the box over mDNS (`_smb._tcp`, smb.rs), Windows
+//! over WS-Discovery (wsd.rs: UDP 3702 + HTTP 5357), so it is under Network in
+//! Finder and in File Explorer alike.
+//!
 //! Drives are noticed by a udev rule poking this daemon (SIGUSR1) and, as a
 //! backstop, a scan every few seconds of /sys/block (see drives.rs for what
 //! counts as external — never a board's internal disk).
 mod drives;
 mod files;
 mod smb;
+mod wsd;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use drives::{Found, Volume};
@@ -501,6 +506,42 @@ fn main() {
         tokio::spawn(mqtt(app.clone()));
         let mountd_task = tokio::spawn(mountd());
 
+        // Windows discovery (WS-Discovery): answer on UDP 3702 while sharing
+        // is on, and serve the metadata Get on HTTP 5357.
+        let wsd_host = Arc::new(wsd::Host::new(&app.host, "WORKGROUP"));
+        {
+            let a = app.clone();
+            tokio::spawn(wsd::run(wsd_host.clone(), move || a.settings.lock().unwrap().enabled));
+        }
+        {
+            let a = app.clone();
+            tokio::spawn(wsd::llmnr(app.host.clone(), move || a.settings.lock().unwrap().enabled));
+        }
+        {
+            let h = wsd_host.clone();
+            let path = format!("/{}", h.uuid);
+            let meta = axum::Router::new().route(
+                &path,
+                axum::routing::post(move |body: String| {
+                    let h = h.clone();
+                    async move {
+                        match h.metadata(&body) {
+                            Some(xml) => ([(axum::http::header::CONTENT_TYPE, "application/soap+xml")], xml).into_response(),
+                            None => StatusCode::BAD_REQUEST.into_response(),
+                        }
+                    }
+                }),
+            );
+            match tokio::net::TcpListener::bind(("0.0.0.0", wsd::HTTP_PORT)).await {
+                Ok(l) => {
+                    tokio::spawn(async move {
+                        let _ = axum::serve(l, meta).await;
+                    });
+                }
+                Err(e) => eprintln!("storaged: wsd: cannot bind tcp/{}: {e}", wsd::HTTP_PORT),
+            }
+        }
+
         // Drive scanning: on a udev poke (SIGUSR1), a rescan command, or every
         // few seconds as a backstop. Blocking work (mount, udevadm) runs off
         // the async thread.
@@ -554,6 +595,7 @@ fn main() {
         // Leave nothing half-written on a drive someone pulls after a stop.
         mountd_task.abort();
         smb::withdraw();
+        wsd::bye(&wsd_host);
         let _ = std::process::Command::new("sync").status();
         let names: Vec<String> = app.mounted.lock().unwrap().values().map(|m| m.name.clone()).collect();
         for n in names {
