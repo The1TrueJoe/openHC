@@ -49,12 +49,26 @@ start() {
     echo "ea-switch: $MOD loaded (not bound yet; S40net falls back if needed)"
 }
 
+# Build the configured switch topology (default: both DSA ports bridged into
+# br-lan, STP on) now that the driver has bound and lan1/lan2 exist — BEFORE
+# S40net (S40) leases, so the bridge is the interface that gets the address.
+# switchd apply is idempotent, best-effort, and writes the L3 handoff
+# (/run/ohc/net.conf) that S40net reads. A no-op where switchd is not shipped
+# (boards without the `switch` feature) or OHC_DSA_PORTS is empty.
+apply_topology() {
+    [ -x /opt/ohc/bin/switchd ] || return 0
+    [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+    export OHC_DSA_PORTS
+    [ -n "$OHC_DSA_PORTS" ] || return 0
+    /opt/ohc/bin/switchd apply
+}
+
 stop() {
     modprobe -r "$MOD" >/dev/null 2>&1 || true
 }
 
 case "$1" in
-    start) start ;;
+    start) start; apply_topology ;;
     stop) stop ;;
     restart) stop; start ;;
     *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;

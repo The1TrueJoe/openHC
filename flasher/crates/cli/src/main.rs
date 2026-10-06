@@ -580,10 +580,19 @@ fn install(rest: &[String]) -> bool {
     let yes = rest.iter().any(|a| a == "--yes");
     let Some((host, ssh)) = connect(rest) else { return false };
     let forced = rest.windows(2).find(|w| w[0] == "--board").map(|w| w[1].clone());
-    let id = tp::identify(&ssh);
+    let mut id = tp::identify(&ssh);
     let board = if let Some(name) = forced {
         match board::by_name(&name) {
-            Some(b) => { println!("  target: {} ({}) [forced]", b.name, b.desc); b }
+            Some(b) => {
+                println!("  target: {} ({}) [forced]", b.name, b.desc);
+                // A forced board is also the identity the method selection uses.
+                // EA3 v1/v2 are indistinguishable over SSH, so identify() leaves
+                // id.board None; without this, method::choose rejects every
+                // method as "board not identified" even though the operator just
+                // named one — which is exactly the install that cannot proceed.
+                id.board = Some(b);
+                b
+            }
             None => { eprintln!("  unknown board '{name}'"); return false; }
         }
     } else {

@@ -828,6 +828,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchd"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "ohcmqtt",
+ "rumqttc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "utoipa",
+ "utoipa-axum",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

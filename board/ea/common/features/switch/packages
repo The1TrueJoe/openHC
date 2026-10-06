@@ -1,0 +1,4 @@
+# The managed-switch daemon ships only where the BCM53125 does (the `switch`
+# feature: ea3-v1, ea3-v2, ea1-v2-poe). One "<crate> <binary>" per line; the
+# binary defaults to the crate name. See packages/build.sh.
+switchd

@@ -124,14 +124,14 @@ jobs:
       - name: cargo test
         if: matrix.board == 'hc800'
         working-directory: packages
-        run: cargo test -p iod
+        run: cargo test -p iod -p switchd
 
       # portal too — it is in the artifact, and `cargo check` would not have
       # produced a binary for it. The portal binary now lives in the `wifi`
       # crate (merged with the shared Wi-Fi lib), so build that crate to get it.
-      - name: Build iod + portal + ohc-zigbee + sysmond + ohc-audiod + ohc-restore for ${{ matrix.board }}
+      - name: Build iod + portal + ohc-zigbee + sysmond + ohc-audiod + switchd + ohc-restore for ${{ matrix.board }}
         working-directory: packages
-        run: cargo build --release -p iod -p wifi -p zigbee -p sysmond -p audiod -p restore --target ${{ matrix.target }}
+        run: cargo build --release -p iod -p wifi -p zigbee -p sysmond -p audiod -p switchd -p restore --target ${{ matrix.target }}
 
       - uses: actions/setup-node@v4
         with:
@@ -188,6 +188,7 @@ jobs:
             packages/target/${{ matrix.target }}/release/ohc-zigbee
             packages/target/${{ matrix.target }}/release/sysmond
             packages/target/${{ matrix.target }}/release/ohc-audiod
+            packages/target/${{ matrix.target }}/release/switchd
             packages/target/${{ matrix.target }}/release/ohc-restore
           retention-days: 14
           if-no-files-found: error
