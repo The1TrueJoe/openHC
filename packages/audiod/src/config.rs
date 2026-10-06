@@ -13,7 +13,8 @@ use std::path::PathBuf;
 pub struct Endpoint {
     /// The name a phone shows (Spotify app / AirPlay picker).
     pub name: String,
-    /// Output id from the board (`analog1`, `hdmi`, …).
+    /// Output id from the board (`analog1`, `hdmi`, …), or empty for an
+    /// endpoint that is not connected (kept, but nothing runs).
     pub output: String,
 }
 
@@ -116,7 +117,9 @@ impl Endpoints {
                 if !name_ok(&e.name) {
                     return Err(format!("{kind}: '{}' must be 1-64 printable characters", e.name));
                 }
-                if b.output(&e.output).is_none() {
+                // An empty output is an endpoint that is not connected: it
+                // stays in the map (and the web UI's switcher) but nothing runs.
+                if !e.output.is_empty() && b.output(&e.output).is_none() {
                     return Err(format!("{kind} '{}': no output '{}'", e.name, e.output));
                 }
             }
@@ -162,6 +165,9 @@ mod tests {
         let mut bad = ok.clone();
         bad.spotify[0].output = "coax".into();
         assert!(bad.validate(&b).is_err());
+        let mut unplugged = ok.clone();
+        unplugged.spotify[0].output = String::new();
+        assert!(unplugged.validate(&b).is_ok());
         let mut bad = ok.clone();
         bad.spotify[0].name = "  ".into();
         assert!(bad.validate(&b).is_err());

@@ -140,6 +140,8 @@ pub fn shairport_conf(name: &str, out: &Port, n: usize) -> String {
 /// One supervised instance.
 pub struct Instance {
     pub tag: String,
+    /// Spec::key — equal keys are the same instance.
+    key: String,
     pub kind: &'static str,
     pub name: Option<String>,
     pub input: Option<String>,
@@ -195,26 +197,41 @@ pub fn write_asound(b: &Board) {
     }
 }
 
-/// Start everything the map names (asound.conf written and the level controls
-/// created first — see App::restart). The returned instances run until dropped.
-pub fn start(b: &Board, e: &Endpoints, up: &Up) -> Vec<Instance> {
-    up.lock().unwrap().clear();
-    let _ = std::fs::create_dir_all(RUN_DIR);
-    // Nothing plays until an endpoint says so.
-    crate::meta::clear_all();
+/// What one instance runs: the program, its arguments and the files it reads.
+/// Two equal specs are the same instance, so a map change keeps it running.
+struct Spec {
+    tag: String,
+    kind: &'static str,
+    name: Option<String>,
+    input: Option<String>,
+    output: Option<String>,
+    program: String,
+    args: Vec<String>,
+    /// (path, contents, executable)
+    files: Vec<(String, String, bool)>,
+}
+
+impl Spec {
+    fn key(&self) -> String {
+        let mut k = format!("{}\0{}", self.program, self.args.join("\0"));
+        for (p, c, x) in &self.files {
+            k += &format!("\0{p}\0{c}\0{x}");
+        }
+        k
+    }
+}
+
+/// Every instance the map asks for.
+fn plan(b: &Board, e: &Endpoints) -> Vec<Spec> {
     let mut v = Vec::new();
     let have = |p: &str| std::path::Path::new(p).exists();
 
     if have(LIBRESPOT) {
         for (n, ep) in e.spotify.iter().enumerate() {
-            let Some(out) = b.output(&ep.output) else { continue };
+            let Some(out) = b.output(&ep.output) else { continue }; // not connected
             let tag = format!("spotify-{n}");
             let hook = format!("{RUN_DIR}/{tag}-event");
-            let hooked = std::fs::write(&hook, librespot_hook(&tag)).is_ok() && {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).is_ok()
-            };
-            let mut args: Vec<String> = vec![
+            let args: Vec<String> = vec![
                 "--name".into(), ep.name.clone(),
                 "--backend".into(), "alsa".into(),
                 "--device".into(), out.pcm.clone(),
@@ -226,55 +243,93 @@ pub fn start(b: &Board, e: &Endpoints, up: &Up) -> Vec<Instance> {
                 "--mixer".into(), "alsa".into(),
                 "--alsa-mixer-device".into(), format!("hw:{}", out.card()),
                 "--alsa-mixer-control".into(), out.pcm.clone(),
+                "--onevent".into(), hook.clone(),
             ];
-            if hooked {
-                args.extend(["--onevent".into(), hook]);
-            }
-            v.push(Instance { task: supervise(tag.clone(), LIBRESPOT.into(), args, up.clone()), tag,
-                kind: "spotify", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()) });
+            v.push(Spec { files: vec![(hook, librespot_hook(&tag), true)], tag, kind: "spotify", name: Some(ep.name.clone()),
+                input: None, output: Some(ep.output.clone()), program: LIBRESPOT.into(), args });
         }
     }
     if have(SHAIRPORT) {
         for (n, ep) in e.airplay.iter().enumerate() {
             let Some(out) = b.output(&ep.output) else { continue };
-            let tag = format!("airplay-{n}");
             let cfg = format!("{RUN_DIR}/shairport-{n}.conf");
-            if let Err(err) = std::fs::write(&cfg, shairport_conf(&ep.name, out, n)) {
-                eprintln!("{tag}: cannot write {cfg}: {err}");
-                continue;
-            }
-            v.push(Instance { task: supervise(tag.clone(), SHAIRPORT.into(), vec!["-c".into(), cfg], up.clone()), tag,
-                kind: "airplay", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()) });
+            v.push(Spec { files: vec![(cfg.clone(), shairport_conf(&ep.name, out, n), false)], tag: format!("airplay-{n}"),
+                kind: "airplay", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()),
+                program: SHAIRPORT.into(), args: vec!["-c".into(), cfg] });
         }
     }
     if have(crate::library::MPD) {
         if let Some((ep, out)) = e.library.first().and_then(|ep| b.output(&ep.output).map(|o| (ep, o))) {
-            let tag = crate::library::TAG.to_string();
             let cfg = format!("{RUN_DIR}/mpd.conf");
-            match std::fs::write(&cfg, crate::library::mpd_conf(out)) {
-                Ok(()) => v.push(Instance {
-                    task: supervise(tag.clone(), crate::library::MPD.into(), vec!["--no-daemon".into(), "--stderr".into(), cfg], up.clone()),
-                    tag, kind: "library", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()),
-                }),
-                Err(err) => eprintln!("library: cannot write {cfg}: {err}"),
-            }
+            v.push(Spec { files: vec![(cfg.clone(), crate::library::mpd_conf(out), false)], tag: crate::library::TAG.into(),
+                kind: "library", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()),
+                program: crate::library::MPD.into(), args: vec!["--no-daemon".into(), "--stderr".into(), cfg] });
         }
     }
     for (n, r) in e.routes.iter().enumerate() {
         let (Some(i), Some(o)) = (b.input(&r.input), b.output(&r.output)) else { continue };
-        let tag = format!("route-{n}");
         let args = vec![
             "-C".into(), i.pcm.clone(), "-P".into(), o.pcm.clone(),
             "-r".into(), b.rate.to_string(), "-c".into(), "2".into(), "-f".into(), "S16_LE".into(),
             "-t".into(), "50000".into(),
         ];
-        v.push(Instance { task: supervise(tag.clone(), "alsaloop".into(), args, up.clone()), tag,
-            kind: "route", name: None, input: Some(r.input.clone()), output: Some(r.output.clone()) });
+        v.push(Spec { files: vec![], tag: format!("route-{n}"), kind: "route", name: None,
+            input: Some(r.input.clone()), output: Some(r.output.clone()), program: "alsaloop".into(), args });
     }
     for (n, h) in b.helpers.iter().enumerate().filter(|(_, h)| have(h)) {
-        let tag = format!("helper-{n}");
-        v.push(Instance { task: supervise(tag.clone(), h.clone(), vec![], up.clone()), tag,
-            kind: "helper", name: Some(h.clone()), input: None, output: None });
+        v.push(Spec { files: vec![], tag: format!("helper-{n}"), kind: "helper", name: Some(h.clone()),
+            input: None, output: None, program: h.clone(), args: vec![] });
+    }
+    v
+}
+
+/// Bring the running instances in line with the map: an instance whose spec
+/// is unchanged keeps running (a change to one endpoint does not interrupt
+/// what is playing on the others); the rest of `old` stops (dropped) and what
+/// is new starts. The returned instances run until dropped.
+pub fn start(b: &Board, e: &Endpoints, up: &Up, old: Vec<Instance>) -> Vec<Instance> {
+    let _ = std::fs::create_dir_all(RUN_DIR);
+    let mut old: HashMap<String, Instance> = old.into_iter().map(|i| (i.tag.clone(), i)).collect();
+    let mut v = Vec::new();
+    for spec in plan(b, e) {
+        let key = spec.key();
+        if let Some(i) = old.remove(&spec.tag).filter(|i| i.key == key) {
+            v.push(i);
+            continue;
+        }
+        let mut ok = true;
+        for (path, contents, exec) in &spec.files {
+            let r = std::fs::write(path, contents).and_then(|_| {
+                use std::os::unix::fs::PermissionsExt;
+                if *exec { std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)) } else { Ok(()) }
+            });
+            if let Err(err) = r {
+                eprintln!("{}: cannot write {path}: {err}", spec.tag);
+                ok = false;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        // A restarted endpoint starts with nothing playing.
+        crate::meta::store(&spec.tag, None);
+        v.push(Instance {
+            task: supervise(spec.tag.clone(), spec.program, spec.args, up.clone()),
+            key,
+            tag: spec.tag,
+            kind: spec.kind,
+            name: spec.name,
+            input: spec.input,
+            output: spec.output,
+        });
+    }
+    // Whatever is left in `old` is no longer wanted: dropping it stops it.
+    let gone: Vec<String> = old.keys().cloned().collect();
+    drop(old);
+    let mut u = up.lock().unwrap();
+    for t in gone {
+        u.remove(&t);
+        crate::meta::store(&t, None);
     }
     v
 }

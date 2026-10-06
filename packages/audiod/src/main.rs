@@ -80,7 +80,7 @@ impl App {
     fn restart(self: &Arc<Self>) {
         let e = self.endpoints.lock().unwrap().clone();
         let mut inst = self.instances.lock().unwrap();
-        inst.clear(); // drops = stops
+        let old = std::mem::take(&mut *inst);
         if self.board.has_map() {
             runner::write_asound(&self.board);
             levels::prepare(&self.board, &self.levels.lock().unwrap());
@@ -90,7 +90,7 @@ impl App {
                     tone::apply(p, &tones.get(&p.id).copied().unwrap_or_default());
                 }
             }
-            *inst = runner::start(&self.board, &e, &self.up);
+            *inst = runner::start(&self.board, &e, &self.up, old);
             // One metadata reader per AirPlay endpoint, for the life of the
             // daemon (its FIFO outlives a shairport-sync restart).
             for i in inst.iter().filter(|i| i.kind == "airplay") {
@@ -506,6 +506,8 @@ fn main() {
     });
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio");
+    // Now-playing from a previous run is stale: nothing plays yet.
+    meta::clear_all();
     rt.block_on(async move {
         // Bind before starting anything: a second copy (a restart racing the
         // old one's exit) must fail here, before it has spawned endpoints that
