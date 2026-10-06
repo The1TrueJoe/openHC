@@ -11,7 +11,9 @@
 //!   AirPlay/Spotify endpoints' volume sliders set) and `audio/announcing/<id>`;
 //!   commands `cmd/audio/level/<id>` and `cmd/audio/announce/<id|all>` (see
 //!   levels.rs and announce.rs); every Spotify/AirPlay endpoint's now-playing
-//!   on `audio/meta/<tag>` (meta.rs).
+//!   on `audio/meta/<tag>` (meta.rs); the music-library player (mpd on the
+//!   drives under /media) on `audio/library` and `cmd/audio/library/<verb>`
+//!   (library.rs).
 //! * **REST** (configuration, which changes rarely): `GET /api/audio` and
 //!   `PUT /api/audio/endpoints` — which Spotify Connect and AirPlay endpoints
 //!   exist and which output each plays on, and live input routes. webd proxies
@@ -24,6 +26,7 @@ mod announce;
 mod board;
 mod config;
 mod levels;
+mod library;
 mod meta;
 mod runner;
 mod single;
@@ -58,6 +61,8 @@ struct App {
     levels: Mutex<HashMap<String, u8>>,
     /// Outputs with an announcement playing.
     announcing: Mutex<HashSet<String>>,
+    /// The music-library player's client side.
+    library: Arc<library::Library>,
     /// AirPlay endpoints whose metadata reader thread is running.
     readers: Mutex<HashSet<String>>,
     /// One announcement at a time per output; the rest wait their turn.
@@ -169,6 +174,7 @@ impl App {
             "spotify": e.spotify,
             "airplay": e.airplay,
             "routes": e.routes,
+            "library": e.library,
             "instances": instances,
         }))
     }
@@ -235,6 +241,45 @@ async fn get_cover(axum::extract::Path(tag): axum::extract::Path<String>) -> axu
     }
 }
 
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+struct BrowseQuery {
+    /// A folder under /media, as mpd names it (`Sandisk/Music`); empty = the top.
+    #[serde(default)]
+    path: String,
+}
+
+#[utoipa::path(get, path = "/api/audio/library/browse", tag = "Audio",
+    summary = "Folders and tracks in one library folder",
+    description = "The music-library player's view of /media (the drives ohc-storaged mounts): `kind` dir|file, `path` (pass a dir back as `path`; give a file or dir to `cmd/audio/library/replace` or `add` to play it), and for tracks title/artist/album/duration_s.",
+    params(BrowseQuery),
+    responses((status = 200, description = "entries"), (status = 503, description = "no library player running")))]
+async fn library_browse(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<BrowseQuery>) -> axum::response::Response {
+    match app.library.browse(&q.path).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+struct SearchQuery {
+    /// Text to find in any tag (title, artist, album, ...).
+    q: String,
+}
+
+#[utoipa::path(get, path = "/api/audio/library/search", tag = "Audio",
+    summary = "Find tracks in the library",
+    params(SearchQuery),
+    responses((status = 200, description = "matching tracks (at most 200)"), (status = 503, description = "no library player running")))]
+async fn library_search(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<SearchQuery>) -> axum::response::Response {
+    if q.q.trim().is_empty() {
+        return Json(json!([])).into_response();
+    }
+    match app.library.search(q.q.trim()).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
 #[utoipa::path(get, path = "/api/health", tag = "Audio", summary = "ohc-audiod liveness",
     responses((status = 200, description = "ok")))]
 async fn health() -> Json<Value> {
@@ -255,12 +300,21 @@ async fn publish(app: &App, client: &AsyncClient, base: &Base, r: &mut Retained)
         }
         // Now playing, per endpoint. Null (an empty retained message) clears it.
         let tags: Vec<String> = app.instances.lock().unwrap().iter()
-            .filter(|i| i.kind == "spotify" || i.kind == "airplay")
+            .filter(|i| i.kind == "spotify" || i.kind == "airplay" || i.kind == "library")
             .map(|i| i.tag.clone())
             .collect();
         for tag in tags {
             let m = meta::load(&tag).map(|m| json!(m)).unwrap_or(Value::Null);
             r.set(client, base, &format!("audio/meta/{tag}"), &m).await;
+        }
+        // The library player, when the map has one.
+        let has_library = !app.endpoints.lock().unwrap().library.is_empty();
+        if has_library {
+            app.library.mounts_changed().await;
+            let st = app.library.state.lock().unwrap().clone();
+            r.set(client, base, "audio/library", &json!(st)).await;
+        } else {
+            r.set(client, base, "audio/library", &Value::Null).await;
         }
     }
     if let Some(dev) = single::selected() {
@@ -291,6 +345,12 @@ async fn command(app: &Arc<App>, what: &str, body: &str) {
     }
     if let Some(target) = what.strip_prefix("announce/") {
         app.announce(target, body).await;
+        return;
+    }
+    if let Some(verb) = what.strip_prefix("library/") {
+        if let Err(e) = app.library.command(verb, body).await {
+            eprintln!("audiod: cmd/audio/library/{verb}: {e}");
+        }
         return;
     }
     match what {
@@ -393,6 +453,7 @@ fn main() {
         announcing: Mutex::new(HashSet::new()),
         announce_turn,
         readers: Mutex::new(HashSet::new()),
+        library: Arc::new(library::Library::default()),
         changed: Notify::new(),
     });
 
@@ -413,6 +474,10 @@ fn main() {
             app.instances.lock().unwrap().len()
         );
         tokio::spawn(mqtt(app.clone()));
+        if app.board.has_map() {
+            let poke = app.clone();
+            tokio::spawn(app.library.clone().run(move || poke.changed.notify_one()));
+        }
         // A librespot event hook (meta::hook) pokes us to publish now.
         {
             let app = app.clone();
@@ -429,6 +494,8 @@ fn main() {
             .routes(routes!(put_endpoints))
             .routes(routes!(health))
             .routes(routes!(get_cover))
+            .routes(routes!(library_browse))
+            .routes(routes!(library_search))
             .with_state(app.clone())
             .split_for_parts();
         let router = router.route(

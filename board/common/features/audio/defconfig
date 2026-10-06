@@ -45,3 +45,19 @@ BR2_PACKAGE_AVAHI_LIBDNSSD_COMPATIBILITY=y
 
 # Spotify Connect. Not in Buildroot — packages/librespot is openHC's own (Rust).
 BR2_PACKAGE_LIBRESPOT=y
+
+# The music-library player: mpd, run by ohc-audiod (one instance, when the
+# endpoint map has a `library` entry) over /media, where ohc-storaged mounts the
+# drives. Its own S95mpd is replaced by an overlay stub (audiod supervises it).
+# mpd is C++: the musl boards (HC-800) need the C++ toolchain and libstdc++,
+# which the EA family's glibc toolchain already has.
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_INSTALL_LIBSTDCPP=y
+BR2_PACKAGE_MPD=y
+# Formats: MP3 (mad, on by default), FLAC, Ogg Vorbis, Opus, AAC/M4A (faad2),
+# WAV/AIFF (libsndfile). Output: ALSA (on by default) into the output's PCM.
+BR2_PACKAGE_MPD_FLAC=y
+BR2_PACKAGE_MPD_VORBIS=y
+BR2_PACKAGE_MPD_OPUS=y
+BR2_PACKAGE_MPD_FAAD2=y
+BR2_PACKAGE_MPD_LIBSNDFILE=y

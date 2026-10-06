@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable, Bell, Workflow, ChevronRight } from 'lucide-react';
+import {
+  Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable, Bell, Workflow, ChevronRight, Library,
+  Play, Pause, SkipBack, SkipForward, Square, Folder, FileAudio, Search, Shuffle, Repeat, RefreshCw,
+} from 'lucide-react';
 import {
   io, rest, audioCover, type AudioEndpoints, type AudioInstance, type AudioMap, type AudioMeta, type AudioReceiver,
-  type AudioStatus, type Capabilities,
+  type AudioStatus, type Capabilities, type LibraryEntry, type LibraryState,
 } from '../api';
 import { useIoState } from '../App';
 
@@ -39,7 +42,10 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   // retained topics arrive leaf by leaf.
   const map = live?.map ?? a.map;
   if (map && Array.isArray(map.outputs) && Array.isArray(map.instances))
-    return <MapPanel map={map} level={live?.level ?? {}} announcing={live?.announcing ?? {}} meta={live?.meta ?? {}} />;
+    return (
+      <MapPanel map={map} level={live?.level ?? {}} announcing={live?.announcing ?? {}} meta={live?.meta ?? {}}
+        library={live?.library} />
+    );
 
   return (
     <div className="space-y-4">
@@ -218,25 +224,30 @@ function nowPlaying(v: unknown): { title: string; artist?: string } | null {
    and arrives over MQTT (`<base>/state/audio/map`). */
 
 type Row = { left: string; right: string };
-type Kind = 'spotify' | 'airplay' | 'routes';
+type Kind = 'spotify' | 'airplay' | 'routes' | 'library';
 
 const rowsOf = (map: AudioMap, kind: Kind): Row[] =>
   kind === 'routes'
     ? map.routes.map((r) => ({ left: r.input, right: r.output }))
-    : map[kind].map((e) => ({ left: e.name, right: e.output }));
+    : (map[kind] ?? []).map((e) => ({ left: e.name, right: e.output }));
 
 function MapPanel({
-  map, level, announcing, meta,
+  map, level, announcing, meta, library,
 }: {
   map: AudioMap;
   level: Record<string, number>;
   announcing: Record<string, boolean>;
   meta: Record<string, AudioMeta>;
+  library: LibraryState | undefined;
 }) {
   const label = (id: string) => map.outputs.find((o) => o.id === id)?.label ?? id;
+  const lib = map.library?.[0];
   return (
     <div className="space-y-4">
       <Routing map={map} level={level} announcing={announcing} meta={meta} />
+      {lib && (
+        <LibraryPanel name={lib.name} output={label(lib.output)} state={library} meta={meta['library-0']} />
+      )}
 
       {/* Configuration, folded away: the diagram above already shows every
           endpoint and where it plays, so this is only for changing that. */}
@@ -253,6 +264,9 @@ function MapPanel({
             map={map} leftLabel="Name in the Spotify app" label={label} />
           <ListEditor title="AirPlay" icon={<Radio size={15} className="text-muted" />} kind="airplay"
             map={map} leftLabel="Name on Apple devices" label={label} />
+          <ListEditor title="Library player" icon={<Library size={15} className="text-muted" />} kind="library"
+            map={map} leftLabel="Name" label={label} max={1}
+            hint="Plays music from the drives plugged into the box (USB, eSATA). One player; pick its output." />
           {map.inputs.length > 0 && (
             <ListEditor title="Input routes" icon={<Cable size={15} className="text-muted" />} kind="routes"
               map={map} leftLabel="Input" label={label}
@@ -278,7 +292,7 @@ const OUT_ROW = 84;
 const LINK_W = 72;
 
 type Source = {
-  key: string; kind: 'spotify' | 'airplay' | 'route'; name: string;
+  key: string; kind: 'spotify' | 'airplay' | 'route' | 'library'; name: string;
   /** '' = an input that is not routed anywhere. */
   output: string;
   running: boolean; playing: boolean; tag?: string;
@@ -301,6 +315,7 @@ function sourcesOf(map: AudioMap): Source[] {
   return [
     ...map.spotify.map((e, n) => src(`s${n}`, 'spotify', e.name, e.name, e.output)),
     ...map.airplay.map((e, n) => src(`a${n}`, 'airplay', e.name, e.name, e.output)),
+    ...(map.library ?? []).map((e, n) => src(`l${n}`, 'library', e.name, e.name, e.output)),
     ...map.routes.map((r, n) => src(`r${n}`, 'route', inputLabel(r.input), r.input, r.output)),
     // Inputs with no route still show, so the jack is visible.
     ...map.inputs
@@ -309,7 +324,7 @@ function sourcesOf(map: AudioMap): Source[] {
   ].sort((a, b) => order(a.output) - order(b.output));
 }
 
-const KIND_ICON = { spotify: Music, airplay: Radio, route: Cable } as const;
+const KIND_ICON = { spotify: Music, airplay: Radio, route: Cable, library: Library } as const;
 
 function Routing({
   map, level, announcing, meta,
@@ -478,8 +493,168 @@ function OutputRow({
   );
 }
 
+/* ── the library player ─────────────────────────────────────────────────────
+
+   mpd over the drives on /media: what it is playing (with the transport), and
+   a browser to find something else. Live state is MQTT (`state/audio/library`,
+   `state/audio/meta/library-0`); browsing is a one-shot REST read per folder.
+   Its volume is its output's level, in the routing diagram above. */
+
+const clock = (s: number) => {
+  const t = Math.max(0, Math.floor(s));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+};
+
+function useElapsed(st: LibraryState | undefined): number | undefined {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (st?.state !== 'play') return;
+    const t = setInterval(() => tick((n) => n + 1), 500);
+    return () => clearInterval(t);
+  }, [st?.state]);
+  if (st?.elapsed_s === undefined) return undefined;
+  if (st.state !== 'play' || !st.elapsed_at_ms) return st.elapsed_s;
+  return Math.min(st.duration_s ?? Infinity, st.elapsed_s + (Date.now() - st.elapsed_at_ms) / 1000);
+}
+
+function LibraryPanel({
+  name, output, state, meta,
+}: {
+  name: string;
+  output: string;
+  state: LibraryState | undefined;
+  meta: AudioMeta | undefined;
+}) {
+  const send = (verb: string, arg = '') => { try { io.library(verb, arg); } catch { /* not connected */ } };
+  const elapsed = useElapsed(state);
+  const playing = state?.state === 'play';
+  const offline = !state || state.state === 'offline';
+  const [badCover, setBadCover] = useState<string | null>(null);
+  const cover = meta?.cover && meta.cover !== badCover ? meta.cover : null;
+  const btn = 'rounded-lg p-2 text-muted hover:text-ink disabled:opacity-30';
+
+  return (
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <Library size={15} className="text-muted" />
+        {name}
+        <span className="text-xs font-normal text-muted">→ {output}</span>
+        {state?.updating && (
+          <span className="ml-auto flex items-center gap-1 text-xs font-normal text-muted">
+            <RefreshCw size={12} className="animate-spin" /> indexing drives
+          </span>
+        )}
+      </h2>
+
+      {offline ? (
+        <p className="text-xs text-muted">The library player is starting (or not installed on this image).</p>
+      ) : (
+        <>
+          <div className="flex items-center gap-3">
+            {cover ? (
+              <img src={audioCover(cover)} alt="" onError={() => setBadCover(cover)} className="size-14 shrink-0 rounded-lg object-cover" />
+            ) : (
+              <div className="hair flex size-14 shrink-0 items-center justify-center rounded-lg border bg-raised">
+                <Music size={20} className="text-muted" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm">{meta?.title || (state.queue_length ? 'Stopped' : 'Nothing queued')}</div>
+              <div className="truncate text-xs text-muted">{[meta?.artist, meta?.album].filter(Boolean).join(' — ')}</div>
+              {state.duration_s !== undefined && elapsed !== undefined && (
+                <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums text-muted">
+                  <span>{clock(elapsed)}</span>
+                  <input type="range" min={0} max={Math.max(1, Math.floor(state.duration_s))} value={Math.floor(elapsed)}
+                    onChange={(e) => send('seek', e.target.value)} aria-label="Position"
+                    className="min-w-0 flex-1 accent-accent" />
+                  <span>{clock(state.duration_s)}</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mt-2 flex items-center gap-1">
+            <button className={btn} onClick={() => send('previous')} disabled={!state.queue_length} aria-label="Previous"><SkipBack size={16} /></button>
+            <button className={`${btn} text-ink`} onClick={() => send('toggle')} disabled={!state.queue_length} aria-label={playing ? 'Pause' : 'Play'}>
+              {playing ? <Pause size={18} /> : <Play size={18} />}
+            </button>
+            <button className={btn} onClick={() => send('next')} disabled={!state.queue_length} aria-label="Next"><SkipForward size={16} /></button>
+            <button className={btn} onClick={() => send('stop')} disabled={state.state === 'stop'} aria-label="Stop"><Square size={14} /></button>
+            <button className={`${btn} ${state.random ? 'text-accent' : ''}`} onClick={() => send('random', state.random ? 'OFF' : 'ON')} aria-label="Shuffle" title="Shuffle"><Shuffle size={15} /></button>
+            <button className={`${btn} ${state.repeat ? 'text-accent' : ''}`} onClick={() => send('repeat', state.repeat ? 'OFF' : 'ON')} aria-label="Repeat" title="Repeat"><Repeat size={15} /></button>
+            <span className="ml-auto text-xs text-muted">{state.queue_length} in queue</span>
+          </div>
+          <Browser onPlay={(uri) => send('replace', uri)} onQueue={(uri) => send('add', uri)} />
+        </>
+      )}
+    </section>
+  );
+}
+
+/* Folders and tracks on the drives. Clicking a folder opens it, clicking a
+   track plays it; ▶ plays the row (a folder: everything under it), + queues it. */
+function Browser({ onPlay, onQueue }: { onPlay: (uri: string) => void; onQueue: (uri: string) => void }) {
+  const [path, setPath] = useState('');
+  const [q, setQ] = useState('');
+  const [items, setItems] = useState<LibraryEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setErr(null);
+    const load = q.trim() ? rest.librarySearch(q.trim()) : rest.libraryBrowse(path);
+    const t = setTimeout(() => {
+      load.then((v) => live && setItems(v)).catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    }, q.trim() ? 250 : 0);
+    return () => { live = false; clearTimeout(t); };
+  }, [path, q]);
+
+  const crumbs = path ? path.split('/') : [];
+  const base = (p: string) => p.split('/').pop() ?? p;
+  return (
+    <div className="mt-3 border-t pt-3" style={{ borderColor: 'var(--edge)' }}>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1 text-xs">
+          <button onClick={() => { setPath(''); setQ(''); }} className="text-muted hover:text-ink">Drives</button>
+          {!q && crumbs.map((c, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <ChevronRight size={12} className="text-muted" />
+              <button onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))} className="max-w-40 truncate hover:text-ink">{c}</button>
+            </span>
+          ))}
+        </div>
+        <label className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-2 py-1">
+          <Search size={13} className="text-muted" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" aria-label="Search the library"
+            className="w-32 bg-transparent text-xs text-ink outline-none sm:w-44" />
+        </label>
+      </div>
+      {err && <p className="text-xs text-alarm">{err}</p>}
+      {items && !items.length && (
+        <p className="text-xs text-muted">{q ? 'No matches.' : path ? 'Empty folder.' : 'No drives with music yet — plug one in (it is indexed automatically).'}</p>
+      )}
+      <div className="max-h-80 space-y-0.5 overflow-auto">
+        {items?.map((e) => (
+          <div key={e.path} className="group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-raised">
+            {e.kind === 'dir' ? <Folder size={14} className="shrink-0 text-muted" /> : <FileAudio size={14} className="shrink-0 text-muted" />}
+            <button className="min-w-0 flex-1 truncate text-left" title={e.path}
+              onClick={() => (e.kind === 'dir' ? (setQ(''), setPath(e.path)) : onPlay(e.path))}>
+              {e.kind === 'dir' ? base(e.path) : e.title || base(e.path)}
+              {e.kind === 'file' && e.artist && <span className="text-xs text-muted"> — {e.artist}</span>}
+            </button>
+            {e.duration_s !== undefined && <span className="shrink-0 text-xs tabular-nums text-muted">{clock(e.duration_s)}</span>}
+            <button onClick={() => onPlay(e.path)} title="Play" aria-label={`Play ${base(e.path)}`}
+              className="rounded-md p-1 text-muted opacity-60 hover:text-ink group-hover:opacity-100"><Play size={13} /></button>
+            <button onClick={() => onQueue(e.path)} title="Add to queue" aria-label={`Queue ${base(e.path)}`}
+              className="rounded-md p-1 text-muted opacity-60 hover:text-ink group-hover:opacity-100"><Plus size={13} /></button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ListEditor({
-  title, icon, kind, map, leftLabel, label, hint,
+  title, icon, kind, map, leftLabel, label, hint, max,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -488,6 +663,8 @@ function ListEditor({
   leftLabel: string;
   label: (id: string) => string;
   hint?: string;
+  /** At most this many rows (the library player: one). */
+  max?: number;
 }) {
   const fromMap = rowsOf(map, kind);
   const key = JSON.stringify(fromMap);
@@ -514,7 +691,7 @@ function ListEditor({
   const save = async () => {
     setBusy(true);
     setErr(null);
-    const next: AudioEndpoints = { spotify: map.spotify, airplay: map.airplay, routes: map.routes };
+    const next: AudioEndpoints = { spotify: map.spotify, airplay: map.airplay, routes: map.routes, library: map.library ?? [] };
     if (isRoute) next.routes = rows.map((r) => ({ input: r.left, output: r.right }));
     else next[kind] = rows.map((r) => ({ name: r.left.trim(), output: r.right }));
     try {
@@ -576,8 +753,9 @@ function ListEditor({
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
+          disabled={max !== undefined && rows.length >= max}
           onClick={() => setRows([...rows, { left: isRoute ? map.inputs[0]?.id ?? '' : '', right: map.outputs[0]?.id ?? '' }])}
-          className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs text-ink hover:border-accent/50">
+          className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs text-ink hover:border-accent/50 disabled:opacity-40">
           <Plus size={13} /> Add
         </button>
         <button disabled={!dirty || !!bad || busy} onClick={save}

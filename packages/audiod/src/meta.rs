@@ -62,7 +62,7 @@ pub fn load(tag: &str) -> Option<Meta> {
     serde_json::from_str(&std::fs::read_to_string(path(tag)).ok()?).ok()
 }
 
-fn store(tag: &str, m: Option<&Meta>) {
+pub fn store(tag: &str, m: Option<&Meta>) {
     let _ = std::fs::create_dir_all(DIR);
     match m.filter(|m| !m.is_empty()) {
         Some(m) => {

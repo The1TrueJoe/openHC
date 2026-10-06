@@ -120,12 +120,14 @@ export interface AudioEndpoints {
   spotify: AudioEndpoint[];
   airplay: AudioEndpoint[];
   routes: AudioRoute[];
+  /** The music-library player (mpd over the drives on /media): 0 or 1. */
+  library?: AudioEndpoint[];
 }
 
 /** One supervised process ohc-audiod runs for the map. */
 export interface AudioInstance {
   tag: string;
-  kind: 'spotify' | 'airplay' | 'route' | 'helper';
+  kind: 'spotify' | 'airplay' | 'route' | 'library' | 'helper';
   name: string | null;
   input: string | null;
   output: string | null;
@@ -155,6 +157,30 @@ export interface AudioMeta {
   /** The phone or app driving it. */
   client?: string;
   duration_ms?: number;
+}
+
+/** The music-library player (`<base>/state/audio/library`). */
+export interface LibraryState {
+  state: 'play' | 'pause' | 'stop' | 'offline';
+  elapsed_s?: number;
+  /** When elapsed_s was read (Unix ms): the page runs the clock from there. */
+  elapsed_at_ms?: number;
+  duration_s?: number;
+  position?: number;
+  queue_length: number;
+  random: boolean;
+  repeat: boolean;
+  updating: boolean;
+}
+
+/** A folder or track in the library (REST browse/search). */
+export interface LibraryEntry {
+  kind: 'dir' | 'file';
+  path: string;
+  title?: string;
+  artist?: string;
+  album?: string;
+  duration_s?: number;
 }
 
 /** A displayable URL for `AudioMeta.cover`. */
@@ -239,6 +265,8 @@ export interface IoState {
     announcing?: Record<string, boolean>;
     /** Endpoint tag (`spotify-1`, `airplay-0`) → what it is playing. */
     meta?: Record<string, AudioMeta>;
+    /** The library player's transport state. */
+    library?: LibraryState;
   };
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
@@ -319,6 +347,10 @@ export const rest = {
    *  live changes arrive over MQTT. */
   audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
   /** Replace the endpoint map (configuration). */
+  libraryBrowse: (path: string) =>
+    j<LibraryEntry[]>(`${AUDIO}/api/audio/library/browse?path=${encodeURIComponent(path)}`),
+  librarySearch: (q: string) =>
+    j<LibraryEntry[]>(`${AUDIO}/api/audio/library/search?q=${encodeURIComponent(q)}`),
   saveEndpoints: (e: AudioEndpoints) =>
     j<AudioMap>(`${AUDIO}/api/audio/endpoints`, {
       method: 'PUT',
@@ -482,6 +514,9 @@ export class Io {
   /** Play an announcement over an output's music, which ducks under it:
    *  `chime`, an http(s) URL or an absolute path to a WAV on the box. */
   announce = (output: string, source = 'chime') => this.#publish(`audio/announce/${output}`, source);
+  /** The library player: play|pause|toggle|stop|next|previous|seek <s>|clear|
+   *  add <uri>|replace <uri>|random ON/OFF|repeat ON/OFF|update. */
+  library = (verb: string, arg = '') => this.#publish(`audio/library/${verb}`, arg);
   /** Fan: a percent holds it there, 'auto' hands it back to the curve. */
   setFan = (v: number | 'auto') =>
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));

@@ -402,6 +402,26 @@
       },
       "summary": "Now playing on an endpoint (retained, ohc-audiod)",
       "description": "Per Spotify/AirPlay endpoint (`tag` as in state/audio/map instances, e.g. `spotify-1`): `state` (playing/paused/stopped), `title`, `artist`, `album`, `cover` (an image URL, or for AirPlay a path under REST `/audio/api/audio/` such as `cover/airplay-1?v=3`), `client` (the phone or app), `duration_ms`. Cleared (empty retained message) when the session ends."
+    },
+    "audioLibrary": {
+      "address": "openhc/{box}/state/audio/library",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Library player state (retained, ohc-audiod)",
+      "description": "Boards with a `library` endpoint: mpd playing the drives under /media. `state` (play/pause/stop/offline), `elapsed_s` with `elapsed_at_ms` (when it was read, so a client can run the clock), `duration_s`, `position`, `queue_length`, `random`, `repeat`, `updating` (indexing the drives). What it plays is `state/audio/meta/library-0`; its volume is its output level. Cleared when there is no library endpoint."
+    },
+    "audioLibraryCommand": {
+      "address": "openhc/{box}/cmd/audio/library/{verb}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Control the library player",
+      "description": "`play` [queue position], `pause`, `toggle`, `stop`, `next`, `previous`, `seek` <seconds>, `clear`, `add` <uri>, `replace` <uri> (clear, add, play), `random` ON/OFF, `repeat` ON/OFF, `update` (re-index). A uri is a path under /media as REST `GET /audio/api/audio/library/browse` returns it; a folder adds everything under it."
     }
   },
   "operations": {
@@ -663,6 +683,20 @@
         "$ref": "#/channels/audioMeta"
       },
       "summary": "Now playing on an endpoint (retained, ohc-audiod)"
+    },
+    "audioLibrary": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioLibrary"
+      },
+      "summary": "Library player state (retained, ohc-audiod)"
+    },
+    "audioLibraryCommand": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioLibraryCommand"
+      },
+      "summary": "Control the library player"
     }
   },
   "components": {

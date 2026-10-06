@@ -231,6 +231,19 @@ pub fn start(b: &Board, e: &Endpoints, up: &Up) -> Vec<Instance> {
                 kind: "airplay", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()) });
         }
     }
+    if have(crate::library::MPD) {
+        if let Some((ep, out)) = e.library.first().and_then(|ep| b.output(&ep.output).map(|o| (ep, o))) {
+            let tag = crate::library::TAG.to_string();
+            let cfg = format!("{RUN_DIR}/mpd.conf");
+            match std::fs::write(&cfg, crate::library::mpd_conf(out)) {
+                Ok(()) => v.push(Instance {
+                    task: supervise(tag.clone(), crate::library::MPD.into(), vec!["--no-daemon".into(), "--stderr".into(), cfg], up.clone()),
+                    tag, kind: "library", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()),
+                }),
+                Err(err) => eprintln!("library: cannot write {cfg}: {err}"),
+            }
+        }
+    }
     for (n, r) in e.routes.iter().enumerate() {
         let (Some(i), Some(o)) = (b.input(&r.input), b.output(&r.output)) else { continue };
         let tag = format!("route-{n}");
