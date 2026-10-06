@@ -116,12 +116,17 @@ static EGLNativeWindowType rt_get_native_window(void *data)
 	(void)data;
 	fprintf(stderr, "pvrbk: rt_get_native_window\n"); fflush(stderr);
 	/*
-	 * With MESA_EGL_NO_X11_HEADERS the DDK's EGLNativeWindowType is a plain
-	 * integer, and its LinuxFB WSEGL ignores the value -- there is exactly
-	 * one surface and it is the framebuffer. Returning 0 is correct, not a
-	 * placeholder.
+	 * MUST be non-zero. The DDK's LinuxFB WSEGL ignores the handle value (there
+	 * is one surface and it is the framebuffer), so the value itself is a
+	 * don't-care to EGL. But WebKit's GLContext::create() treats the handle as a
+	 * truthiness flag: `window ? createWindowContext() : createOffscreenContext()`
+	 * (GLContext.cpp). Returning 0 sent the compositor down the OFFSCREEN path --
+	 * it rendered to a surfaceless/pbuffer target and swapped to nothing, so not
+	 * one frame reached /dev/fb0 despite a clean, "rendered" frame. Any non-zero
+	 * value makes WebKit create a real fbdev window surface via
+	 * eglCreateWindowSurface, whose swap the WSEGL blits to the panel.
 	 */
-	return (EGLNativeWindowType)0;
+	return (EGLNativeWindowType)1;
 }
 
 static void rt_resize(void *data, uint32_t width, uint32_t height)
