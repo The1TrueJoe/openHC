@@ -118,7 +118,7 @@ mod tests {
     use super::*;
     use crate::board::Port;
     fn board() -> Board {
-        let p = |id: &str, pcm: &str| Port { id: id.into(), label: id.into(), device: "hw:0".into(), pcm: pcm.into() };
+        let p = |id: &str, pcm: &str| Port { id: id.into(), label: id.into(), device: "hw:0".into(), pcm: pcm.into(), swap: false };
         Board { outputs: vec![p("analog1", "ohc_analog1"), p("hdmi", "ohc_hdmi")], inputs: vec![p("linein", "ohc_in_linein")], rate: 44100, helpers: vec![] }
     }
     #[test]
