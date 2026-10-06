@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
-  ReactFlow, Background, Controls, Handle, Panel, Position, useNodesState, useReactFlow,
-  type Connection, type Edge, type EdgeChange, type Node, type NodeProps,
+  ReactFlow, Background, Controls, Handle, Panel, Position, useNodesState, NodeToolbar, EdgeToolbar, BaseEdge,
+  getBezierPath, type Connection, type Edge, type EdgeChange, type EdgeProps, type Node, type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
-  Music, Radio, Cable, Library, Speaker, Bell, Volume2, X, Plus, Trash2, Unplug, ChevronRight, RotateCcw,
+  Music, Radio, Cable, Library, Speaker, Bell, Volume2, VolumeX, X, Plus, Trash2, Unplug, ChevronRight, RotateCcw,
   Play, Pause, SkipBack, SkipForward, Square, Folder, FileAudio, Search, Shuffle, Repeat, RefreshCw,
 } from 'lucide-react';
 import {
@@ -22,7 +22,9 @@ import {
    or library source plays to one output, so a new line replaces its old one;
    an input can feed any number of outputs. Click any node for its settings:
    an output's level, tone and announcements; a source's name, what it is
-   playing, and for the library its player and browser.
+   playing, and for the library its player and browser — in a popup on the
+   chart itself (React Flow's NodeToolbar / EdgeToolbar), attached to what was
+   clicked.
 
    Routing is configuration (REST PUT /audio/api/audio/endpoints — audiod
    restarts only what changed, so other outputs keep playing); everything live
@@ -44,6 +46,9 @@ type SourceData = {
   playing: boolean;
   meta?: AudioMeta;
   connected: boolean;
+  /** Labels of the outputs it is assigned to (lines are drawn only while
+   *  audio flows, so the node says where it would play). */
+  targets: string[];
 };
 type OutputData = { id: string; label: string; level?: number; announcing: boolean; feeding: number };
 type XY = { x: number; y: number };
@@ -63,9 +68,82 @@ const endpointsOf = (map: AudioMap): AudioEndpoints => ({
   spotify: map.spotify, airplay: map.airplay, routes: map.routes, library: map.library ?? [],
 });
 
+/* What the popups need: the map, the live state, and how to save or close. */
+type Flow = {
+  eps: AudioEndpoints;
+  map: AudioMap;
+  live: Live;
+  save: (e: AudioEndpoints) => void;
+  close: () => void;
+  feeding: (outputId: string) => SourceData[];
+  disconnect: (edgeId: string) => void;
+  nameOf: (nodeId: string) => string;
+};
+const FlowCtx = createContext<Flow | null>(null);
+const useFlow = () => useContext(FlowCtx)!;
+
+/* A popup on the chart (NodeToolbar/EdgeToolbar content): a card with a
+   pointer toward what it belongs to, a header, a body of sections and an
+   optional footer of actions. Fixed size whatever the zoom; the pointer
+   belongs to it (nodrag/nopan/nowheel), so a slider drag does not pan. */
+function Popup({
+  side, icon, title, subtitle, onClose, footer, children,
+}: {
+  /** Which side of the card points at its node. */
+  side: 'left' | 'right';
+  icon: React.ReactNode;
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  onClose: () => void;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="nodrag nopan nowheel relative w-[300px] text-left" onClick={(e) => e.stopPropagation()}>
+      <span aria-hidden
+        className={`hair absolute top-6 size-3 rotate-45 border bg-panel ${side === 'left' ? '-left-1.5 border-r-0 border-t-0' : '-right-1.5 border-b-0 border-l-0'}`} />
+      <div className="hair relative overflow-hidden rounded-2xl border bg-panel shadow-2xl">
+        <header className="flex items-center gap-3 px-4 pb-3 pt-4">
+          <div className="shrink-0">{icon}</div>
+          <div className="min-w-0 flex-1 leading-tight">
+            <div className="truncate text-sm font-medium text-ink">{title}</div>
+            {subtitle && <div className="mt-0.5 truncate text-xs text-muted">{subtitle}</div>}
+          </div>
+          <button onClick={onClose} className="-mr-1 self-start rounded-md p-1 text-muted hover:bg-raised hover:text-ink" aria-label="Close">
+            <X size={15} />
+          </button>
+        </header>
+        <div className="max-h-[60vh] space-y-4 overflow-y-auto px-4 pb-4">{children}</div>
+        {footer && <footer className="flex items-center gap-2 border-t px-4 py-2.5" style={{ borderColor: 'var(--edge)' }}>{footer}</footer>}
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section>
+      <div className="mb-1.5 flex items-center text-[11px] font-medium uppercase tracking-wider text-muted">
+        {title}
+        {action && <span className="ml-auto normal-case tracking-normal">{action}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function IconChip({ icon: Icon, live }: { icon: typeof Music; live?: boolean }) {
+  return (
+    <div className={`flex size-10 items-center justify-center rounded-xl ${live ? 'bg-live/15 text-live' : 'bg-accent/12 text-accent'}`}>
+      <Icon size={18} />
+    </div>
+  );
+}
+
 /* ── nodes ────────────────────────────────────────────────────────────────── */
 
 function SourceNode({ data, selected }: NodeProps<Node<SourceData>>) {
+  const f = useFlow();
   const Icon = KIND_ICON[data.kind];
   const m = data.meta;
   const track = m?.title ? [m.title, m.artist].filter(Boolean).join(' — ') : '';
@@ -83,16 +161,23 @@ function SourceNode({ data, selected }: NodeProps<Node<SourceData>>) {
       <div className="min-w-0 flex-1 leading-tight">
         <div className="truncate text-sm text-ink">{data.name}</div>
         <div className="truncate text-muted">
-          {track || (data.playing ? 'playing' : data.kind === 'input' ? 'input' : !data.connected ? 'not connected' : data.running ? KIND_LABEL[data.kind] : 'not running')}
+          {track || (data.connected
+            ? `${KIND_LABEL[data.kind]} → ${data.targets.join(', ')}${data.running || data.kind === 'input' ? '' : ' (not running)'}`
+            : `${KIND_LABEL[data.kind]} · not connected`)}
         </div>
       </div>
       {data.playing && <span className="size-2 shrink-0 rounded-full bg-live" title="playing" />}
       <Handle type="source" position={Position.Right} className="!size-3 !border-2 !border-[var(--panel)] !bg-[var(--accent)]" />
+      <NodeToolbar isVisible={selected} position={Position.Right} align="start" offset={16}>
+        <SourceInspector s={data} eps={f.eps} map={f.map} live={f.live} onSave={f.save} onClose={f.close} />
+      </NodeToolbar>
     </div>
   );
 }
 
 function OutputNode({ data, selected }: NodeProps<Node<OutputData>>) {
+  const f = useFlow();
+  const port = f.map.outputs.find((o) => o.id === data.id);
   return (
     <div className={`hair w-56 rounded-xl border bg-panel px-3 py-2.5 shadow-sm ${selected ? 'border-accent ring-1 ring-accent/40' : ''} ${data.announcing ? 'border-warm/70' : ''}`}>
       <Handle type="target" position={Position.Left} className="!size-3 !border-2 !border-[var(--panel)] !bg-[var(--accent)]" />
@@ -108,22 +193,42 @@ function OutputNode({ data, selected }: NodeProps<Node<OutputData>>) {
         </div>
         <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted">{data.level === undefined ? '–' : `${data.level}%`}</span>
       </div>
+      <NodeToolbar isVisible={selected} position={Position.Left} align="start" offset={16}>
+        <OutputInspector id={data.id} label={data.label} device={port?.device ?? ''} live={f.live} feeding={f.feeding(data.id)}
+          onClose={f.close} />
+      </NodeToolbar>
     </div>
   );
 }
 
+/* A connection, with its popup (from → to, Disconnect) at its midpoint when
+   selected. */
+function RouteEdge(p: EdgeProps) {
+  const f = useFlow();
+  const [path, x, y] = getBezierPath(p);
+  return (
+    <>
+      <BaseEdge id={p.id} path={path} style={p.style} interactionWidth={18} />
+      <EdgeToolbar edgeId={p.id} x={x} y={y} isVisible={p.selected}>
+        <div className="nodrag nopan hair flex items-center gap-2 rounded-full border bg-panel py-1.5 pl-3.5 pr-1.5 text-xs shadow-2xl">
+          <span className="max-w-40 truncate">{f.nameOf(p.source)}</span>
+          <ChevronRight size={12} className="shrink-0 text-muted" />
+          <span className="max-w-32 truncate">{f.nameOf(p.target)}</span>
+          <button onClick={() => f.disconnect(p.id)}
+            className="ml-1 flex items-center gap-1 rounded-full bg-raised px-2.5 py-1 text-muted hover:bg-alarm/15 hover:text-alarm">
+            <Unplug size={12} /> Disconnect
+          </button>
+        </div>
+      </EdgeToolbar>
+    </>
+  );
+}
+const edgeTypes = { route: RouteEdge };
+
 // Not `input`/`output`: those are React Flow's built-in node types, and their
 // default styling (a box behind the node) applies by class name.
-/* Re-frame the chart when the side panel opens or closes (the canvas changes
-   width under it). Rendered inside <ReactFlow>, whose context it uses. */
-function Refit({ when }: { when: boolean }) {
-  const { fitView } = useReactFlow();
-  useEffect(() => {
-    const t = setTimeout(() => fitView({ padding: 0.15, duration: 200 }), 50);
-    return () => clearTimeout(t);
-  }, [when, fitView]);
-  return null;
-}
+// Not `input`/`output`: those are React Flow's built-in node types, and their
+// default styling (a box behind the node) applies by class name.
 
 const nodeTypes = { ohcSource: SourceNode, ohcOutput: OutputNode };
 
@@ -152,6 +257,8 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
   const inst = (kind: string, name: string | null, output: string) =>
     map.instances.find((i) => i.kind === kind && (i.name ?? i.input) === name && i.output === output);
 
+  const outLabel = (id: string) => map.outputs.find((o) => o.id === id)?.label ?? id;
+
   // What to draw, from the map and the live state.
   const sources: Array<{ id: string; data: SourceData }> = [];
   (['spotify', 'airplay', 'library'] as const).forEach((kind) =>
@@ -160,6 +267,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
       sources.push({ id: srcId(kind, n), data: {
         kind, index: n, name: e.name, tag: i?.tag, running: !!i?.running, playing: !!i?.running && !!i?.playing,
         meta: i?.tag ? live.meta?.[i.tag] : undefined, connected: !!e.output,
+        targets: e.output ? [outLabel(e.output)] : [],
       } });
     }));
   map.inputs.forEach((p, n) => {
@@ -167,6 +275,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
     sources.push({ id: srcId('input', p.id), data: {
       kind: 'input', index: n, name: p.label, running: true,
       playing: routes.some((r) => inst('route', p.id, r.output)?.running), connected: routes.length > 0,
+      targets: routes.map((r) => outLabel(r.output)),
     } });
   });
   const feeding = (o: string) =>
@@ -203,13 +312,17 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
       if (!e.output) return;
       const playing = sources.find((s) => s.id === srcId(kind, n))?.data.playing;
       const id = `edge:${kind}:${n}`;
-      edges.push({ id, source: srcId(kind, n), target: outId(e.output), animated: !!playing, selected: sel === id,
+      // Lines are audio actually flowing. An idle assignment is shown on the
+      // source node ("→ Analog 2") instead, unless it is the selected line.
+      if (!playing && sel !== id) return;
+      edges.push({ id, type: 'route', source: srcId(kind, n), target: outId(e.output), animated: !!playing, selected: sel === id,
         style: { stroke: playing ? 'var(--live)' : 'var(--muted)', strokeWidth: playing ? 2.5 : 1.5, opacity: playing ? 1 : 0.6 } });
     }));
   eps.routes.forEach((r, n) => {
     const playing = !!inst('route', r.input, r.output)?.running;
     const id = `edge:route:${n}`;
-    edges.push({ id, source: srcId('input', r.input), target: outId(r.output), animated: playing, selected: sel === id,
+    if (!playing && sel !== id) return;
+    edges.push({ id, type: 'route', source: srcId('input', r.input), target: outId(r.output), animated: playing, selected: sel === id,
       style: { stroke: playing ? 'var(--live)' : 'var(--muted)', strokeWidth: playing ? 2.5 : 1.5 } });
   });
 
@@ -254,21 +367,24 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
     }
   };
 
-  const selected = sel?.startsWith('edge:') ? null : sel;
-  const selSource = sources.find((s) => s.id === selected);
-  const selOutput = map.outputs.find((o) => outId(o.id) === selected);
-  const selEdge = sel?.startsWith('edge:') ? edges.find((e) => e.id === sel) : undefined;
   const nameOf = (nodeId: string) =>
     sources.find((s) => s.id === nodeId)?.data.name ?? map.outputs.find((o) => outId(o.id) === nodeId)?.label ?? nodeId;
+  // Everything assigned to an output (lines show only what is playing).
+  const feedingOf = (o: string) => {
+    const label = outLabel(o);
+    return sources.filter((s) => s.data.targets.includes(label)).map((s) => s.data);
+  };
+  const flow: Flow = { eps, map, live, save, close: () => setSel(null), feeding: feedingOf, disconnect, nameOf };
   const hasLibrary = (eps.library ?? []).length > 0;
 
   return (
-    <div className="flex h-full min-h-0">
-      <div className="relative min-w-0 flex-1">
+    <FlowCtx.Provider value={flow}>
+      <div className="absolute inset-0">
         <ReactFlow
           nodes={nodes.map((n) => ({ ...n, selected: n.id === sel }))}
           edges={edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodesChange={(chs) => {
             onNodesChange(chs.filter((c) => c.type !== 'remove' && c.type !== 'select'));
             for (const c of chs) {
@@ -287,11 +403,11 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
           colorMode="system"
           style={{ background: 'var(--ground)' }}
           fitView
-          fitViewOptions={{ padding: 0.15 }}
+          fitViewOptions={{ padding: 0.12, maxZoom: 1.25 }}
+          minZoom={0.3}
           proOptions={{ hideAttribution: true }}
           deleteKeyCode={['Backspace', 'Delete']}
         >
-          <Refit when={!!(selSource || selOutput || selEdge)} />
           <Background gap={20} size={1} />
           <Controls showInteractive={false} />
           <Panel position="top-left">
@@ -304,36 +420,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
           )}
         </ReactFlow>
       </div>
-
-      {(selSource || selOutput || selEdge) && (
-        <aside className="hair absolute inset-y-0 right-0 z-10 w-full max-w-sm overflow-y-auto border-l bg-panel p-4 shadow-xl sm:static sm:w-96 sm:shadow-none">
-          <button onClick={() => setSel(null)} className="float-right rounded-md p-1 text-muted hover:text-ink" aria-label="Close">
-            <X size={16} />
-          </button>
-          {selSource && (
-            <SourceInspector key={selSource.id} s={selSource.data} eps={eps} map={map} live={live}
-              onSave={save} onClose={() => setSel(null)} />
-          )}
-          {selOutput && (
-            <OutputInspector key={selOutput.id} id={selOutput.id} label={selOutput.label} device={selOutput.device} live={live}
-              feeding={sources.filter((s) => edges.some((e) => e.source === s.id && e.target === outId(selOutput.id))).map((s) => s.data)} />
-          )}
-          {selEdge && (
-            <div className="space-y-3">
-              <h2 className="text-sm font-medium">Connection</h2>
-              <p className="text-sm">
-                {nameOf(selEdge.source)} <ChevronRight size={13} className="inline text-muted" /> {nameOf(selEdge.target)}
-              </p>
-              <button onClick={() => disconnect(selEdge.id)}
-                className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs hover:border-alarm/60 hover:text-alarm">
-                <Unplug size={13} /> Disconnect
-              </button>
-              <p className="text-xs text-muted">Or select the line and press Delete.</p>
-            </div>
-          )}
-        </aside>
-      )}
-    </div>
+    </FlowCtx.Provider>
   );
 }
 
@@ -358,17 +445,10 @@ function AddSource({ onAdd, hasLibrary }: { onAdd: (k: 'spotify' | 'airplay' | '
   );
 }
 
-/* ── inspectors ───────────────────────────────────────────────────────────── */
+/* ── inspectors (popup contents) ───────────────────────────────────────────── */
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs text-muted">{label}</span>
-      {children}
-    </label>
-  );
-}
-const inputCls = 'hair w-full rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50';
+const pill = (on: boolean) =>
+  `rounded-full border px-2.5 py-1 text-xs transition ${on ? 'border-accent/60 bg-accent/15 text-ink' : 'hair bg-raised text-muted hover:text-ink'}`;
 
 function SourceInspector({
   s, eps, map, live, onSave, onClose,
@@ -380,12 +460,15 @@ function SourceInspector({
   onSave: (e: AudioEndpoints) => void;
   onClose: () => void;
 }) {
-  const Icon = KIND_ICON[s.kind];
   const [name, setName] = useState(s.name);
+  const [bad, setBad] = useState<string | null>(null);
   const m = s.meta;
   const clone = (): AudioEndpoints => JSON.parse(JSON.stringify(eps));
   const list = (e: AudioEndpoints) => (s.kind === 'input' ? null : (e[s.kind] ?? []) as AudioEndpoint[]);
   const ep = list(eps)?.[s.index];
+  const inputId = s.kind === 'input' ? map.inputs[s.index]?.id : undefined;
+  const status = s.playing ? 'Playing' : !s.connected ? 'Not connected' : s.kind === 'input' || s.running ? 'Idle' : 'Not running';
+  const cover = m?.cover && m.cover !== bad ? m.cover : null;
 
   const rename = () => {
     const n = name.trim();
@@ -394,145 +477,154 @@ function SourceInspector({
     list(next)![s.index].name = n;
     onSave(next);
   };
-
-  if (s.kind === 'input') {
-    const id = map.inputs[s.index]?.id;
-    const routes = eps.routes.map((r, n) => ({ ...r, n })).filter((r) => r.input === id);
-    return (
-      <div className="space-y-4">
-        <h2 className="flex items-center gap-2 text-sm font-medium"><Icon size={15} className="text-muted" /> {s.name}</h2>
-        <p className="text-xs text-muted">A hardware input. Drag it to any number of outputs to play it there live.</p>
-        <div className="space-y-1.5">
-          {routes.map((r) => (
-            <div key={r.n} className="hair flex items-center gap-2 rounded-lg border bg-raised px-2.5 py-1.5 text-sm">
-              <ChevronRight size={13} className="text-muted" />
-              {map.outputs.find((o) => o.id === r.output)?.label ?? r.output}
-              <button className="ml-auto rounded-md p-1 text-muted hover:text-alarm" title="Disconnect"
-                onClick={() => { const next = clone(); next.routes.splice(r.n, 1); onSave(next); }}><Unplug size={13} /></button>
-            </div>
-          ))}
-          {!routes.length && <p className="text-xs text-muted">Not playing anywhere.</p>}
-        </div>
-      </div>
-    );
-  }
+  // Endpoints play to one output (or none); an input to any number.
+  const assigned = (o: string) =>
+    s.kind === 'input' ? eps.routes.some((r) => r.input === inputId && r.output === o) : ep?.output === o;
+  const toggle = (o: string) => {
+    const next = clone();
+    if (s.kind === 'input') {
+      const i = next.routes.findIndex((r) => r.input === inputId && r.output === o);
+      if (i >= 0) next.routes.splice(i, 1);
+      else next.routes.push({ input: inputId!, output: o });
+    } else {
+      const e = list(next)![s.index];
+      e.output = e.output === o ? '' : o;
+    }
+    onSave(next);
+  };
 
   return (
-    <div className="space-y-4">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <Icon size={15} className="text-muted" /> {KIND_LABEL[s.kind]}
-        <span className={`ml-2 text-xs font-normal ${s.playing ? 'text-live' : 'text-muted'}`}>
-          {s.playing ? 'playing' : !s.connected ? 'not connected' : s.running ? 'idle' : 'not running'}
-        </span>
-      </h2>
-
-      {m?.title && (
-        <div className="hair flex gap-3 rounded-xl border bg-raised p-2.5">
-          {m.cover && <img src={audioCover(m.cover)} alt="" className="size-14 shrink-0 rounded-lg object-cover" />}
-          <div className="min-w-0 text-sm leading-tight">
-            <div className="truncate">{m.title}</div>
-            {m.artist && <div className="truncate text-xs text-muted">{m.artist}</div>}
-            {m.album && <div className="truncate text-xs text-muted">{m.album}</div>}
-            {m.client && <div className="mt-1 truncate text-xs text-muted">from {m.client}</div>}
-          </div>
-        </div>
+    <Popup side="left" onClose={onClose}
+      icon={cover
+        ? <img src={audioCover(cover)} alt="" onError={() => setBad(cover)} className="size-10 rounded-xl object-cover" />
+        : <IconChip icon={KIND_ICON[s.kind]} live={s.playing} />}
+      title={m?.title || s.name}
+      subtitle={m?.title ? [m.artist, m.client && `from ${m.client}`].filter(Boolean).join(' · ') : `${KIND_LABEL[s.kind]} · ${status}`}
+      footer={s.kind === 'input' ? undefined : (
+        <>
+          <span className={`flex items-center gap-1.5 text-xs ${s.playing ? 'text-live' : 'text-muted'}`}>
+            <span className={`size-1.5 rounded-full ${s.playing ? 'bg-live' : 'bg-[var(--muted)]'}`} /> {status}
+          </span>
+          <button onClick={() => {
+            if (!confirm(`Remove "${s.name}"?`)) return;
+            const next = clone(); list(next)!.splice(s.index, 1); onSave(next); onClose();
+          }} className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted hover:bg-alarm/10 hover:text-alarm">
+            <Trash2 size={12} /> Remove
+          </button>
+        </>
+      )}>
+      {s.kind !== 'input' && (
+        <Section title={s.kind === 'spotify' ? 'Name in Spotify' : s.kind === 'airplay' ? 'Name on Apple devices' : 'Name'}>
+          <input value={name} onChange={(e) => setName(e.target.value)} onBlur={rename} maxLength={64}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            className="hair w-full rounded-lg border bg-raised px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent/60" />
+        </Section>
       )}
 
-      <Field label={s.kind === 'spotify' ? 'Name in the Spotify app' : s.kind === 'airplay' ? 'Name on Apple devices' : 'Name'}>
-        <input value={name} onChange={(e) => setName(e.target.value)} onBlur={rename} maxLength={64}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} className={inputCls} />
-      </Field>
-      <Field label="Plays on">
-        <select value={ep?.output ?? ''} className={inputCls}
-          onChange={(e) => { const next = clone(); list(next)![s.index].output = e.target.value; onSave(next); }}>
-          <option value="">Not connected</option>
-          {map.outputs.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-        </select>
-      </Field>
+      <Section title={s.kind === 'input' ? 'Plays on (any number)' : 'Plays on'}>
+        <div className="flex flex-wrap gap-1.5">
+          {map.outputs.map((o) => (
+            <button key={o.id} className={pill(assigned(o.id))} onClick={() => toggle(o.id)}>{o.label}</button>
+          ))}
+        </div>
+      </Section>
+
+      {m?.album && (
+        <Section title="Album">
+          <div className="truncate text-sm">{m.album}</div>
+        </Section>
+      )}
 
       {s.kind === 'library' && <LibraryPlayer state={live.library} meta={m} />}
-
-      <button onClick={() => {
-        if (!confirm(`Remove "${s.name}"?`)) return;
-        const next = clone(); list(next)!.splice(s.index, 1); onSave(next); onClose();
-      }}
-        className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs hover:border-alarm/60 hover:text-alarm">
-        <Trash2 size={13} /> Remove source
-      </button>
-    </div>
+    </Popup>
   );
 }
 
 function OutputInspector({
-  id, label, device, live, feeding,
+  id, label, device, live, feeding, onClose,
 }: {
   id: string;
   label: string;
   device: string;
   live: Live;
   feeding: SourceData[];
+  onClose: () => void;
 }) {
   const level = live.level?.[id];
+  const lastLevel = useRef(level && level > 0 ? level : 60);
+  if (level && level > 0) lastLevel.current = level;
   const hasTone = live.bass !== undefined;
   const tone = { bass: live.bass?.[id] ?? 0, treble: live.treble?.[id] ?? 0, balance: live.balance?.[id] ?? 0 };
   const flat = tone.bass === 0 && tone.treble === 0 && tone.balance === 0;
-  const db = (v: number) => (v > 0 ? `+${v} dB` : `${v} dB`);
-  const bal = (v: number) => (v === 0 ? 'centre' : v < 0 ? `L ${-v}` : `R ${v}`);
-  return (
-    <div className="space-y-4">
-      <h2 className="flex items-center gap-2 text-sm font-medium" title={device}>
-        <Speaker size={15} className="text-muted" /> {label}
-        {live.announcing?.[id] && <span className="text-xs font-normal text-warm">announcing</span>}
-      </h2>
+  const db = (v: number) => (v > 0 ? `+${v}` : `${v}`);
+  const bal = (v: number) => (v === 0 ? 'C' : v < 0 ? `L${-v}` : `R${v}`);
+  const announcing = !!live.announcing?.[id];
+  const playing = feeding.filter((f) => f.playing).length;
+  const muted = level === 0;
 
-      <div>
-        <div className="mb-1 text-xs text-muted">Level</div>
-        <LiveSlider value={level ?? 0} min={0} max={100} disabled={level === undefined} label={`${label} level`}
-          fmt={(v) => `${v}%`} send={(v) => io.setAudioLevel(id, v)} />
-        <p className="mt-1 text-xs text-muted">The AirPlay and Spotify volume sliders move this too.</p>
-      </div>
+  return (
+    <Popup side="right" onClose={onClose}
+      icon={<IconChip icon={Speaker} live={playing > 0} />}
+      title={label}
+      subtitle={announcing ? 'Announcing' : playing ? `${playing} playing` : 'Idle'}
+      footer={
+        <>
+          <button onClick={() => { try { io.announce(id); } catch { /* not connected */ } }}
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-raised hover:text-ink">
+            <Bell size={13} /> Chime
+          </button>
+          <span className="ml-auto truncate font-mono text-[10px] text-muted" title={device}>{device}</span>
+        </>
+      }>
+      <Section title="Volume">
+        <div className="flex items-center gap-2">
+          <button disabled={level === undefined} aria-label={muted ? 'Unmute' : 'Mute'} title={muted ? 'Unmute' : 'Mute'}
+            onClick={() => { try { io.setAudioLevel(id, muted ? lastLevel.current : 0); } catch { /* not connected */ } }}
+            className={`rounded-lg p-1.5 hover:bg-raised ${muted ? 'text-alarm' : 'text-muted hover:text-ink'}`}>
+            {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
+          <div className="min-w-0 flex-1">
+            <LiveSlider value={level ?? 0} min={0} max={100} disabled={level === undefined} label={`${label} volume`}
+              fmt={(v) => `${v}%`} send={(v) => io.setAudioLevel(id, v)} />
+          </div>
+        </div>
+      </Section>
 
       {hasTone && (
-        <div>
-          <div className="mb-1 flex items-center text-xs text-muted">
-            Tone
-            <button disabled={flat} title="Flat and centred" aria-label="Reset tone"
-              onClick={() => { try { (['bass', 'treble', 'balance'] as const).forEach((k) => io.setTone(id, k, 0)); } catch { /* not connected */ } }}
-              className="ml-auto rounded-md p-1 text-muted hover:text-ink disabled:opacity-30"><RotateCcw size={12} /></button>
-          </div>
-          <div className="space-y-1.5">
+        <Section title="Tone" action={
+          <button disabled={flat} title="Flat and centred" aria-label="Reset tone"
+            onClick={() => { try { (['bass', 'treble', 'balance'] as const).forEach((k) => io.setTone(id, k, 0)); } catch { /* not connected */ } }}
+            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:text-ink disabled:opacity-30">
+            <RotateCcw size={11} /> Reset
+          </button>
+        }>
+          <div className="space-y-1">
             <ToneSlider id={id} knob="bass" label="Bass" value={tone.bass} min={-12} max={12} fmt={db} />
             <ToneSlider id={id} knob="treble" label="Treble" value={tone.treble} min={-12} max={12} fmt={db} />
             <ToneSlider id={id} knob="balance" label="Balance" value={tone.balance} min={-100} max={100} fmt={bal} />
           </div>
-        </div>
+        </Section>
       )}
 
-      <button onClick={() => { try { io.announce(id); } catch { /* not connected */ } }}
-        className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs hover:border-accent/50">
-        <Bell size={13} /> Play a chime (ducks the music)
-      </button>
-
-      <div>
-        <div className="mb-1 text-xs text-muted">Playing here</div>
+      <Section title="Sources">
         {feeding.length ? (
-          <ul className="space-y-1 text-sm">
+          <div className="flex flex-wrap gap-1.5">
             {feeding.map((f) => {
               const Icon = KIND_ICON[f.kind];
               return (
-                <li key={`${f.kind}:${f.index}`} className="flex items-center gap-2">
-                  <Icon size={13} className={f.playing ? 'shrink-0 text-live' : 'shrink-0 text-muted'} />
+                <span key={`${f.kind}:${f.index}`} title={`${f.name} · ${KIND_LABEL[f.kind]}`}
+                  className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${f.playing ? 'border-live/50 bg-live/10 text-ink' : 'hair bg-raised text-muted'}`}>
+                  <Icon size={12} className="shrink-0" />
                   <span className="truncate">{f.name}</span>
-                  <span className="ml-auto shrink-0 text-xs text-muted">{KIND_LABEL[f.kind]}</span>
-                </li>
+                </span>
               );
             })}
-          </ul>
+          </div>
         ) : (
-          <p className="text-xs text-muted">Nothing connected — drag a source here.</p>
+          <p className="text-xs text-muted">None — drag a source here.</p>
         )}
-      </div>
-    </div>
+      </Section>
+    </Popup>
   );
 }
 
@@ -565,7 +657,7 @@ function LiveSlider({
         onChange={(e) => { const v = Number(e.target.value); setDrag(v); go(v); }}
         onPointerUp={release} onKeyUp={release} onBlur={release}
         className="min-w-0 flex-1 accent-accent" />
-      <span className="w-12 shrink-0 text-right text-xs tabular-nums">{disabled ? '–' : fmt(shown)}</span>
+      <span className="w-10 shrink-0 text-right text-xs tabular-nums">{disabled ? '–' : fmt(shown)}</span>
     </div>
   );
 }
@@ -581,32 +673,16 @@ function ToneSlider({
   max: number;
   fmt: (v: number) => string;
 }) {
-  const [drag, setDrag] = useState<number | null>(null);
-  const sent = useRef(0);
-  const shown = drag ?? value;
-  const send = (v: number, force = false) => {
-    const now = Date.now();
-    if (!force && now - sent.current < 120) return;
-    sent.current = now;
-    try { io.setTone(id, knob, v); } catch { /* not connected */ }
-  };
-  const release = () => {
-    if (drag !== null) send(drag, true);
-    setDrag(null);
-  };
   return (
-    <label className="flex min-w-0 flex-1 items-center gap-2 text-xs">
-      <span className="w-12 shrink-0 text-muted">{label}</span>
-      <input type="range" min={min} max={max} value={shown} aria-label={label}
-        onChange={(e) => { const v = Number(e.target.value); setDrag(v); send(v); }}
-        onPointerUp={release} onKeyUp={release} onBlur={release}
-        onDoubleClick={() => { setDrag(null); send(0, true); }}
-        className="min-w-0 flex-1 accent-accent" />
-      <span className="w-12 shrink-0 text-right tabular-nums">{fmt(shown)}</span>
-    </label>
+    <div className="flex items-center gap-2 text-xs" onDoubleClick={() => { try { io.setTone(id, knob, 0); } catch { /* not connected */ } }}
+      title="Double-click to reset">
+      <span className="w-14 shrink-0 text-muted">{label}</span>
+      <div className="min-w-0 flex-1">
+        <LiveSlider value={value} min={min} max={max} label={label} fmt={fmt} send={(v) => io.setTone(id, knob, v)} />
+      </div>
+    </div>
   );
 }
-
 
 const clock = (s: number) => {
   const t = Math.max(0, Math.floor(s));

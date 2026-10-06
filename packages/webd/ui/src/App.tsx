@@ -129,7 +129,7 @@ export default function App() {
       <main
         className={
           here.full
-            ? 'min-w-0 flex-1 overflow-hidden'
+            ? 'relative min-w-0 flex-1 overflow-hidden'
             : 'min-w-0 flex-1 overflow-auto p-5 sm:p-7'
         }
       >
