@@ -16,9 +16,12 @@ import {
 /* The audio switcher: the whole Audio page on boards with named outputs.
 
    Sources (Spotify Connect and AirPlay endpoints, the library player, the
-   hardware inputs) on the left, outputs on the right, and the routing is the
-   lines between them — drag from a source to an output to connect it, select
-   a line and press Delete (or use its panel) to disconnect. A Spotify, AirPlay
+   hardware inputs) on the left, outputs on the right. Two kinds of line:
+   a DEFAULT route (dashed, quiet) is where a source plays when its trigger
+   fires — today, when it starts playing — and is configuration; a LIVE line
+   (solid, lit) is audio actually flowing now. Drag from a source to an output
+   to set its default; select a line and press Delete (or use its popup) to
+   remove it. A Spotify, AirPlay
    or library source plays to one output, so a new line replaces its old one;
    an input can feed any number of outputs. Click any node for its settings:
    an output's level, tone and announcements; a source's name, what it is
@@ -161,9 +164,7 @@ function SourceNode({ data, selected }: NodeProps<Node<SourceData>>) {
       <div className="min-w-0 flex-1 leading-tight">
         <div className="truncate text-sm text-ink">{data.name}</div>
         <div className="truncate text-muted">
-          {track || (data.connected
-            ? `${KIND_LABEL[data.kind]} → ${data.targets.join(', ')}${data.running || data.kind === 'input' ? '' : ' (not running)'}`
-            : `${KIND_LABEL[data.kind]} · not connected`)}
+          {track || `${KIND_LABEL[data.kind]}${!data.connected ? (data.kind === 'input' ? ' · not routed' : ' · no default') : data.running || data.kind === 'input' ? '' : ' · not running'}`}
         </div>
       </div>
       {data.playing && <span className="size-2 shrink-0 rounded-full bg-live" title="playing" />}
@@ -201,32 +202,58 @@ function OutputNode({ data, selected }: NodeProps<Node<OutputData>>) {
   );
 }
 
-/* A connection, with its popup (from → to, Disconnect) at its midpoint when
+type RouteData = { live: boolean };
+
+/* The two line states, in one place (the legend draws the same). */
+const LINE = {
+  live: { stroke: 'var(--live)', strokeWidth: 2.5 },
+  default: { stroke: 'var(--muted)', strokeWidth: 1.25, strokeDasharray: '5 5', opacity: 0.55 },
+} as const;
+
+/* A route: dashed while it is only a default, solid and lit while audio flows
+   over it, with its popup (from → to, state, remove) at its midpoint when
    selected. */
-function RouteEdge(p: EdgeProps) {
+function RouteEdge(p: EdgeProps<Edge<RouteData>>) {
   const f = useFlow();
   const [path, x, y] = getBezierPath(p);
+  const live = !!p.data?.live;
+  const style = { ...(live ? LINE.live : LINE.default), ...(p.selected ? { stroke: 'var(--accent)', opacity: 1 } : {}) };
   return (
     <>
-      <BaseEdge id={p.id} path={path} style={p.style} interactionWidth={18} />
+      <BaseEdge id={p.id} path={path} style={style} interactionWidth={18} />
       <EdgeToolbar edgeId={p.id} x={x} y={y} isVisible={p.selected}>
         <div className="nodrag nopan hair flex items-center gap-2 rounded-full border bg-panel py-1.5 pl-3.5 pr-1.5 text-xs shadow-2xl">
-          <span className="max-w-40 truncate">{f.nameOf(p.source)}</span>
+          <span className={`size-1.5 shrink-0 rounded-full ${live ? 'bg-live' : 'bg-[var(--muted)]'}`} />
+          <span className="max-w-36 truncate">{f.nameOf(p.source)}</span>
           <ChevronRight size={12} className="shrink-0 text-muted" />
-          <span className="max-w-32 truncate">{f.nameOf(p.target)}</span>
+          <span className="max-w-28 truncate">{f.nameOf(p.target)}</span>
+          <span className="shrink-0 text-muted">{live ? 'playing' : 'default'}</span>
           <button onClick={() => f.disconnect(p.id)}
             className="ml-1 flex items-center gap-1 rounded-full bg-raised px-2.5 py-1 text-muted hover:bg-alarm/15 hover:text-alarm">
-            <Unplug size={12} /> Disconnect
+            <Unplug size={12} /> Remove
           </button>
         </div>
       </EdgeToolbar>
     </>
   );
 }
+
+function Legend() {
+  const row = (style: React.CSSProperties, label: string) => (
+    <div className="flex items-center gap-2">
+      <svg width="28" height="6" aria-hidden><line x1="0" y1="3" x2="28" y2="3" style={style} /></svg>
+      {label}
+    </div>
+  );
+  return (
+    <div className="hair space-y-1 rounded-lg border bg-panel/90 px-3 py-2 text-[11px] text-muted shadow-sm backdrop-blur">
+      {row(LINE.live, 'Playing')}
+      {row(LINE.default, 'Default route')}
+    </div>
+  );
+}
 const edgeTypes = { route: RouteEdge };
 
-// Not `input`/`output`: those are React Flow's built-in node types, and their
-// default styling (a box behind the node) applies by class name.
 // Not `input`/`output`: those are React Flow's built-in node types, and their
 // default styling (a box behind the node) applies by class name.
 
@@ -306,24 +333,20 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [derivedKey]);
 
-  const edges: Edge[] = [];
+  const edges: Edge<RouteData>[] = [];
   (['spotify', 'airplay', 'library'] as const).forEach((kind) =>
     (eps[kind] ?? []).forEach((e, n) => {
       if (!e.output) return;
       const playing = sources.find((s) => s.id === srcId(kind, n))?.data.playing;
       const id = `edge:${kind}:${n}`;
-      // Lines are audio actually flowing. An idle assignment is shown on the
-      // source node ("→ Analog 2") instead, unless it is the selected line.
-      if (!playing && sel !== id) return;
-      edges.push({ id, type: 'route', source: srcId(kind, n), target: outId(e.output), animated: !!playing, selected: sel === id,
-        style: { stroke: playing ? 'var(--live)' : 'var(--muted)', strokeWidth: playing ? 2.5 : 1.5, opacity: playing ? 1 : 0.6 } });
+      edges.push({ id, type: 'route', source: srcId(kind, n), target: outId(e.output), selected: sel === id,
+        data: { live: !!playing }, zIndex: playing ? 1 : 0 });
     }));
   eps.routes.forEach((r, n) => {
     const playing = !!inst('route', r.input, r.output)?.running;
     const id = `edge:route:${n}`;
-    if (!playing && sel !== id) return;
-    edges.push({ id, type: 'route', source: srcId('input', r.input), target: outId(r.output), animated: playing, selected: sel === id,
-      style: { stroke: playing ? 'var(--live)' : 'var(--muted)', strokeWidth: playing ? 2.5 : 1.5 } });
+    edges.push({ id, type: 'route', source: srcId('input', r.input), target: outId(r.output), selected: sel === id,
+      data: { live: playing }, zIndex: playing ? 1 : 0 });
   });
 
   // Routing edits.
@@ -413,6 +436,9 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
           <Panel position="top-left">
             <AddSource onAdd={addSource} hasLibrary={hasLibrary} />
           </Panel>
+          <Panel position="bottom-right">
+            <Legend />
+          </Panel>
           {err && (
             <Panel position="bottom-center">
               <div className="rounded-lg border border-alarm/40 bg-panel px-3 py-1.5 text-xs text-alarm">{err}</div>
@@ -467,7 +493,7 @@ function SourceInspector({
   const list = (e: AudioEndpoints) => (s.kind === 'input' ? null : (e[s.kind] ?? []) as AudioEndpoint[]);
   const ep = list(eps)?.[s.index];
   const inputId = s.kind === 'input' ? map.inputs[s.index]?.id : undefined;
-  const status = s.playing ? 'Playing' : !s.connected ? 'Not connected' : s.kind === 'input' || s.running ? 'Idle' : 'Not running';
+  const status = s.playing ? 'Playing' : !s.connected ? 'No default output' : s.kind === 'input' || s.running ? 'Idle' : 'Not running';
   const cover = m?.cover && m.cover !== bad ? m.cover : null;
 
   const rename = () => {
@@ -521,12 +547,15 @@ function SourceInspector({
         </Section>
       )}
 
-      <Section title={s.kind === 'input' ? 'Plays on (any number)' : 'Plays on'}>
+      <Section title={s.kind === 'input' ? 'Default outputs' : 'Default output'}>
         <div className="flex flex-wrap gap-1.5">
           {map.outputs.map((o) => (
             <button key={o.id} className={pill(assigned(o.id))} onClick={() => toggle(o.id)}>{o.label}</button>
           ))}
         </div>
+        <p className="mt-1.5 text-[11px] text-muted">
+          {s.kind === 'input' ? 'Plays live on each one selected.' : 'Where it plays when it starts.'}
+        </p>
       </Section>
 
       {m?.album && (
