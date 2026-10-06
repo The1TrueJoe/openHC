@@ -22,6 +22,8 @@ const HTTP = `${location.origin}/iod`;
 const SYS = `${location.origin}/sys`;
 /* ohc-audiod's configuration REST, proxied by webd at /audio. */
 const AUDIO = `${location.origin}/audio`;
+/* ohc-storaged's REST (external drives, the SMB share), proxied at /storage. */
+const STORAGE = `${location.origin}/storage`;
 const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
@@ -69,6 +71,38 @@ export interface Capabilities {
   /** Audio, discovered at runtime (not board.env). Absent when the box has no
    *  sound card AND no receiver binaries — the same "nothing behind it" rule. */
   audio?: AudioStatus;
+  /** External drives + the SMB share, when this board runs ohc-storaged. */
+  storage?: StorageStatus;
+}
+
+/** One mounted filesystem on a plugged-in drive (ohc-storaged). */
+export interface StorageVolume {
+  id: string;
+  /** The share name, and the folder under /media. */
+  name: string;
+  label: string;
+  fs: string;
+  bus: 'usb' | 'esata';
+  drive: string;
+  size_bytes: number;
+  used_bytes?: number;
+  mount?: string;
+  read_only: boolean;
+}
+
+/** The SMB share settings and how to reach it. The password is write-only. */
+export interface StorageShare {
+  enabled: boolean;
+  user: string;
+  guest: boolean;
+  host: string;
+  smb: string;
+  windows: string;
+}
+
+export interface StorageStatus {
+  volumes: StorageVolume[];
+  share: StorageShare;
 }
 
 /** An ALSA playback device the receivers can be pointed at. `id` is what you
@@ -218,6 +252,8 @@ export interface IoState {
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
   health?: { now?: Telemetry; history?: History; fan?: FanStatus };
+  /** External drives (ohc-storaged), live. */
+  storage?: { volumes?: StorageVolume[]; share?: StorageShare };
   /** Return-to-stock availability (boards with the ohc-restore helper). */
   system?: { restore?: { available: boolean; openhc?: boolean; detail?: string } };
 }
@@ -294,6 +330,14 @@ export const rest = {
    *  live changes arrive over MQTT. */
   audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
   /** Replace the endpoint map (configuration). */
+  /** ohc-storaged: volumes and the share. Absent board feature = rejected. */
+  storage: () => j<StorageStatus>(`${STORAGE}/api/storage`),
+  saveShare: (u: { enabled?: boolean; user?: string; password?: string; guest?: boolean }) =>
+    j<StorageShare>(`${STORAGE}/api/storage/share`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(u),
+    }),
   saveEndpoints: (e: AudioEndpoints) =>
     j<AudioMap>(`${AUDIO}/api/audio/endpoints`, {
       method: 'PUT',
@@ -456,6 +500,8 @@ export class Io {
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));
   /** Return to stock. One-way; iod acts only on the literal "confirm". */
   restoreStock = () => this.#publish('system/restore', 'confirm');
+  /** Unshare and unmount a volume so its drive can be pulled. */
+  ejectVolume = (id: string) => this.#publish(`storage/eject/${id}`, '');
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {

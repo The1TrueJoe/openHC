@@ -10,3 +10,4 @@ zigbee      # EM357 NCP on a CP2104 USB bridge (/dev/ttyUSB0); node + cp210x
 audio       # ALSA + Spotify Connect + AirPlay userspace (needs an output: DSP on
             # EA3, HDMI elsewhere once that driver lands)
 restore     # software return-to-stock: ohc-restore edits the MFH over mtd0
+storage     # USB drives mounted and shared over SMB (ohc-storaged)

@@ -146,11 +146,14 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_WIRELESS_EXT is not set
 
 # No storage stack: rootfs is a RAM initramfs. eMMC/SATA/USB/NVMe/MTD/RAID out.
+# (Features add back what they need, merged after this: 'emmc' its MMC + ext4,
+# 'storage' USB disks, their filesystems and the ksmbd SMB server.)
 # CONFIG_MD is not set
 # CONFIG_NVME_CORE is not set
 # CONFIG_MTD is not set
 
-# Filesystems: initramfs is tmpfs/ramfs (builtin). No on-disk or network FS.
+# Filesystems: initramfs is tmpfs/ramfs (builtin). No on-disk or network FS
+# beyond what a feature adds (see above).
 # CONFIG_EXT3_FS is not set
 # CONFIG_EXT2_FS is not set
 # CONFIG_JBD2 is not set
