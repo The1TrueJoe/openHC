@@ -98,6 +98,8 @@ export interface StorageShare {
   host: string;
   smb: string;
   windows: string;
+  /** The password generated on first start, until one is set (REST only). */
+  initial_password?: string;
 }
 
 /** One entry in a folder on a drive (the file browser). */

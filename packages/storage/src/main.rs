@@ -198,7 +198,13 @@ type Ctx = State<Arc<App>>;
     description = "For drawing a page once — volumes come and go live on MQTT (`<base>/state/storage/volumes`).",
     responses((status = 200, description = "volumes and share")))]
 async fn get_storage(State(app): Ctx) -> Json<Value> {
-    Json(json!({ "volumes": app.volumes(), "share": app.share_doc() }))
+    let mut share = app.share_doc();
+    // The generated first-start password, until one is set (REST only: the
+    // retained MQTT state is readable by anything on the broker).
+    if let Some(pw) = app.settings.lock().unwrap().initial_password.clone() {
+        share["initial_password"] = json!(pw);
+    }
+    Json(json!({ "volumes": app.volumes(), "share": share }))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -236,6 +242,7 @@ async fn put_share(State(app): Ctx, Json(u): Json<ShareUpdate>) -> axum::respons
             if let Err(e) = smb::set_password(&s.user, p) {
                 return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
             }
+            s.initial_password = None;
         }
         (None, true) => {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": "a new login needs a password" }))).into_response();
@@ -466,12 +473,22 @@ fn main() {
         changed: Notify::new(),
         rescan: Notify::new(),
     });
-    // First start: the login gets the box's default password, changeable from
-    // the web UI (Storage) or PUT /api/storage/share.
+    // First start: the login gets a random password, shown on the web UI's
+    // Storage page until it is changed there (or PUT /api/storage/share).
     app.apply_shares();
     if !smb::pwddb().exists() {
-        if let Err(e) = smb::set_password(&settings.user, "openhc") {
-            eprintln!("storaged: cannot create the SMB login: {e}");
+        match smb::random_password() {
+            Ok(pw) => match smb::set_password(&settings.user, &pw) {
+                Ok(()) => {
+                    let mut s = app.settings.lock().unwrap();
+                    s.initial_password = Some(pw);
+                    if let Err(e) = smb::save(&s) {
+                        eprintln!("storaged: cannot save the share settings: {e}");
+                    }
+                }
+                Err(e) => eprintln!("storaged: cannot create the SMB login: {e}"),
+            },
+            Err(e) => eprintln!("storaged: no random source for the SMB password: {e}"),
         }
     }
 

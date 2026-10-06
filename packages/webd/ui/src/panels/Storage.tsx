@@ -21,7 +21,7 @@ export function StoragePanel({ caps }: { caps: Capabilities }) {
     <div className="space-y-4">
       <Drives volumes={volumes} />
       {volumes.length > 0 && <Files volumes={volumes} />}
-      {share && <Share share={share} volumes={volumes} />}
+      {share && <Share share={share} volumes={volumes} initialPassword={caps.storage?.share.initial_password} />}
     </div>
   );
 }
@@ -108,8 +108,16 @@ function CopyLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Share({ share, volumes }: { share: StorageShare; volumes: StorageVolume[] }) {
+function Share({
+  share, volumes, initialPassword,
+}: {
+  share: StorageShare;
+  volumes: StorageVolume[];
+  /** Generated on first start; shown until a password is set. */
+  initialPassword?: string;
+}) {
   const [password, setPassword] = useState('');
+  const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -120,6 +128,7 @@ function Share({ share, volumes }: { share: StorageShare; volumes: StorageVolume
       await rest.saveShare(u);
       setMsg({ ok: true, text: done });
       setPassword('');
+      if (u.password) setChanged(true);
     } catch (e) {
       setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -154,6 +163,12 @@ function Share({ share, volumes }: { share: StorageShare; volumes: StorageVolume
         <div>
           <div className="mb-1 text-xs text-muted">Login</div>
           <div className="hair rounded-lg border bg-raised px-2.5 py-2 font-mono text-sm">{share.user}</div>
+          {initialPassword && !changed && (
+            <p className="mt-2 text-xs text-muted">
+              Password: <code className="font-mono text-ink">{initialPassword}</code> — generated for this box on
+              first start. Set your own to replace it.
+            </p>
+          )}
         </div>
         <form
           onSubmit={(e) => {

@@ -7,8 +7,10 @@
 //!   and `ksmbd.control --reload` picks it up.
 //! * Logins: one account, `openhc` by default. Windows 11 refuses guest SMB
 //!   logins out of the box, so a password is the default; guest access is an
-//!   option for networks that want it. The password lives only as its NT hash
-//!   in ksmbd's database (`ksmbd.adduser` writes it), on /data.
+//!   option for networks that want it. There is no well-known default: the
+//!   first start generates a random password and keeps it (on /data, with the
+//!   settings) only so the web UI can show it, until someone sets their own.
+//!   ksmbd itself holds only its NT hash (`ksmbd.adduser` writes it).
 //! * Shares force root as the file owner: FAT/exFAT/NTFS have no owners, and
 //!   the SMB account is not a Unix one.
 //! * macOS finds the box in Finder through an `_smb._tcp` mDNS service (avahi,
@@ -30,11 +32,15 @@ pub struct Settings {
     /// Allow guest (no password) access as well. Windows 11 blocks guest
     /// logons by default; macOS allows them.
     pub guest: bool,
+    /// The generated first-start password, kept only until a password is set,
+    /// so the web UI (REST, never MQTT) can show it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_password: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { enabled: true, user: "openhc".into(), guest: false }
+        Settings { enabled: true, user: "openhc".into(), guest: false, initial_password: None }
     }
 }
 
@@ -63,6 +69,24 @@ pub fn save(s: &Settings) -> std::io::Result<()> {
     let tmp = p.with_extension("json.new");
     std::fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
     std::fs::rename(&tmp, p)
+}
+
+/// A random password: 12 characters from an alphabet without look-alikes
+/// (0/O, 1/l/I), from the kernel's random source.
+pub fn random_password() -> std::io::Result<String> {
+    use std::io::Read;
+    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut out = String::with_capacity(12);
+    let mut f = std::fs::File::open("/dev/urandom")?;
+    let mut b = [0u8; 1];
+    while out.len() < 12 {
+        f.read_exact(&mut b)?;
+        // Reject the top of the range so every character is equally likely.
+        if (b[0] as usize) < 256 - 256 % ALPHABET.len() {
+            out.push(ALPHABET[b[0] as usize % ALPHABET.len()] as char);
+        }
+    }
+    Ok(out)
 }
 
 pub fn valid_user(u: &str) -> bool {
@@ -179,6 +203,13 @@ mod tests {
         let c = ksmbd_conf("box", &Settings::default(), &[("x]\n[global".into(), "/media/x".into())]);
         assert!(!c.contains("x]"));
         assert_eq!(c.matches("[global]").count(), 1);
+    }
+    #[test]
+    fn random_passwords() {
+        let (a, b) = (random_password().unwrap(), random_password().unwrap());
+        assert_eq!(a.len(), 12);
+        assert_ne!(a, b);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() && !"0O1lI".contains(c)));
     }
     #[test]
     fn user_names() {
