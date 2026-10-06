@@ -90,3 +90,13 @@ BR2_PACKAGE_SGX545_UM=y
 BR2_PACKAGE_WPEWEBKIT=y
 BR2_PACKAGE_WPEBACKEND_PVR=y
 BR2_PACKAGE_WEBVIEW=y
+
+# --- source patches (BR2_GLOBAL_PATCH_DIR) ---
+# patches/wpewebkit/*.patch is applied to the wpewebkit SOURCE. 0001 makes
+# GLContextLibWPE hand the PowerVR LinuxFB WSEGL a 0 native window: WebKit's
+# GLContext uses the handle as window?createWindowContext:createOffscreenContext,
+# so wpebackend-pvr returns a non-zero sentinel to get an on-screen context, but
+# the WSEGL only accepts 0 -- without this the compositor renders offscreen and
+# nothing reaches /dev/fb0. (This is source patching; the build/buildroot-patches
+# set patches Buildroot ITSELF and is separate.)
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/gpu-wpe-i386/patches"
