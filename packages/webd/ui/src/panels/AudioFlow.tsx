@@ -19,7 +19,9 @@ import {
    hardware inputs) on the left, outputs on the right. Two kinds of line:
    a DEFAULT route (dashed, quiet) is where a source plays when its trigger
    fires — today, when it starts playing — and is configuration; a LIVE line
-   (solid, lit) is audio actually flowing now. Drag from a source to an output
+   (solid, lit) is audio actually flowing now. Spotify/AirPlay/library
+   trigger themselves (they start playing); an input is triggered through the
+   API (cmd/audio/input/<id>, or Play in its popup). Drag from a source to an output
    to set its default; select a line and press Delete (or use its popup) to
    remove it. A Spotify, AirPlay
    or library source plays to one output, so a new line replaces its old one;
@@ -301,7 +303,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
     const routes = eps.routes.filter((r) => r.input === p.id);
     sources.push({ id: srcId('input', p.id), data: {
       kind: 'input', index: n, name: p.label, running: true,
-      playing: routes.some((r) => inst('route', p.id, r.output)?.running), connected: routes.length > 0,
+      playing: !!live.input?.[p.id] && routes.some((r) => inst('route', p.id, r.output)?.running), connected: routes.length > 0,
       targets: routes.map((r) => outLabel(r.output)),
     } });
   });
@@ -493,7 +495,7 @@ function SourceInspector({
   const list = (e: AudioEndpoints) => (s.kind === 'input' ? null : (e[s.kind] ?? []) as AudioEndpoint[]);
   const ep = list(eps)?.[s.index];
   const inputId = s.kind === 'input' ? map.inputs[s.index]?.id : undefined;
-  const status = s.playing ? 'Playing' : !s.connected ? 'No default output' : s.kind === 'input' || s.running ? 'Idle' : 'Not running';
+  const status = s.playing ? 'Playing' : !s.connected ? 'No default output' : s.kind === 'input' ? 'Off' : s.running ? 'Idle' : 'Not running';
   const cover = m?.cover && m.cover !== bad ? m.cover : null;
 
   const rename = () => {
@@ -526,7 +528,19 @@ function SourceInspector({
         : <IconChip icon={KIND_ICON[s.kind]} live={s.playing} />}
       title={m?.title || s.name}
       subtitle={m?.title ? [m.artist, m.client && `from ${m.client}`].filter(Boolean).join(' · ') : `${KIND_LABEL[s.kind]} · ${status}`}
-      footer={s.kind === 'input' ? undefined : (
+      footer={s.kind === 'input' ? (
+        <>
+          <span className={`flex items-center gap-1.5 text-xs ${s.playing ? 'text-live' : 'text-muted'}`}>
+            <span className={`size-1.5 rounded-full ${s.playing ? 'bg-live' : 'bg-[var(--muted)]'}`} /> {s.playing ? 'Playing' : 'Off'}
+          </span>
+          <button disabled={!s.connected && !live.input?.[inputId!]}
+            title={s.connected ? undefined : 'Pick a default output first'}
+            onClick={() => { try { io.setInput(inputId!, !live.input?.[inputId!]); } catch { /* not connected */ } }}
+            className={`ml-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-xs disabled:opacity-40 ${live.input?.[inputId!] ? 'bg-raised text-ink hover:bg-alarm/10 hover:text-alarm' : 'bg-accent/20 text-ink hover:bg-accent/30'}`}>
+            {live.input?.[inputId!] ? <><Square size={11} /> Stop</> : <><Play size={11} /> Play</>}
+          </button>
+        </>
+      ) : (
         <>
           <span className={`flex items-center gap-1.5 text-xs ${s.playing ? 'text-live' : 'text-muted'}`}>
             <span className={`size-1.5 rounded-full ${s.playing ? 'bg-live' : 'bg-[var(--muted)]'}`} /> {status}
@@ -554,7 +568,7 @@ function SourceInspector({
           ))}
         </div>
         <p className="mt-1.5 text-[11px] text-muted">
-          {s.kind === 'input' ? 'Plays live on each one selected.' : 'Where it plays when it starts.'}
+          {s.kind === 'input' ? 'Where it plays when triggered (Play, or the API).' : 'Where it plays when it starts.'}
         </p>
       </Section>
 

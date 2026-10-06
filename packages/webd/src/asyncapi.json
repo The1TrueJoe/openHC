@@ -442,6 +442,26 @@
       },
       "summary": "Set an output tone",
       "description": "`bass`/`treble` in dB (-12..12) or `balance` (-100..100), clamped. Heard at once (the plugin reads its controls as it plays) and saved across reboots."
+    },
+    "audioInput": {
+      "address": "openhc/{box}/state/audio/input/{input}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Input triggered on (retained, ohc-audiod)",
+      "description": "ON while `{input}` is playing to its default routes (the routes in state/audio/map). Every input starts OFF."
+    },
+    "audioSetInput": {
+      "address": "openhc/{box}/cmd/audio/input/{input}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Trigger an input",
+      "description": "`ON`, `OFF` or `TOGGLE`. An input route in the map is a default — where the input plays when triggered — so audio flows only while it is ON. Only that input’s routes start or stop; nothing else on the outputs is interrupted."
     }
   },
   "operations": {
@@ -731,6 +751,20 @@
         "$ref": "#/channels/audioSetTone"
       },
       "summary": "Set an output tone"
+    },
+    "audioInput": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioInput"
+      },
+      "summary": "Input triggered on (retained, ohc-audiod)"
+    },
+    "audioSetInput": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioSetInput"
+      },
+      "summary": "Trigger an input"
     }
   },
   "components": {

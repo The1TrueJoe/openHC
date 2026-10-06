@@ -267,6 +267,8 @@ export interface IoState {
     meta?: Record<string, AudioMeta>;
     /** The library player's transport state. */
     library?: LibraryState;
+    /** Input id → triggered on (playing to its default routes). */
+    input?: Record<string, boolean>;
     /** Output id → tone (images with the tone stage): dB, dB, -100..100. */
     bass?: Record<string, number>;
     treble?: Record<string, number>;
@@ -518,6 +520,8 @@ export class Io {
   /** Play an announcement over an output's music, which ducks under it:
    *  `chime`, an http(s) URL or an absolute path to a WAV on the box. */
   announce = (output: string, source = 'chime') => this.#publish(`audio/announce/${output}`, source);
+  /** Trigger an input on or off: while on it plays to its default routes. */
+  setInput = (input: string, on: boolean) => this.#publish(`audio/input/${input}`, on ? 'ON' : 'OFF');
   /** An output's tone: bass/treble in dB (-12..12), balance -100 (left) .. 100 (right). */
   setTone = (output: string, knob: 'bass' | 'treble' | 'balance', value: number) =>
     this.#publish(`audio/${knob}/${output}`, String(Math.round(value)));

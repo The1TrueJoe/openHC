@@ -15,7 +15,8 @@
 //!   drives under /media) on `audio/library` and `cmd/audio/library/<verb>`
 //!   (library.rs); with the tone plugin, each output's `audio/bass/<id>`,
 //!   `audio/treble/<id>`, `audio/balance/<id>` and the same under `cmd/`
-//!   (tone.rs).
+//!   (tone.rs). An input plays to its default routes only while triggered:
+//!   `cmd/audio/input/<id>` ON|OFF|TOGGLE, state `audio/input/<id>`.
 //! * **REST** (configuration, which changes rarely): `GET /api/audio` and
 //!   `PUT /api/audio/endpoints` — which Spotify Connect and AirPlay endpoints
 //!   exist and which output each plays on, and live input routes. webd proxies
@@ -62,6 +63,9 @@ struct App {
     up: runner::Up,
     /// Output id → level percent, as last set or read back from the control.
     levels: Mutex<HashMap<String, u8>>,
+    /// Inputs triggered on (cmd/audio/input/<id>): only these play to their
+    /// default routes. Live state — every input starts off.
+    live_inputs: Mutex<HashSet<String>>,
     /// Output id → tone (bass, treble, balance), as last set.
     tones: Mutex<HashMap<String, tone::Tone>>,
     /// Outputs with an announcement playing.
@@ -90,7 +94,8 @@ impl App {
                     tone::apply(p, &tones.get(&p.id).copied().unwrap_or_default());
                 }
             }
-            *inst = runner::start(&self.board, &e, &self.up, old);
+            let live = self.live_inputs.lock().unwrap().clone();
+            *inst = runner::start(&self.board, &e, &live, &self.up, old);
             // One metadata reader per AirPlay endpoint, for the life of the
             // daemon (its FIFO outlives a shairport-sync restart).
             for i in inst.iter().filter(|i| i.kind == "airplay") {
@@ -342,6 +347,11 @@ async fn publish(app: &App, client: &AsyncClient, base: &Base, r: &mut Retained)
             let m = meta::load(&tag).map(|m| json!(m)).unwrap_or(Value::Null);
             r.set(client, base, &format!("audio/meta/{tag}"), &m).await;
         }
+        // Inputs: triggered on or not.
+        let live_inputs = app.live_inputs.lock().unwrap().clone();
+        for i in &app.board.inputs {
+            r.set(client, base, &format!("audio/input/{}", i.id), &json!(live_inputs.contains(&i.id))).await;
+        }
         // The library player, when the map has one.
         let has_library = !app.endpoints.lock().unwrap().library.is_empty();
         if has_library {
@@ -387,6 +397,28 @@ async fn command(app: &Arc<App>, what: &str, body: &str) {
             }
             Err(_) => eprintln!("audiod: cmd/audio/{what}: not a number: {body:?}"),
         }
+        app.changed.notify_one();
+        return;
+    }
+    if let Some(id) = what.strip_prefix("input/") {
+        if app.board.input(id).is_none() {
+            eprintln!("audiod: cmd/audio/input: no input '{id}'");
+            return;
+        }
+        {
+            let mut live = app.live_inputs.lock().unwrap();
+            let on = match body.to_ascii_uppercase().as_str() {
+                "ON" | "1" | "TRUE" => true,
+                "OFF" | "0" | "FALSE" => false,
+                "TOGGLE" => !live.contains(id),
+                other => {
+                    eprintln!("audiod: cmd/audio/input/{id}: expected ON, OFF or TOGGLE, got {other:?}");
+                    return;
+                }
+            };
+            if on { live.insert(id.to_string()); } else { live.remove(id); }
+        }
+        app.restart(); // starts or stops just that input's routes
         app.changed.notify_one();
         return;
     }
@@ -498,6 +530,7 @@ fn main() {
         up: Default::default(),
         levels: Mutex::new(levels::load()),
         tones: Mutex::new(tone::load()),
+        live_inputs: Mutex::new(HashSet::new()),
         announcing: Mutex::new(HashSet::new()),
         announce_turn,
         readers: Mutex::new(HashSet::new()),

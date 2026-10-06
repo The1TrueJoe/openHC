@@ -22,7 +22,7 @@
 use crate::board::{Board, Port};
 use crate::config::Endpoints;
 use crate::levels;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -221,8 +221,9 @@ impl Spec {
     }
 }
 
-/// Every instance the map asks for.
-fn plan(b: &Board, e: &Endpoints) -> Vec<Spec> {
+/// Every instance the map asks for. An input's routes are defaults: they run
+/// only while that input is triggered on (`live_inputs`, cmd/audio/input/<id>).
+fn plan(b: &Board, e: &Endpoints, live_inputs: &HashSet<String>) -> Vec<Spec> {
     let mut v = Vec::new();
     let have = |p: &str| std::path::Path::new(p).exists();
 
@@ -267,6 +268,9 @@ fn plan(b: &Board, e: &Endpoints) -> Vec<Spec> {
         }
     }
     for (n, r) in e.routes.iter().enumerate() {
+        if !live_inputs.contains(&r.input) {
+            continue;
+        }
         let (Some(i), Some(o)) = (b.input(&r.input), b.output(&r.output)) else { continue };
         let args = vec![
             "-C".into(), i.pcm.clone(), "-P".into(), o.pcm.clone(),
@@ -287,11 +291,11 @@ fn plan(b: &Board, e: &Endpoints) -> Vec<Spec> {
 /// is unchanged keeps running (a change to one endpoint does not interrupt
 /// what is playing on the others); the rest of `old` stops (dropped) and what
 /// is new starts. The returned instances run until dropped.
-pub fn start(b: &Board, e: &Endpoints, up: &Up, old: Vec<Instance>) -> Vec<Instance> {
+pub fn start(b: &Board, e: &Endpoints, live_inputs: &HashSet<String>, up: &Up, old: Vec<Instance>) -> Vec<Instance> {
     let _ = std::fs::create_dir_all(RUN_DIR);
     let mut old: HashMap<String, Instance> = old.into_iter().map(|i| (i.tag.clone(), i)).collect();
     let mut v = Vec::new();
-    for spec in plan(b, e) {
+    for spec in plan(b, e, live_inputs) {
         let key = spec.key();
         if let Some(i) = old.remove(&spec.tag).filter(|i| i.key == key) {
             v.push(i);
