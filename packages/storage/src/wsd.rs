@@ -20,7 +20,7 @@
 //! The endpoint id is a UUIDv5 of the hostname, so it is stable across
 //! restarts (as wsdd's default is). IPv4 only, as the boards are.
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -55,8 +55,7 @@ pub struct Host {
     /// Stable endpoint id (UUIDv5 of the hostname).
     pub uuid: uuid::Uuid,
     instance_id: u64,
-    // 32-bit: the ARMv5 boards have no 64-bit atomics (the workspace builds for all).
-    message_number: AtomicU32,
+    message_number: AtomicU64,
 }
 
 fn esc(s: &str) -> String {
@@ -71,7 +70,7 @@ impl Host {
             workgroup: workgroup.to_string(),
             uuid: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, hostname.as_bytes()),
             instance_id,
-            message_number: AtomicU32::new(0),
+            message_number: AtomicU64::new(0),
         }
     }
 
