@@ -24,6 +24,7 @@
  * included directly, and EGL/egl.h is needed for EGL_DEFAULT_DISPLAY.
  */
 #include <EGL/egl.h>
+#include <GLES2/gl2.h>
 #include <wpe/wpe.h>
 #include <wpe/wpe-egl.h>
 
@@ -159,7 +160,22 @@ static void rt_frame_rendered(void *data)
 	 * regardless of scene complexity -- the cost is one full-surface copy
 	 * per frame, not the rendering.
 	 */
-	fprintf(stderr, "pvrbk: rt_frame_rendered (swapped)\n"); fflush(stderr);
+	{
+		/* DIAG: can we even read WebKit's rendered frame here? If the centre
+		 * pixel comes back as the page colour, a web-process readback->fb0
+		 * present is viable; glErr/fbo tell us what is bound. */
+		GLint fbo = -1;
+		GLubyte px[4] = { 0, 0, 0, 0 };
+		GLenum err;
+		GLint cx = t ? (GLint)(t->width / 2) : 360;
+		GLint cy = t ? (GLint)(t->height / 2) : 240;
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+		glReadPixels(cx, cy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+		err = glGetError();
+		fprintf(stderr, "pvrbk: rt_frame_rendered fbo=%d center=%02x%02x%02x%02x glErr=0x%x\n",
+			fbo, px[0], px[1], px[2], px[3], err);
+		fflush(stderr);
+	}
 	if (t && t->wpe)
 		wpe_renderer_backend_egl_target_dispatch_frame_complete(t->wpe);
 }
