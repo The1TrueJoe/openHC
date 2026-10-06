@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the openHC daemons for a board and stage them into its rootfs overlay.
 #
-#   packages/build.sh <board>     (default: ca1)
+#   packages/build.sh <board>            (default: ca1)
+#   packages/build.sh <board> --crates   the crates this board ships, and stop
+#   packages/build.sh <board> --bins     the binaries this board ships, and stop
 #
 # <board> is a DIRECTORY NAME under board/, because that is what CI passes: the
 # matrix is built from the board tree, so it says "ea1-v2-poe", not "ea1". The
@@ -38,21 +40,6 @@ if ! grep -q "^\[target\.$TARGET\]" "$HERE/.cargo/config.toml" 2>/dev/null; then
   echo "  cargo would fall back to the host linker and fail on the object format" >&2
   exit 1
 fi
-
-# a cargo whose toolchain actually has std for $TARGET (Homebrew's lies about it)
-pick_cargo() {
-  for c in "$HOME/.cargo/bin/cargo" "$HOME"/.rustup/toolchains/*/bin/cargo; do
-    [ -x "$c" ] || continue
-    rc="$(dirname "$c")/rustc"
-    sys="$("$rc" --print sysroot 2>/dev/null)" || continue
-    [ -d "$sys/lib/rustlib/$TARGET" ] && { echo "$c"; return; }
-  done
-  echo "build.sh: no cargo toolchain has std for $TARGET" >&2
-  echo "  run: rustup target add $TARGET" >&2
-  exit 1
-}
-CARGO="$(pick_cargo)"
-export RUSTC="$(dirname "$CARGO")/rustc"
 
 # --- which crates this board actually gets --------------------------------------
 # CORE daemons ship on every board. FEATURE daemons ship only where the board's
@@ -95,9 +82,32 @@ for f in $FEATURES; do
     case "$crate" in ''|\#*) continue ;; esac
     CRATES="$CRATES $crate"
     BINS="$BINS ${bin:-$crate}"
-    echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})"
+    echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})" >&2
   done < "$d/packages"
 done
+
+# `build.sh <board> --crates` / `--bins`: just say what this board gets, for
+# CI (daemons.yml builds exactly these, so a crate is only ever compiled for
+# the boards that ship it — the IO Extender's ARMv5 never sees ohc-storaged).
+case "${2:-}" in
+  --crates) echo $CRATES; exit 0 ;;
+  --bins)   echo $BINS; exit 0 ;;
+esac
+
+# a cargo whose toolchain actually has std for $TARGET (Homebrew's lies about it)
+pick_cargo() {
+  for c in "$HOME/.cargo/bin/cargo" "$HOME"/.rustup/toolchains/*/bin/cargo; do
+    [ -x "$c" ] || continue
+    rc="$(dirname "$c")/rustc"
+    sys="$("$rc" --print sysroot 2>/dev/null)" || continue
+    [ -d "$sys/lib/rustlib/$TARGET" ] && { echo "$c"; return; }
+  done
+  echo "build.sh: no cargo toolchain has std for $TARGET" >&2
+  echo "  run: rustup target add $TARGET" >&2
+  exit 1
+}
+CARGO="$(pick_cargo)"
+export RUSTC="$(dirname "$CARGO")/rustc"
 
 echo ">> UI (must build before cargo — build.rs embeds ui/dist)"
 ( cd "$HERE/webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )
