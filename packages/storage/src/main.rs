@@ -12,12 +12,15 @@
 //!   Commands: `<base>/cmd/storage/eject/<id>` (unmount and unshare before
 //!   pulling the drive), `<base>/cmd/storage/rescan`.
 //! * **REST** (configuration, :7073, webd `/storage/`): `GET /api/storage`,
-//!   `PUT /api/storage/share` — sharing on/off, login, password, guest.
+//!   `PUT /api/storage/share` — sharing on/off, login, password, guest; and the
+//!   web UI's file browser, `/api/files…` — list, download, upload (streamed),
+//!   new folder, rename, delete, confined to the mounted volumes (files.rs).
 //!
 //! Drives are noticed by a udev rule poking this daemon (SIGUSR1) and, as a
 //! backstop, a scan every few seconds of /sys/block (see drives.rs for what
 //! counts as external — never a board's internal disk).
 mod drives;
+mod files;
 mod smb;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
@@ -170,6 +173,11 @@ impl App {
         v
     }
 
+    /// Mounted volumes' names and whether each is read-only (for files.rs).
+    fn volume_names(&self) -> Vec<(String, bool)> {
+        self.mounted.lock().unwrap().values().map(|m| (m.name.clone(), m.read_only)).collect()
+    }
+
     fn share_doc(&self) -> Value {
         let s = self.settings.lock().unwrap().clone();
         json!({
@@ -241,6 +249,135 @@ async fn put_share(State(app): Ctx, Json(u): Json<ShareUpdate>) -> axum::respons
     app.apply_shares();
     app.changed.notify_one();
     Json(app.share_doc()).into_response()
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+struct PathQuery {
+    /// `<volume>/<path inside it>`, e.g. `Sandisk/Music/track.flac`.
+    path: String,
+}
+
+#[utoipa::path(get, path = "/api/files", tag = "Storage",
+    summary = "List a folder on a drive",
+    description = "Folders first, then files: name, dir, size (bytes), modified (Unix seconds). `path` = `<volume>` lists a drive's top.",
+    params(PathQuery),
+    responses((status = 200, description = "entries", body = Vec<files::Entry>), (status = 404, description = "no such volume or folder")))]
+async fn files_list(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<PathQuery>) -> axum::response::Response {
+    match files::resolve(std::path::Path::new(drives::MEDIA), &q.path, &app.volume_names(), false) {
+        Ok((p, _)) => match files::list(&p) {
+            Ok(v) => Json(v).into_response(),
+            Err(r) => r,
+        },
+        Err(r) => r,
+    }
+}
+
+#[utoipa::path(get, path = "/api/files/download", tag = "Storage",
+    summary = "Download a file from a drive",
+    params(PathQuery),
+    responses((status = 200, description = "the file, streamed, as an attachment"), (status = 404, description = "not found")))]
+async fn files_download(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<PathQuery>) -> axum::response::Response {
+    match files::resolve(std::path::Path::new(drives::MEDIA), &q.path, &app.volume_names(), false) {
+        Ok((p, _)) if p.is_file() => files::download(&p).await,
+        Ok(_) => files::err(StatusCode::BAD_REQUEST, "not a file"),
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+struct UploadQuery {
+    /// Where the file goes: `<volume>/<folder…>/<file name>`.
+    path: String,
+    /// Replace a file of the same name (otherwise 409).
+    #[serde(default)]
+    overwrite: bool,
+}
+
+#[utoipa::path(put, path = "/api/files/upload", tag = "Storage",
+    summary = "Upload a file to a drive",
+    description = "The request body is the file's bytes (any size; streamed to the drive through a temporary file, renamed into place when complete).",
+    params(UploadQuery),
+    responses((status = 200, description = "stored"), (status = 403, description = "read-only volume"), (status = 409, description = "exists"), (status = 507, description = "drive full")))]
+async fn files_upload(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<UploadQuery>, body: axum::body::Body) -> axum::response::Response {
+    let (p, _) = match files::resolve(std::path::Path::new(drives::MEDIA), &q.path, &app.volume_names(), true) {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if !p.file_name().is_some_and(|n| files::valid_name(&n.to_string_lossy())) || !p.parent().is_some_and(|d| d.is_dir()) {
+        return files::err(StatusCode::BAD_REQUEST, "upload into an existing folder, with a file name");
+    }
+    let r = files::upload(&p, body, q.overwrite).await;
+    app.changed.notify_one();
+    r
+}
+
+#[utoipa::path(post, path = "/api/files/mkdir", tag = "Storage",
+    summary = "Make a folder on a drive",
+    params(PathQuery),
+    responses((status = 200, description = "made"), (status = 409, description = "exists")))]
+async fn files_mkdir(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<PathQuery>) -> axum::response::Response {
+    let (p, _) = match files::resolve(std::path::Path::new(drives::MEDIA), &q.path, &app.volume_names(), true) {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if !p.file_name().is_some_and(|n| files::valid_name(&n.to_string_lossy())) {
+        return files::err(StatusCode::BAD_REQUEST, "bad folder name");
+    }
+    match std::fs::create_dir(&p) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => files::err(StatusCode::CONFLICT, "exists"),
+        Err(e) => files::err(StatusCode::BAD_REQUEST, format!("{e}")),
+    }
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+struct RenameQuery {
+    /// The file or folder: `<volume>/<path>`.
+    path: String,
+    /// Its new name, in the same folder.
+    to: String,
+}
+
+#[utoipa::path(post, path = "/api/files/rename", tag = "Storage",
+    summary = "Rename a file or folder on a drive",
+    params(RenameQuery),
+    responses((status = 200, description = "renamed"), (status = 409, description = "the new name exists")))]
+async fn files_rename(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<RenameQuery>) -> axum::response::Response {
+    let (p, vol) = match files::resolve(std::path::Path::new(drives::MEDIA), &q.path, &app.volume_names(), true) {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if !files::valid_name(&q.to) || p == std::path::Path::new(drives::MEDIA).join(&vol) {
+        return files::err(StatusCode::BAD_REQUEST, "bad name");
+    }
+    let to = p.with_file_name(&q.to);
+    if to.exists() {
+        return files::err(StatusCode::CONFLICT, "the new name exists");
+    }
+    match std::fs::rename(&p, &to) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => files::err(StatusCode::BAD_REQUEST, format!("{e}")),
+    }
+}
+
+#[utoipa::path(delete, path = "/api/files", tag = "Storage",
+    summary = "Delete a file or folder (with everything in it) from a drive",
+    params(PathQuery),
+    responses((status = 200, description = "deleted"), (status = 404, description = "not found")))]
+async fn files_delete(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<PathQuery>) -> axum::response::Response {
+    let (p, vol) = match files::resolve(std::path::Path::new(drives::MEDIA), &q.path, &app.volume_names(), true) {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if p == std::path::Path::new(drives::MEDIA).join(&vol) {
+        return files::err(StatusCode::BAD_REQUEST, "that is the whole drive");
+    }
+    let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+    app.changed.notify_one();
+    match r {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => files::err(StatusCode::NOT_FOUND, format!("{e}")),
+    }
 }
 
 #[utoipa::path(get, path = "/api/health", tag = "Storage", summary = "ohc-storaged liveness",
@@ -370,8 +507,15 @@ fn main() {
             .routes(routes!(get_storage))
             .routes(routes!(put_share))
             .routes(routes!(health))
+            .routes(routes!(files_list, files_delete))
+            .routes(routes!(files_download))
+            .routes(routes!(files_upload))
+            .routes(routes!(files_mkdir))
+            .routes(routes!(files_rename))
             .with_state(app.clone())
             .split_for_parts();
+        // Uploads are files of any size, streamed: no body limit.
+        let router = router.layer(axum::extract::DefaultBodyLimit::disable());
         let router = router.route(
             "/api/openapi.json",
             axum::routing::get(move || {

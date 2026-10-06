@@ -100,6 +100,15 @@ export interface StorageShare {
   windows: string;
 }
 
+/** One entry in a folder on a drive (the file browser). */
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  /** Unix seconds. */
+  modified: number;
+}
+
 export interface StorageStatus {
   volumes: StorageVolume[];
   share: StorageShare;
@@ -332,6 +341,30 @@ export const rest = {
   /** Replace the endpoint map (configuration). */
   /** ohc-storaged: volumes and the share. Absent board feature = rejected. */
   storage: () => j<StorageStatus>(`${STORAGE}/api/storage`),
+  /** The file browser. `path` is `<volume>/<path inside it>`. */
+  files: (path: string) => j<FileEntry[]>(`${STORAGE}/api/files?path=${encodeURIComponent(path)}`),
+  fileDownloadUrl: (path: string) => auth(`${STORAGE}/api/files/download?path=${encodeURIComponent(path)}`),
+  fileMkdir: (path: string) => j<unknown>(`${STORAGE}/api/files/mkdir?path=${encodeURIComponent(path)}`, { method: 'POST' }),
+  fileRename: (path: string, to: string) =>
+    j<unknown>(`${STORAGE}/api/files/rename?path=${encodeURIComponent(path)}&to=${encodeURIComponent(to)}`, { method: 'POST' }),
+  fileDelete: (path: string) => j<unknown>(`${STORAGE}/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  /** Upload one file into folder `dir`, reporting progress 0..1. XHR, not
+   *  fetch: fetch has no upload progress. */
+  fileUpload: (dir: string, file: File, onProgress: (f: number) => void, overwrite = false) =>
+    new Promise<void>((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      const path = `${dir.replace(/\/+$/, '')}/${file.name}`;
+      x.open('PUT', auth(`${STORAGE}/api/files/upload?path=${encodeURIComponent(path)}${overwrite ? '&overwrite=true' : ''}`));
+      x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+      x.onload = () => {
+        if (x.status >= 200 && x.status < 300) return resolve();
+        let msg = `${x.status}`;
+        try { msg = JSON.parse(x.responseText).error ?? msg; } catch { /* not json */ }
+        reject(new Error(msg));
+      };
+      x.onerror = () => reject(new Error('upload failed (connection)'));
+      x.send(file);
+    }),
   saveShare: (u: { enabled?: boolean; user?: string; password?: string; guest?: boolean }) =>
     j<StorageShare>(`${STORAGE}/api/storage/share`, {
       method: 'PUT',

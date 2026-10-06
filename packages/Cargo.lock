@@ -832,11 +832,13 @@ name = "storage"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "http-body-util",
  "ohcmqtt",
  "rumqttc",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "utoipa",
  "utoipa-axum",
 ]
