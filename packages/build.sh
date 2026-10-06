@@ -68,13 +68,13 @@ feature_dir() {
   return 1
 }
 
-# Core crates/binaries, on every board. The `portal` binary now lives in the
-# `wifi` crate (merged with the shared Wi-Fi lib), so we build crate `wifi` to
-# get it; the staged binary is still `portal`. CRATES (what `cargo build -p`
-# builds) and BINS (what gets installed) are separate lists, so a crate whose
-# binary has a different name is expressed by listing each accordingly.
-CRATES="iod webd wifi sysmond"   # core
-BINS="iod webd portal sysmond"
+# Core crates/binaries, on every board. CRATES (what `cargo build -p` builds)
+# and BINS (what gets installed) are separate lists, so a crate whose binary
+# has a different name is expressed by listing each accordingly. The Wi-Fi
+# setup `portal` (in the `wifi` crate, whose lib webd links everywhere) is the
+# `wifi` feature's, so only boards with Wi-Fi ship it.
+CRATES="iod webd sysmond"   # core
+BINS="iod webd sysmond"
 for f in $FEATURES; do
   d=$(feature_dir "$f") || continue
   [ -f "$d/packages" ] || continue
