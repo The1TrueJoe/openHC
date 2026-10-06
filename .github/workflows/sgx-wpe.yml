@@ -108,6 +108,16 @@ jobs:
       - name: Build the i386 WPE stack
         run: |
           set -e
+          # Force wpewebkit to re-extract + re-apply its SOURCE patches
+          # (BR2_GLOBAL_PATCH_DIR board/gpu-wpe-i386/patches/wpewebkit/*) + rebuild.
+          # The restored output-tree cache carries wpewebkit's .stamp_built, so an
+          # incremental build would SKIP re-patching entirely and silently ship an
+          # unpatched libWPEWebKit -- which is exactly how the GLContext fix went
+          # missing for two builds. Removing its build dir clears the stamps and
+          # forces the patch set to be applied. (Local packages wpebackend-pvr/webview
+          # re-sync on their own; only the downloaded+patched wpewebkit needs this.)
+          O="output/build/gpu-wpe-i386/build"
+          if [ -d "$O" ]; then rm -rf "$O"/wpewebkit-* && echo ">> cleared cached wpewebkit to re-apply source patches"; fi
           BUILDROOT_DIR="$HOME/buildroot" BOARD=gpu-wpe-i386 bash ./build/build.sh
 
       # Harvest output/build/gpu-wpe-i386/target — a complete i386 glibc sysroot
