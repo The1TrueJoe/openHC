@@ -107,11 +107,13 @@ static void rt_initialize(void *data, void *backend, uint32_t width, uint32_t he
 		t->width = width;
 		t->height = height;
 	}
+	fprintf(stderr, "pvrbk: rt_initialize %ux%u\n", width, height); fflush(stderr);
 }
 
 static EGLNativeWindowType rt_get_native_window(void *data)
 {
 	(void)data;
+	fprintf(stderr, "pvrbk: rt_get_native_window\n"); fflush(stderr);
 	/*
 	 * With MESA_EGL_NO_X11_HEADERS the DDK's EGLNativeWindowType is a plain
 	 * integer, and its LinuxFB WSEGL ignores the value -- there is exactly
@@ -135,6 +137,7 @@ static void rt_resize(void *data, uint32_t width, uint32_t height)
 static void rt_frame_will_render(void *data)
 {
 	(void)data;
+	fprintf(stderr, "pvrbk: rt_frame_will_render\n"); fflush(stderr);
 }
 
 static void rt_frame_rendered(void *data)
@@ -156,6 +159,7 @@ static void rt_frame_rendered(void *data)
 	 * regardless of scene complexity -- the cost is one full-surface copy
 	 * per frame, not the rendering.
 	 */
+	fprintf(stderr, "pvrbk: rt_frame_rendered (swapped)\n"); fflush(stderr);
 	if (t && t->wpe)
 		wpe_renderer_backend_egl_target_dispatch_frame_complete(t->wpe);
 }
