@@ -267,6 +267,10 @@ export interface IoState {
     meta?: Record<string, AudioMeta>;
     /** The library player's transport state. */
     library?: LibraryState;
+    /** Output id → tone (images with the tone stage): dB, dB, -100..100. */
+    bass?: Record<string, number>;
+    treble?: Record<string, number>;
+    balance?: Record<string, number>;
   };
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
@@ -514,6 +518,9 @@ export class Io {
   /** Play an announcement over an output's music, which ducks under it:
    *  `chime`, an http(s) URL or an absolute path to a WAV on the box. */
   announce = (output: string, source = 'chime') => this.#publish(`audio/announce/${output}`, source);
+  /** An output's tone: bass/treble in dB (-12..12), balance -100 (left) .. 100 (right). */
+  setTone = (output: string, knob: 'bass' | 'treble' | 'balance', value: number) =>
+    this.#publish(`audio/${knob}/${output}`, String(Math.round(value)));
   /** The library player: play|pause|toggle|stop|next|previous|seek <s>|clear|
    *  add <uri>|replace <uri>|random ON/OFF|repeat ON/OFF|update. */
   library = (verb: string, arg = '') => this.#publish(`audio/library/${verb}`, arg);

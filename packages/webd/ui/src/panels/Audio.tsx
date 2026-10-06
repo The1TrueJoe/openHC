@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable, Bell, Workflow, ChevronRight, Library,
   Play, Pause, SkipBack, SkipForward, Square, Folder, FileAudio, Search, Shuffle, Repeat, RefreshCw,
+  SlidersHorizontal, RotateCcw,
 } from 'lucide-react';
 import {
   io, rest, audioCover, type AudioEndpoints, type AudioInstance, type AudioMap, type AudioMeta, type AudioReceiver,
@@ -44,7 +45,7 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   if (map && Array.isArray(map.outputs) && Array.isArray(map.instances))
     return (
       <MapPanel map={map} level={live?.level ?? {}} announcing={live?.announcing ?? {}} meta={live?.meta ?? {}}
-        library={live?.library} />
+        library={live?.library} tone={{ bass: live?.bass, treble: live?.treble, balance: live?.balance }} />
     );
 
   return (
@@ -231,20 +232,24 @@ const rowsOf = (map: AudioMap, kind: Kind): Row[] =>
     ? map.routes.map((r) => ({ left: r.input, right: r.output }))
     : (map[kind] ?? []).map((e) => ({ left: e.name, right: e.output }));
 
+type Tones = { bass?: Record<string, number>; treble?: Record<string, number>; balance?: Record<string, number> };
+
 function MapPanel({
-  map, level, announcing, meta, library,
+  map, level, announcing, meta, library, tone,
 }: {
   map: AudioMap;
   level: Record<string, number>;
   announcing: Record<string, boolean>;
   meta: Record<string, AudioMeta>;
   library: LibraryState | undefined;
+  tone: Tones;
 }) {
   const label = (id: string) => map.outputs.find((o) => o.id === id)?.label ?? id;
   const lib = map.library?.[0];
   return (
     <div className="space-y-4">
       <Routing map={map} level={level} announcing={announcing} meta={meta} />
+      {tone.bass && <ToneSection map={map} tone={tone} />}
       {lib && (
         <LibraryPanel name={lib.name} output={label(lib.output)} state={library} meta={meta['library-0']} />
       )}
@@ -488,6 +493,94 @@ function OutputRow({
           />
           <span className="w-9 text-right text-xs tabular-nums">{level === undefined ? '–' : `${shown}%`}</span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── tone ───────────────────────────────────────────────────────────────────
+
+   Bass, treble and balance per output (the ohceq stage in front of each
+   output, so it applies to everything playing there). Live over MQTT like the
+   level: the slider sends while it moves, the retained state answers. */
+
+function ToneSection({ map, tone }: { map: AudioMap; tone: Tones }) {
+  return (
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <SlidersHorizontal size={15} className="text-muted" />
+        Tone
+      </h2>
+      <div className="space-y-3">
+        {map.outputs.map((o) => (
+          <ToneRow key={o.id} id={o.id} label={o.label}
+            bass={tone.bass?.[o.id] ?? 0} treble={tone.treble?.[o.id] ?? 0} balance={tone.balance?.[o.id] ?? 0} />
+        ))}
+      </div>
+      <p className="mt-3 text-xs text-muted">
+        Shelving bass (120 Hz) and treble (8 kHz), ±12 dB. Boosting lowers the overall level by the same amount so
+        nothing clips.
+      </p>
+    </section>
+  );
+}
+
+function ToneSlider({
+  id, knob, label, value, min, max, fmt,
+}: {
+  id: string;
+  knob: 'bass' | 'treble' | 'balance';
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  fmt: (v: number) => string;
+}) {
+  const [drag, setDrag] = useState<number | null>(null);
+  const sent = useRef(0);
+  const shown = drag ?? value;
+  const send = (v: number, force = false) => {
+    const now = Date.now();
+    if (!force && now - sent.current < 120) return;
+    sent.current = now;
+    try { io.setTone(id, knob, v); } catch { /* not connected */ }
+  };
+  const release = () => {
+    if (drag !== null) send(drag, true);
+    setDrag(null);
+  };
+  return (
+    <label className="flex min-w-0 flex-1 items-center gap-2 text-xs">
+      <span className="w-12 shrink-0 text-muted">{label}</span>
+      <input type="range" min={min} max={max} value={shown} aria-label={label}
+        onChange={(e) => { const v = Number(e.target.value); setDrag(v); send(v); }}
+        onPointerUp={release} onKeyUp={release} onBlur={release}
+        onDoubleClick={() => { setDrag(null); send(0, true); }}
+        className="min-w-0 flex-1 accent-accent" />
+      <span className="w-12 shrink-0 text-right tabular-nums">{fmt(shown)}</span>
+    </label>
+  );
+}
+
+function ToneRow({ id, label, bass, treble, balance }: { id: string; label: string; bass: number; treble: number; balance: number }) {
+  const db = (v: number) => (v > 0 ? `+${v} dB` : `${v} dB`);
+  const bal = (v: number) => (v === 0 ? 'centre' : v < 0 ? `L ${-v}` : `R ${v}`);
+  const flat = bass === 0 && treble === 0 && balance === 0;
+  return (
+    <div className="hair rounded-xl border bg-raised p-2.5">
+      <div className="mb-1.5 flex items-center gap-2 text-sm">
+        <Speaker size={14} className="text-muted" />
+        {label}
+        <button disabled={flat} title="Flat and centred" aria-label={`Reset ${label} tone`}
+          onClick={() => { try { (['bass', 'treble', 'balance'] as const).forEach((k) => io.setTone(id, k, 0)); } catch { /* not connected */ } }}
+          className="ml-auto rounded-md p-1 text-muted hover:text-ink disabled:opacity-30">
+          <RotateCcw size={13} />
+        </button>
+      </div>
+      <div className="flex flex-col gap-1.5 sm:flex-row sm:gap-4">
+        <ToneSlider id={id} knob="bass" label="Bass" value={bass} min={-12} max={12} fmt={db} />
+        <ToneSlider id={id} knob="treble" label="Treble" value={treble} min={-12} max={12} fmt={db} />
+        <ToneSlider id={id} knob="balance" label="Balance" value={balance} min={-100} max={100} fmt={bal} />
       </div>
     </div>
   );

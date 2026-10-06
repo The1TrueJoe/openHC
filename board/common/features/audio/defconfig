@@ -61,3 +61,7 @@ BR2_PACKAGE_MPD_VORBIS=y
 BR2_PACKAGE_MPD_OPUS=y
 BR2_PACKAGE_MPD_FAAD2=y
 BR2_PACKAGE_MPD_LIBSNDFILE=y
+
+# Per-output tone (bass, treble, balance): openHC's own ALSA plugin
+# (packages/alsa-ohceq), one stage per output, driven by ohc-audiod.
+BR2_PACKAGE_ALSA_OHCEQ=y

@@ -13,7 +13,9 @@
 //!   levels.rs and announce.rs); every Spotify/AirPlay endpoint's now-playing
 //!   on `audio/meta/<tag>` (meta.rs); the music-library player (mpd on the
 //!   drives under /media) on `audio/library` and `cmd/audio/library/<verb>`
-//!   (library.rs).
+//!   (library.rs); with the tone plugin, each output's `audio/bass/<id>`,
+//!   `audio/treble/<id>`, `audio/balance/<id>` and the same under `cmd/`
+//!   (tone.rs).
 //! * **REST** (configuration, which changes rarely): `GET /api/audio` and
 //!   `PUT /api/audio/endpoints` — which Spotify Connect and AirPlay endpoints
 //!   exist and which output each plays on, and live input routes. webd proxies
@@ -28,6 +30,7 @@ mod config;
 mod levels;
 mod library;
 mod meta;
+mod tone;
 mod runner;
 mod single;
 
@@ -59,6 +62,8 @@ struct App {
     up: runner::Up,
     /// Output id → level percent, as last set or read back from the control.
     levels: Mutex<HashMap<String, u8>>,
+    /// Output id → tone (bass, treble, balance), as last set.
+    tones: Mutex<HashMap<String, tone::Tone>>,
     /// Outputs with an announcement playing.
     announcing: Mutex<HashSet<String>>,
     /// The music-library player's client side.
@@ -79,6 +84,12 @@ impl App {
         if self.board.has_map() {
             runner::write_asound(&self.board);
             levels::prepare(&self.board, &self.levels.lock().unwrap());
+            if tone::available() {
+                let tones = self.tones.lock().unwrap();
+                for p in &self.board.outputs {
+                    tone::apply(p, &tones.get(&p.id).copied().unwrap_or_default());
+                }
+            }
             *inst = runner::start(&self.board, &e, &self.up);
             // One metadata reader per AirPlay endpoint, for the life of the
             // daemon (its FIFO outlives a shairport-sync restart).
@@ -89,6 +100,21 @@ impl App {
                 }
             }
         }
+    }
+
+    fn set_tone(&self, id: &str, knob: &str, v: i32) -> Result<(), String> {
+        let p = self.board.output(id).ok_or_else(|| format!("no output '{id}'"))?;
+        if !tone::available() {
+            return Err("this image has no tone stage".into());
+        }
+        let mut tones = self.tones.lock().unwrap();
+        let t = tones.entry(id.to_string()).or_default();
+        if !t.set(knob, v) {
+            return Err(format!("unknown tone control '{knob}'"));
+        }
+        tone::apply_knob(p, knob, t.get(knob).unwrap_or(0));
+        tone::save(&tones);
+        Ok(())
     }
 
     fn set_level(&self, id: &str, percent: u8) -> Result<(), String> {
@@ -298,6 +324,15 @@ async fn publish(app: &App, client: &AsyncClient, base: &Base, r: &mut Retained)
             r.set(client, base, &format!("audio/level/{}", p.id), &json!(level)).await;
             r.set(client, base, &format!("audio/announcing/{}", p.id), &json!(announcing.contains(&p.id))).await;
         }
+        if tone::available() {
+            let tones = app.tones.lock().unwrap().clone();
+            for p in &app.board.outputs {
+                let t = tones.get(&p.id).copied().unwrap_or_default();
+                for k in tone::KNOBS {
+                    r.set(client, base, &format!("audio/{k}/{}", p.id), &json!(t.get(k).unwrap_or(0))).await;
+                }
+            }
+        }
         // Now playing, per endpoint. Null (an empty retained message) clears it.
         let tags: Vec<String> = app.instances.lock().unwrap().iter()
             .filter(|i| i.kind == "spotify" || i.kind == "airplay" || i.kind == "library")
@@ -339,6 +374,18 @@ async fn command(app: &Arc<App>, what: &str, body: &str) {
                 }
             }
             Err(_) => eprintln!("audiod: cmd/audio/level/{id}: not a percent: {body:?}"),
+        }
+        app.changed.notify_one();
+        return;
+    }
+    if let Some((knob, id)) = what.split_once('/').filter(|(k, _)| tone::KNOBS.contains(k)) {
+        match body.parse::<i32>() {
+            Ok(v) => {
+                if let Err(e) = app.set_tone(id, knob, v) {
+                    eprintln!("audiod: cmd/audio/{what}: {e}");
+                }
+            }
+            Err(_) => eprintln!("audiod: cmd/audio/{what}: not a number: {body:?}"),
         }
         app.changed.notify_one();
         return;
@@ -450,6 +497,7 @@ fn main() {
         instances: Mutex::new(Vec::new()),
         up: Default::default(),
         levels: Mutex::new(levels::load()),
+        tones: Mutex::new(tone::load()),
         announcing: Mutex::new(HashSet::new()),
         announce_turn,
         readers: Mutex::new(HashSet::new()),

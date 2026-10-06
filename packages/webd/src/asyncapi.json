@@ -422,6 +422,26 @@
       },
       "summary": "Control the library player",
       "description": "`play` [queue position], `pause`, `toggle`, `stop`, `next`, `previous`, `seek` <seconds>, `clear`, `add` <uri>, `replace` <uri> (clear, add, play), `random` ON/OFF, `repeat` ON/OFF, `update` (re-index). A uri is a path under /media as REST `GET /audio/api/audio/library/browse` returns it; a folder adds everything under it."
+    },
+    "audioTone": {
+      "address": "openhc/{box}/state/audio/{knob}/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Output tone (retained, ohc-audiod)",
+      "description": "Images with the tone stage (the ohceq ALSA plugin): `{knob}` is `bass` or `treble` (dB, -12..12; shelves at 120 Hz and 8 kHz) or `balance` (-100 left only .. 100 right only). Applies to everything on `{output}`. Boosting lowers the overall level by the boost, so nothing clips."
+    },
+    "audioSetTone": {
+      "address": "openhc/{box}/cmd/audio/{knob}/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Set an output tone",
+      "description": "`bass`/`treble` in dB (-12..12) or `balance` (-100..100), clamped. Heard at once (the plugin reads its controls as it plays) and saved across reboots."
     }
   },
   "operations": {
@@ -697,6 +717,20 @@
         "$ref": "#/channels/audioLibraryCommand"
       },
       "summary": "Control the library player"
+    },
+    "audioTone": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioTone"
+      },
+      "summary": "Output tone (retained, ohc-audiod)"
+    },
+    "audioSetTone": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioSetTone"
+      },
+      "summary": "Set an output tone"
     }
   },
   "components": {
