@@ -14,6 +14,7 @@ rumqttc = { version = "0.25", default-features = false }
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 ohcmqtt = { path = "../ohcmqtt" }
+base64 = "0.22"
 
 [[bin]]
 name = "ohc-audiod"

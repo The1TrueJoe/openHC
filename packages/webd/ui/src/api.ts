@@ -130,6 +130,8 @@ export interface AudioInstance {
   input: string | null;
   output: string | null;
   running: boolean;
+  /** Actually playing audio right now (a route: whenever it runs). */
+  playing?: boolean;
 }
 
 /** ohc-audiod's endpoint map: the board's outputs/inputs, the configured
@@ -141,6 +143,22 @@ export interface AudioMap extends AudioEndpoints {
   inputs: AudioPort[];
   instances: AudioInstance[];
 }
+
+/** Now playing on one Spotify/AirPlay endpoint (`<base>/state/audio/meta/<tag>`). */
+export interface AudioMeta {
+  state?: 'playing' | 'paused' | 'stopped' | '';
+  title?: string;
+  artist?: string;
+  album?: string;
+  /** An absolute image URL (Spotify), or a path under ohc-audiod's API (AirPlay). */
+  cover?: string;
+  /** The phone or app driving it. */
+  client?: string;
+  duration_ms?: number;
+}
+
+/** A displayable URL for `AudioMeta.cover`. */
+export const audioCover = (c: string) => (/^https?:\/\//.test(c) ? c : auth(`${AUDIO}/api/audio/${c}`));
 
 /** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
  *  only present when genuinely available, so the panel shows them conditionally. */
@@ -214,6 +232,13 @@ export interface IoState {
     receiver?: Record<string, { running?: boolean }>;
     /** Boards with named outputs: the endpoint map, live. */
     map?: AudioMap;
+    /** Output id → level 0..100: the one volume of that jack, which its
+     *  AirPlay/Spotify endpoints' sliders also move. */
+    level?: Record<string, number>;
+    /** Output id → an announcement is playing (its music is ducked). */
+    announcing?: Record<string, boolean>;
+    /** Endpoint tag (`spotify-1`, `airplay-0`) → what it is playing. */
+    meta?: Record<string, AudioMeta>;
   };
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
@@ -451,6 +476,12 @@ export class Io {
   /** Output volume, 0..100. Clamped and read back by iod. */
   setAudioVolume = (percent: number) =>
     this.#publish('audio/volume', String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** An output's level, 0..100 (boards with named outputs). */
+  setAudioLevel = (output: string, percent: number) =>
+    this.#publish(`audio/level/${output}`, String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** Play an announcement over an output's music, which ducks under it:
+   *  `chime`, an http(s) URL or an absolute path to a WAV on the box. */
+  announce = (output: string, source = 'chime') => this.#publish(`audio/announce/${output}`, source);
   /** Fan: a percent holds it there, 'auto' hands it back to the curve. */
   setFan = (v: number | 'auto') =>
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));

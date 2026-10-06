@@ -21,6 +21,12 @@ case "$1" in
     stop)
         [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE"
         killall ohc-audiod 2>/dev/null
+        # Wait for it to go: it stops its endpoints on the way out, and a
+        # start before that finds their ports (and :7072) still taken.
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            pidof ohc-audiod >/dev/null || break
+            sleep 0.5
+        done
         rm -f "$PIDFILE"
         ;;
     restart) "$0" stop; sleep 1; "$0" start ;;

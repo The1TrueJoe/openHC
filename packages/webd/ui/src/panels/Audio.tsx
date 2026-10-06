@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable, Bell, Workflow, ChevronRight } from 'lucide-react';
 import {
-  io, rest, type AudioEndpoints, type AudioInstance, type AudioMap, type AudioReceiver, type AudioStatus,
-  type Capabilities,
+  io, rest, audioCover, type AudioEndpoints, type AudioInstance, type AudioMap, type AudioMeta, type AudioReceiver,
+  type AudioStatus, type Capabilities,
 } from '../api';
 import { useIoState } from '../App';
 
@@ -38,7 +38,8 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   // the capabilities snapshot; rendered only once it has the full shape — the
   // retained topics arrive leaf by leaf.
   const map = live?.map ?? a.map;
-  if (map && Array.isArray(map.outputs) && Array.isArray(map.instances)) return <MapPanel map={map} />;
+  if (map && Array.isArray(map.outputs) && Array.isArray(map.instances))
+    return <MapPanel map={map} level={live?.level ?? {}} announcing={live?.announcing ?? {}} meta={live?.meta ?? {}} />;
 
   return (
     <div className="space-y-4">
@@ -224,42 +225,255 @@ const rowsOf = (map: AudioMap, kind: Kind): Row[] =>
     ? map.routes.map((r) => ({ left: r.input, right: r.output }))
     : map[kind].map((e) => ({ left: e.name, right: e.output }));
 
-function MapPanel({ map }: { map: AudioMap }) {
+function MapPanel({
+  map, level, announcing, meta,
+}: {
+  map: AudioMap;
+  level: Record<string, number>;
+  announcing: Record<string, boolean>;
+  meta: Record<string, AudioMeta>;
+}) {
   const label = (id: string) => map.outputs.find((o) => o.id === id)?.label ?? id;
   return (
     <div className="space-y-4">
-      <section className="hair rounded-xl border bg-panel p-4">
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
-          <Speaker size={15} className="text-muted" />
-          Outputs and inputs
-        </h2>
-        <div className="flex flex-wrap gap-2 text-xs">
-          {map.outputs.map((o) => (
-            <span key={o.id} className="hair rounded-lg border bg-raised px-2.5 py-1.5" title={o.device}>
-              {o.label}
-            </span>
+      <Routing map={map} level={level} announcing={announcing} meta={meta} />
+
+      {/* Configuration, folded away: the diagram above already shows every
+          endpoint and where it plays, so this is only for changing that. */}
+      <details className="hair group rounded-xl border bg-panel">
+        <summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-medium">
+          <ChevronRight size={15} className="text-muted transition group-open:rotate-90" />
+          Edit endpoints
+          <span className="ml-auto text-xs font-normal text-muted">
+            add, rename or move Spotify, AirPlay and input routes
+          </span>
+        </summary>
+        <div className="space-y-5 px-4 pb-4">
+          <ListEditor title="Spotify Connect" icon={<Music size={15} className="text-muted" />} kind="spotify"
+            map={map} leftLabel="Name in the Spotify app" label={label} />
+          <ListEditor title="AirPlay" icon={<Radio size={15} className="text-muted" />} kind="airplay"
+            map={map} leftLabel="Name on Apple devices" label={label} />
+          {map.inputs.length > 0 && (
+            <ListEditor title="Input routes" icon={<Cable size={15} className="text-muted" />} kind="routes"
+              map={map} leftLabel="Input" label={label}
+              hint="A route plays the input live on the output, mixed with anything else playing there." />
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+/* ── routing ────────────────────────────────────────────────────────────────
+
+   Who plays where, drawn: every source (Spotify and AirPlay endpoints, input
+   routes) on the left, every output on the right with its level, and a line
+   from each source to the output it plays on — lit while that source is
+   running. An output's level is the one volume of the jack: the slider here,
+   `cmd/audio/level/<id>`, and the AirPlay/Spotify volume sliders all move the
+   same control, so whichever moved last is what shows. */
+
+const SRC_ROW = 52;
+const OUT_ROW = 84;
+const LINK_W = 72;
+
+type Source = {
+  key: string; kind: 'spotify' | 'airplay' | 'route'; name: string;
+  /** '' = an input that is not routed anywhere. */
+  output: string;
+  running: boolean; playing: boolean; tag?: string;
+};
+
+/** Every source, ordered by the output it plays on so the lines fan in
+ *  instead of crossing. */
+function sourcesOf(map: AudioMap): Source[] {
+  const inst = (kind: AudioInstance['kind'], name: string, output: string) =>
+    map.instances.find((i) => i.kind === kind && (i.name ?? i.input) === name && i.output === output);
+  const src = (key: string, kind: Source['kind'], name: string, match: string, output: string): Source => {
+    const i = inst(kind, match, output);
+    return { key, kind, name, output, running: !!i?.running, playing: !!i?.running && !!i?.playing, tag: i?.tag };
+  };
+  const inputLabel = (id: string) => map.inputs.find((i) => i.id === id)?.label ?? id;
+  const order = (id: string) => {
+    const j = map.outputs.findIndex((o) => o.id === id);
+    return j < 0 ? map.outputs.length : j;
+  };
+  return [
+    ...map.spotify.map((e, n) => src(`s${n}`, 'spotify', e.name, e.name, e.output)),
+    ...map.airplay.map((e, n) => src(`a${n}`, 'airplay', e.name, e.name, e.output)),
+    ...map.routes.map((r, n) => src(`r${n}`, 'route', inputLabel(r.input), r.input, r.output)),
+    // Inputs with no route still show, so the jack is visible.
+    ...map.inputs
+      .filter((i) => !map.routes.some((r) => r.input === i.id))
+      .map((i): Source => ({ key: `i${i.id}`, kind: 'route', name: i.label, output: '', running: false, playing: false })),
+  ].sort((a, b) => order(a.output) - order(b.output));
+}
+
+const KIND_ICON = { spotify: Music, airplay: Radio, route: Cable } as const;
+
+function Routing({
+  map, level, announcing, meta,
+}: {
+  map: AudioMap;
+  level: Record<string, number>;
+  announcing: Record<string, boolean>;
+  meta: Record<string, AudioMeta>;
+}) {
+  const sources = sourcesOf(map);
+  const height = Math.max(sources.length * SRC_ROW, map.outputs.length * OUT_ROW, OUT_ROW);
+  // Both columns are centred in the same height, so a row's centre is
+  // computable rather than measured.
+  const srcTop = (height - sources.length * SRC_ROW) / 2;
+  const outTop = (height - map.outputs.length * OUT_ROW) / 2;
+  const outY = (id: string) => {
+    const j = map.outputs.findIndex((o) => o.id === id);
+    return j < 0 ? null : outTop + j * OUT_ROW + OUT_ROW / 2;
+  };
+
+  return (
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <Workflow size={15} className="text-muted" />
+        Routing
+      </h2>
+      <div className="flex" style={{ height }}>
+        <div className="min-w-0 flex-1" style={{ paddingTop: srcTop }}>
+          {sources.map((s) => (
+            <SourceRow key={s.key} s={s} meta={s.tag ? meta[s.tag] : undefined} />
           ))}
-          {map.inputs.map((i) => (
-            <span key={i.id} className="hair rounded-lg border bg-raised px-2.5 py-1.5 text-muted" title={i.device}>
-              {i.label} (input)
-            </span>
+          {!sources.length && <p className="text-xs text-muted">Nothing is set up to play yet.</p>}
+        </div>
+
+        <svg width={LINK_W} height={height} className="shrink-0" aria-hidden="true">
+          {sources.map((s, i) => {
+            const y2 = s.output ? outY(s.output) : null;
+            if (y2 === null) return null;
+            const y1 = srcTop + i * SRC_ROW + SRC_ROW / 2;
+            return (
+              // Playing: solid and lit. Idle (running, nothing playing): faint.
+              // Not running: dashed.
+              <path
+                key={s.key}
+                d={`M0 ${y1} C ${LINK_W / 2} ${y1}, ${LINK_W / 2} ${y2}, ${LINK_W} ${y2}`}
+                fill="none"
+                strokeWidth={s.playing ? 2.25 : 1.25}
+                strokeDasharray={s.running ? undefined : '3 3'}
+                style={{ stroke: s.playing ? 'var(--live)' : 'var(--muted)', opacity: s.playing ? 1 : 0.4 }}
+              />
+            );
+          })}
+        </svg>
+
+        <div className="w-60 shrink-0 sm:w-72" style={{ paddingTop: outTop }}>
+          {map.outputs.map((o) => (
+            <OutputRow key={o.id} id={o.id} label={o.label} device={o.device}
+              level={level[o.id]} announcing={!!announcing[o.id]} />
           ))}
         </div>
-        <p className="mt-2 text-xs text-muted">
-          Any number of endpoints can share an output; they mix. Volume is per endpoint, from the app
-          playing to it.
-        </p>
-      </section>
+      </div>
+      <p className="mt-3 text-xs text-muted">
+        Lit lines are playing. Sources on one output mix; each output has one level, which the
+        AirPlay and Spotify volume sliders move too. The bell plays a chime over the output,
+        ducking its music.
+      </p>
+    </section>
+  );
+}
 
-      <ListEditor title="Spotify Connect" icon={<Music size={15} className="text-muted" />} kind="spotify"
-        map={map} leftLabel="Name in the Spotify app" label={label} />
-      <ListEditor title="AirPlay" icon={<Radio size={15} className="text-muted" />} kind="airplay"
-        map={map} leftLabel="Name on Apple devices" label={label} />
-      {map.inputs.length > 0 && (
-        <ListEditor title="Input routes" icon={<Cable size={15} className="text-muted" />} kind="routes"
-          map={map} leftLabel="Input" label={label}
-          hint="A route plays the input live on the output, mixed with anything else playing there." />
-      )}
+function SourceRow({ s, meta }: { s: Source; meta: AudioMeta | undefined }) {
+  const Icon = KIND_ICON[s.kind];
+  const unrouted = s.output === '';
+  const track = meta?.title ? [meta.title, meta.artist].filter(Boolean).join(' — ') : '';
+  const status = unrouted ? 'not routed' : s.playing ? 'playing' : meta?.state === 'paused' ? 'paused' : s.running ? 'idle' : 'not running';
+  const tip = [s.name, track, meta?.album, meta?.client && `from ${meta.client}`, status].filter(Boolean).join('\n');
+  // A cover that will not load (offline box, expired CDN link) falls back to
+  // the source's icon rather than a broken-image glyph.
+  const [badCover, setBadCover] = useState<string | null>(null);
+  const cover = meta?.cover && meta.cover !== badCover ? meta.cover : null;
+  return (
+    <div className="flex items-center pr-1" style={{ height: SRC_ROW }}>
+      <div title={tip}
+        className={`hair flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border bg-raised px-2 text-xs ${s.running || track ? '' : 'opacity-50'}`}>
+        {cover ? (
+          <img src={audioCover(cover)} alt="" onError={() => setBadCover(cover)}
+            className="size-8 shrink-0 rounded object-cover" />
+        ) : (
+          <div className="flex size-8 shrink-0 items-center justify-center">
+            <Icon size={14} className={s.playing ? 'text-live' : 'text-muted'} />
+          </div>
+        )}
+        <div className="min-w-0 flex-1 leading-tight">
+          {track ? (
+            <>
+              <div className="truncate text-ink">{track}</div>
+              <div className="truncate text-muted">
+                {s.name}{meta?.client ? ` · ${meta.client}` : ''}
+              </div>
+            </>
+          ) : (
+            <div className="truncate">{s.name}</div>
+          )}
+        </div>
+        {(s.playing || meta?.state === 'paused' || unrouted) && (
+          <span className={`shrink-0 ${s.playing ? 'text-live' : 'text-muted'}`}>{status}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OutputRow({
+  id, label, device, level, announcing,
+}: {
+  id: string;
+  label: string;
+  device: string;
+  level: number | undefined;
+  announcing: boolean;
+}) {
+  // Local while dragging, so the thumb follows the pointer; sent at most every
+  // 120 ms while it moves and once on release, then the retained state takes
+  // over again.
+  const [drag, setDrag] = useState<number | null>(null);
+  const sent = useRef(0);
+  const shown = drag ?? level ?? 0;
+  const send = (v: number, force = false) => {
+    const now = Date.now();
+    if (!force && now - sent.current < 120) return;
+    sent.current = now;
+    try { io.setAudioLevel(id, v); } catch { /* not connected: the page says so */ }
+  };
+  const release = () => {
+    if (drag !== null) send(drag, true);
+    setDrag(null);
+  };
+
+  return (
+    <div className="flex items-center pl-1" style={{ height: OUT_ROW }}>
+      <div className={`hair w-full rounded-xl border bg-raised p-2.5 ${announcing ? 'border-warm/60' : ''}`}>
+        <div className="flex items-center gap-2 text-sm">
+          <Speaker size={14} className="shrink-0 text-muted" />
+          <span className="truncate" title={device}>{label}</span>
+          {announcing && <span className="text-xs text-warm">announcing</span>}
+          <button
+            onClick={() => { try { io.announce(id); } catch { /* not connected */ } }}
+            className="ml-auto rounded-md p-1 text-muted hover:text-ink"
+            title="Play a chime over this output" aria-label={`Announce on ${label}`}>
+            <Bell size={14} />
+          </button>
+        </div>
+        <div className="mt-1.5 flex items-center gap-2">
+          <Volume2 size={13} className="shrink-0 text-muted" />
+          <input
+            type="range" min={0} max={100} value={shown} disabled={level === undefined}
+            aria-label={`${label} level`}
+            onChange={(e) => { const v = Number(e.target.value); setDrag(v); send(v); }}
+            onPointerUp={release} onKeyUp={release} onBlur={release}
+            className="min-w-0 flex-1 accent-accent"
+          />
+          <span className="w-9 text-right text-xs tabular-nums">{level === undefined ? '–' : `${shown}%`}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -314,12 +528,12 @@ function ListEditor({
   };
 
   return (
-    <section className="hair rounded-xl border bg-panel p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+    <section>
+      <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
         {icon}
         {title}
         <span className="ml-auto text-xs font-normal text-muted">{rows.length}</span>
-      </h2>
+      </h3>
       {hint && <p className="mb-3 text-xs text-muted">{hint}</p>}
 
       <div className="space-y-2">
