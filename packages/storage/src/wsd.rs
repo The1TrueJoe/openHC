@@ -391,7 +391,7 @@ mod tests {
                 .replace("<wsd:Probe><wsd:Types>wsdp:Device</wsd:Types></wsd:Probe>", &format!("<wsd:Resolve><wsa:EndpointReference><wsa:Address>{urn}</wsa:Address></wsa:EndpointReference></wsd:Resolve>"))
         };
         let r = h.answer(&resolve(&h.urn()), IP).unwrap();
-        assert!(r.contains(&format!("<wsd:XAddrs>http://10.0.0.112:5357/{}</wsd:XAddrs>", h.uuid)), "{r}");
+        assert!(r.contains(&format!("<wsd:XAddrs>http://10.0.0.112:5357/{}</wsd:XAddrs>", h.uuid)));
         assert!(r.contains("/ResolveMatches</wsa:Action>"));
         assert!(h.answer(&resolve("urn:uuid:00000000-0000-0000-0000-000000000000"), IP).is_none());
     }
@@ -402,7 +402,7 @@ mod tests {
         let get = PROBE.replace("http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe", GET).replace("<wsd:Probe><wsd:Types>wsdp:Device</wsd:Types></wsd:Probe>", "");
         let r = h.metadata(&get).unwrap();
         roxmltree::Document::parse(&r).unwrap();
-        assert!(r.contains("<pub:Computer>OPENHC-HC800-000FFF57B978/Workgroup:WORKGROUP</pub:Computer>"), "{r}");
+        assert!(r.contains("<pub:Computer>OPENHC-HC800-000FFF57B978/Workgroup:WORKGROUP</pub:Computer>"));
         assert!(r.contains(&format!("<wsa:Action>{GET_RESPONSE}</wsa:Action>")));
         assert!(!r.contains("AppSequence"));
         assert!(h.metadata(PROBE).is_none());
