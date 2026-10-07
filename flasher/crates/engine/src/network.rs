@@ -567,7 +567,13 @@ fn write_mtd_block(ssh: &Ssh, off: u64, data: &[u8]) -> Result<()> {
 /// with mtd0 access.
 pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     let kernel = rel.get("bzImage").context("release has no bzImage")?;
-    let initrd = rel.get("rootfs.cpio.gz").context("release has no rootfs.cpio.gz")?;
+    // The RAM installer is the TINY networked boot-init (~2 MB), NOT the full
+    // rootfs. openHC's EA rootfs (~47 MB gz / 512 MB raw) does not fit the ~24 MB
+    // gap ahead of p1, and it does not need to: boot-init comes up on the network
+    // (dropbear) and the caller's stage2_write_rootfs streams the real rootfs
+    // straight to p1 over SSH, then reboots; boot-init then finds a valid p1 and
+    // pivots. See board/ea/common/boot-init/init (net_serve) and mk-boot-init.sh.
+    let initrd = rel.get("boot-init.cpio.gz").context("release has no boot-init.cpio.gz")?;
     let klen = kernel.len() as u64;
     let ilen = initrd.len() as u64;
 
