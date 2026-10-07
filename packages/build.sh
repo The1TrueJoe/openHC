@@ -61,11 +61,11 @@ for ff in ${FAM:+"$FAM/ohc.features"} "$BOARD_DIR/ohc.features"; do
 done
 FEATURES=$(printf '%s\n' $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
 
-feature_dir() {
+# Every scope's copy of a feature, most general first (as build/build.sh layers them).
+feature_dirs() {
   for d in "$REPO/board/common/features/$1" ${FAM:+"$FAM/features/$1"} "$BOARD_DIR/features/$1"; do
-    [ -d "$d" ] && { echo "$d"; return 0; }
+    [ -d "$d" ] && echo "$d"
   done
-  return 1
 }
 
 # Core crates/binaries, on every board. CRATES (what `cargo build -p` builds)
@@ -76,14 +76,15 @@ feature_dir() {
 CRATES="iod webd sysmond"   # core
 BINS="iod webd sysmond"
 for f in $FEATURES; do
-  d=$(feature_dir "$f") || continue
-  [ -f "$d/packages" ] || continue
-  while read -r crate bin _rest; do
-    case "$crate" in ''|\#*) continue ;; esac
-    CRATES="$CRATES $crate"
-    BINS="$BINS ${bin:-$crate}"
-    echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})" >&2
-  done < "$d/packages"
+  for d in $(feature_dirs "$f"); do
+    [ -f "$d/packages" ] || continue
+    while read -r crate bin _rest; do
+      case "$crate" in ''|\#*) continue ;; esac
+      CRATES="$CRATES $crate"
+      BINS="$BINS ${bin:-$crate}"
+      echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})" >&2
+    done < "$d/packages"
+  done
 done
 
 # `build.sh <board> --crates` / `--bins`: just say what this board gets, for
