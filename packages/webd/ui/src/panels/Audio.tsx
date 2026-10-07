@@ -1,10 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Music, Speaker, Radio, Volume2, CircleDot, Circle, Plus, Trash2, Cable } from 'lucide-react';
-import {
-  io, rest, type AudioEndpoints, type AudioInstance, type AudioMap, type AudioReceiver, type AudioStatus,
-  type Capabilities,
-} from '../api';
+import { useState } from 'react';
+import { Music, Speaker, Radio, Volume2, CircleDot, Circle } from 'lucide-react';
+import { io, type AudioReceiver, type AudioStatus, type Capabilities } from '../api';
 import { useIoState } from '../App';
+import { AudioFlow } from './AudioFlow';
 
 /* Audio: the ALSA output the box renders to, and the two network receivers that
    render to it. Spotify Connect (librespot) and AirPlay (shairport-sync) are
@@ -31,17 +29,16 @@ export function AudioPanel({ caps }: { caps: Capabilities }) {
   const selected = live?.output ?? a.selected ?? '';
   const volume = live?.volume ?? a.volume;
 
-  /* A board with named outputs runs N endpoints mapped onto its jacks; the
-     single-output selector and the master volume do not apply there (each
-     endpoint has its own volume, controlled from the phone). */
-  // Live map from MQTT (retained, so it is there on connect), falling back to
-  // the capabilities snapshot; rendered only once it has the full shape — the
-  // retained topics arrive leaf by leaf.
+  /* A board with named outputs gets the switcher (AudioFlow): sources wired to
+     outputs, each node's settings a click away. The live map comes over MQTT
+     (retained, so it is there on connect), falling back to the capabilities
+     snapshot; it renders once it has the full shape — retained topics arrive
+     leaf by leaf. */
   const map = live?.map ?? a.map;
-  if (map && Array.isArray(map.outputs) && Array.isArray(map.instances)) return <MapPanel map={map} />;
+  if (map && Array.isArray(map.outputs) && Array.isArray(map.instances)) return <AudioFlow map={map} live={live ?? {}} />;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 p-5 sm:p-7">
       <OutputSection outputs={a.outputs} selected={selected} volume={volume} />
       <ReceiversSection receivers={a.receivers} live={live?.receiver} />
     </div>
@@ -209,170 +206,3 @@ function nowPlaying(v: unknown): { title: string; artist?: string } | null {
   return { title, artist: str('artist') ?? str('album_artist') };
 }
 
-/* ── boards with named outputs ──────────────────────────────────────────────
-
-   The jacks are fixed (board.env); what you configure is which endpoints exist
-   and where each one plays. That is CONFIGURATION, so it is saved over REST
-   (ohc-audiod, PUT /audio/api/audio/endpoints); what is running is live state
-   and arrives over MQTT (`<base>/state/audio/map`). */
-
-type Row = { left: string; right: string };
-type Kind = 'spotify' | 'airplay' | 'routes';
-
-const rowsOf = (map: AudioMap, kind: Kind): Row[] =>
-  kind === 'routes'
-    ? map.routes.map((r) => ({ left: r.input, right: r.output }))
-    : map[kind].map((e) => ({ left: e.name, right: e.output }));
-
-function MapPanel({ map }: { map: AudioMap }) {
-  const label = (id: string) => map.outputs.find((o) => o.id === id)?.label ?? id;
-  return (
-    <div className="space-y-4">
-      <section className="hair rounded-xl border bg-panel p-4">
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
-          <Speaker size={15} className="text-muted" />
-          Outputs and inputs
-        </h2>
-        <div className="flex flex-wrap gap-2 text-xs">
-          {map.outputs.map((o) => (
-            <span key={o.id} className="hair rounded-lg border bg-raised px-2.5 py-1.5" title={o.device}>
-              {o.label}
-            </span>
-          ))}
-          {map.inputs.map((i) => (
-            <span key={i.id} className="hair rounded-lg border bg-raised px-2.5 py-1.5 text-muted" title={i.device}>
-              {i.label} (input)
-            </span>
-          ))}
-        </div>
-        <p className="mt-2 text-xs text-muted">
-          Any number of endpoints can share an output; they mix. Volume is per endpoint, from the app
-          playing to it.
-        </p>
-      </section>
-
-      <ListEditor title="Spotify Connect" icon={<Music size={15} className="text-muted" />} kind="spotify"
-        map={map} leftLabel="Name in the Spotify app" label={label} />
-      <ListEditor title="AirPlay" icon={<Radio size={15} className="text-muted" />} kind="airplay"
-        map={map} leftLabel="Name on Apple devices" label={label} />
-      {map.inputs.length > 0 && (
-        <ListEditor title="Input routes" icon={<Cable size={15} className="text-muted" />} kind="routes"
-          map={map} leftLabel="Input" label={label}
-          hint="A route plays the input live on the output, mixed with anything else playing there." />
-      )}
-    </div>
-  );
-}
-
-function ListEditor({
-  title, icon, kind, map, leftLabel, label, hint,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  kind: Kind;
-  map: AudioMap;
-  leftLabel: string;
-  label: (id: string) => string;
-  hint?: string;
-}) {
-  const fromMap = rowsOf(map, kind);
-  const key = JSON.stringify(fromMap);
-  const [rows, setRows] = useState<Row[]>(fromMap);
-  const [base, setBase] = useState(key);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  // A save elsewhere (another page, the API) replaces our copy.
-  useEffect(() => {
-    if (key !== base) {
-      setBase(key);
-      setRows(JSON.parse(key));
-    }
-  }, [key, base]);
-
-  const isRoute = kind === 'routes';
-  const dirty = JSON.stringify(rows) !== base;
-  const bad = rows.find((r) => !r.left.trim() || !r.right);
-  const instKind: AudioInstance['kind'] = isRoute ? 'route' : kind;
-  const isUp = (r: Row) =>
-    map.instances.some((i) => i.kind === instKind && i.running && (i.name ?? i.input) === r.left.trim() && i.output === r.right);
-  const set = (i: number, p: Partial<Row>) => setRows(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
-
-  const save = async () => {
-    setBusy(true);
-    setErr(null);
-    const next: AudioEndpoints = { spotify: map.spotify, airplay: map.airplay, routes: map.routes };
-    if (isRoute) next.routes = rows.map((r) => ({ input: r.left, output: r.right }));
-    else next[kind] = rows.map((r) => ({ name: r.left.trim(), output: r.right }));
-    try {
-      await rest.saveEndpoints(next);
-      setBase(JSON.stringify(rows));
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="hair rounded-xl border bg-panel p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
-        {icon}
-        {title}
-        <span className="ml-auto text-xs font-normal text-muted">{rows.length}</span>
-      </h2>
-      {hint && <p className="mb-3 text-xs text-muted">{hint}</p>}
-
-      <div className="space-y-2">
-        {rows.map((r, i) => (
-          <div key={i} className="flex flex-wrap items-center gap-2">
-            {isUp(r) ? (
-              <CircleDot size={13} className="text-live" aria-label="running" />
-            ) : (
-              <Circle size={13} className="text-muted" aria-label="not running" />
-            )}
-            {isRoute ? (
-              <select value={r.left} onChange={(e) => set(i, { left: e.target.value })} aria-label={leftLabel}
-                className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50">
-                {!r.left && <option value="">Input…</option>}
-                {map.inputs.map((l) => (
-                  <option key={l.id} value={l.id}>{l.label}</option>
-                ))}
-              </select>
-            ) : (
-              <input value={r.left} onChange={(e) => set(i, { left: e.target.value })} placeholder={leftLabel}
-                aria-label={leftLabel} maxLength={64}
-                className="hair min-w-0 flex-1 rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50" />
-            )}
-            <span className="text-xs text-muted">→</span>
-            <select value={r.right} onChange={(e) => set(i, { right: e.target.value })} aria-label="Output"
-              className="hair rounded-lg border bg-raised p-2 text-sm text-ink outline-none focus:border-accent/50">
-              {!r.right && <option value="">Output…</option>}
-              {map.outputs.map((o) => (
-                <option key={o.id} value={o.id}>{label(o.id)}</option>
-              ))}
-            </select>
-            <button onClick={() => setRows(rows.filter((_, j) => j !== i))}
-              className="rounded-lg p-2 text-muted hover:text-ink" aria-label="Remove" title="Remove">
-              <Trash2 size={14} />
-            </button>
-          </div>
-        ))}
-        {!rows.length && <p className="text-xs text-muted">None.</p>}
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => setRows([...rows, { left: isRoute ? map.inputs[0]?.id ?? '' : '', right: map.outputs[0]?.id ?? '' }])}
-          className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-3 py-1.5 text-xs text-ink hover:border-accent/50">
-          <Plus size={13} /> Add
-        </button>
-        <button disabled={!dirty || !!bad || busy} onClick={save}
-          className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs transition hover:bg-accent/30 disabled:opacity-40">
-          {busy ? 'Saving…' : 'Save'}
-        </button>
-        {dirty && bad && <span className="text-xs text-alarm">Every row needs a name and an output.</span>}
-        {err && <span className="text-xs text-alarm">{err}</span>}
-      </div>
-    </section>
-  );
-}

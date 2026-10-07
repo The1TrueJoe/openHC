@@ -43,7 +43,9 @@ function destinations(c: Capabilities): Dest[] {
   // Audio appears only on a box that actually has it — a sound card or a
   // network receiver — the same "nothing behind it does not appear" rule.
   if (c.audio) {
-    d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} /> });
+    // Full-pane: the panel lays itself out (the switcher fills the window;
+    // the single-output view pads itself).
+    d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} />, full: true });
   }
   // Storage appears on boards that run ohc-storaged (the 'storage' feature:
   // every board with USB).
@@ -133,7 +135,7 @@ export default function App() {
       <main
         className={
           here.full
-            ? 'min-w-0 flex-1 overflow-hidden'
+            ? 'relative min-w-0 flex-1 overflow-hidden'
             : 'min-w-0 flex-1 overflow-auto p-5 sm:p-7'
         }
       >

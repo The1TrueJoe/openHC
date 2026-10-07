@@ -276,7 +276,7 @@
         }
       },
       "summary": "Audio endpoint map (retained, ohc-audiod)",
-      "description": "Boards with named outputs: `outputs` and `inputs` (hardware), the configured `spotify`/`airplay` (name + output) and `routes` (input + output), and `instances` — every supervised process with its `running` flag. JSON. Changing the map is configuration: REST `PUT /audio/api/audio/endpoints`."
+      "description": "Boards with named outputs: `outputs` and `inputs` (hardware), the configured `spotify`/`airplay` (name + output) and `routes` (input + output), and `instances` — every supervised process with its `running` flag and whether it is `playing`. JSON. Changing the map is configuration: REST `PUT /audio/api/audio/endpoints`."
     },
     "healthNow": {
       "address": "openhc/{box}/state/health/now",
@@ -352,6 +352,116 @@
           "description": "audiod | sysmond"
         }
       }
+    },
+    "audioLevel": {
+      "address": "openhc/{box}/state/audio/level/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Output level 0..100 (retained, ohc-audiod)",
+      "description": "Boards with named outputs: the one volume of that jack. Every endpoint, route and announcement on the output goes through it, and its AirPlay/Spotify endpoints use it as their hardware mixer, so a phone volume slider moves it too; this topic shows whichever moved last. Audio taper (40·log10(100/p) dB); 0 mutes."
+    },
+    "audioSetLevel": {
+      "address": "openhc/{box}/cmd/audio/level/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Set an output level",
+      "description": "A percent 0..100 for output `{output}` (an id from state/audio/map). Saved across reboots."
+    },
+    "audioAnnouncing": {
+      "address": "openhc/{box}/state/audio/announcing/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "An announcement is playing (retained, ohc-audiod)",
+      "description": "ON while an announcement plays on `{output}`; its music is ducked underneath."
+    },
+    "audioAnnounce": {
+      "address": "openhc/{box}/cmd/audio/announce/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Play an announcement",
+      "description": "Over `{output}` (or `all`): `chime` (or empty) for the built-in two-tone chime, an http(s) URL or an absolute path to a WAV. The output music ramps down (OHC_AUDIO_DUCK_DB, default 20 dB), the announcement plays at the output level, the music ramps back. One at a time per output; more queue."
+    },
+    "audioMeta": {
+      "address": "openhc/{box}/state/audio/meta/{tag}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Now playing on an endpoint (retained, ohc-audiod)",
+      "description": "Per Spotify/AirPlay endpoint (`tag` as in state/audio/map instances, e.g. `spotify-1`): `state` (playing/paused/stopped), `title`, `artist`, `album`, `cover` (an image URL, or for AirPlay a path under REST `/audio/api/audio/` such as `cover/airplay-1?v=3`), `client` (the phone or app), `duration_ms`. Cleared (empty retained message) when the session ends."
+    },
+    "audioLibrary": {
+      "address": "openhc/{box}/state/audio/library",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Library player state (retained, ohc-audiod)",
+      "description": "Boards with a `library` endpoint: mpd playing the drives under /media. `state` (play/pause/stop/offline), `elapsed_s` with `elapsed_at_ms` (when it was read, so a client can run the clock), `duration_s`, `position`, `queue_length`, `random`, `repeat`, `updating` (indexing the drives). What it plays is `state/audio/meta/library-0`; its volume is its output level. Cleared when there is no library endpoint."
+    },
+    "audioLibraryCommand": {
+      "address": "openhc/{box}/cmd/audio/library/{verb}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Control the library player",
+      "description": "`play` [queue position], `pause`, `toggle`, `stop`, `next`, `previous`, `seek` <seconds>, `clear`, `add` <uri>, `replace` <uri> (clear, add, play), `random` ON/OFF, `repeat` ON/OFF, `update` (re-index). A uri is a path under /media as REST `GET /audio/api/audio/library/browse` returns it; a folder adds everything under it."
+    },
+    "audioTone": {
+      "address": "openhc/{box}/state/audio/{knob}/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Output tone (retained, ohc-audiod)",
+      "description": "Images with the tone stage (the ohceq ALSA plugin): `{knob}` is `bass` or `treble` (dB, -12..12; shelves at 120 Hz and 8 kHz) or `balance` (-100 left only .. 100 right only). Applies to everything on `{output}`. Boosting lowers the overall level by the boost, so nothing clips."
+    },
+    "audioSetTone": {
+      "address": "openhc/{box}/cmd/audio/{knob}/{output}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Number"
+        }
+      },
+      "summary": "Set an output tone",
+      "description": "`bass`/`treble` in dB (-12..12) or `balance` (-100..100), clamped. Heard at once (the plugin reads its controls as it plays) and saved across reboots."
+    },
+    "audioInput": {
+      "address": "openhc/{box}/state/audio/input/{input}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/OnOff"
+        }
+      },
+      "summary": "Input triggered on (retained, ohc-audiod)",
+      "description": "ON while `{input}` is playing to its default routes (the routes in state/audio/map). Every input starts OFF."
+    },
+    "audioSetInput": {
+      "address": "openhc/{box}/cmd/audio/input/{input}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Trigger an input",
+      "description": "`ON`, `OFF` or `TOGGLE`. An input route in the map is a default — where the input plays when triggered — so audio flows only while it is ON. Only that input’s routes start or stop; nothing else on the outputs is interrupted."
     },
     "storageVolumes": {
       "address": "openhc/{box}/state/storage/volumes",
@@ -618,6 +728,83 @@
         "$ref": "#/channels/serviceStatus"
       },
       "summary": "Per-daemon availability (retained)"
+    },
+    "audioLevel": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioLevel"
+      },
+      "summary": "Output level 0..100 (retained, ohc-audiod)"
+    },
+    "audioSetLevel": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioSetLevel"
+      },
+      "summary": "Set an output level"
+    },
+    "audioAnnouncing": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioAnnouncing"
+      },
+      "summary": "An announcement is playing (retained, ohc-audiod)"
+    },
+    "audioAnnounce": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioAnnounce"
+      },
+      "summary": "Play an announcement"
+    },
+    "audioMeta": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioMeta"
+      },
+      "summary": "Now playing on an endpoint (retained, ohc-audiod)"
+    },
+    "audioLibrary": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioLibrary"
+      },
+      "summary": "Library player state (retained, ohc-audiod)"
+    },
+    "audioLibraryCommand": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioLibraryCommand"
+      },
+      "summary": "Control the library player"
+    },
+    "audioTone": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioTone"
+      },
+      "summary": "Output tone (retained, ohc-audiod)"
+    },
+    "audioSetTone": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioSetTone"
+      },
+      "summary": "Set an output tone"
+    },
+    "audioInput": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioInput"
+      },
+      "summary": "Input triggered on (retained, ohc-audiod)"
+    },
+    "audioSetInput": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/audioSetInput"
+      },
+      "summary": "Trigger an input"
     },
     "storageVolumes": {
       "action": "send",

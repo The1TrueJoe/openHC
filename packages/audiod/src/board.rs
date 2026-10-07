@@ -64,6 +64,20 @@ fn ports(list_var: &str, item_prefix: &str, pcm_prefix: &str) -> Vec<Port> {
         .collect()
 }
 
+impl Port {
+    /// The ALSA card behind the device, for its mixer controls:
+    /// `hw:CARD=Intel,DEV=2` → `Intel`, `hw:1,0` → `1`.
+    pub fn card(&self) -> String {
+        let spec = self.device.split_once(':').map_or("", |(_, s)| s);
+        let first = spec.split(',').next().unwrap_or("");
+        let card = spec
+            .split(',')
+            .find_map(|kv| kv.strip_prefix("CARD="))
+            .unwrap_or(if first.contains('=') { "0" } else { first });
+        if card.is_empty() { "0".into() } else { card.to_string() }
+    }
+}
+
 impl Board {
     pub fn from_env() -> Board {
         Board {
@@ -97,6 +111,14 @@ pub fn parse_list(s: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn card_of_a_device() {
+        let p = |d: &str| Port { id: "x".into(), label: "x".into(), device: d.into(), pcm: "ohc_x".into(), swap: false };
+        assert_eq!(p("hw:CARD=Intel,DEV=2").card(), "Intel");
+        assert_eq!(p("hw:1,0").card(), "1");
+        assert_eq!(p("hw:DEV=3,CARD=PCH").card(), "PCH");
+        assert_eq!(p("default").card(), "0");
+    }
     #[test]
     fn lists_split_on_the_last_at() {
         assert_eq!(
