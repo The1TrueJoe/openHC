@@ -23,6 +23,7 @@ use crate::board::{Board, Port};
 use crate::config::Endpoints;
 use crate::levels;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -123,10 +124,12 @@ fn libconfig_str(s: &str) -> String {
 }
 
 /// The output's level control is AirPlay's hardware mixer (by its simple name,
-/// `<pcm>`), so the AirPlay volume slider IS the output's level.
+/// `<pcm>`), so the AirPlay volume slider IS the output's level — on the same
+/// curve as openHC's own slider (dasl_tapered; levels.rs), which is what lets
+/// audiod move the sender's slider to a level set here (airplay.rs).
 pub fn shairport_conf(name: &str, out: &Port, n: usize) -> String {
     format!(
-        "general = {{\n    name = {};\n    port = {};\n    udp_port_base = {};\n    udp_port_range = 20;\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
+        "general = {{\n    name = {};\n    port = {};\n    udp_port_base = {};\n    udp_port_range = 20;\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n    volume_control_profile = \"dasl_tapered\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
         libconfig_str(name),
         5000 + n,
         6001 + 20 * n,
@@ -146,7 +149,27 @@ pub struct Instance {
     pub name: Option<String>,
     pub input: Option<String>,
     pub output: Option<String>,
+    /// The running process's pid (0 between restarts).
+    pid: Arc<AtomicU32>,
     task: JoinHandle<()>,
+}
+
+impl Instance {
+    /// The running process's pid, 0 between restarts.
+    pub fn pid(&self) -> u32 {
+        self.pid.load(Ordering::Relaxed)
+    }
+
+    /// SIGUSR1 to the running process. For a Spotify endpoint (our librespot
+    /// patch) it means "the output's level changed outside you": librespot
+    /// reads its mixer and reports the level to Spotify, so the app's slider
+    /// follows a change made from openHC.
+    pub fn poke(&self) {
+        let pid = self.pid();
+        if pid != 0 {
+            let _ = std::process::Command::new("kill").args(["-USR1", &pid.to_string()]).status();
+        }
+    }
 }
 
 impl Drop for Instance {
@@ -155,7 +178,7 @@ impl Drop for Instance {
     }
 }
 
-fn supervise(tag: String, program: String, args: Vec<String>, up: Up) -> JoinHandle<()> {
+fn supervise(tag: String, program: String, args: Vec<String>, up: Up, pid: Arc<AtomicU32>) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let mut cmd = Command::new(&program);
@@ -166,6 +189,7 @@ fn supervise(tag: String, program: String, args: Vec<String>, up: Up) -> JoinHan
                 .kill_on_drop(true);
             match cmd.spawn() {
                 Ok(mut child) => {
+                    pid.store(child.id().unwrap_or(0), Ordering::Relaxed);
                     up.lock().unwrap().insert(tag.clone(), true);
                     for out in [child.stdout.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
                                 child.stderr.take().map(|e| Box::new(e) as Box<dyn tokio::io::AsyncRead + Unpin + Send>)]
@@ -181,6 +205,7 @@ fn supervise(tag: String, program: String, args: Vec<String>, up: Up) -> JoinHan
                         });
                     }
                     let st = child.wait().await;
+                    pid.store(0, Ordering::Relaxed);
                     eprintln!("{tag}: exited ({st:?}), restarting in 3 s");
                 }
                 Err(e) => eprintln!("{tag}: cannot start {program}: {e}"),
@@ -317,8 +342,10 @@ pub fn start(b: &Board, e: &Endpoints, live_inputs: &HashSet<String>, up: &Up, o
         }
         // A restarted endpoint starts with nothing playing.
         crate::meta::store(&spec.tag, None);
+        let pid = Arc::new(AtomicU32::new(0));
         v.push(Instance {
-            task: supervise(spec.tag.clone(), spec.program, spec.args, up.clone()),
+            task: supervise(spec.tag.clone(), spec.program, spec.args, up.clone(), pid.clone()),
+            pid,
             key,
             tag: spec.tag,
             kind: spec.kind,

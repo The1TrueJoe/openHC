@@ -13,14 +13,19 @@
 //! slider moves the output's level and the level is what this daemon reports;
 //! the web UI and `cmd/audio/level/<id>` set the same control.
 //!
-//! Percent is an audio taper, atten = 40·log10(100/p) dB (60% → −8.9 dB, 10% →
-//! −40 dB), onto softvol's 0.2 dB steps; 0 is softvol's raw 0, which mutes.
+//! Percent is shairport-sync's "dasl_tapered" curve, so openHC's slider and an
+//! AirPlay sender's slider are the same number: every halving is −10 dB
+//! (50% → −10 dB, 25% → −20 dB, 10% → −33 dB), with a straight line to the
+//! bottom of the range below ~3% where that would fall off it. It lands on
+//! softvol's 0.2 dB steps rounding down, as shairport-sync's own mixer writes
+//! do, so a level sent to the sender (airplay_volume) and echoed back sets the
+//! same step. 0 is softvol's raw 0, which mutes.
 use crate::board::{Board, Port};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// softvol resolution - 1: 0.2 dB steps from −51 dB (raw 1) to 0 dB.
+/// softvol resolution - 1: 0.2 dB steps from −51 dB (raw 0) to 0 dB.
 pub const VOL_MAX: u32 = 255;
 pub const VOL_MIN_DB: f64 = -51.0;
 /// 0.2 dB steps from −40 dB to 0 dB. Never at 0 (mute) — ducking lowers music.
@@ -35,20 +40,46 @@ pub fn duck_control(p: &Port) -> String {
     format!("{} Duck Playback Volume", p.pcm)
 }
 
+/// The level's dB for a percent above 0 (shairport-sync's dasl_tapered_vol2attn).
+fn percent_db(p: u8) -> f64 {
+    let s = f64::from(p.min(100)) / 100.0;
+    let tapered = 10.0 * s.log2();
+    let flat = VOL_MIN_DB * (1.0 - s);
+    tapered.max(flat).min(0.0)
+}
+
 pub fn percent_to_raw(p: u8) -> u32 {
     if p == 0 {
         return 0;
     }
-    let att = 40.0 * (100.0 / f64::from(p.min(100))).log10();
-    VOL_MAX.saturating_sub((att / STEP_DB).round() as u32).max(1)
+    to_step(percent_db(p)).clamp(1, VOL_MAX)
 }
 
+/// dB → softvol step exactly as shairport-sync's mixer write lands: the dB as
+/// whole hundredths (a C double → long, truncated), then ALSA's dB-scale lookup
+/// for the step at or below it.
+fn to_step(db: f64) -> u32 {
+    let h = (db * 100.0) as i64;
+    let (min, step) = ((VOL_MIN_DB * 100.0) as i64, (STEP_DB * 100.0).round() as i64);
+    ((h - min).max(0) / step) as u32
+}
+
+/// The percent whose step is nearest `raw` (the highest, where several share it).
 pub fn raw_to_percent(raw: u32) -> u8 {
     if raw == 0 {
         return 0;
     }
-    let att = f64::from(VOL_MAX - raw.min(VOL_MAX)) * STEP_DB;
-    (100.0 * 10f64.powf(-att / 40.0)).round().clamp(1.0, 100.0) as u8
+    (1..=100u8).rev().min_by_key(|&p| percent_to_raw(p).abs_diff(raw)).unwrap_or(100)
+}
+
+/// The AirPlay volume (−30 … 0, −144 = mute) whose slider position is `p`
+/// percent. Through shairport-sync's dasl_tapered profile it sets exactly
+/// percent_to_raw(p), so a sender told this and echoing it back changes nothing.
+pub fn airplay_volume(p: u8) -> f64 {
+    if p == 0 {
+        return -144.0;
+    }
+    -30.0 + 30.0 * f64::from(p.min(100)) / 100.0
 }
 
 /// The duck stage's raw value for `db` of attenuation.
@@ -154,12 +185,28 @@ mod tests {
     fn taper_round_trips_and_mutes_at_zero() {
         assert_eq!(percent_to_raw(0), 0);
         assert_eq!(percent_to_raw(100), VOL_MAX);
-        assert_eq!(percent_to_raw(60), 211); // −8.8 dB
-        assert_eq!(percent_to_raw(1), 1); // floor, never mute
-        for p in [10u8, 25, 50, 60, 75, 90, 100] {
+        assert_eq!(percent_to_raw(50), 205); // −10 dB
+        assert_eq!(percent_to_raw(25), 155); // −20 dB
+        assert_eq!(percent_to_raw(60), 218); // −7.4 dB, rounded down
+        assert!(percent_to_raw(1) >= 1); // the flat floor, never mute
+        for p in [1u8, 3, 10, 25, 50, 60, 75, 90, 100] {
             assert_eq!(raw_to_percent(percent_to_raw(p)), p, "{p}");
         }
         assert_eq!(raw_to_percent(0), 0);
+    }
+    #[test]
+    fn airplay_volume_is_the_slider_position() {
+        assert_eq!(airplay_volume(0), -144.0);
+        assert_eq!(airplay_volume(100), 0.0);
+        assert_eq!(airplay_volume(50), -15.0);
+        // shairport-sync's dasl_tapered_vol2attn, in its own hundredths of a
+        // dB, then its mixer write (the step at or below): the same raw step.
+        for p in 1..=100u8 {
+            let s = 1.0 + airplay_volume(p) / 30.0;
+            let (max, min) = (0.0, VOL_MIN_DB * 100.0);
+            let att = (max + 1000.0 * s.log10() / 2f64.log10()).max(min + (max - min) * s).min(max) / 100.0;
+            assert_eq!(to_step(att).max(1), percent_to_raw(p), "{p}");
+        }
     }
     #[test]
     fn duck_depth() {

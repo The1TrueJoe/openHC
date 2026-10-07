@@ -25,6 +25,7 @@
 //! On a board with named outputs (board.env OHC_AUDIO_OUTPUTS — the HC-800) it
 //! runs every endpoint itself (see runner.rs); elsewhere it reports the stock
 //! single receivers and turns their output/volume knobs (single.rs).
+mod airplay;
 mod announce;
 mod board;
 mod config;
@@ -129,6 +130,15 @@ impl App {
         let mut l = self.levels.lock().unwrap();
         l.insert(id.to_string(), percent);
         levels::save(&l);
+        // Move the app's slider on whatever is playing here: Spotify through
+        // our librespot patch, AirPlay through the sender's DACP channel.
+        for i in self.instances.lock().unwrap().iter().filter(|i| i.output.as_deref() == Some(id)) {
+            match i.kind {
+                "spotify" => i.poke(),
+                "airplay" => airplay::set_sender_volume(i.pid(), levels::airplay_volume(percent)),
+                _ => {}
+            }
+        }
         Ok(())
     }
 
