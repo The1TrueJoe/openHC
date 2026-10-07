@@ -182,26 +182,31 @@ FEATURES=$(printf '%s\n' $FEATURES | awk '!seen[$0]++' | tr '\n' ' ')
 # booted, and the driver simply was not there. Together, a feature cannot
 # half-exist.
 #
-# Features are SEARCHED across the same three scopes the defconfigs layer
-# through — common, family, board — most general first. So `splash` lives once
-# in board/common/features/ and is selected by an HC-800 and an EA3 alike, while
-# a family or a board can define one of its own without touching common.
-feature_dir() {
+# Features LAYER across the same three scopes the defconfigs do — common,
+# family, board — most general first, every scope that has the feature applied
+# in turn (kconfig takes the last assignment). So `splash` lives once in
+# board/common/features/ and is selected by an HC-800 and an EA3 alike, a family
+# or a board can define one of its own without touching common, and a family can
+# adjust a shared one: board/ea/common/features/storage turns the shared storage
+# drivers into modules to fit CEFDK's bootlinux window.
+feature_dirs() {
+    _found=1
     for _d in "$REPO/board/common/features/$1" \
               ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/features/$1"} \
               "$BOARD_DIR/features/$1"; do
-        [ -d "$_d" ] && { printf '%s\n' "$_d"; return 0; }
+        [ -d "$_d" ] && { printf '%s\n' "$_d"; _found=0; }
     done
-    return 1
+    return $_found
 }
 
 # Kernel fragments that accompany the selected features, as BR2_EXTERNAL-relative
 # paths (Buildroot expands $(BR2_EXTERNAL_OPENHC_PATH) itself).
 FEAT_FRAGMENTS=""
 for f in $FEATURES; do
-    d=$(feature_dir "$f") || continue
-    [ -f "$d/linux.fragment" ] || continue
-    FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${d#"$REPO/board/"}/linux.fragment"
+    for d in $(feature_dirs "$f"); do
+        [ -f "$d/linux.fragment" ] || continue
+        FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${d#"$REPO/board/"}/linux.fragment"
+    done
 done
 
 # Family baseline, injected by CONVENTION so a board defconfig need not repeat it.
@@ -241,15 +246,16 @@ fi
         echo
     fi
     for f in $FEATURES; do
-        d=$(feature_dir "$f") || {
+        dirs=$(feature_dirs "$f") || {
             echo "build.sh: unknown feature '$f' — looked in common, ${COMMON_CFG:+$(basename "$(dirname "$COMMON_CFG")"), }$BOARD" >&2
             exit 1
         }
-        if [ -f "$d/defconfig" ]; then
+        for d in $dirs; do
+            [ -f "$d/defconfig" ] || continue
             echo "# --- feature: $f (${d#"$REPO/board/"}) ---"
             cat "$d/defconfig"
             echo
-        fi
+        done
     done
     cat "$BOARD_CFG"
     # Everything below is emitted AFTER the board file so it is the winning

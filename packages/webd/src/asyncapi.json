@@ -3,13 +3,13 @@
   "info": {
     "title": "openHC IO over MQTT",
     "version": "0.1.0",
-    "description": "The live state and control surface of an openHC controller: IO (relays, contacts, IR, serial, front-panel LEDs — iod), audio (ohc-audiod), health (sysmond) and return-to-stock (iod), all on the controller's own mosquitto.\n\nThe rule: anything a control system (Home Assistant, Control4) acts on or watches change is here; configuration and things that rarely change are REST (see the OpenAPI document) — the audio endpoint map, the MQTT settings, full-resolution telemetry history.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
+    "description": "The live state and control surface of an openHC controller: IO (relays, contacts, IR, serial, front-panel LEDs — iod), audio (ohc-audiod), external drives (ohc-storaged), health (sysmond) and return-to-stock (iod), all on the controller's own mosquitto.\n\nThe rule: anything a control system (Home Assistant, Control4) acts on or watches change is here; configuration and things that rarely change are REST (see the OpenAPI document) — the audio endpoint map, the MQTT settings, full-resolution telemetry history.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
   },
   "servers": {
     "onboard": {
       "host": "{host}:1883",
       "protocol": "mqtt",
-      "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
+      "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio), ohc-storaged (drives) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
       "variables": {
         "host": {
           "default": "openhc-<board>-<mac>.local"
@@ -462,6 +462,46 @@
       },
       "summary": "Trigger an input",
       "description": "`ON`, `OFF` or `TOGGLE`. An input route in the map is a default — where the input plays when triggered — so audio flows only while it is ON. Only that input’s routes start or stop; nothing else on the outputs is interrupted."
+    },
+    "storageVolumes": {
+      "address": "openhc/{box}/state/storage/volumes",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Mounted external volumes (retained, ohc-storaged)",
+      "description": "Every filesystem on a plugged-in USB (or eSATA) drive that ohc-storaged mounted and shares: `id` (kernel name, e.g. `sdb2`), `name` (the share and the folder under /media), `label`, `fs`, `bus` (`usb`/`esata`), `drive` (vendor + model), `size_bytes`, `used_bytes`, `mount`, `read_only`. JSON array; empty when nothing is plugged in."
+    },
+    "storageShare": {
+      "address": "openhc/{box}/state/storage/share",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "SMB share settings (retained, ohc-storaged)",
+      "description": "`enabled`, the login `user`, `guest` access, and how to reach it: `smb` (macOS: smb://<box>.local) and `windows` (\\\\<box>.local). The password is never published; set it with REST `PUT /storage/api/storage/share`."
+    },
+    "storageEject": {
+      "address": "openhc/{box}/cmd/storage/eject/{id}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Empty"
+        }
+      },
+      "summary": "Eject a volume",
+      "description": "Unshare and unmount volume `{id}` (from state/storage/volumes) so the drive can be pulled safely. It stays out until the drive is unplugged and plugged in again."
+    },
+    "storageRescan": {
+      "address": "openhc/{box}/cmd/storage/rescan",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Empty"
+        }
+      },
+      "summary": "Rescan for drives",
+      "description": "Look for drives now instead of on the next poke or poll."
     }
   },
   "operations": {
@@ -765,6 +805,34 @@
         "$ref": "#/channels/audioSetInput"
       },
       "summary": "Trigger an input"
+    },
+    "storageVolumes": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/storageVolumes"
+      },
+      "summary": "Mounted external volumes (retained, ohc-storaged)"
+    },
+    "storageShare": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/storageShare"
+      },
+      "summary": "SMB share settings (retained, ohc-storaged)"
+    },
+    "storageEject": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/storageEject"
+      },
+      "summary": "Eject a volume"
+    },
+    "storageRescan": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/storageRescan"
+      },
+      "summary": "Rescan for drives"
     }
   },
   "components": {

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the openHC daemons for a board and stage them into its rootfs overlay.
 #
-#   packages/build.sh <board>     (default: ca1)
+#   packages/build.sh <board>            (default: ca1)
+#   packages/build.sh <board> --crates   the crates this board ships, and stop
+#   packages/build.sh <board> --bins     the binaries this board ships, and stop
 #
 # <board> is a DIRECTORY NAME under board/, because that is what CI passes: the
 # matrix is built from the board tree, so it says "ea1-v2-poe", not "ea1". The
@@ -39,21 +41,6 @@ if ! grep -q "^\[target\.$TARGET\]" "$HERE/.cargo/config.toml" 2>/dev/null; then
   exit 1
 fi
 
-# a cargo whose toolchain actually has std for $TARGET (Homebrew's lies about it)
-pick_cargo() {
-  for c in "$HOME/.cargo/bin/cargo" "$HOME"/.rustup/toolchains/*/bin/cargo; do
-    [ -x "$c" ] || continue
-    rc="$(dirname "$c")/rustc"
-    sys="$("$rc" --print sysroot 2>/dev/null)" || continue
-    [ -d "$sys/lib/rustlib/$TARGET" ] && { echo "$c"; return; }
-  done
-  echo "build.sh: no cargo toolchain has std for $TARGET" >&2
-  echo "  run: rustup target add $TARGET" >&2
-  exit 1
-}
-CARGO="$(pick_cargo)"
-export RUSTC="$(dirname "$CARGO")/rustc"
-
 # --- which crates this board actually gets --------------------------------------
 # CORE daemons ship on every board. FEATURE daemons ship only where the board's
 # ohc.features enables the owning feature — the same gate build/build.sh uses for
@@ -74,30 +61,54 @@ for ff in ${FAM:+"$FAM/ohc.features"} "$BOARD_DIR/ohc.features"; do
 done
 FEATURES=$(printf '%s\n' $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
 
-feature_dir() {
+# Every scope's copy of a feature, most general first (as build/build.sh layers them).
+feature_dirs() {
   for d in "$REPO/board/common/features/$1" ${FAM:+"$FAM/features/$1"} "$BOARD_DIR/features/$1"; do
-    [ -d "$d" ] && { echo "$d"; return 0; }
+    [ -d "$d" ] && echo "$d"
   done
-  return 1
 }
 
-# Core crates/binaries, on every board. The `portal` binary now lives in the
-# `wifi` crate (merged with the shared Wi-Fi lib), so we build crate `wifi` to
-# get it; the staged binary is still `portal`. CRATES (what `cargo build -p`
-# builds) and BINS (what gets installed) are separate lists, so a crate whose
-# binary has a different name is expressed by listing each accordingly.
-CRATES="iod webd wifi sysmond"   # core
-BINS="iod webd portal sysmond"
+# Core crates/binaries, on every board. CRATES (what `cargo build -p` builds)
+# and BINS (what gets installed) are separate lists, so a crate whose binary
+# has a different name is expressed by listing each accordingly. The Wi-Fi
+# setup `portal` (in the `wifi` crate, whose lib webd links everywhere) is the
+# `wifi` feature's, so only boards with Wi-Fi ship it.
+CRATES="iod webd sysmond"   # core
+BINS="iod webd sysmond"
 for f in $FEATURES; do
-  d=$(feature_dir "$f") || continue
-  [ -f "$d/packages" ] || continue
-  while read -r crate bin _rest; do
-    case "$crate" in ''|\#*) continue ;; esac
-    CRATES="$CRATES $crate"
-    BINS="$BINS ${bin:-$crate}"
-    echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})"
-  done < "$d/packages"
+  for d in $(feature_dirs "$f"); do
+    [ -f "$d/packages" ] || continue
+    while read -r crate bin _rest; do
+      case "$crate" in ''|\#*) continue ;; esac
+      CRATES="$CRATES $crate"
+      BINS="$BINS ${bin:-$crate}"
+      echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})" >&2
+    done < "$d/packages"
+  done
 done
+
+# `build.sh <board> --crates` / `--bins`: just say what this board gets, for
+# CI (daemons.yml builds exactly these, so a crate is only ever compiled for
+# the boards that ship it — the IO Extender's ARMv5 never sees ohc-storaged).
+case "${2:-}" in
+  --crates) echo $CRATES; exit 0 ;;
+  --bins)   echo $BINS; exit 0 ;;
+esac
+
+# a cargo whose toolchain actually has std for $TARGET (Homebrew's lies about it)
+pick_cargo() {
+  for c in "$HOME/.cargo/bin/cargo" "$HOME"/.rustup/toolchains/*/bin/cargo; do
+    [ -x "$c" ] || continue
+    rc="$(dirname "$c")/rustc"
+    sys="$("$rc" --print sysroot 2>/dev/null)" || continue
+    [ -d "$sys/lib/rustlib/$TARGET" ] && { echo "$c"; return; }
+  done
+  echo "build.sh: no cargo toolchain has std for $TARGET" >&2
+  echo "  run: rustup target add $TARGET" >&2
+  exit 1
+}
+CARGO="$(pick_cargo)"
+export RUSTC="$(dirname "$CARGO")/rustc"
 
 echo ">> UI (must build before cargo — build.rs embeds ui/dist)"
 ( cd "$HERE/webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )

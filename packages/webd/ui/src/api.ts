@@ -22,6 +22,8 @@ const HTTP = `${location.origin}/iod`;
 const SYS = `${location.origin}/sys`;
 /* ohc-audiod's configuration REST, proxied by webd at /audio. */
 const AUDIO = `${location.origin}/audio`;
+/* ohc-storaged's REST (external drives, the SMB share), proxied at /storage. */
+const STORAGE = `${location.origin}/storage`;
 const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
@@ -69,6 +71,49 @@ export interface Capabilities {
   /** Audio, discovered at runtime (not board.env). Absent when the box has no
    *  sound card AND no receiver binaries — the same "nothing behind it" rule. */
   audio?: AudioStatus;
+  /** External drives + the SMB share, when this board runs ohc-storaged. */
+  storage?: StorageStatus;
+}
+
+/** One mounted filesystem on a plugged-in drive (ohc-storaged). */
+export interface StorageVolume {
+  id: string;
+  /** The share name, and the folder under /media. */
+  name: string;
+  label: string;
+  fs: string;
+  bus: 'usb' | 'esata';
+  drive: string;
+  size_bytes: number;
+  used_bytes?: number;
+  mount?: string;
+  read_only: boolean;
+}
+
+/** The SMB share settings and how to reach it. The password is write-only. */
+export interface StorageShare {
+  enabled: boolean;
+  user: string;
+  guest: boolean;
+  host: string;
+  smb: string;
+  windows: string;
+  /** The password generated on first start, until one is set (REST only). */
+  initial_password?: string;
+}
+
+/** One entry in a folder on a drive (the file browser). */
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  /** Unix seconds. */
+  modified: number;
+}
+
+export interface StorageStatus {
+  volumes: StorageVolume[];
+  share: StorageShare;
 }
 
 /** An ALSA playback device the receivers can be pointed at. `id` is what you
@@ -277,6 +322,8 @@ export interface IoState {
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
   health?: { now?: Telemetry; history?: History; fan?: FanStatus };
+  /** External drives (ohc-storaged), live. */
+  storage?: { volumes?: StorageVolume[]; share?: StorageShare };
   /** Return-to-stock availability (boards with the ohc-restore helper). */
   system?: { restore?: { available: boolean; openhc?: boolean; detail?: string } };
 }
@@ -352,11 +399,43 @@ export const rest = {
   /** ohc-audiod: outputs, inputs, the endpoint map, the receivers. Loaded once;
    *  live changes arrive over MQTT. */
   audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
-  /** Replace the endpoint map (configuration). */
+  /** ohc-storaged: volumes and the share. Absent board feature = rejected. */
+  storage: () => j<StorageStatus>(`${STORAGE}/api/storage`),
+  /** The file browser. `path` is `<volume>/<path inside it>`. */
+  files: (path: string) => j<FileEntry[]>(`${STORAGE}/api/files?path=${encodeURIComponent(path)}`),
+  fileDownloadUrl: (path: string) => auth(`${STORAGE}/api/files/download?path=${encodeURIComponent(path)}`),
+  fileMkdir: (path: string) => j<unknown>(`${STORAGE}/api/files/mkdir?path=${encodeURIComponent(path)}`, { method: 'POST' }),
+  fileRename: (path: string, to: string) =>
+    j<unknown>(`${STORAGE}/api/files/rename?path=${encodeURIComponent(path)}&to=${encodeURIComponent(to)}`, { method: 'POST' }),
+  fileDelete: (path: string) => j<unknown>(`${STORAGE}/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  /** Upload one file into folder `dir`, reporting progress 0..1. XHR, not
+   *  fetch: fetch has no upload progress. */
+  fileUpload: (dir: string, file: File, onProgress: (f: number) => void, overwrite = false) =>
+    new Promise<void>((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      const path = `${dir.replace(/\/+$/, '')}/${file.name}`;
+      x.open('PUT', auth(`${STORAGE}/api/files/upload?path=${encodeURIComponent(path)}${overwrite ? '&overwrite=true' : ''}`));
+      x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+      x.onload = () => {
+        if (x.status >= 200 && x.status < 300) return resolve();
+        let msg = `${x.status}`;
+        try { msg = JSON.parse(x.responseText).error ?? msg; } catch { /* not json */ }
+        reject(new Error(msg));
+      };
+      x.onerror = () => reject(new Error('upload failed (connection)'));
+      x.send(file);
+    }),
+  saveShare: (u: { enabled?: boolean; user?: string; password?: string; guest?: boolean }) =>
+    j<StorageShare>(`${STORAGE}/api/storage/share`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(u),
+    }),
   libraryBrowse: (path: string) =>
     j<LibraryEntry[]>(`${AUDIO}/api/audio/library/browse?path=${encodeURIComponent(path)}`),
   librarySearch: (q: string) =>
     j<LibraryEntry[]>(`${AUDIO}/api/audio/library/search?q=${encodeURIComponent(q)}`),
+  /** Replace the endpoint map (configuration). */
   saveEndpoints: (e: AudioEndpoints) =>
     j<AudioMap>(`${AUDIO}/api/audio/endpoints`, {
       method: 'PUT',
@@ -533,6 +612,8 @@ export class Io {
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));
   /** Return to stock. One-way; iod acts only on the literal "confirm". */
   restoreStock = () => this.#publish('system/restore', 'confirm');
+  /** Unshare and unmount a volume so its drive can be pulled. */
+  ejectVolume = (id: string) => this.#publish(`storage/eject/${id}`, '');
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {

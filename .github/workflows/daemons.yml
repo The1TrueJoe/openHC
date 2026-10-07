@@ -1,7 +1,8 @@
 # Cross-build the openHC userspace daemons for every board target.
 #
 # These are the SERVICES in packages/ — iod (the IO server), webd (the config
-# GUI it is a client of), portal, and the wifi lib they share. They are Rust,
+# GUI it is a client of), portal, and the wifi lib they share, plus each
+# feature's daemon on the boards with that feature (packages/build.sh decides). They are Rust,
 # static musl, and staged into the rootfs overlay rather than built by
 # Buildroot, so nothing else in CI compiles them.
 #
@@ -67,7 +68,9 @@ jobs:
             # linking. Nothing else in the workspace needs one.
             cc: musl-gcc
             apt: musl-tools
-          - board: ea1
+          # A real board directory (build.sh resolves its features from it);
+          # every EA variant ships the same crates (ea/common's features).
+          - board: ea1-v2
             target: i686-unknown-linux-musl
             cc: i686-linux-gnu-gcc
             # libc6-dev-*-cross carries the target's headers. Without it the
@@ -110,13 +113,28 @@ jobs:
           # would rewrite the compiler name too (musl-gcc -> musl_gcc).
           echo "CC_$(echo '${{ matrix.target }}' | tr '-' '_')=${{ matrix.cc }}" >> "$GITHUB_ENV"
 
+      # Only what this board ships: packages/build.sh resolves the board's
+      # features to crates (core + each feature's `packages` file), the same
+      # list the image build stages. So a feature's daemon is compiled only for
+      # the boards that have the feature — the IO Extender (ARMv5, no 64-bit
+      # atomics) is not held to code it never runs, like ohc-storaged.
+      - name: Which crates ${{ matrix.board }} ships
+        run: |
+          crates=$(bash packages/build.sh ${{ matrix.board }} --crates)
+          bins=$(bash packages/build.sh ${{ matrix.board }} --bins)
+          echo "crates: $crates"; echo "bins: $bins"
+          echo "CRATES=$crates" >> "$GITHUB_ENV"
+          echo "BINS=$bins" >> "$GITHUB_ENV"
+          # `-p` flags for everything but webd (built after the UI, below).
+          echo "CARGO_PKGS=$(for c in $crates; do [ "$c" = webd ] || printf -- ' -p %s' "$c"; done)" >> "$GITHUB_ENV"
+
       # Rust first, WITHOUT webd. webd's build.rs embeds ui/dist, so building it
       # before the UI exists would produce a binary that silently serves the
       # fallback page — and a Rust error would be buried under a frontend build.
       # Checking the rest first keeps the two failures separable.
-      - name: cargo check — every crate but webd, for ${{ matrix.board }}
+      - name: cargo check — this board's crates but webd, for ${{ matrix.board }}
         working-directory: packages
-        run: cargo check --workspace --target ${{ matrix.target }} --exclude webd
+        run: cargo check --target ${{ matrix.target }} $CARGO_PKGS
 
       # Host-target, once. The unit tests cover pure logic — base64 framing for
       # serial payloads, event-topic filtering, state-delta suppression — none
@@ -129,9 +147,9 @@ jobs:
       # portal too — it is in the artifact, and `cargo check` would not have
       # produced a binary for it. The portal binary now lives in the `wifi`
       # crate (merged with the shared Wi-Fi lib), so build that crate to get it.
-      - name: Build iod + portal + ohc-zigbee + sysmond + ohc-audiod + ohc-restore for ${{ matrix.board }}
+      - name: Build this board's daemons for ${{ matrix.board }}
         working-directory: packages
-        run: cargo build --release -p iod -p wifi -p zigbee -p sysmond -p audiod -p restore --target ${{ matrix.target }}
+        run: cargo build --release $CARGO_PKGS --target ${{ matrix.target }}
 
       - uses: actions/setup-node@v4
         with:
@@ -178,17 +196,17 @@ jobs:
           fi
           echo "OK: static"
 
+      # Exactly the binaries this board ships; a missing one fails here.
+      - name: Collect ${{ matrix.board }}'s binaries
+        run: |
+          mkdir -p out
+          for b in $BINS; do cp "packages/target/${{ matrix.target }}/release/$b" out/; done
+          ls -l out
+
       - uses: actions/upload-artifact@v4
         with:
           name: daemons-${{ matrix.board }}
-          path: |
-            packages/target/${{ matrix.target }}/release/iod
-            packages/target/${{ matrix.target }}/release/webd
-            packages/target/${{ matrix.target }}/release/portal
-            packages/target/${{ matrix.target }}/release/ohc-zigbee
-            packages/target/${{ matrix.target }}/release/sysmond
-            packages/target/${{ matrix.target }}/release/ohc-audiod
-            packages/target/${{ matrix.target }}/release/ohc-restore
+          path: out/*
           retention-days: 14
           if-no-files-found: error
 
