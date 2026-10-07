@@ -120,16 +120,20 @@ export interface AudioEndpoints {
   spotify: AudioEndpoint[];
   airplay: AudioEndpoint[];
   routes: AudioRoute[];
+  /** The music-library player (mpd over the drives on /media): 0 or 1. */
+  library?: AudioEndpoint[];
 }
 
 /** One supervised process ohc-audiod runs for the map. */
 export interface AudioInstance {
   tag: string;
-  kind: 'spotify' | 'airplay' | 'route' | 'helper';
+  kind: 'spotify' | 'airplay' | 'route' | 'library' | 'helper';
   name: string | null;
   input: string | null;
   output: string | null;
   running: boolean;
+  /** Actually playing audio right now (a route: whenever it runs). */
+  playing?: boolean;
 }
 
 /** ohc-audiod's endpoint map: the board's outputs/inputs, the configured
@@ -141,6 +145,46 @@ export interface AudioMap extends AudioEndpoints {
   inputs: AudioPort[];
   instances: AudioInstance[];
 }
+
+/** Now playing on one Spotify/AirPlay endpoint (`<base>/state/audio/meta/<tag>`). */
+export interface AudioMeta {
+  state?: 'playing' | 'paused' | 'stopped' | '';
+  title?: string;
+  artist?: string;
+  album?: string;
+  /** An absolute image URL (Spotify), or a path under ohc-audiod's API (AirPlay). */
+  cover?: string;
+  /** The phone or app driving it. */
+  client?: string;
+  duration_ms?: number;
+}
+
+/** The music-library player (`<base>/state/audio/library`). */
+export interface LibraryState {
+  state: 'play' | 'pause' | 'stop' | 'offline';
+  elapsed_s?: number;
+  /** When elapsed_s was read (Unix ms): the page runs the clock from there. */
+  elapsed_at_ms?: number;
+  duration_s?: number;
+  position?: number;
+  queue_length: number;
+  random: boolean;
+  repeat: boolean;
+  updating: boolean;
+}
+
+/** A folder or track in the library (REST browse/search). */
+export interface LibraryEntry {
+  kind: 'dir' | 'file';
+  path: string;
+  title?: string;
+  artist?: string;
+  album?: string;
+  duration_s?: number;
+}
+
+/** A displayable URL for `AudioMeta.cover`. */
+export const audioCover = (c: string) => (/^https?:\/\//.test(c) ? c : auth(`${AUDIO}/api/audio/${c}`));
 
 /** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
  *  only present when genuinely available, so the panel shows them conditionally. */
@@ -214,6 +258,21 @@ export interface IoState {
     receiver?: Record<string, { running?: boolean }>;
     /** Boards with named outputs: the endpoint map, live. */
     map?: AudioMap;
+    /** Output id → level 0..100: the one volume of that jack, which its
+     *  AirPlay/Spotify endpoints' sliders also move. */
+    level?: Record<string, number>;
+    /** Output id → an announcement is playing (its music is ducked). */
+    announcing?: Record<string, boolean>;
+    /** Endpoint tag (`spotify-1`, `airplay-0`) → what it is playing. */
+    meta?: Record<string, AudioMeta>;
+    /** The library player's transport state. */
+    library?: LibraryState;
+    /** Input id → triggered on (playing to its default routes). */
+    input?: Record<string, boolean>;
+    /** Output id → tone (images with the tone stage): dB, dB, -100..100. */
+    bass?: Record<string, number>;
+    treble?: Record<string, number>;
+    balance?: Record<string, number>;
   };
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
@@ -294,6 +353,10 @@ export const rest = {
    *  live changes arrive over MQTT. */
   audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
   /** Replace the endpoint map (configuration). */
+  libraryBrowse: (path: string) =>
+    j<LibraryEntry[]>(`${AUDIO}/api/audio/library/browse?path=${encodeURIComponent(path)}`),
+  librarySearch: (q: string) =>
+    j<LibraryEntry[]>(`${AUDIO}/api/audio/library/search?q=${encodeURIComponent(q)}`),
   saveEndpoints: (e: AudioEndpoints) =>
     j<AudioMap>(`${AUDIO}/api/audio/endpoints`, {
       method: 'PUT',
@@ -451,6 +514,20 @@ export class Io {
   /** Output volume, 0..100. Clamped and read back by iod. */
   setAudioVolume = (percent: number) =>
     this.#publish('audio/volume', String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** An output's level, 0..100 (boards with named outputs). */
+  setAudioLevel = (output: string, percent: number) =>
+    this.#publish(`audio/level/${output}`, String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** Play an announcement over an output's music, which ducks under it:
+   *  `chime`, an http(s) URL or an absolute path to a WAV on the box. */
+  announce = (output: string, source = 'chime') => this.#publish(`audio/announce/${output}`, source);
+  /** Trigger an input on or off: while on it plays to its default routes. */
+  setInput = (input: string, on: boolean) => this.#publish(`audio/input/${input}`, on ? 'ON' : 'OFF');
+  /** An output's tone: bass/treble in dB (-12..12), balance -100 (left) .. 100 (right). */
+  setTone = (output: string, knob: 'bass' | 'treble' | 'balance', value: number) =>
+    this.#publish(`audio/${knob}/${output}`, String(Math.round(value)));
+  /** The library player: play|pause|toggle|stop|next|previous|seek <s>|clear|
+   *  add <uri>|replace <uri>|random ON/OFF|repeat ON/OFF|update. */
+  library = (verb: string, arg = '') => this.#publish(`audio/library/${verb}`, arg);
   /** Fan: a percent holds it there, 'auto' hands it back to the curve. */
   setFan = (v: number | 'auto') =>
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));

@@ -1,0 +1,9 @@
+#!/bin/sh
+# mpd — replaces Buildroot's S95mpd (this overlay file is copied over it).
+#
+# openHC does not run mpd as a system service: ohc-audiod runs it, one instance,
+# as the music-library player when its endpoint map has a `library` entry, with
+# a generated config (/run/ohc/audio/mpd.conf) pointing at /media and playing to
+# that endpoint's output. Starting a second copy here with Buildroot's
+# /etc/mpd.conf would take port 6600 from it. So this does nothing.
+exit 0
