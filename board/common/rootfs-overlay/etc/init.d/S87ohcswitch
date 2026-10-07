@@ -26,7 +26,7 @@ case "$1" in
         [ -x "$BIN" ] || { echo "switchd: not built into this image"; exit 0; }
         printf "switchd: "
         start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec "$BIN" \
-            && echo "managing $OHC_DSA_PORTS on :7073" || echo "failed"
+            && echo "managing $OHC_DSA_PORTS on :7074" || echo "failed"
         ;;
     stop)
         start-stop-daemon -K -q -p "$PIDFILE"

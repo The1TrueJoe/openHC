@@ -45,6 +45,18 @@ lease() {                      # $1 = iface. static if configured, else DHCP.
     udhcpc -i "$1" -t 8 -T 2 -n >/dev/null 2>&1
 }
 
+# Every attempt above failed: leave a DHCP client retrying in the background
+# rather than giving up. Boot-time DHCP is a single ~25 s window, and after a
+# power cut the switch port or the DHCP server can easily take longer than that
+# to come back - a box on a board with no Wi-Fi fallback (the HC-800, the IO
+# Extender) then sat with only a link-local address until someone rebooted it.
+# -b backgrounds once the first round fails and keeps trying every -A seconds.
+persist() {                    # $1 = iface
+    [ -n "$OHC_NET_STATIC" ] && return 0
+    udhcpc -i "$1" -t 3 -T 2 -A 10 -b >/dev/null 2>&1
+    echo "Net: $1 still has no lease; DHCP keeps retrying in the background"
+}
+
 # Last-resort recovery. Once a DSA switch driver binds, the SoC MAC stops being
 # an ordinary netdev and becomes the switch's CPU port: the switch expects
 # tagged frames there, so plain DHCP on it is dropped and the box falls off the
@@ -121,6 +133,7 @@ case "$1" in
                 wait_carrier "$MASTER"
                 lease "$MASTER" && echo "up ($(addr_of "$MASTER"))" || echo "still no lease"
             fi
+            [ -n "$(addr_of "$MASTER" | grep -v '^169\.254\.')" ] || persist "$MASTER"
         fi
         exit 0
     fi
@@ -146,7 +159,17 @@ case "$1" in
             printf 'Net: %s (post-unbind): ' "$MASTER"
             ip link set "$MASTER" up 2>/dev/null
             wait_carrier "$MASTER"
-            lease "$MASTER" && echo "up ($(addr_of "$MASTER"))" || echo "still no lease"
+            if lease "$MASTER"; then
+                echo "up ($(addr_of "$MASTER"))"
+            else
+                echo "still no lease"
+                persist "$MASTER"
+            fi
+        else
+            # The switch is up: keep trying on the first port with a cable.
+            for p in $PORTS; do
+                [ "$(cat "/sys/class/net/$p/carrier" 2>/dev/null)" = 1 ] && { persist "$p"; break; }
+            done
         fi
     fi
     # The splash drew at S01, before any of this, so it had no address to show.

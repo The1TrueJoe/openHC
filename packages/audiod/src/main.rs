@@ -6,7 +6,17 @@
 //!   integration watches or drives): `<base>/state/audio/map` — the endpoint
 //!   map with every instance's running state; `audio/output`, `audio/volume`,
 //!   `audio/receiver/<id>/running` on single-output boards; commands
-//!   `<base>/cmd/audio/output` and `<base>/cmd/audio/volume`.
+//!   `<base>/cmd/audio/output` and `<base>/cmd/audio/volume`. With named
+//!   outputs, each output's level `audio/level/<id>` (0-100, also what its
+//!   AirPlay/Spotify endpoints' volume sliders set) and `audio/announcing/<id>`;
+//!   commands `cmd/audio/level/<id>` and `cmd/audio/announce/<id|all>` (see
+//!   levels.rs and announce.rs); every Spotify/AirPlay endpoint's now-playing
+//!   on `audio/meta/<tag>` (meta.rs); the music-library player (mpd on the
+//!   drives under /media) on `audio/library` and `cmd/audio/library/<verb>`
+//!   (library.rs); with the tone plugin, each output's `audio/bass/<id>`,
+//!   `audio/treble/<id>`, `audio/balance/<id>` and the same under `cmd/`
+//!   (tone.rs). An input plays to its default routes only while triggered:
+//!   `cmd/audio/input/<id>` ON|OFF|TOGGLE, state `audio/input/<id>`.
 //! * **REST** (configuration, which changes rarely): `GET /api/audio` and
 //!   `PUT /api/audio/endpoints` — which Spotify Connect and AirPlay endpoints
 //!   exist and which output each plays on, and live input routes. webd proxies
@@ -15,8 +25,14 @@
 //! On a board with named outputs (board.env OHC_AUDIO_OUTPUTS — the HC-800) it
 //! runs every endpoint itself (see runner.rs); elsewhere it reports the stock
 //! single receivers and turns their output/volume knobs (single.rs).
+mod airplay;
+mod announce;
 mod board;
 mod config;
+mod levels;
+mod library;
+mod meta;
+mod tone;
 mod runner;
 mod single;
 
@@ -26,6 +42,8 @@ use config::Endpoints;
 use ohcmqtt::{Base, Retained};
 use rumqttc::{AsyncClient, Event, Incoming, QoS};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::future::IntoFuture;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -44,17 +62,129 @@ struct App {
     endpoints: Mutex<Endpoints>,
     instances: Mutex<Vec<runner::Instance>>,
     up: runner::Up,
+    /// Output id → level percent, as last set or read back from the control.
+    levels: Mutex<HashMap<String, u8>>,
+    /// Inputs triggered on (cmd/audio/input/<id>): only these play to their
+    /// default routes. Live state — every input starts off.
+    live_inputs: Mutex<HashSet<String>>,
+    /// Output id → tone (bass, treble, balance), as last set.
+    tones: Mutex<HashMap<String, tone::Tone>>,
+    /// Outputs with an announcement playing.
+    announcing: Mutex<HashSet<String>>,
+    /// The music-library player's client side.
+    library: Arc<library::Library>,
+    /// AirPlay endpoints whose metadata reader thread is running.
+    readers: Mutex<HashSet<String>>,
+    /// One announcement at a time per output; the rest wait their turn.
+    announce_turn: HashMap<String, tokio::sync::Mutex<()>>,
     /// Poked whenever published state may have changed.
     changed: Notify,
 }
 
 impl App {
-    fn restart(&self) {
+    fn restart(self: &Arc<Self>) {
         let e = self.endpoints.lock().unwrap().clone();
         let mut inst = self.instances.lock().unwrap();
-        inst.clear(); // drops = stops
+        let old = std::mem::take(&mut *inst);
         if self.board.has_map() {
-            *inst = runner::start(&self.board, &e, &self.up);
+            runner::write_asound(&self.board);
+            levels::prepare(&self.board, &self.levels.lock().unwrap());
+            if tone::available() {
+                let tones = self.tones.lock().unwrap();
+                for p in &self.board.outputs {
+                    tone::apply(p, &tones.get(&p.id).copied().unwrap_or_default());
+                }
+            }
+            let live = self.live_inputs.lock().unwrap().clone();
+            *inst = runner::start(&self.board, &e, &live, &self.up, old);
+            // One metadata reader per AirPlay endpoint, for the life of the
+            // daemon (its FIFO outlives a shairport-sync restart).
+            for i in inst.iter().filter(|i| i.kind == "airplay") {
+                if self.readers.lock().unwrap().insert(i.tag.clone()) {
+                    let app = self.clone();
+                    meta::read_shairport(i.tag.clone(), move || app.changed.notify_one());
+                }
+            }
+        }
+    }
+
+    fn set_tone(&self, id: &str, knob: &str, v: i32) -> Result<(), String> {
+        let p = self.board.output(id).ok_or_else(|| format!("no output '{id}'"))?;
+        if !tone::available() {
+            return Err("this image has no tone stage".into());
+        }
+        let mut tones = self.tones.lock().unwrap();
+        let t = tones.entry(id.to_string()).or_default();
+        if !t.set(knob, v) {
+            return Err(format!("unknown tone control '{knob}'"));
+        }
+        tone::apply_knob(p, knob, t.get(knob).unwrap_or(0));
+        tone::save(&tones);
+        Ok(())
+    }
+
+    fn set_level(&self, id: &str, percent: u8) -> Result<(), String> {
+        let p = self.board.output(id).ok_or_else(|| format!("no output '{id}'"))?;
+        let percent = percent.min(100);
+        levels::cset(p, &levels::vol_control(p), levels::percent_to_raw(percent));
+        let mut l = self.levels.lock().unwrap();
+        l.insert(id.to_string(), percent);
+        levels::save(&l);
+        // Move the app's slider on whatever is playing here: Spotify through
+        // our librespot patch, AirPlay through the sender's DACP channel.
+        for i in self.instances.lock().unwrap().iter().filter(|i| i.output.as_deref() == Some(id)) {
+            match i.kind {
+                "spotify" => i.poke(),
+                "airplay" => airplay::set_sender_volume(i.pid(), levels::airplay_volume(percent)),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Pick up level changes made outside this daemon — an AirPlay or Spotify
+    /// volume slider moving the control. A raw value that still matches the
+    /// saved percent keeps that percent (the taper is many-to-one at the
+    /// bottom, so reading back would otherwise turn 3% into 5%).
+    fn sync_levels(&self) {
+        let raw = levels::read_raw(&self.board);
+        let mut l = self.levels.lock().unwrap();
+        let mut moved = false;
+        for (id, r) in raw {
+            let cur = *l.get(&id).unwrap_or(&levels::DEFAULT);
+            if levels::percent_to_raw(cur) != r {
+                l.insert(id, levels::raw_to_percent(r));
+                moved = true;
+            }
+        }
+        if moved {
+            levels::save(&l);
+        }
+    }
+
+    async fn announce(self: &Arc<Self>, target: &str, source: &str) {
+        let ids: Vec<String> = if target == "all" {
+            self.board.outputs.iter().map(|p| p.id.clone()).collect()
+        } else if self.board.output(target).is_some() {
+            vec![target.to_string()]
+        } else {
+            eprintln!("audiod: cmd/audio/announce: no output '{target}'");
+            return;
+        };
+        for id in ids {
+            let (app, source) = (self.clone(), source.to_string());
+            tokio::spawn(async move {
+                let Some(turn) = app.announce_turn.get(&id) else { return };
+                let _turn = turn.lock().await;
+                let Some(p) = app.board.output(&id) else { return };
+                app.announcing.lock().unwrap().insert(id.clone());
+                app.changed.notify_one();
+                if let Err(e) = announce::play(p, &source).await {
+                    eprintln!("audiod: announce on {id}: {e}");
+                }
+                app.announcing.lock().unwrap().remove(&id);
+                app.changed.notify_one();
+            });
         }
     }
 
@@ -72,6 +202,9 @@ impl App {
             .map(|i| json!({
                 "tag": i.tag, "kind": i.kind, "name": i.name, "input": i.input, "output": i.output,
                 "running": up.get(&i.tag).copied().unwrap_or(false),
+                // A route plays whenever it runs; an endpoint when it says so.
+                "playing": up.get(&i.tag).copied().unwrap_or(false)
+                    && (i.kind == "route" || meta::playing(&i.tag)),
             }))
             .collect();
         let e = self.endpoints.lock().unwrap();
@@ -82,6 +215,7 @@ impl App {
             "spotify": e.spotify,
             "airplay": e.airplay,
             "routes": e.routes,
+            "library": e.library,
             "instances": instances,
         }))
     }
@@ -130,6 +264,63 @@ async fn put_endpoints(State(app): Ctx, Json(next): Json<Endpoints>) -> axum::re
     Json(app.map()).into_response()
 }
 
+#[utoipa::path(get, path = "/api/audio/cover/{tag}", tag = "Audio",
+    summary = "An AirPlay endpoint's cover art",
+    description = "The image the sender sent with the current track; `state/audio/meta/<tag>` names it (`cover`). Spotify covers are absolute URLs there instead.",
+    params(("tag" = String, Path, description = "endpoint tag, e.g. airplay-1")),
+    responses((status = 200, description = "the image"), (status = 404, description = "no cover art")))]
+async fn get_cover(axum::extract::Path(tag): axum::extract::Path<String>) -> axum::response::Response {
+    if !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match std::fs::read(meta::cover_path(&tag)) {
+        Ok(b) => (
+            [(axum::http::header::CONTENT_TYPE, meta::mime(&b)), (axum::http::header::CACHE_CONTROL, "max-age=86400")],
+            b,
+        ).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+struct BrowseQuery {
+    /// A folder under /media, as mpd names it (`Sandisk/Music`); empty = the top.
+    #[serde(default)]
+    path: String,
+}
+
+#[utoipa::path(get, path = "/api/audio/library/browse", tag = "Audio",
+    summary = "Folders and tracks in one library folder",
+    description = "The music-library player's view of /media (the drives ohc-storaged mounts): `kind` dir|file, `path` (pass a dir back as `path`; give a file or dir to `cmd/audio/library/replace` or `add` to play it), and for tracks title/artist/album/duration_s.",
+    params(BrowseQuery),
+    responses((status = 200, description = "entries"), (status = 503, description = "no library player running")))]
+async fn library_browse(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<BrowseQuery>) -> axum::response::Response {
+    match app.library.browse(&q.path).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+struct SearchQuery {
+    /// Text to find in any tag (title, artist, album, ...).
+    q: String,
+}
+
+#[utoipa::path(get, path = "/api/audio/library/search", tag = "Audio",
+    summary = "Find tracks in the library",
+    params(SearchQuery),
+    responses((status = 200, description = "matching tracks (at most 200)"), (status = 503, description = "no library player running")))]
+async fn library_search(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<SearchQuery>) -> axum::response::Response {
+    if q.q.trim().is_empty() {
+        return Json(json!([])).into_response();
+    }
+    match app.library.search(q.q.trim()).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
 #[utoipa::path(get, path = "/api/health", tag = "Audio", summary = "ohc-audiod liveness",
     responses((status = 200, description = "ok")))]
 async fn health() -> Json<Value> {
@@ -140,6 +331,46 @@ async fn health() -> Json<Value> {
 async fn publish(app: &App, client: &AsyncClient, base: &Base, r: &mut Retained) {
     if let Some(m) = app.map() {
         r.set(client, base, "audio/map", &m).await;
+        app.sync_levels();
+        let levels = app.levels.lock().unwrap().clone();
+        let announcing = app.announcing.lock().unwrap().clone();
+        for p in &app.board.outputs {
+            let level = *levels.get(&p.id).unwrap_or(&levels::DEFAULT);
+            r.set(client, base, &format!("audio/level/{}", p.id), &json!(level)).await;
+            r.set(client, base, &format!("audio/announcing/{}", p.id), &json!(announcing.contains(&p.id))).await;
+        }
+        if tone::available() {
+            let tones = app.tones.lock().unwrap().clone();
+            for p in &app.board.outputs {
+                let t = tones.get(&p.id).copied().unwrap_or_default();
+                for k in tone::KNOBS {
+                    r.set(client, base, &format!("audio/{k}/{}", p.id), &json!(t.get(k).unwrap_or(0))).await;
+                }
+            }
+        }
+        // Now playing, per endpoint. Null (an empty retained message) clears it.
+        let tags: Vec<String> = app.instances.lock().unwrap().iter()
+            .filter(|i| i.kind == "spotify" || i.kind == "airplay" || i.kind == "library")
+            .map(|i| i.tag.clone())
+            .collect();
+        for tag in tags {
+            let m = meta::load(&tag).map(|m| json!(m)).unwrap_or(Value::Null);
+            r.set(client, base, &format!("audio/meta/{tag}"), &m).await;
+        }
+        // Inputs: triggered on or not.
+        let live_inputs = app.live_inputs.lock().unwrap().clone();
+        for i in &app.board.inputs {
+            r.set(client, base, &format!("audio/input/{}", i.id), &json!(live_inputs.contains(&i.id))).await;
+        }
+        // The library player, when the map has one.
+        let has_library = !app.endpoints.lock().unwrap().library.is_empty();
+        if has_library {
+            app.library.mounts_changed().await;
+            let st = app.library.state.lock().unwrap().clone();
+            r.set(client, base, "audio/library", &json!(st)).await;
+        } else {
+            r.set(client, base, "audio/library", &Value::Null).await;
+        }
     }
     if let Some(dev) = single::selected() {
         r.set(client, base, "audio/output", &json!(dev)).await;
@@ -153,8 +384,64 @@ async fn publish(app: &App, client: &AsyncClient, base: &Base, r: &mut Retained)
 }
 
 /// Handle `<base>/cmd/audio/<what>`.
-async fn command(app: &App, what: &str, body: &str) {
+async fn command(app: &Arc<App>, what: &str, body: &str) {
     let body = body.trim();
+    if let Some(id) = what.strip_prefix("level/") {
+        match body.parse::<u8>() {
+            Ok(p) => {
+                if let Err(e) = app.set_level(id, p) {
+                    eprintln!("audiod: cmd/audio/level: {e}");
+                }
+            }
+            Err(_) => eprintln!("audiod: cmd/audio/level/{id}: not a percent: {body:?}"),
+        }
+        app.changed.notify_one();
+        return;
+    }
+    if let Some((knob, id)) = what.split_once('/').filter(|(k, _)| tone::KNOBS.contains(k)) {
+        match body.parse::<i32>() {
+            Ok(v) => {
+                if let Err(e) = app.set_tone(id, knob, v) {
+                    eprintln!("audiod: cmd/audio/{what}: {e}");
+                }
+            }
+            Err(_) => eprintln!("audiod: cmd/audio/{what}: not a number: {body:?}"),
+        }
+        app.changed.notify_one();
+        return;
+    }
+    if let Some(id) = what.strip_prefix("input/") {
+        if app.board.input(id).is_none() {
+            eprintln!("audiod: cmd/audio/input: no input '{id}'");
+            return;
+        }
+        {
+            let mut live = app.live_inputs.lock().unwrap();
+            let on = match body.to_ascii_uppercase().as_str() {
+                "ON" | "1" | "TRUE" => true,
+                "OFF" | "0" | "FALSE" => false,
+                "TOGGLE" => !live.contains(id),
+                other => {
+                    eprintln!("audiod: cmd/audio/input/{id}: expected ON, OFF or TOGGLE, got {other:?}");
+                    return;
+                }
+            };
+            if on { live.insert(id.to_string()); } else { live.remove(id); }
+        }
+        app.restart(); // starts or stops just that input's routes
+        app.changed.notify_one();
+        return;
+    }
+    if let Some(target) = what.strip_prefix("announce/") {
+        app.announce(target, body).await;
+        return;
+    }
+    if let Some(verb) = what.strip_prefix("library/") {
+        if let Err(e) = app.library.command(verb, body).await {
+            eprintln!("audiod: cmd/audio/library/{verb}: {e}");
+        }
+        return;
+    }
     match what {
         "output" if !app.board.has_map() => match single::select(body) {
             Ok(_) => {
@@ -223,6 +510,14 @@ async fn mqtt(app: Arc<App>) {
 }
 
 fn main() {
+    // librespot's --onevent program (see meta.rs): handle one event and exit.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--hook") {
+        if let Some(tag) = args.get(2) {
+            meta::hook(tag);
+        }
+        return;
+    }
     let bind = std::env::var("AUDIOD_BIND").unwrap_or_else(|_| "0.0.0.0:7072".into());
     let board = Board::from_env();
     let endpoints = Endpoints::load();
@@ -231,16 +526,39 @@ fn main() {
             eprintln!("audiod: saved map invalid ({e}); endpoints that do not match the board are skipped");
         }
     }
+    if board.has_map() {
+        let _ = std::fs::create_dir_all("/run/ohc/audio");
+        if let Err(e) = std::fs::write(announce::CHIME, announce::chime_wav(board.rate)) {
+            eprintln!("audiod: cannot write {}: {e}", announce::CHIME);
+        }
+    }
+    let announce_turn = board.outputs.iter().map(|p| (p.id.clone(), tokio::sync::Mutex::new(()))).collect();
     let app = Arc::new(App {
         board,
         endpoints: Mutex::new(endpoints),
         instances: Mutex::new(Vec::new()),
         up: Default::default(),
+        levels: Mutex::new(levels::load()),
+        tones: Mutex::new(tone::load()),
+        live_inputs: Mutex::new(HashSet::new()),
+        announcing: Mutex::new(HashSet::new()),
+        announce_turn,
+        readers: Mutex::new(HashSet::new()),
+        library: Arc::new(library::Library::default()),
         changed: Notify::new(),
     });
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio");
+    // Now-playing from a previous run is stale: nothing plays yet.
+    meta::clear_all();
     rt.block_on(async move {
+        // Bind before starting anything: a second copy (a restart racing the
+        // old one's exit) must fail here, before it has spawned endpoints that
+        // process::exit would then orphan.
+        let listener = tokio::net::TcpListener::bind(&bind).await.unwrap_or_else(|e| {
+            eprintln!("audiod: cannot bind {bind}: {e}");
+            std::process::exit(1);
+        });
         app.restart();
         eprintln!(
             "audiod: {} outputs, {} inputs, {} instances",
@@ -249,12 +567,29 @@ fn main() {
             app.instances.lock().unwrap().len()
         );
         tokio::spawn(mqtt(app.clone()));
+        if app.board.has_map() {
+            let poke = app.clone();
+            tokio::spawn(app.library.clone().run(move || poke.changed.notify_one()));
+        }
+        // A librespot event hook (meta::hook) pokes us to publish now.
+        {
+            let app = app.clone();
+            tokio::spawn(async move {
+                let Ok(mut usr1) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()) else { return };
+                while usr1.recv().await.is_some() {
+                    app.changed.notify_one();
+                }
+            });
+        }
 
         let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
             .routes(routes!(get_audio))
             .routes(routes!(put_endpoints))
             .routes(routes!(health))
-            .with_state(app)
+            .routes(routes!(get_cover))
+            .routes(routes!(library_browse))
+            .routes(routes!(library_search))
+            .with_state(app.clone())
             .split_for_parts();
         let router = router.route(
             "/api/openapi.json",
@@ -263,16 +598,26 @@ fn main() {
                 async move { Json(api) }
             }),
         );
-        let listener = tokio::net::TcpListener::bind(&bind).await.unwrap_or_else(|e| {
-            eprintln!("audiod: cannot bind {bind}: {e}");
-            std::process::exit(1);
-        });
         eprintln!("audiod: REST on {bind}");
-        let shutdown = async {
-            let _ = tokio::signal::ctrl_c().await;
-        };
-        if let Err(e) = axum::serve(listener, router).with_graceful_shutdown(shutdown).await {
-            eprintln!("audiod: {e}");
+        // On SIGTERM (the init script's stop) or ^C, stop at once — not
+        // axum's graceful shutdown, which waits out webd's keep-alive
+        // connections — and drop every instance, whose processes are
+        // kill_on_drop. Dying on the default SIGTERM action instead left
+        // librespot and shairport-sync orphaned, holding their ports.
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler");
+        tokio::select! {
+            r = axum::serve(listener, router).into_future() => {
+                if let Err(e) = r {
+                    eprintln!("audiod: {e}");
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
         }
+        app.instances.lock().unwrap().clear();
+        // Let the aborted supervisors drop their children (kill_on_drop).
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        eprintln!("audiod: stopped");
     });
 }

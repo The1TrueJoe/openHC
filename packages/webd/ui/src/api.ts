@@ -24,6 +24,8 @@ const SYS = `${location.origin}/sys`;
 const AUDIO = `${location.origin}/audio`;
 /* switchd's configuration REST, proxied by webd at /switch (switch boards only). */
 const SWITCH = `${location.origin}/switch`;
+/* ohc-storaged's REST (external drives, the SMB share), proxied at /storage. */
+const STORAGE = `${location.origin}/storage`;
 const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
@@ -75,6 +77,8 @@ export interface Capabilities {
    *  board with no DSA switch (switchd is not shipped there), so no Switch
    *  panel — the same "nothing behind it" rule. */
   switch?: SwitchOverview;
+  /** External drives + the SMB share, when this board runs ohc-storaged. */
+  storage?: StorageStatus;
 }
 
 // ── Managed switch (switchd) ────────────────────────────────────────────────
@@ -158,6 +162,47 @@ export interface ApplyResult {
   errors: string[];
 }
 
+/** One mounted filesystem on a plugged-in drive (ohc-storaged). */
+export interface StorageVolume {
+  id: string;
+  /** The share name, and the folder under /media. */
+  name: string;
+  label: string;
+  fs: string;
+  bus: 'usb' | 'esata';
+  drive: string;
+  size_bytes: number;
+  used_bytes?: number;
+  mount?: string;
+  read_only: boolean;
+}
+
+/** The SMB share settings and how to reach it. The password is write-only. */
+export interface StorageShare {
+  enabled: boolean;
+  user: string;
+  guest: boolean;
+  host: string;
+  smb: string;
+  windows: string;
+  /** The password generated on first start, until one is set (REST only). */
+  initial_password?: string;
+}
+
+/** One entry in a folder on a drive (the file browser). */
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  /** Unix seconds. */
+  modified: number;
+}
+
+export interface StorageStatus {
+  volumes: StorageVolume[];
+  share: StorageShare;
+}
+
 /** An ALSA playback device the receivers can be pointed at. `id` is what you
  *  pass to `aplay -D` / librespot `--device` (e.g. `hw:DSP`). */
 export interface AudioOutput {
@@ -207,16 +252,20 @@ export interface AudioEndpoints {
   spotify: AudioEndpoint[];
   airplay: AudioEndpoint[];
   routes: AudioRoute[];
+  /** The music-library player (mpd over the drives on /media): 0 or 1. */
+  library?: AudioEndpoint[];
 }
 
 /** One supervised process ohc-audiod runs for the map. */
 export interface AudioInstance {
   tag: string;
-  kind: 'spotify' | 'airplay' | 'route' | 'helper';
+  kind: 'spotify' | 'airplay' | 'route' | 'library' | 'helper';
   name: string | null;
   input: string | null;
   output: string | null;
   running: boolean;
+  /** Actually playing audio right now (a route: whenever it runs). */
+  playing?: boolean;
 }
 
 /** ohc-audiod's endpoint map: the board's outputs/inputs, the configured
@@ -228,6 +277,46 @@ export interface AudioMap extends AudioEndpoints {
   inputs: AudioPort[];
   instances: AudioInstance[];
 }
+
+/** Now playing on one Spotify/AirPlay endpoint (`<base>/state/audio/meta/<tag>`). */
+export interface AudioMeta {
+  state?: 'playing' | 'paused' | 'stopped' | '';
+  title?: string;
+  artist?: string;
+  album?: string;
+  /** An absolute image URL (Spotify), or a path under ohc-audiod's API (AirPlay). */
+  cover?: string;
+  /** The phone or app driving it. */
+  client?: string;
+  duration_ms?: number;
+}
+
+/** The music-library player (`<base>/state/audio/library`). */
+export interface LibraryState {
+  state: 'play' | 'pause' | 'stop' | 'offline';
+  elapsed_s?: number;
+  /** When elapsed_s was read (Unix ms): the page runs the clock from there. */
+  elapsed_at_ms?: number;
+  duration_s?: number;
+  position?: number;
+  queue_length: number;
+  random: boolean;
+  repeat: boolean;
+  updating: boolean;
+}
+
+/** A folder or track in the library (REST browse/search). */
+export interface LibraryEntry {
+  kind: 'dir' | 'file';
+  path: string;
+  title?: string;
+  artist?: string;
+  album?: string;
+  duration_s?: number;
+}
+
+/** A displayable URL for `AudioMeta.cover`. */
+export const audioCover = (c: string) => (/^https?:\/\//.test(c) ? c : auth(`${AUDIO}/api/audio/${c}`));
 
 /** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
  *  only present when genuinely available, so the panel shows them conditionally. */
@@ -301,10 +390,27 @@ export interface IoState {
     receiver?: Record<string, { running?: boolean }>;
     /** Boards with named outputs: the endpoint map, live. */
     map?: AudioMap;
+    /** Output id → level 0..100: the one volume of that jack, which its
+     *  AirPlay/Spotify endpoints' sliders also move. */
+    level?: Record<string, number>;
+    /** Output id → an announcement is playing (its music is ducked). */
+    announcing?: Record<string, boolean>;
+    /** Endpoint tag (`spotify-1`, `airplay-0`) → what it is playing. */
+    meta?: Record<string, AudioMeta>;
+    /** The library player's transport state. */
+    library?: LibraryState;
+    /** Input id → triggered on (playing to its default routes). */
+    input?: Record<string, boolean>;
+    /** Output id → tone (images with the tone stage): dB, dB, -100..100. */
+    bass?: Record<string, number>;
+    treble?: Record<string, number>;
+    balance?: Record<string, number>;
   };
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
   health?: { now?: Telemetry; history?: History; fan?: FanStatus };
+  /** External drives (ohc-storaged), live. */
+  storage?: { volumes?: StorageVolume[]; share?: StorageShare };
   /** Return-to-stock availability (boards with the ohc-restore helper). */
   system?: { restore?: { available: boolean; openhc?: boolean; detail?: string } };
   /** Live managed-switch state from switchd: the mode, the bridge, and each
@@ -388,6 +494,42 @@ export const rest = {
   /** ohc-audiod: outputs, inputs, the endpoint map, the receivers. Loaded once;
    *  live changes arrive over MQTT. */
   audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
+  /** ohc-storaged: volumes and the share. Absent board feature = rejected. */
+  storage: () => j<StorageStatus>(`${STORAGE}/api/storage`),
+  /** The file browser. `path` is `<volume>/<path inside it>`. */
+  files: (path: string) => j<FileEntry[]>(`${STORAGE}/api/files?path=${encodeURIComponent(path)}`),
+  fileDownloadUrl: (path: string) => auth(`${STORAGE}/api/files/download?path=${encodeURIComponent(path)}`),
+  fileMkdir: (path: string) => j<unknown>(`${STORAGE}/api/files/mkdir?path=${encodeURIComponent(path)}`, { method: 'POST' }),
+  fileRename: (path: string, to: string) =>
+    j<unknown>(`${STORAGE}/api/files/rename?path=${encodeURIComponent(path)}&to=${encodeURIComponent(to)}`, { method: 'POST' }),
+  fileDelete: (path: string) => j<unknown>(`${STORAGE}/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  /** Upload one file into folder `dir`, reporting progress 0..1. XHR, not
+   *  fetch: fetch has no upload progress. */
+  fileUpload: (dir: string, file: File, onProgress: (f: number) => void, overwrite = false) =>
+    new Promise<void>((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      const path = `${dir.replace(/\/+$/, '')}/${file.name}`;
+      x.open('PUT', auth(`${STORAGE}/api/files/upload?path=${encodeURIComponent(path)}${overwrite ? '&overwrite=true' : ''}`));
+      x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+      x.onload = () => {
+        if (x.status >= 200 && x.status < 300) return resolve();
+        let msg = `${x.status}`;
+        try { msg = JSON.parse(x.responseText).error ?? msg; } catch { /* not json */ }
+        reject(new Error(msg));
+      };
+      x.onerror = () => reject(new Error('upload failed (connection)'));
+      x.send(file);
+    }),
+  saveShare: (u: { enabled?: boolean; user?: string; password?: string; guest?: boolean }) =>
+    j<StorageShare>(`${STORAGE}/api/storage/share`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(u),
+    }),
+  libraryBrowse: (path: string) =>
+    j<LibraryEntry[]>(`${AUDIO}/api/audio/library/browse?path=${encodeURIComponent(path)}`),
+  librarySearch: (q: string) =>
+    j<LibraryEntry[]>(`${AUDIO}/api/audio/library/search?q=${encodeURIComponent(q)}`),
   /** Replace the endpoint map (configuration). */
   saveEndpoints: (e: AudioEndpoints) =>
     j<AudioMap>(`${AUDIO}/api/audio/endpoints`, {
@@ -558,6 +700,20 @@ export class Io {
   /** Output volume, 0..100. Clamped and read back by iod. */
   setAudioVolume = (percent: number) =>
     this.#publish('audio/volume', String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** An output's level, 0..100 (boards with named outputs). */
+  setAudioLevel = (output: string, percent: number) =>
+    this.#publish(`audio/level/${output}`, String(Math.max(0, Math.min(100, Math.round(percent)))));
+  /** Play an announcement over an output's music, which ducks under it:
+   *  `chime`, an http(s) URL or an absolute path to a WAV on the box. */
+  announce = (output: string, source = 'chime') => this.#publish(`audio/announce/${output}`, source);
+  /** Trigger an input on or off: while on it plays to its default routes. */
+  setInput = (input: string, on: boolean) => this.#publish(`audio/input/${input}`, on ? 'ON' : 'OFF');
+  /** An output's tone: bass/treble in dB (-12..12), balance -100 (left) .. 100 (right). */
+  setTone = (output: string, knob: 'bass' | 'treble' | 'balance', value: number) =>
+    this.#publish(`audio/${knob}/${output}`, String(Math.round(value)));
+  /** The library player: play|pause|toggle|stop|next|previous|seek <s>|clear|
+   *  add <uri>|replace <uri>|random ON/OFF|repeat ON/OFF|update. */
+  library = (verb: string, arg = '') => this.#publish(`audio/library/${verb}`, arg);
   /** Fan: a percent holds it there, 'auto' hands it back to the curve. */
   setFan = (v: number | 'auto') =>
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));
@@ -567,6 +723,8 @@ export class Io {
    *  one is PUT /switch/api/switch/config). switchd re-reads the port after. */
   setSwitchPort = (name: string, up: boolean) =>
     this.#publish(`switch/port/${name}`, up ? 'up' : 'down');
+  /** Unshare and unmount a volume so its drive can be pulled. */
+  ejectVolume = (id: string) => this.#publish(`storage/eject/${id}`, '');
 
   /** Nested-set `relay/1` → state.relay['1']. */
   #apply(path: string, value: unknown) {

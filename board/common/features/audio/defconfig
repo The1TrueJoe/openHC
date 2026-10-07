@@ -35,6 +35,9 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 # BR2_PACKAGE_SHAIRPORT_SYNC_ALSA=y line would be a nonexistent symbol kconfig
 # discards without a word — same silent-nothing bug as CONFIG_PWM_CE5300 / NET_DSA_B53.
 BR2_PACKAGE_SHAIRPORT_SYNC=y
+# Its D-Bus remote control (glib): how ohc-audiod moves a sender's volume slider
+# to a level set from openHC (packages/audiod/src/airplay.rs, over DACP).
+BR2_PACKAGE_SHAIRPORT_SYNC_DBUS=y
 
 # ...and the mDNS responder it announces through — a full one (openHC's own
 # _openhc._tcp responder is too minimal for other AirPlay implementations).
@@ -45,3 +48,23 @@ BR2_PACKAGE_AVAHI_LIBDNSSD_COMPATIBILITY=y
 
 # Spotify Connect. Not in Buildroot — packages/librespot is openHC's own (Rust).
 BR2_PACKAGE_LIBRESPOT=y
+
+# The music-library player: mpd, run by ohc-audiod (one instance, when the
+# endpoint map has a `library` entry) over /media, where ohc-storaged mounts the
+# drives. Its own S95mpd is replaced by an overlay stub (audiod supervises it).
+# mpd is C++: the musl boards (HC-800) need the C++ toolchain and libstdc++,
+# which the EA family's glibc toolchain already has.
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_INSTALL_LIBSTDCPP=y
+BR2_PACKAGE_MPD=y
+# Formats: MP3 (mad, on by default), FLAC, Ogg Vorbis, Opus, AAC/M4A (faad2),
+# WAV/AIFF (libsndfile). Output: ALSA (on by default) into the output's PCM.
+BR2_PACKAGE_MPD_FLAC=y
+BR2_PACKAGE_MPD_VORBIS=y
+BR2_PACKAGE_MPD_OPUS=y
+BR2_PACKAGE_MPD_FAAD2=y
+BR2_PACKAGE_MPD_LIBSNDFILE=y
+
+# Per-output tone (bass, treble, balance): openHC's own ALSA plugin
+# (packages/alsa-ohceq), one stage per output, driven by ohc-audiod.
+BR2_PACKAGE_ALSA_OHCEQ=y

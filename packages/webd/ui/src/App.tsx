@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, Network } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, Network, HardDrive } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
@@ -8,6 +8,7 @@ import { DocsPanel } from './panels/Docs';
 import { SystemPanel } from './panels/System';
 import { AudioPanel } from './panels/Audio';
 import { SwitchPanel } from './panels/Switch';
+import { StoragePanel } from './panels/Storage';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -43,7 +44,14 @@ function destinations(c: Capabilities): Dest[] {
   // Audio appears only on a box that actually has it — a sound card or a
   // network receiver — the same "nothing behind it does not appear" rule.
   if (c.audio) {
-    d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} /> });
+    // Full-pane: the panel lays itself out (the switcher fills the window;
+    // the single-output view pads itself).
+    d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} />, full: true });
+  }
+  // Storage appears on boards that run ohc-storaged (the 'storage' feature:
+  // every board with USB).
+  if (c.storage) {
+    d.push({ id: 'storage', label: 'Storage', icon: HardDrive, render: (c) => <StoragePanel caps={c} /> });
   }
   // The managed switch: only on a board whose DSA ports switchd actually found.
   if (c.switch) {
@@ -77,15 +85,19 @@ export default function App() {
       rest.capabilities(),
       rest.config(),
       rest.audio().catch(() => null),
+      rest.storage().catch(() => null),
       rest.switch().catch(() => null),
     ])
-      .then(([caps, cfg, audio, sw]) => {
+      .then(([caps, cfg, audio, storage, sw]) => {
         const hasAudio = !!audio && (!!audio.map || audio.outputs.length > 0 || audio.receivers.some((r) => r.installed));
-        let c = hasAudio ? { ...caps, audio: audio! } : caps;
         // switchd present and reporting ports → a Switch panel. A board without
         // the managed switch has no switchd, so this rejected and sw is null.
-        if (sw && sw.ports.length > 0) c = { ...c, switch: sw };
-        setCaps(c);
+        setCaps({
+          ...caps,
+          ...(hasAudio ? { audio: audio! } : {}),
+          ...(storage ? { storage } : {}),
+          ...(sw && sw.ports.length > 0 ? { switch: sw } : {}),
+        });
         io.connect(cfg.topics.base);
       })
       .catch((e: unknown) => setErr(String((e as Error).message ?? e)));
@@ -141,7 +153,7 @@ export default function App() {
       <main
         className={
           here.full
-            ? 'min-w-0 flex-1 overflow-hidden'
+            ? 'relative min-w-0 flex-1 overflow-hidden'
             : 'min-w-0 flex-1 overflow-auto p-5 sm:p-7'
         }
       >

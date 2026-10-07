@@ -1,0 +1,6 @@
+# Crates this feature adds to the board's package build (packages/build.sh).
+# "<crate> <binary>"; binary defaults to the crate name.
+# The captive-portal setup page (S41wifi-ap runs it while the setup AP is up).
+# webd links the same crate's lib for its Wi-Fi API on every board; only boards
+# with Wi-Fi ship the portal binary.
+wifi portal

@@ -1,0 +1,5 @@
+# ohc-storaged (the 'storage' feature): tell it a disk or partition came or went,
+# so a plugged-in drive is mounted and shared within a second. It also rescans
+# every few seconds, so this is about speed, not correctness. Harmless where the
+# daemon is not installed (killall finds nothing).
+SUBSYSTEM=="block", ACTION=="add|remove|change", KERNEL=="sd*", RUN+="/usr/bin/killall -q -USR1 ohc-storaged"
