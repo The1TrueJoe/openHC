@@ -124,10 +124,12 @@ fn libconfig_str(s: &str) -> String {
 }
 
 /// The output's level control is AirPlay's hardware mixer (by its simple name,
-/// `<pcm>`), so the AirPlay volume slider IS the output's level.
+/// `<pcm>`), so the AirPlay volume slider IS the output's level — on the same
+/// curve as openHC's own slider (dasl_tapered; levels.rs), which is what lets
+/// audiod move the sender's slider to a level set here (airplay.rs).
 pub fn shairport_conf(name: &str, out: &Port, n: usize) -> String {
     format!(
-        "general = {{\n    name = {};\n    port = {};\n    udp_port_base = {};\n    udp_port_range = 20;\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
+        "general = {{\n    name = {};\n    port = {};\n    udp_port_base = {};\n    udp_port_range = 20;\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n    volume_control_profile = \"dasl_tapered\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
         libconfig_str(name),
         5000 + n,
         6001 + 20 * n,
@@ -153,12 +155,17 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// The running process's pid, 0 between restarts.
+    pub fn pid(&self) -> u32 {
+        self.pid.load(Ordering::Relaxed)
+    }
+
     /// SIGUSR1 to the running process. For a Spotify endpoint (our librespot
     /// patch) it means "the output's level changed outside you": librespot
     /// reads its mixer and reports the level to Spotify, so the app's slider
     /// follows a change made from openHC.
     pub fn poke(&self) {
-        let pid = self.pid.load(Ordering::Relaxed);
+        let pid = self.pid();
         if pid != 0 {
             let _ = std::process::Command::new("kill").args(["-USR1", &pid.to_string()]).status();
         }

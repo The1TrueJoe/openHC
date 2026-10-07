@@ -361,7 +361,7 @@
         }
       },
       "summary": "Output level 0..100 (retained, ohc-audiod)",
-      "description": "Boards with named outputs: the one volume of that jack. Every endpoint, route and announcement on the output goes through it, and its AirPlay/Spotify endpoints use it as their hardware mixer, so a phone volume slider moves it too; this topic shows whichever moved last. Audio taper (40·log10(100/p) dB); 0 mutes."
+      "description": "Boards with named outputs: the one volume of that jack. Every endpoint, route and announcement on the output goes through it, and its AirPlay/Spotify endpoints use it as their hardware mixer, so a phone volume slider moves it too; this topic shows whichever moved last. Setting it also moves the playing AirPlay or Spotify app's slider. Same curve as AirPlay's dasl_tapered profile (every halving −10 dB), so the number matches the sender's slider; 0 mutes."
     },
     "audioSetLevel": {
       "address": "openhc/{box}/cmd/audio/level/{output}",
