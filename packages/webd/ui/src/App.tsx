@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, HardDrive } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, Network, HardDrive } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
@@ -7,6 +7,7 @@ import { SettingsPanel } from './panels/Settings';
 import { DocsPanel } from './panels/Docs';
 import { SystemPanel } from './panels/System';
 import { AudioPanel } from './panels/Audio';
+import { SwitchPanel } from './panels/Switch';
 import { StoragePanel } from './panels/Storage';
 
 /** Subscribe a component to the mirrored state.
@@ -52,6 +53,10 @@ function destinations(c: Capabilities): Dest[] {
   if (c.storage) {
     d.push({ id: 'storage', label: 'Storage', icon: HardDrive, render: (c) => <StoragePanel caps={c} /> });
   }
+  // The managed switch: only on a board whose DSA ports switchd actually found.
+  if (c.switch) {
+    d.push({ id: 'switch', label: 'Switch', icon: Network, render: (c) => <SwitchPanel caps={c} /> });
+  }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
   // The controller itself: sensors, fan, front panel. Distinct from IO, which
@@ -76,10 +81,23 @@ export default function App() {
     // the topic root to subscribe under. Only then does the IO client connect.
     // Audio is ohc-audiod's (its own daemon and REST); a board without it, or
     // with it down, simply has no Audio entry.
-    Promise.all([rest.capabilities(), rest.config(), rest.audio().catch(() => null), rest.storage().catch(() => null)])
-      .then(([caps, cfg, audio, storage]) => {
+    Promise.all([
+      rest.capabilities(),
+      rest.config(),
+      rest.audio().catch(() => null),
+      rest.storage().catch(() => null),
+      rest.switch().catch(() => null),
+    ])
+      .then(([caps, cfg, audio, storage, sw]) => {
         const hasAudio = !!audio && (!!audio.map || audio.outputs.length > 0 || audio.receivers.some((r) => r.installed));
-        setCaps({ ...caps, ...(hasAudio ? { audio: audio! } : {}), ...(storage ? { storage } : {}) });
+        // switchd present and reporting ports → a Switch panel. A board without
+        // the managed switch has no switchd, so this rejected and sw is null.
+        setCaps({
+          ...caps,
+          ...(hasAudio ? { audio: audio! } : {}),
+          ...(storage ? { storage } : {}),
+          ...(sw && sw.ports.length > 0 ? { switch: sw } : {}),
+        });
         io.connect(cfg.topics.base);
       })
       .catch((e: unknown) => setErr(String((e as Error).message ?? e)));
