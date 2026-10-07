@@ -1,0 +1,41 @@
+# EA "real" kernel config delta — the FAT kernel that runs the system.
+#
+# openHC EA boot is two kernels (see board/ea/common/rootfs-overlay/etc/init.d/
+# S00kexec and the KERNEL SIZE BUDGET in linux/common.fragment):
+#
+#   * BOOTSTRAP — the bzImage in the CEFDK slot. Must stay under CEFDK
+#     bootlinux's 7,417,856-byte copy window, so it is kept lean (DRM/SGX/etc.
+#     as modules). Its only job is to reach p1 (or the network) and kexec the
+#     real kernel. That is the kernel build.sh produces normally.
+#
+#   * REAL — kexec'd from /boot/bzImage on p1. kexec has NO size limit, so this
+#     kernel builds the large subsystems straight IN and never fights the 7 MB
+#     wall again. This fragment is what makes it fat; it is merged LAST (after
+#     common + the board file + every feature fragment), so each line here wins.
+#
+# This retires the pvrsrvkm rmmod/insmod dance: with the GPU built in, it is
+# simply present when the real kernel boots. New EA functionality can now go in
+# as =y here without the size check in post-image.sh ever being in the way.
+#
+# NOTE: merge_config scrapes "SYMBOL=" even inside comments, so refer to symbols
+# without an assignment in prose.
+
+# --- GPU: PowerVR SGX545, built IN (was =m in features/sgx to save bzImage) ---
+# CONFIG_DRM built in pulls the DRM core + KMS/display helpers (~1.25 MiB) into
+# the kernel; that weight is the whole reason it was a module, and the whole
+# reason no longer applies here. SGX545_CE depends on DRM and follows it to =y;
+# its objs.mk line is obj-$(CONFIG_SGX545_CE), so =y builds the driver in.
+CONFIG_DRM=y
+CONFIG_SGX545_CE=y
+
+# --- framebuffer display built IN (ce5300-fb via FB_SIMPLE) ---
+# ce5300-fb.o is obj-$(CONFIG_FB_SIMPLE); keep the panel/console path built in on
+# the real kernel exactly as on the bootstrap. (Harmless if already set.)
+CONFIG_FB=y
+CONFIG_FB_SIMPLE=y
+
+# Modules stay ON: this kernel can still carry loadable modules (the ASoC audio
+# stack is still obj-m in objs.mk and loads from p1). Nothing here forces them
+# off — the point is only that the LARGE, always-present subsystems are built in
+# so the size ceiling stops dictating the design.
+CONFIG_MODULES=y

@@ -80,6 +80,16 @@ jobs:
           cp output/build/ea1-v1/build/linux-7.1.8/arch/x86/boot/bzImage out/ 2>/dev/null || true
           ls -l out/
 
+      # The EA "real" (fat) kernel: a second out-of-tree compile of the same source
+      # with DRM/SGX built IN (board/ea/common/linux/real-kernel.fragment). This is
+      # the kexec target staged on p1 — no 7 MB limit. Produced here for a low-risk
+      # kexec test on the box before it is wired into the image/boot path.
+      - name: Build the EA real (fat) kernel
+        run: |
+          set -euxo pipefail
+          bash ./build/mk-real-kernel.sh "$PWD/output/build/ea1-v1" "$PWD" "$PWD/out/bzImage-real"
+          ls -l out/bzImage-real
+
       # Same trim as images.yml: build/linux-* is re-extracted every build, images/ is
       # pure output. target/ and staging/ MUST stay (package stamps live there).
       - name: Trim the output tree before caching
