@@ -1,0 +1,41 @@
+From a5bccac6455213673e48ccad2c224852bfb5aa6c Mon Sep 17 00:00:00 2001
+From: openHC <openhc@localhost>
+Date: Tue, 6 Oct 2026 20:15:27 -0400
+Subject: [PATCH] Report externally changed mixer volume to Spotify on SIGUSR1
+
+---
+ src/main.rs | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/main.rs b/src/main.rs
+index fb85803..d767738 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1884,6 +1884,13 @@ async fn main() {
+     const DISCOVERY_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+     const RECONNECT_RATE_LIMIT: usize = 5;
+ 
++    // SIGUSR1: the mixer's level was changed from outside (openHC's volume
++    // control); report it to Spotify so the app's slider follows. Registered
++    // first, so the signal never takes its default action (exit).
++    let mut volume_changed =
++        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
++            .expect("cannot handle SIGUSR1");
++
+     if env::var(RUST_BACKTRACE).is_err() {
+         set_env_var(RUST_BACKTRACE, "full").await;
+     }
+@@ -2088,6 +2095,13 @@ async fn main() {
+                     exit(1);
+                 }
+             },
++            _ = volume_changed.recv() => {
++                if let Some(spirc) = spirc.as_ref() {
++                    if let Err(e) = spirc.set_volume(mixer.volume()) {
++                        error!("error sending spirc volume message: {e}");
++                    }
++                }
++            },
+             _ = async {}, if player.is_invalid() => {
+                 error!("Player shut down unexpectedly");
+                 exit(1);

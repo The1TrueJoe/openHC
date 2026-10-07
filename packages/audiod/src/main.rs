@@ -129,6 +129,13 @@ impl App {
         let mut l = self.levels.lock().unwrap();
         l.insert(id.to_string(), percent);
         levels::save(&l);
+        // Spotify's slider follows only if librespot is told; AirPlay's
+        // sender reads nothing back from the receiver, so it cannot.
+        for i in self.instances.lock().unwrap().iter() {
+            if i.kind == "spotify" && i.output.as_deref() == Some(id) {
+                i.poke();
+            }
+        }
         Ok(())
     }
 
