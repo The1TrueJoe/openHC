@@ -41,7 +41,7 @@ sound/soc/ce5300/ce5300-i2s.c    platform driver: I2S + scatter-gather DMA (PCI 
 sound/soc/ce5300/ce5300-ea3.c    machine driver: ties CPU DAI + codec into a card
 sound/soc/codecs/adau1451-c4.c   codec driver
 board/ea/common/features/audio-dsp/linux.fragment  kernel config (EA3 DSP)
-board/ea/common/features/audio/defconfig           userspace packages (all EA)
+board/common/features/audio/defconfig              userspace packages (EA + HC-800)
 ```
 
 Enable with `audio` in a board's `ohc.features`.
@@ -171,9 +171,12 @@ with the device already enabled.
 Both are plain ALSA clients and need no special kernel support beyond a working
 card.
 
-**AirPlay** is `shairport-sync`, announced via Avahi. This is AirPlay **1**:
-AirPlay 2 needs `nqptp`, which Buildroot 2024.02 doesn't package. AirPlay 1
-works from every Apple device; it just cannot join multi-room groups.
+**AirPlay** is `shairport-sync` 4.3.7, announced via Avahi over D-Bus. It is
+built as classic AirPlay (AirPlay 1). Buildroot 2026.02 can build AirPlay 2
+(nqptp), but AirPlay 2 wants one receiver per host, and the HC-800 runs several
+named AirPlay endpoints on one box, each with its own device ID. Classic
+AirPlay works from every Apple device; it just can't join AirPlay-2 multi-room
+groups.
 
 **Spotify Connect** is `librespot`, packaged here because Buildroot has none. It
 is built with Buildroot's cargo infrastructure rather than the host-side route

@@ -1,0 +1,47 @@
+# Audio: ALSA userspace plus the two network audio receivers (AirPlay + Spotify
+# Connect). SHARED: the EA family and the HC-800 both select it. There is no
+# kernel half here — the sound hardware is per board (the EA-3's ADAU1451 DSP is
+# the audio-dsp feature, the HC-800's HDA codec is in its own fragment).
+#
+# The daemon is ohc-audiod (packages/audiod, staged by this feature's
+# `packages` file). With OHC_AUDIO_OUTPUTS in board.env it runs N Spotify Connect
+# and N AirPlay instances mapped onto named outputs; without it, the single
+# S95librespot / S99shairport-sync instances run and ohc-audiod reports them and
+# turns their output/volume knobs. Its state and control are MQTT
+# (<base>/state/audio/*, <base>/cmd/audio/*), its configuration REST (:7072,
+# webd /audio/).
+
+# alsa-lib + tools to prove the card works: aplay, amixer, speaker-test (the last
+# is how you tell "no sound" from "no card").
+BR2_PACKAGE_ALSA_LIB=y
+BR2_PACKAGE_ALSA_LIB_PCM=y
+BR2_PACKAGE_ALSA_LIB_MIXER=y
+BR2_PACKAGE_ALSA_UTILS=y
+BR2_PACKAGE_ALSA_UTILS_APLAY=y
+BR2_PACKAGE_ALSA_UTILS_AMIXER=y
+BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
+# alsaloop plays an input live on an output (ohc-audiod's input routes).
+# (arecord comes with _APLAY; there is no separate symbol for it.)
+BR2_PACKAGE_ALSA_UTILS_ALSALOOP=y
+BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
+
+# AirPlay. shairport-sync advertises the box over mDNS and renders to ALSA. This
+# is classic AirPlay (shairport-sync 4.3.7 without BR2_PACKAGE_SHAIRPORT_SYNC_AIRPLAY2)
+# — works from every Apple device, just no AirPlay-2 multi-room groups. Classic is
+# deliberate: ohc-audiod runs N named instances on one host, and each gets its own
+# device ID (shairport hashes it from the name); AirPlay 2 needs one nqptp per
+# host and is not built for several receivers on a single box.
+# NOTE: there is no _ALSA sub-option (shairport-sync always builds --with-alsa); a
+# BR2_PACKAGE_SHAIRPORT_SYNC_ALSA=y line would be a nonexistent symbol kconfig
+# discards without a word — same silent-nothing bug as CONFIG_PWM_CE5300 / NET_DSA_B53.
+BR2_PACKAGE_SHAIRPORT_SYNC=y
+
+# ...and the mDNS responder it announces through — a full one (openHC's own
+# _openhc._tcp responder is too minimal for other AirPlay implementations).
+BR2_PACKAGE_AVAHI=y
+BR2_PACKAGE_AVAHI_DAEMON=y
+BR2_PACKAGE_AVAHI_LIBDNSSD_COMPATIBILITY=y
+# D-Bus itself comes from board/common/common_defconfig (every board has it).
+
+# Spotify Connect. Not in Buildroot — packages/librespot is openHC's own (Rust).
+BR2_PACKAGE_LIBRESPOT=y

@@ -560,7 +560,7 @@ fn restore(rest: &[String]) -> bool {
     println!("  target: {}", id.describe());
     let (what, f): (&str, fn(&tp::ssh::Ssh, &Progress) -> anyhow::Result<()>) = match id.board.map(|b| b.family) {
         Some(Family::Iox) => ("restore U-Boot's factory boot and erase the openHC slot", iox::restore),
-        Some(Family::Hc) => ("boot Control4's factory-restore system and let it wipe openHC", hc800::factory_restore),
+        Some(Family::Hc) => ("boot Control4's factory-restore system and let it wipe openHC", hc800::restore),
         Some(Family::Ea) => ("remove openHC's autoscript and let Control4's recovery re-image the box", ea::restore),
         Some(Family::Ca) => ("delete openHC's boot files and run Control4's factoryrestore once", ca1::restore),
         None => { eprintln!("  refusing to restore an unidentified board"); return false }

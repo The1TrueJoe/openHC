@@ -60,62 +60,24 @@ pub fn payload(v: &Value) -> String {
     }
 }
 
-/// Flatten the nested state document back to `a/b/c` leaf paths.
-pub fn flatten(v: &Value) -> Vec<(String, Value)> {
-    fn walk(prefix: &str, v: &Value, out: &mut Vec<(String, Value)>) {
-        match v {
-            Value::Object(m) => {
-                for (k, val) in m {
-                    let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}/{k}") };
-                    walk(&p, val, out);
-                }
-            }
-            leaf => out.push((prefix.to_string(), leaf.clone())),
-        }
-    }
-    let mut out = Vec::new();
-    walk("", v, &mut out);
-    out
-}
-
 /// Every retained topic, for a fresh subscriber or a reconnected broker.
-pub fn retained(base: &str, state: &Value) -> Vec<(String, String)> {
-    flatten(state)
-        .into_iter()
-        .map(|(p, v)| (format!("{base}/state/{p}"), payload(&v)))
+///
+/// One topic per path the state was SET at, with the same payload [`route`]
+/// gives a live change — never a flattening of the nested document. Flattening
+/// split a structured value (`system/restore` = `{available, detail, ...}`) into
+/// leaf topics on reconnect while live changes published it whole, so the same
+/// state had two shapes depending on timing, and the leaves went stale the
+/// moment the value's shape changed.
+pub fn retained(base: &str, entries: &[(String, Value)]) -> Vec<(String, String)> {
+    entries
+        .iter()
+        .map(|(p, v)| (format!("{base}/state/{p}"), payload(v)))
         .collect()
-}
-
-/// MQTT topic-filter matching: `+` is one level, `#` is the rest.
-pub fn matches(filter: &str, topic: &str) -> bool {
-    let (mut f, mut t) = (filter.split('/'), topic.split('/'));
-    loop {
-        match (f.next(), t.next()) {
-            (Some("#"), _) => return true,
-            (Some("+"), Some(_)) => continue,
-            (Some(a), Some(b)) if a == b => continue,
-            (None, None) => return true,
-            _ => return false,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wildcards_follow_mqtt_rules() {
-        assert!(matches("a/b/c", "a/b/c"));
-        assert!(matches("a/#", "a/b/c"));
-        assert!(matches("#", "a/b/c"));
-        assert!(matches("a/+/c", "a/b/c"));
-        assert!(!matches("a/+/c", "a/b/d"));
-        assert!(!matches("a/+", "a/b/c"));
-        assert!(!matches("a/b", "a/bc"));
-        // `#` matches the parent level too, per the spec.
-        assert!(matches("a/#", "a"));
-    }
 
     #[test]
     fn booleans_go_out_as_on_off() {
@@ -125,13 +87,22 @@ mod tests {
     }
 
     #[test]
-    fn retained_covers_every_leaf() {
-        let doc = serde_json::json!({"relay": {"0": true}, "serial": {"0": {"baud": 9600}}});
-        let mut got = retained("openhc/box", &doc);
+    fn retained_matches_live_routing() {
+        // A structured value stays ONE topic, exactly as `route` publishes it.
+        let restore = serde_json::json!({"available": true, "openhc": true});
+        let entries = vec![
+            ("relay/1".to_string(), serde_json::json!(true)),
+            ("serial/1/baud".to_string(), serde_json::json!(9600)),
+            ("system/restore".to_string(), restore.clone()),
+        ];
+        let mut got = retained("openhc/box", &entries);
         got.sort();
         assert_eq!(got, vec![
-            ("openhc/box/state/relay/0".into(), "ON".into()),
-            ("openhc/box/state/serial/0/baud".into(), "9600".into()),
+            ("openhc/box/state/relay/1".into(), "ON".into()),
+            ("openhc/box/state/serial/1/baud".into(), "9600".into()),
+            ("openhc/box/state/system/restore".into(), restore.to_string()),
         ]);
+        let live = route("openhc/box", &Msg::State { path: "system/restore".into(), value: restore }).unwrap();
+        assert_eq!((live.0, live.1), got[2].clone());
     }
 }

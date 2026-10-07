@@ -66,9 +66,12 @@ export default function App() {
   useEffect(() => {
     // REST first, for two things MQTT cannot supply: the board's shape, and
     // the topic root to subscribe under. Only then does the IO client connect.
-    Promise.all([rest.capabilities(), rest.config()])
-      .then(([caps, cfg]) => {
-        setCaps(caps);
+    // Audio is ohc-audiod's (its own daemon and REST); a board without it, or
+    // with it down, simply has no Audio entry.
+    Promise.all([rest.capabilities(), rest.config(), rest.audio().catch(() => null)])
+      .then(([caps, cfg, audio]) => {
+        const hasAudio = !!audio && (!!audio.map || audio.outputs.length > 0 || audio.receivers.some((r) => r.installed));
+        setCaps(hasAudio ? { ...caps, audio: audio! } : caps);
         io.connect(cfg.topics.base);
       })
       .catch((e: unknown) => setErr(String((e as Error).message ?? e)));

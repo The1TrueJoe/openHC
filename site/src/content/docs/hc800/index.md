@@ -171,6 +171,10 @@ Points that matter for the port:
   and replay stale data.
 - **Adding a third entry doesn't disturb the first two.** The factory-restore
   path stays byte-identical, so recovery is untouched.
+- **Back to stock from openHC:** `ohc-flash restore` and the web UI's *Reset
+  to stock* both run the box's `ohc-restore stock`, which arms Control4's
+  factory restore for exactly one boot. The ID button held at power-on is
+  still Control4's own factory reset. See [recovery](/shared/recovery/#hc-800).
 
 See [installing on the HC-800](/build/install/#hc-800) for the exact steps.
 
@@ -333,26 +337,77 @@ wired reachability is unaffected.
 
 `wlan_disable` and `lan_disable` GPIOs can hard-disable either radio or NIC.
 
-## Audio: ALC888-VD on ICH7 HD Audio
+## Audio: four independent outputs, line in, N Spotify + N AirPlay
 
 ```
 card 0: HDA Intel at 0xfe978000 irq 16
 codec#2: Realtek ALC888-VD (0x10ec0888), subsystem 0x14a4d102
 ```
 
-**The BIOS pin defaults describe the rear panel exactly**, so no model quirk is
-needed — mainline `snd_hda_codec_realtek` will produce the right jacks:
+All jacks are on the rear. The BIOS pin defaults are right except for one label
+(0x1b says "front headphone"; it's the second rear line output):
 
-| Node | Pin default | Jack |
-|---|---|---|
-| `0x14` | `0x01044110` | **Line Out**, ext rear |
-| `0x1b` | `0x02244120` | **HP Out**, ext front — the second stereo output |
-| `0x1a` | `0x01843150` | **Line In**, ext rear |
-| `0x1e` | `0x01441140` | **S/PDIF Out**, ext rear — the coax digital out |
-| `0x11` | `0x18561130` | Digital Out, *internal* HDMI |
+| Node | Converter | Jack | openHC output |
+|---|---|---|---|
+| `0x14` | DAC `0x02` | Line Out, rear RCA | `analog1`, "Analog 1" (PCM dev 0) |
+| `0x1b` | DAC `0x03` | 2nd line out, rear RCA | `analog2`, "Analog 2" (PCM dev 2) |
+| `0x1e` | `0x06` | S/PDIF coax, rear | `coax`, "Coax (S/PDIF)" (PCM dev 1) |
+| `0x11` | `0x10` | internal, to the ADV7513 | `hdmi`, "HDMI" (PCM dev 3) |
+| `0x1a` | ADC | Line In, rear RCA | input `linein` |
 
-That's the owner's "2 line out, 1 line in, 1 coax out", one for one. Every other
-pin complex reads `0x411111f0` (not connected).
+### Making them independent
+
+Mainline's generic HDA parser mirrors Analog 2 onto Analog 1 and HDMI onto coax.
+Two codec hints split them, loaded at probe from `/lib/firmware/hda-hc800.fw`
+(`snd_hda_intel.patch=` is on the kernel's built-in command line):
+
+- `indep_hp`: Analog 2 gets its own DAC and its own PCM ("Alt Analog").
+  `S46audio` switches the "Independent HP" control on at boot.
+- `indep_dig_outs`: coax gets its own PCM ("Alt Digital"). **This hint isn't in
+  mainline.** `board/hc800/patches/linux/0001` adds it to `hda/codecs/generic.c`:
+  the second digital output gets its own `hda_multi_out`, IEC958 controls (index
+  16) and PCM, instead of being a follower of the first.
+
+Hardware levels sit at 0 dB. Each endpoint has its own software volume, set from
+the app playing to it.
+
+### Endpoints
+
+`ohc-audiod` (packages/audiod, started by `S92ohcaudiod`) owns audio. It turns
+`board.env`'s outputs into ALSA `dmix` devices (`ohc_analog1`, …) and the input
+into a `dsnoop`, all at 44.1 kHz so nothing resamples, and supervises:
+
+- **Spotify Connect** — one librespot per endpoint
+- **AirPlay** — one shairport-sync (classic AirPlay) per endpoint; each hashes
+  its device ID from its name, so they are distinct devices
+- **Input routes** — `alsaloop` from an input to an output, live
+
+Any number of endpoints can share an output; they mix. The default is one
+Spotify and one AirPlay endpoint per output.
+
+The map is **configuration**, so it is REST — the web UI's Audio panel, or:
+
+```sh
+curl http://<box>/audio/api/audio
+curl -X PUT http://<box>/audio/api/audio/endpoints -H 'content-type: application/json' -d '{
+  "spotify": [{"name": "Living Room", "output": "analog1"}, {"name": "Patio", "output": "analog2"}],
+  "airplay": [{"name": "Den", "output": "hdmi"}],
+  "routes":  [{"input": "linein", "output": "analog2"}]
+}'
+```
+
+What is **running** is live state, on the box's MQTT broker:
+`<base>/state/audio/map` (outputs, inputs, the lists, and every instance with
+its `running` flag). Saved to `/data/ohc/audio.json` — `/data` is the `openhc`
+directory on `sda4`, mounted by `S08ohcdata`, because the root here is RAM.
+
+### HDMI audio
+
+HDMI picture needs no driver (the ADV7513 runs strapped off the LVDS
+deserialiser). HDMI audio needs the encoder to take S/PDIF in, with N=6272 for
+44.1 kHz. It was found that way, and `ohc-adv7513-audio` re-asserts those
+registers whenever a sink's hot-plug goes high, since a replug can reset the
+part.
 
 ## Video: a real GPU, a fixed 720p pipe, and one missing piece
 

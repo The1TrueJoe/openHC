@@ -1,45 +1,17 @@
-//! Web-controlled audio: ALSA outputs, the network receivers, and the one knob
-//! that is genuinely ours to turn — the output selection and its volume.
+//! Single-output audio — boards WITHOUT named outputs (the EA family today).
 //!
-//! openHC's `audio` feature ships ALSA (alsa-lib + aplay/amixer/speaker-test),
-//! **librespot** (Spotify Connect) and **shairport-sync** (AirPlay 1). Those two
-//! are *receivers*: playback is driven from the phone, not from here. So this
-//! module does NOT pretend to be a media player. It reports what is actually
-//! true about the box and exposes only what the services actually support:
-//!
-//! * which ALSA outputs exist (discovered at runtime, never from board.env —
-//!   HDMI audio on the other EA boards is future work, so "zero or more outputs"
-//!   is the only honest model);
-//! * which receivers are installed and running;
-//! * which output is selected, and the volume on it (via `amixer`);
-//! * now-playing metadata **iff** a receiver is actually feeding it to us.
-//!
-//! The governing rule is board.rs's: a thing with nothing behind it does not
-//! appear. No sound card and no receiver binaries → [`capability`] returns
-//! `None` and the whole section — REST, MQTT, the panel — is simply absent.
-//!
-//! ## What is NOT here, and why
-//!
-//! **Transport (play/pause/next).** Neither receiver exposes it in this image.
-//! librespot v0.4.2 (see packages/librespot/librespot.mk) has no control API; it
-//! takes `--onevent`/`--emit-sink-events` hooks only. shairport-sync is built
-//! with the bare `BR2_PACKAGE_SHAIRPORT_SYNC=y` (board/ea/common/features/audio),
-//! which does not select the D-Bus/MPRIS or metadata sub-options, so there is no
-//! MPRIS object to call. Faking transport that is not there would be worse than
-//! omitting it, so it is omitted. See the TODO at the bottom of this file for the
-//! board-side wiring that would light it up.
-//!
-//! **Now-playing** is read from a small state file a receiver's `--onevent` hook
-//! *could* write ([`NOWPLAYING_DIR`]). Absent file → `null`, nothing invented.
+//! There the receivers are the two stock single instances (S95librespot,
+//! S99shairport-sync), and what is ours to turn is which ALSA output they render
+//! to and the volume on it. Moved here from iod, unchanged in behaviour: iod owns
+//! IO, this daemon owns audio.
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// Where librespot and shairport-sync land in this image. Checked for existence
 /// to decide "installed"; the paths match the init scripts under the board
 /// rootfs-overlay (S95librespot points `DAEMON` at the first of these).
-const LIBRESPOT_BIN: &str = "/usr/bin/librespot";
-const SHAIRPORT_BIN: &str = "/usr/bin/shairport-sync";
+use crate::runner::{LIBRESPOT as LIBRESPOT_BIN, SHAIRPORT as SHAIRPORT_BIN};
 
 /// The file iod owns to tell the receivers which ALSA device to render to.
 ///
@@ -224,8 +196,8 @@ pub fn selected() -> Option<String> {
 /// board actually has. Creates the parent directory so a fresh box works.
 ///
 /// Returns the device written. The receivers do not pick this up until they are
-/// restarted AND their init scripts source the file — see the TODO; iod has no
-/// business restarting another package's daemon, so it does not.
+/// restarted AND their init scripts source the file — see the TODO; ohc-audiod
+/// restarts them after writing it (see main.rs).
 pub fn select(device: &str) -> Result<String, String> {
     let known = outputs();
     if !known.iter().any(|o| o.id == device) {
@@ -239,7 +211,7 @@ pub fn select(device: &str) -> Result<String, String> {
         let _ = std::fs::create_dir_all(parent);
     }
     let body = format!(
-        "# Written by iod (audio output selection). Sourced by the receiver init\n\
+        "# Written by ohc-audiod (audio output selection). Sourced by the receiver init\n\
          # scripts. Do not edit by hand — the Audio panel owns this file.\n\
          OHC_AUDIO_DEVICE=\"{device}\"\n"
     );
@@ -329,68 +301,6 @@ pub fn now_playing(receiver_id: &str) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
-/// The audio capability section, or `None` when the box has no audio at all.
-///
-/// Present when there is at least one output OR at least one receiver installed —
-/// a box with a sound card but no receivers can still have its volume set, and a
-/// box with receivers but a not-yet-probed card can still show their status.
-pub fn capability() -> Option<Value> {
-    let outputs = outputs();
-    let receivers = receivers();
-    let any_receiver = receivers.iter().any(|r| r.installed);
-    if outputs.is_empty() && !any_receiver {
-        return None;
-    }
-    Some(json!({
-        "outputs": outputs,
-        "receivers": receivers,
-        "selected": selected(),
-    }))
-}
-
-/// The full live status, for the REST read and the MQTT state mirror. Builds on
-/// [`capability`] and adds the things that change at runtime: volume, and each
-/// receiver's now-playing. Returns `None` on a box with no audio.
-pub async fn status() -> Option<Value> {
-    let mut v = capability()?;
-    let obj = v.as_object_mut().unwrap();
-    if let Some(vol) = volume_get(None).await {
-        obj.insert("volume".into(), json!(vol));
-    }
-    // Attach now-playing to each receiver that has some.
-    if let Some(recv) = obj.get_mut("receivers").and_then(|r| r.as_array_mut()) {
-        for r in recv.iter_mut() {
-            if let Some(id) = r.get("id").and_then(|i| i.as_str()).map(str::to_string) {
-                if let Some(np) = now_playing(&id) {
-                    if let Some(ro) = r.as_object_mut() {
-                        ro.insert("now_playing".into(), np);
-                    }
-                }
-            }
-        }
-    }
-    Some(v)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TODO (board-side, for whoever owns board/ — iod must not edit init scripts):
-//
-//   1. The receiver init scripts must source iod's selection file so a pick in
-//      the UI actually moves the audio. DONE for librespot (packages/librespot/
-//      S95librespot now sources /etc/ohc/audio-output and adds --device). Still
-//      TODO for shairport-sync, whose init is Buildroot's: pass -d "$OHC_AUDIO_DEVICE"
-//      (e.g. via an init override or by templating /etc/shairport-sync.conf's
-//      alsa output_device from the same file). Until then its output follows the
-//      default PCM and the panel's "restart to apply" note stands for it.
-//      NOTE: the audio userspace is board/ea/common/features/audio (all EA); the
-//      EA3 DSP kernel half is board/ea/common/features/audio-dsp.
-//
-//   2. now-playing + transport: build shairport-sync with --with-mpris-interface
-//      (BR2 sub-option) OR add a librespot `--onevent` hook that writes
-//      /run/ohc/<id>.json. iod already reads that file (now_playing) and already
-//      carries supports_transport/supports_metadata flags; flipping them true and
-//      adding the MPRIS calls is then an iod change with a real surface behind it.
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -60,27 +60,19 @@ export function SettingsPanel() {
 
   return (
     <div className="max-w-2xl space-y-4">
-      {/* Serving is what the config GUI itself talks to, so it is first and it
-          is explicit about what turning it off costs. */}
+      {/* The box's own broker: not a setting, but worth stating, because it is
+          what Home Assistant / Control4 connect to. */}
       <section className="hair rounded-xl border bg-panel p-4">
         <div className="mb-3 flex items-center gap-2">
           <Server size={16} className="text-accent" />
-          <h2 className="text-sm font-medium">This controller</h2>
+          <h2 className="text-sm font-medium">This controller's broker</h2>
         </div>
-        <Toggle
-          label="Serve MQTT from this controller"
-          hint="The IO panels in this page talk to it. Turning it off leaves them with nothing to speak to."
-          checked={form.serve ?? true}
-          onChange={(v) => set('serve', v)}
-        />
-        <Field label="Plain MQTT port" hint="For things on the LAN that are not a browser. 0 disables it.">
-          <input
-            type="number"
-            value={form.listen_port ?? 1883}
-            onChange={(e) => set('listen_port', Number(e.target.value))}
-            className="w-28 rounded-md border bg-raised px-2 py-1 text-sm hair outline-none focus:border-accent/50"
-          />
-        </Field>
+        <p className="text-xs text-muted">
+          Every openHC controller runs an MQTT broker (mosquitto) on port <code>1883</code>. Its
+          services — IO, audio, health — each publish under <code>{base}/</code>. Point Home Assistant
+          or a Control4 driver at <code>mqtt://&lt;this controller&gt;:1883</code>; this page uses the
+          same broker over a WebSocket.
+        </p>
       </section>
 
       <section className="hair rounded-xl border bg-panel p-4">
@@ -89,8 +81,8 @@ export function SettingsPanel() {
           <h2 className="text-sm font-medium">Another broker</h2>
         </div>
         <Toggle
-          label={<>Also publish to an external broker {pinned('bridge') && <Pinned />}</>}
-          hint="Independent of the above. This page keeps talking to the controller either way, so a broker that is down never costs you the settings screen."
+          label={<>Bridge to a house broker {pinned('bridge') && <Pinned />}</>}
+          hint="The controller's broker forwards its whole topic tree both ways (state out, commands in) and Home Assistant discovery out. This page keeps talking to the controller's own broker either way, so a house broker that is down never costs you the settings screen."
           checked={form.bridge ?? false}
           disabled={pinned('bridge')}
           onChange={(v) => set('bridge', v)}
@@ -116,7 +108,7 @@ export function SettingsPanel() {
             </div>
             <Field
               label={<>CA certificate {pinned('ca_path') && <Pinned />}</>}
-              hint="Required for mqtts:// with a private or self-signed broker — this image ships no trust store, and iod refuses to connect rather than skipping verification."
+              hint="For mqtts:// with a private or self-signed broker: a CA certificate file on the controller. Without one the system trust store (/etc/ssl/certs) is used."
             >
               <Text value={form.ca_path ?? ''} disabled={pinned('ca_path')}
                     placeholder="/etc/openhc/broker-ca.pem" onChange={(v) => set('ca_path', v)} />

@@ -1,0 +1,43 @@
+#!/bin/sh
+# Persistent /data — SHARED (board/common), inert unless board.env names a device.
+#
+# For boards whose root is a RAM initramfs (the HC-800), anything a user changes
+# — the audio endpoint mapping first — would be gone at the next reboot. This
+# mounts a directory on real storage at /data:
+#
+#   OHC_DATA_DEV="LABEL=root_fs_hc800"   the filesystem (busybox mount resolves LABEL=)
+#   OHC_DATA_SUBDIR="openhc"             a directory inside it, bind-mounted at /data
+#
+# The subdirectory keeps openHC's files to one place on a filesystem it shares
+# (on the HC-800 that is the stock Control4 root, left bootable; a factory
+# restore re-creates it, which wipes /data with it — the expected outcome).
+# Boards with a persistent root (the EA eMMC rootfs) do not set OHC_DATA_DEV and
+# simply use /data on the root.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+DEVMNT=/mnt/ohc-datadev
+
+start() {
+    mkdir -p /data
+    [ -n "$OHC_DATA_DEV" ] || { mkdir -p /data/ohc; return 0; }
+    grep -q " /data " /proc/mounts && return 0
+    mkdir -p "$DEVMNT"
+    if ! mount -o rw,noatime "$OHC_DATA_DEV" "$DEVMNT" 2>/dev/null; then
+        echo "data: cannot mount $OHC_DATA_DEV — /data stays in RAM"
+        mkdir -p /data/ohc
+        return 0
+    fi
+    sub="$DEVMNT/${OHC_DATA_SUBDIR:-openhc}"
+    mkdir -p "$sub/ohc"
+    mount --bind "$sub" /data && echo "data: /data on $OHC_DATA_DEV:/${OHC_DATA_SUBDIR:-openhc}"
+}
+stop() {
+    sync
+    umount /data 2>/dev/null
+    umount "$DEVMNT" 2>/dev/null
+}
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

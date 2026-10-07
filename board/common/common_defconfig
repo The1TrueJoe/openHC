@@ -38,6 +38,17 @@ BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 BR2_PACKAGE_DROPBEAR=y
 BR2_PACKAGE_AVAHI=y
 BR2_PACKAGE_AVAHI_DAEMON=y
+# The MQTT broker on every board. Each openHC daemon (iod, sysmond, ohc-audiod)
+# is a client of it and publishes its own topics under <prefix>/<host>/; Home
+# Assistant / Control4 drivers connect to it on 1883, and the web UI over a
+# WebSocket listener (libwebsockets) that webd exposes as /mqtt. A real broker
+# rather than iod serving MQTT itself: one topic tree from several daemons, and
+# bridging to a house broker is mosquitto's own bridge feature. Config:
+# board/common/rootfs-overlay/etc/mosquitto/mosquitto.conf.
+BR2_PACKAGE_MOSQUITTO=y
+BR2_PACKAGE_MOSQUITTO_BROKER=y
+BR2_PACKAGE_LIBWEBSOCKETS=y
+
 # D-Bus on every board, so avahi is built one way everywhere and its config can
 # simply say enable-dbus=yes. Without it, a D-Bus-less avahi rejects the key
 # outright and will not start, while the audio images need D-Bus for

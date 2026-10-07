@@ -1,10 +1,10 @@
 //! The HTTP surfaces — deliberately NOT where IO control lives.
 //!
-//! IO control is MQTT, and only MQTT: `/mqtt` here is an MQTT-over-WebSocket
-//! endpoint for the browser, and it speaks exactly the topics an external
-//! broker sees. One set of semantics for the config GUI, Home Assistant, a
-//! Node-RED flow and a shell script — rather than a bespoke JSON protocol that
-//! has to be kept in step with the MQTT one forever.
+//! IO control is MQTT, and only MQTT, on the box's mosquitto (the browser
+//! reaches it over the WebSocket webd proxies at /mqtt). One set of semantics
+//! for the config GUI, Home Assistant, a Node-RED flow and a shell script —
+//! rather than a bespoke JSON protocol that has to be kept in step with the
+//! MQTT one forever.
 //!
 //! What is left over HTTP is what MQTT is bad at:
 //!
@@ -56,7 +56,6 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .routes(routes!(capabilities))
         .routes(routes!(mcu_info))
         .routes(routes!(mcu_reset))
-        .routes(routes!(audio_status_h))
         .routes(routes!(restore_status_h))
         .routes(routes!(restore_stock_h))
         .routes(routes!(config_get, config_put))
@@ -66,7 +65,6 @@ pub fn router(cfg: Arc<Config>) -> Router {
     // request/response, and describing a byte stream as a GET that never
     // returns would be worse than leaving them to the AsyncAPI side.
     Router::new()
-        .route("/mqtt", get(ws_mqtt))
         .route("/ws/serial/{index}", get(ws_serial))
         .route("/api/openapi.json", get(move || {
             let api = api.clone();
@@ -124,19 +122,6 @@ reinstalled. POST-ing here IS the confirmation; wrap it in a UI confirm dialog."
     responses((status = 200, description = "restore started; the box will reboot")))]
 async fn restore_stock_h(s: Ctx) -> axum::response::Response {
     run(s, Cmd::RestoreStock { confirm: true }).await
-}
-
-#[utoipa::path(get, path = "/api/audio", tag = "IO",
-    summary = "ALSA outputs, the network receivers, selection and volume",
-    description = "A thing with nothing behind it does not appear: a board with no sound card and \
-no receiver binaries has no `audio` section at all and this faults 404. Otherwise it reports the \
-outputs discovered at runtime, whether librespot/shairport-sync are installed and running, the \
-selected output, the volume, and any now-playing the receivers actually feed us. Changing the \
-output or the volume is MQTT (`cmd/audio/output`, `cmd/audio/volume`), the same as a relay — this \
-read is for drawing the panel.",
-    responses((status = 200, description = "audio status"), (status = 404, description = "no audio on this board")))]
-async fn audio_status_h(s: Ctx) -> axum::response::Response {
-    run(s, Cmd::AudioStatus).await
 }
 
 /// Permissive CORS, deliberately.
@@ -235,69 +220,6 @@ async fn run(State(c): Ctx, cmd: Cmd) -> axum::response::Response {
     }
 }
 
-// ── IO control: MQTT over WebSocket ────────────────────────────────────────
-
-/// The browser's transport to iod's MQTT endpoint.
-///
-/// mqtt.js on the other end; the same packets a plain-TCP client sends, just
-/// carried in binary WebSocket frames. Sub-protocol negotiation is answered
-/// because browsers offer `mqtt` and some clients refuse a server that does not
-/// echo it back.
-async fn ws_mqtt(State(c): Ctx, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.protocols(["mqtt", "mqttv3.1"]).on_upgrade(move |sock| mqtt_ws_loop(c, sock))
-}
-
-async fn mqtt_ws_loop(c: Arc<Config>, sock: WebSocket) {
-    use futures_util::{SinkExt, StreamExt};
-    let m = c.settings.lock().map(|s| s.mqtt.clone()).unwrap_or_default();
-    if !m.serve {
-        return;
-    }
-    let (mut ws_tx, mut ws_rx) = sock.split();
-    let (in_tx, in_rx) = tokio::sync::mpsc::channel::<rumqttc::Packet>(64);
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<rumqttc::Packet>(256);
-
-    // Packets out to the browser.
-    tokio::spawn(async move {
-        while let Some(p) = out_rx.recv().await {
-            let Some(bytes) = crate::mqtt::server::encode(&p) else { continue };
-            if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
-                return;
-            }
-        }
-    });
-    // Packets in. A WebSocket frame boundary has nothing to do with a packet
-    // boundary, so the bytes are reassembled before being decoded.
-    tokio::spawn(async move {
-        let mut framer = crate::mqtt::server::Framer::new();
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            let bytes = match msg {
-                Message::Binary(b) => b.to_vec(),
-                Message::Text(t) => t.as_bytes().to_vec(),
-                Message::Close(_) => return,
-                _ => continue,
-            };
-            framer.feed(&bytes);
-            loop {
-                match framer.next() {
-                    Ok(Some(p)) => {
-                        if in_tx.send(p).await.is_err() {
-                            return;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        eprintln!("iod/mqttd: bad packet from a browser: {e}");
-                        return;
-                    }
-                }
-            }
-        }
-    });
-
-    crate::mqtt::server::session(c, m, in_rx, out_tx, "browser".into()).await;
-}
-
 // ── configuration ──────────────────────────────────────────────────────────
 
 /// Settings, minus anything secret.
@@ -315,8 +237,6 @@ async fn config_get(State(c): Ctx) -> impl IntoResponse {
     let m = &s.mqtt;
     Json(json!({
         "mqtt": {
-            "serve": m.serve,
-            "listen_port": m.listen_port,
             "bridge": m.bridge,
             "url": m.url,
             "username": m.username,
@@ -344,8 +264,9 @@ struct ConfigReq {
 
 #[utoipa::path(post, path = "/api/config", tag = "Config",
     summary = "Save MQTT settings",
-    description = "Restarts the broker or the bridge as needed; a pinned field is refused rather \
-than accepted and dropped.",
+    description = "Topic tree (prefix, client id), Home Assistant discovery, and the house-broker \
+bridge — rendered into mosquitto's bridge config, which restarts mosquitto if it changed. A pinned \
+field is refused rather than accepted and dropped.",
     responses((status = 200, description = "saved")))]
 async fn config_put(State(c): Ctx, Json(req): Json<ConfigReq>) -> axum::response::Response {
     let mut next = {
@@ -359,14 +280,7 @@ async fn config_put(State(c): Ctx, Json(req): Json<ConfigReq>) -> axum::response
         None => return fault_response(Fault::Bad("mqtt must be an object".into())),
     };
     let s_of = |k: &str| o.get(k).and_then(|v| v.as_str()).map(str::to_string);
-    if let Some(v) = o.get("serve").and_then(|v| v.as_bool()) { next.serve = v }
     if let Some(v) = o.get("bridge").and_then(|v| v.as_bool()) { next.bridge = v }
-    if let Some(v) = o.get("listen_port").and_then(|v| v.as_u64()) {
-        if v > u16::MAX as u64 {
-            return fault_response(Fault::Bad("listen_port out of range".into()));
-        }
-        next.listen_port = v as u16;
-    }
     if let Some(v) = s_of("url") { next.url = v }
     if let Some(v) = s_of("username") { next.username = v }
     if let Some(v) = s_of("password") { next.password = v }

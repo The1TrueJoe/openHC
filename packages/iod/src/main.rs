@@ -7,7 +7,6 @@
 //! One binary runs the whole fleet. What differs between an HC-800, an EA3, an
 //! IO Extender and a CA-1 is `/opt/ohc/board.env` and nothing else.
 mod api;
-mod audio;
 mod b64;
 mod board;
 mod events;
@@ -106,25 +105,14 @@ async fn poller(cfg: Arc<Config>) {
     }
 }
 
-/// Mirror the audio state that CHANGES at runtime: which output is selected, its
-/// volume, and whether each receiver is up. Slow on purpose — none of this moves
-/// fast, and reading it is a `/proc` scan plus an `amixer` fork. Now-playing is
-/// NOT mirrored here: it is structured and almost always empty in this image, so
-/// it is served proper JSON over REST (`/api/audio`) instead of as a retained
-/// topic a shell consumer would see as the string "null".
-async fn audio_poller(cfg: Arc<Config>) {
-    use std::time::Duration;
+/// The return-to-stock availability, for MQTT (`system/restore`). A helper
+/// fork, and it only changes when an install or restore happens, so slowly.
+async fn restore_poller(cfg: Arc<Config>) {
     loop {
-        if let Some(dev) = audio::selected() {
-            cfg.bus.set("audio/output", serde_json::json!(dev));
+        if let Ok(v) = ops::restore_status().await {
+            cfg.bus.set("system/restore", v);
         }
-        if let Some(v) = audio::volume_get(None).await {
-            cfg.bus.set("audio/volume", serde_json::json!(v));
-        }
-        for r in audio::receivers() {
-            cfg.bus.set(&format!("audio/receiver/{}/running", r.id), serde_json::json!(r.running));
-        }
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }
 }
 
@@ -171,9 +159,9 @@ fn main() {
 
     let (settings, pinned) = mqtt::settings::Settings::load(&board.hostname);
     eprintln!(
-        "iod: mqtt serve={} listen={} bridge={}{}",
-        settings.mqtt.serve,
-        settings.mqtt.listen_port,
+        "iod: mqtt broker={}:{} bridge={}{}",
+        ohcmqtt::broker().0,
+        ohcmqtt::broker().1,
         settings.mqtt.bridge,
         if settings.mqtt.bridge { format!(" -> {}", settings.mqtt.url) } else { String::new() },
     );
@@ -231,16 +219,13 @@ fn main() {
             tokio::task::spawn_local(poller(cfg.clone()));
         }
 
-        // Audio is independent of the IO backend — a box can be a Spotify/AirPlay
-        // endpoint with no relays at all — so it gets its own poller, spawned only
-        // when the box actually has audio (a sound card or a receiver installed).
-        if audio::capability().is_some() {
-            eprintln!("iod: audio present — serving outputs/receivers");
-            tokio::task::spawn_local(audio_poller(cfg.clone()));
-        }
+        // Audio is ohc-audiod's and health is sysmond's — each its own MQTT
+        // client on the box's broker. What iod still publishes beyond IO is
+        // whether a return to stock is available.
+        tokio::task::spawn_local(restore_poller(cfg.clone()));
 
-        // Serve MQTT, bridge outward, or both — and restart either when the
-        // settings page saves.
+        // Connect to the box's broker (and keep mosquitto's house-broker bridge
+        // in line with the settings) — restarting when the settings page saves.
         tokio::task::spawn_local(mqtt::supervise(cfg.clone(), settings_rx));
         if std::env::var("IOD_TOKEN").map(|t| !t.is_empty()).unwrap_or(false) {
             eprintln!("iod: token auth ENABLED");

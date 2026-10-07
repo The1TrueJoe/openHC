@@ -3,13 +3,13 @@
   "info": {
     "title": "openHC IO over MQTT",
     "version": "0.1.0",
-    "description": "The IO CONTROL surface of an openHC controller. Relays, contacts, IR, serial and front-panel LEDs.\n\nThis is deliberately **not** the whole API. Configuration is REST (see the OpenAPI document), and telemetry \u2014 temperatures, fans, CPU \u2014 is REST too, from `sysmond`, because it wants history and a retained topic cannot answer 'what did it do for the last hour'.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
+    "description": "The live state and control surface of an openHC controller: IO (relays, contacts, IR, serial, front-panel LEDs — iod), audio (ohc-audiod), health (sysmond) and return-to-stock (iod), all on the controller's own mosquitto.\n\nThe rule: anything a control system (Home Assistant, Control4) acts on or watches change is here; configuration and things that rarely change are REST (see the OpenAPI document) — the audio endpoint map, the MQTT settings, full-resolution telemetry history.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
   },
   "servers": {
     "onboard": {
       "host": "{host}:1883",
       "protocol": "mqtt",
-      "description": "The broker iod serves itself. It can also bridge to an external broker instead \u2014 see the settings page.",
+      "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
       "variables": {
         "host": {
           "default": "openhc-<board>-<mac>.local"
@@ -56,7 +56,7 @@
         }
       },
       "summary": "Front-panel LED brightness (retained)",
-      "description": "0..max_brightness. Addressed by NAME \u2014 `power`, `wifi-red` \u2014 because LEDs are not a numbered row."
+      "description": "0..max_brightness. Addressed by NAME — `power`, `wifi-red` — because LEDs are not a numbered row."
     },
     "mcuLink": {
       "address": "openhc/{box}/state/mcu/link",
@@ -96,7 +96,7 @@
         }
       },
       "summary": "A code the front receiver heard (NOT retained)",
-      "description": "Pronto, in the same form `ir/front/send` accepts \u2014 so a learned code can be sent straight back."
+      "description": "Pronto, in the same form `ir/front/send` accepts — so a learned code can be sent straight back."
     },
     "serialRx": {
       "address": "openhc/{box}/event/serial/{n}/rx",
@@ -126,7 +126,7 @@
         }
       },
       "summary": "Drive a front-panel LED",
-      "description": "`ON`, `OFF`, or a number for brightness. A LED under a kernel trigger has the trigger dropped first \u2014 asking for a level is asking for software control."
+      "description": "`ON`, `OFF`, or a number for brightness. A LED under a kernel trigger has the trigger dropped first — asking for a level is asking for software control."
     },
     "irSend": {
       "address": "openhc/{box}/cmd/ir/{port}/send",
@@ -136,7 +136,7 @@
         }
       },
       "summary": "Transmit a Pronto code",
-      "description": "port is a rear jack number, or `front` for the internal blaster \u2014 which is NOT jack 7; it has no socket. Type 0000 (learned) only, and a carrier word of 0000 is refused because the firmware divides by it."
+      "description": "port is a rear jack number, or `front` for the internal blaster — which is NOT jack 7; it has no socket. Type 0000 (learned) only, and a carrier word of 0000 is refused because the firmware divides by it."
     },
     "serialWrite": {
       "address": "openhc/{box}/cmd/serial/{n}/write",
@@ -206,7 +206,7 @@
         }
       },
       "summary": "Pulse the microcontroller's reset line",
-      "description": "Recovery for a wedged part. Tries both polarities and reports which worked. Note: on the HC-800 a wedged MCU has NOT been recoverable by reset \u2014 it needs a power cycle."
+      "description": "Recovery for a wedged part. Tries both polarities and reports which worked. Note: on the HC-800 a wedged MCU has NOT been recoverable by reset — it needs a power cycle."
     },
     "audioOutputState": {
       "address": "openhc/{box}/state/audio/output",
@@ -216,7 +216,7 @@
         }
       },
       "summary": "Selected ALSA output (retained)",
-      "description": "The device string the network receivers render to, e.g. `hw:DSP`. Absent/empty means they follow the system default PCM. The fuller picture — the list of outputs and the receivers' now-playing — is the REST `/api/audio` read."
+      "description": "The device string the stock network receivers render to, e.g. `hw:DSP` (boards without named outputs). Absent/empty means they follow the system default PCM. Published by ohc-audiod; the list of outputs is its REST `/audio/api/audio`."
     },
     "audioVolumeState": {
       "address": "openhc/{box}/state/audio/volume",
@@ -267,6 +267,91 @@
       },
       "summary": "Any command, as JSON",
       "description": "The escape hatch: the same enum the REST layer takes, e.g. `{\"op\":\"relay.set\",\"index\":0,\"on\":true}`."
+    },
+    "audioMap": {
+      "address": "openhc/{box}/state/audio/map",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Audio endpoint map (retained, ohc-audiod)",
+      "description": "Boards with named outputs: `outputs` and `inputs` (hardware), the configured `spotify`/`airplay` (name + output) and `routes` (input + output), and `instances` — every supervised process with its `running` flag. JSON. Changing the map is configuration: REST `PUT /audio/api/audio/endpoints`."
+    },
+    "healthNow": {
+      "address": "openhc/{box}/state/health/now",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Latest telemetry sample (retained, sysmond)",
+      "description": "Every sampling period (5 s): `series` (sensor descriptions, once), `values` positional against it, `cpu`, `load1`, `mem_used_pct`, `uptime_s`, `mem_total_kb`. JSON."
+    },
+    "healthHistory": {
+      "address": "openhc/{box}/state/health/history",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Telemetry history at one point a minute (retained, sysmond)",
+      "description": "The sample ring downsampled to a point a minute (six hours ≈ 360 points); `period_s`, `series`, `samples`. Full-resolution windows are REST `/sys/api/history`."
+    },
+    "healthFan": {
+      "address": "openhc/{box}/state/health/fan",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Fan presence, mode and duty (retained, sysmond)",
+      "description": "`{available, mode: auto|manual, pct}`; `available:false` on boards with no controllable fan."
+    },
+    "healthSetFan": {
+      "address": "openhc/{box}/cmd/health/fan",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Hold the fan at a percent, or release it",
+      "description": "`auto` returns the fan to its temperature curve; a number 0..100 holds it there (a critical temperature still forces 100%). Boards with a fan helper only."
+    },
+    "systemRestore": {
+      "address": "openhc/{box}/state/system/restore",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Return-to-stock availability (retained, iod)",
+      "description": "`{available, openhc, detail}` on boards with the ohc-restore helper (EA family, HC-800); `available:false` elsewhere."
+    },
+    "systemRestoreStock": {
+      "address": "openhc/{box}/cmd/system/restore",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Return the controller to stock (DESTRUCTIVE)",
+      "description": "Acted on only for the literal payload `confirm`. One-way: the controller reboots into Control4's recovery and openHC is removed."
+    },
+    "serviceStatus": {
+      "address": "openhc/{box}/status/{service}",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Per-daemon availability (retained)",
+      "description": "`online` / `offline` (last will) for `audiod`, `sysmond`; iod's is `openhc/{box}/status`. Lets an integration tell which part of the box went away.",
+      "parameters": {
+        "service": {
+          "description": "audiod | sysmond"
+        }
+      }
     }
   },
   "operations": {
@@ -437,6 +522,62 @@
         "$ref": "#/channels/raw"
       },
       "summary": "Any command, as JSON"
+    },
+    "audioMap": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/audioMap"
+      },
+      "summary": "Audio endpoint map (retained, ohc-audiod)"
+    },
+    "healthNow": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/healthNow"
+      },
+      "summary": "Latest telemetry sample (retained, sysmond)"
+    },
+    "healthHistory": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/healthHistory"
+      },
+      "summary": "Telemetry history at one point a minute (retained, sysmond)"
+    },
+    "healthFan": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/healthFan"
+      },
+      "summary": "Fan presence, mode and duty (retained, sysmond)"
+    },
+    "healthSetFan": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/healthSetFan"
+      },
+      "summary": "Hold the fan at a percent, or release it"
+    },
+    "systemRestore": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/systemRestore"
+      },
+      "summary": "Return-to-stock availability (retained, iod)"
+    },
+    "systemRestoreStock": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/systemRestoreStock"
+      },
+      "summary": "Return the controller to stock (DESTRUCTIVE)"
+    },
+    "serviceStatus": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/serviceStatus"
+      },
+      "summary": "Per-daemon availability (retained)"
     }
   },
   "components": {

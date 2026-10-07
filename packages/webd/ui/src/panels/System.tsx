@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Lightbulb, RotateCcw, TriangleAlert } from 'lucide-react';
-import { io, rest, type Capabilities, type IoState } from '../api';
+import { io, type Capabilities, type IoState } from '../api';
 import { useIoState } from '../App';
 import { HealthSection } from './Health';
 
@@ -20,33 +20,24 @@ export function SystemPanel({ caps }: { caps: Capabilities }) {
   );
 }
 
-/* Return to stock. Only appears on boards that actually support it (the EA /
-   CEFDK family, where iod has the ohc-restore helper); on anything else the
-   status call says `available: false` and this renders nothing. It is the one
-   destructive control in the UI, so it is two-step: an arm, then a confirm. */
+/* Return to stock. Only appears on boards that actually support it (those built
+   with the `restore` feature, which ships ohc-restore: the EA family and the
+   HC-800); on anything else iod's
+   retained `system/restore` says `available: false` and this renders nothing.
+   It is the one destructive control in the UI, so it is two-step: an arm, then
+   a confirm — and iod acts only on the literal payload "confirm". */
 function RestoreSection() {
-  const [avail, setAvail] = useState<null | { available: boolean; openhc?: boolean; detail?: string }>(null);
+  const avail = useIoState().system?.restore;
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    rest.restoreStatus().then(setAvail).catch(() => setAvail({ available: false }));
-  }, []);
-
   if (!avail?.available) return null;
 
-  const start = async () => {
+  const start = () => {
     setBusy(true);
-    setMsg(null);
-    try {
-      await rest.restoreStock();
-      setMsg('Returning to stock — the controller is rebooting. This page will stop responding.');
-    } catch (e) {
-      setMsg(`Failed: ${e instanceof Error ? e.message : String(e)}`);
-      setBusy(false);
-      setArmed(false);
-    }
+    io.restoreStock();
+    setMsg('Returning to stock — the controller is rebooting. This page will stop responding.');
   };
 
   return (
@@ -58,7 +49,7 @@ function RestoreSection() {
       <p className="text-xs text-muted">
         {avail.openhc === false
           ? 'This controller is already on the stock boot path.'
-          : 'Reverses the one boot-header change openHC made and hands the rootfs back to Control4’s recovery kernel. The controller reboots to the factory image and openHC is removed until reinstalled.'}
+          : 'Hands the controller to Control4’s own factory recovery: it reboots, re-images itself to the factory image, and comes back as stock Control4. openHC is removed until reinstalled.'}
       </p>
       {msg && <p className="mt-3 text-xs">{msg}</p>}
       {!msg && (

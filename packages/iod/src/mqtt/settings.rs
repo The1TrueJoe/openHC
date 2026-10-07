@@ -13,25 +13,31 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// `IOD_SETTINGS`, else the first that exists of `/data/ohc/iod.json` and
+/// `/etc/openhc/iod.json`, else — for a first save — `/data/ohc/iod.json` when
+/// that directory exists (a persistent /data on a RAM-rooted board, S08ohcdata)
+/// and `/etc/openhc/iod.json` otherwise. An existing /etc file keeps being used,
+/// so a board that already has settings there does not lose them.
 pub fn path() -> PathBuf {
-    std::env::var("IOD_SETTINGS")
-        .unwrap_or_else(|_| "/etc/openhc/iod.json".into())
-        .into()
+    if let Ok(p) = std::env::var("IOD_SETTINGS") {
+        return p.into();
+    }
+    let data = PathBuf::from("/data/ohc/iod.json");
+    let etc = PathBuf::from("/etc/openhc/iod.json");
+    if data.exists() || (!etc.exists() && Path::new("/data/ohc").is_dir()) {
+        data
+    } else {
+        etc
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Mqtt {
-    /// Serve MQTT from this controller. The config GUI talks to it over a
-    /// WebSocket, so turning this off leaves the IO panels with nothing to
-    /// speak to — which is why it defaults on and the UI says as much.
-    pub serve: bool,
-    /// Plain-MQTT listener for other things on the LAN. 0 disables it; the
-    /// WebSocket endpoint is always available through webd regardless.
-    pub listen_port: u16,
-    /// Also connect OUT to somebody else's broker. Independent of `serve`:
-    /// the GUI keeps talking to this controller either way, so pointing at a
-    /// house broker never costs you the ability to configure the box.
+    /// Bridge the box's broker to a house broker (mosquitto's bridge, rendered
+    /// by bridge.rs). The box's own broker keeps serving the GUI and local
+    /// integrations either way, so pointing at a house broker never costs you
+    /// the ability to configure the box.
     pub bridge: bool,
     pub url: String,
     pub username: String,
@@ -50,8 +56,6 @@ pub struct Mqtt {
 impl Default for Mqtt {
     fn default() -> Self {
         Mqtt {
-            serve: true,
-            listen_port: 1883,
             bridge: false,
             url: String::new(),
             username: String::new(),
