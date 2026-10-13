@@ -46,8 +46,16 @@ TUPLE="x86_64-buildroot-linux-gnu"
 echo "mk-real-kernel: toolchain $HOSTBIN/$TUPLE-gcc"
 
 export PATH="$HOSTBIN:$PATH"
-MAKE=(make -C "$SRC" ARCH=x86_64 CROSS_COMPILE="$TUPLE-" \
-      HOSTCC="$HOSTBIN/$TUPLE-gcc" -j"$(nproc 2>/dev/null || echo 4)")
+# Match Buildroot's own kernel make env (read off its invocation): the CROSS gcc
+# from host/bin for the target, but HOSTCC is the BUILD machine's gcc pointed at
+# Buildroot's host headers/libs — objtool/fixdep link host-libelf (gelf.h) which
+# Buildroot installs to host/include (BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF). Without
+# -isystem host/include the host-tool build dies on "gelf.h: No such file".
+HOSTGCC="${HOSTGCC:-/usr/bin/gcc}"; command -v "$HOSTGCC" >/dev/null 2>&1 || HOSTGCC=gcc
+MAKE=(make -C "$SRC" ARCH=x86_64 CROSS_COMPILE="$HOSTBIN/$TUPLE-" \
+      HOSTCC="$HOSTGCC -O2 -isystem $OUT/host/include -L$OUT/host/lib -Wl,-rpath,$OUT/host/lib" \
+      KCFLAGS="-Wno-attribute-alias" WERROR=0 \
+      -j"$(nproc 2>/dev/null || echo 4)")
 
 # IN-TREE build. Buildroot builds the kernel in-tree, so $SRC is "dirty"; the
 # kernel then REFUSES an out-of-tree `O=` build ("outputmakefile Error 1"). We
