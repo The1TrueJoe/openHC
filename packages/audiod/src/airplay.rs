@@ -2,7 +2,7 @@
 //!
 //! Classic AirPlay only carries volume sender → receiver. The way back is DACP,
 //! the remote-control channel a sender (iPhone, Music) opens to the receiver:
-//! shairport-sync's D-Bus interface (BR2_PACKAGE_SHAIRPORT_SYNC_DBUS) exposes it
+//! shairport-sync's D-Bus interface (packages/ohc-shairport-sync) exposes it
 //! as `RemoteControl.SetAirplayVolume(-30 … 0)`, which tells the sender to set
 //! its volume for this receiver. The sender then sends that volume back as
 //! usual, and because openHC's level and shairport-sync's mixer share one curve
@@ -10,7 +10,8 @@
 //!
 //! Every endpoint is its own shairport-sync on the system bus: the first to
 //! start owns `org.gnome.ShairportSync`, each later one
-//! `org.gnome.ShairportSync.i<pid>` (dbus-ohc-shairport.conf lets them). The
+//! `org.gnome.ShairportSync.i<pid>` (packages/ohc-shairport-sync patch 0001 —
+//! 5.x dropped that fallback; the ohc-shairport.conf D-Bus policy lets them). The
 //! bus says which pid owns the plain name. Best effort: with no sender
 //! connected, or one without DACP, there is nothing to move.
 use std::process::Command;

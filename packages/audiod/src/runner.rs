@@ -12,9 +12,12 @@
 //!   `<pcm>_eq` is the tone stage (tone.rs), present when the image has the
 //!   plugin.
 //! * one supervised process per endpoint: librespot per Spotify endpoint,
-//!   shairport-sync (classic AirPlay; it hashes its device ID from the name, so
-//!   N named instances are N devices) per AirPlay endpoint, alsaloop per route,
-//!   plus any board helpers (the HC-800's ADV7513 keeper).
+//!   shairport-sync per AirPlay endpoint, alsaloop per route, plus any board
+//!   helpers (the HC-800's ADV7513 keeper). With nqptp in the image the
+//!   receivers are AirPlay 2 (packages/ohc-shairport-sync): each on its own
+//!   port, 7000+n, its device id and nqptp shared memory derived from its name,
+//!   and ONE nqptp for them all, planned first. Without it they are classic
+//!   AirPlay on 5000+n.
 //!
 //! Supervision is tokio's: each instance is a task that spawns the process with
 //! kill_on_drop, logs its output, and restarts it 3 s after it exits. Stopping
@@ -32,6 +35,8 @@ use tokio::task::JoinHandle;
 
 pub const LIBRESPOT: &str = "/usr/bin/librespot";
 pub const SHAIRPORT: &str = "/usr/bin/shairport-sync";
+/// AirPlay 2's PTP timing daemon: one per host, shared by every receiver.
+pub const NQPTP: &str = "/usr/bin/nqptp";
 const RUN_DIR: &str = "/run/ohc/audio";
 
 /// tag -> currently running.
@@ -127,11 +132,18 @@ fn libconfig_str(s: &str) -> String {
 /// `<pcm>`), so the AirPlay volume slider IS the output's level — on the same
 /// curve as openHC's own slider (dasl_tapered; levels.rs), which is what lets
 /// audiod move the sender's slider to a level set here (airplay.rs).
-pub fn shairport_conf(name: &str, out: &Port, n: usize) -> String {
+///
+/// `ap2`: an AirPlay 2 receiver (nqptp is there). Several share this host and
+/// its address, each on its own RTSP port: 7000+n, which also keeps it clear of
+/// the classic range (5000+n). `service_type = "airplay2"` makes a receiver that
+/// cannot reach nqptp fail and be restarted, where "auto" would quietly drop to
+/// classic AirPlay — still running, but invisible to Apple Music.
+pub fn shairport_conf(name: &str, out: &Port, n: usize, ap2: bool) -> String {
+    let (port, service) = if ap2 { (7000 + n, "\n    service_type = \"airplay2\";") } else { (5000 + n, "") };
     format!(
-        "general = {{\n    name = {};\n    port = {};\n    udp_port_base = {};\n    udp_port_range = 20;\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n    volume_control_profile = \"dasl_tapered\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
+        "general = {{\n    name = {};\n    port = {};{service}\n    udp_port_base = {};\n    udp_port_range = 20;\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n    volume_control_profile = \"dasl_tapered\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
         libconfig_str(name),
-        5000 + n,
+        port,
         6001 + 20 * n,
         libconfig_str(&out.pcm),
         libconfig_str(&format!("hw:{}", out.card())),
@@ -276,10 +288,15 @@ fn plan(b: &Board, e: &Endpoints, live_inputs: &HashSet<String>) -> Vec<Spec> {
         }
     }
     if have(SHAIRPORT) {
+        let ap2 = have(NQPTP);
+        if ap2 && e.airplay.iter().any(|ep| b.output(&ep.output).is_some()) {
+            v.push(Spec { files: vec![], tag: "nqptp".into(), kind: "helper", name: Some("nqptp".into()),
+                input: None, output: None, program: NQPTP.into(), args: vec![] });
+        }
         for (n, ep) in e.airplay.iter().enumerate() {
             let Some(out) = b.output(&ep.output) else { continue };
             let cfg = format!("{RUN_DIR}/shairport-{n}.conf");
-            v.push(Spec { files: vec![(cfg.clone(), shairport_conf(&ep.name, out, n), false)], tag: format!("airplay-{n}"),
+            v.push(Spec { files: vec![(cfg.clone(), shairport_conf(&ep.name, out, n, ap2), false)], tag: format!("airplay-{n}"),
                 kind: "airplay", name: Some(ep.name.clone()), input: None, output: Some(ep.output.clone()),
                 program: SHAIRPORT.into(), args: vec!["-c".into(), cfg] });
         }
@@ -372,9 +389,12 @@ mod tests {
     #[test]
     fn shairport_names_are_quoted_for_libconfig() {
         let out = Port { id: "hdmi".into(), label: "HDMI".into(), device: "hw:CARD=Intel,DEV=3".into(), pcm: "ohc_hdmi".into(), swap: false };
-        let c = shairport_conf(r#"Den "TV" \ 2"#, &out, 1);
+        let c = shairport_conf(r#"Den "TV" \ 2"#, &out, 1, false);
         assert!(c.contains(r#"name = "Den \"TV\" \\ 2";"#), "{c}");
         assert!(c.contains("port = 5001;"));
+        assert!(!c.contains("service_type"));
+        let c2 = shairport_conf("Den", &out, 1, true);
+        assert!(c2.contains("port = 7001;\n    service_type = \"airplay2\";"), "{c2}");
         assert!(c.contains("udp_port_base = 6021;"));
         assert!(c.contains(r#"output_device = "ohc_hdmi";"#));
         assert!(c.contains(r#"mixer_device = "hw:Intel";"#));
