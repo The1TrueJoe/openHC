@@ -45,33 +45,44 @@ TUPLE="x86_64-buildroot-linux-gnu"
 }
 echo "mk-real-kernel: toolchain $HOSTBIN/$TUPLE-gcc"
 
-RBUILD="$OUT/build/linux-real"
-mkdir -p "$RBUILD"
 export PATH="$HOSTBIN:$PATH"
-MAKE=(make -C "$SRC" O="$RBUILD" ARCH=x86_64 CROSS_COMPILE="$TUPLE-" \
+MAKE=(make -C "$SRC" ARCH=x86_64 CROSS_COMPILE="$TUPLE-" \
       HOSTCC="$HOSTBIN/$TUPLE-gcc" -j"$(nproc 2>/dev/null || echo 4)")
 
-# Start from the bootstrap kernel's resolved .config so we inherit every EA
-# fragment, then layer real-kernel.fragment and let olddefconfig settle deps.
-cp "$SRC/.config" "$RBUILD/.config"
+# IN-TREE build. Buildroot builds the kernel in-tree, so $SRC is "dirty"; the
+# kernel then REFUSES an out-of-tree `O=` build ("outputmakefile Error 1"). We
+# cannot O= our way out, so we mrproper and rebuild the fat kernel in the same
+# tree. SAFE in sgx-module.yml: the bootstrap bzImage + pvrsrvkm.ko are already
+# harvested to out/ BEFORE this runs, and the trim step re-extracts linux next
+# build anyway. mrproper clears .config + build artifacts but NOT the mirrored
+# openHC driver sources / Makefile edits / the sgx545ce submodule (those are
+# source, not generated), so the fat build still sees them.
+SLOTCFG=$(mktemp)
+cp "$SRC/.config" "$SLOTCFG"
+echo "mk-real-kernel: mrproper (clean in-tree build for the fat config) ..."
+"${MAKE[@]}" mrproper >/dev/null
+
+# Bootstrap's resolved .config as the base, layer real-kernel.fragment, settle.
+cp "$SLOTCFG" "$SRC/.config"
 if [ -x "$SRC/scripts/kconfig/merge_config.sh" ]; then
-	( cd "$SRC" && ARCH=x86_64 ./scripts/kconfig/merge_config.sh -O "$RBUILD" -m "$RBUILD/.config" "$FRAG" )
+	( cd "$SRC" && ARCH=x86_64 ./scripts/kconfig/merge_config.sh -m "$SRC/.config" "$FRAG" )
 else
-	cat "$FRAG" >> "$RBUILD/.config"
+	cat "$FRAG" >> "$SRC/.config"
 fi
 "${MAKE[@]}" olddefconfig
+rm -f "$SLOTCFG"
 
 # Sanity: the whole point is these must be built IN (=y), not modules.
 for sym in CONFIG_DRM CONFIG_SGX545_CE; do
-	if ! grep -q "^$sym=y" "$RBUILD/.config"; then
-		echo "mk-real-kernel: WARNING $sym is not =y in the real kernel (.config says: $(grep "$sym" "$RBUILD/.config" || echo unset))" >&2
+	if ! grep -q "^$sym=y" "$SRC/.config"; then
+		echo "mk-real-kernel: WARNING $sym is not =y in the real kernel (.config says: $(grep "$sym" "$SRC/.config" || echo unset))" >&2
 	fi
 done
 
 echo "mk-real-kernel: building fat bzImage (DRM/SGX built in) ..."
 "${MAKE[@]}" bzImage
 
-BZ="$RBUILD/arch/x86/boot/bzImage"
+BZ="$SRC/arch/x86/boot/bzImage"
 [ -f "$BZ" ] || { echo "mk-real-kernel: no bzImage produced at $BZ" >&2; exit 1; }
 mkdir -p "$(dirname "$OUTFILE")"
 cp -f "$BZ" "$OUTFILE"
