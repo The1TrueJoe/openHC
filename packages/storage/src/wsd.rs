@@ -354,7 +354,7 @@ pub fn bye(host: &Host) {
 mod tests {
     use super::*;
     fn host() -> Host {
-        Host::new("openhc-hc800-000FFF57B978", "WORKGROUP")
+        Host::new("openhc800-000FFF57B978", "WORKGROUP")
     }
     const IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 112);
 
@@ -402,7 +402,7 @@ mod tests {
         let get = PROBE.replace("http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe", GET).replace("<wsd:Probe><wsd:Types>wsdp:Device</wsd:Types></wsd:Probe>", "");
         let r = h.metadata(&get).unwrap();
         roxmltree::Document::parse(&r).unwrap();
-        assert!(r.contains("<pub:Computer>OPENHC-HC800-000FFF57B978/Workgroup:WORKGROUP</pub:Computer>"));
+        assert!(r.contains("<pub:Computer>OPENHC800-000FFF57B978/Workgroup:WORKGROUP</pub:Computer>"));
         assert!(r.contains(&format!("<wsa:Action>{GET_RESPONSE}</wsa:Action>")));
         assert!(!r.contains("AppSequence"));
         assert!(h.metadata(PROBE).is_none());
@@ -421,13 +421,13 @@ mod tests {
 
     #[test]
     fn llmnr_answers_our_name_only() {
-        let r = llmnr_answer(&query("OPENHC-HC800-000FFF57B978", 1), "openhc-hc800-000FFF57B978", IP).unwrap();
+        let r = llmnr_answer(&query("OPENHC800-000FFF57B978", 1), "openhc800-000FFF57B978", IP).unwrap();
         assert_eq!(&r[0..2], &[0x12, 0x34]);
         assert_eq!(u16::from_be_bytes([r[2], r[3]]) & 0x8000, 0x8000);
         assert_eq!(u16::from_be_bytes([r[6], r[7]]), 1);
         assert_eq!(&r[r.len() - 4..], &[10, 0, 0, 112]);
-        assert!(llmnr_answer(&query("other", 1), "openhc-hc800-000FFF57B978", IP).is_none());
-        assert!(llmnr_answer(&query("openhc-hc800-000FFF57B978", 28), "openhc-hc800-000FFF57B978", IP).is_none());
+        assert!(llmnr_answer(&query("other", 1), "openhc800-000FFF57B978", IP).is_none());
+        assert!(llmnr_answer(&query("openhc800-000FFF57B978", 28), "openhc800-000FFF57B978", IP).is_none());
         assert!(llmnr_answer(&[0u8; 5], "x", IP).is_none());
         let mut resp = query("x", 1);
         resp[2] = 0x80; // a response, not a query

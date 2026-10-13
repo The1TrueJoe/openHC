@@ -3,5 +3,5 @@
 # audio-dsp). Open question is the fuse: the ea3-v2's is blown, the ea1-v1's is
 # clear. UNVERIFIED — netboot first; if the fuse is clear it can flash the plain
 # way with no autoscript.
-BR2_TARGET_GENERIC_HOSTNAME="openhc-ea3-v1"
+BR2_TARGET_GENERIC_HOSTNAME="openea3"
 BR2_TARGET_GENERIC_ISSUE="openHC EA3 v1"

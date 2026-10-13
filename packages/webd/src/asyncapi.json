@@ -12,7 +12,7 @@
       "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio), ohc-storaged (drives) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
       "variables": {
         "host": {
-          "default": "openhc-<board>-<mac>.local"
+          "default": "<openhc800|openea1|openea3|openca1>-<mac>.local"
         }
       }
     },
@@ -22,7 +22,7 @@
       "description": "The same broker over WebSocket, proxied by webd on port 80 so a page needs one origin.",
       "variables": {
         "host": {
-          "default": "openhc-<board>-<mac>.local"
+          "default": "<openhc800|openea1|openea3|openca1>-<mac>.local"
         }
       }
     }

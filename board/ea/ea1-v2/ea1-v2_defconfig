@@ -2,5 +2,5 @@
 # UNVERIFIED ON HARDWARE — netboot first (writes nothing); it is not established
 # whether its secure-boot fuse is blown like the ea3-v2's. If the eMMC path
 # rejects an unsigned kernel it needs the same autoscript takeover the ea3 uses.
-BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1-v2"
+BR2_TARGET_GENERIC_HOSTNAME="openea1"
 BR2_TARGET_GENERIC_ISSUE="openHC EA1 v2"

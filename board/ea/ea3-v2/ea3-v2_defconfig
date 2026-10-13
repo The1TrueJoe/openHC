@@ -6,5 +6,5 @@
 # unsigned kernel — openHC takes over via the CEFDK `script`+`bootlinux`
 # autoscript (our kernel in the raw eMMC gap; signed stock kernel left as the
 # `script off` recovery). See /ea/ea3/ and tools/ohc-ea-takeover.py.
-BR2_TARGET_GENERIC_HOSTNAME="openhc-ea3"
+BR2_TARGET_GENERIC_HOSTNAME="openea3"
 BR2_TARGET_GENERIC_ISSUE="openHC EA3"

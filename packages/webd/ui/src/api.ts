@@ -24,13 +24,14 @@ const SYS = `${location.origin}/sys`;
 const AUDIO = `${location.origin}/audio`;
 /* ohc-storaged's REST (external drives, the SMB share), proxied at /storage. */
 const STORAGE = `${location.origin}/storage`;
-const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
+const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
  *  protected controller can be opened with ?token=… without a login screen the
  *  firmware has nowhere to store an account for. */
 const token = new URLSearchParams(location.search).get('token') ?? '';
 const auth = (u: string) => (token ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : u);
+const WS = auth(WS_BASE);
 
 export type Backend = 'mcu' | 'gpio' | 'none';
 

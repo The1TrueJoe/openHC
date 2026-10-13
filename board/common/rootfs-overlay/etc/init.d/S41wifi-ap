@@ -126,7 +126,7 @@ scan_networks() {
 
 start_ap() {
     # the hostname already carries the per-unit MAC suffix (S09hostname), so it
-    # IS the setup-AP SSID — e.g. openhc-ca1-000FFF528265.
+    # IS the setup-AP SSID — e.g. openca1-000FFF528265.
     SSID="$(hostname)"
     ip link set "$WIFI" up
     ip addr add "$AP_ADDR/24" dev "$WIFI" 2>/dev/null

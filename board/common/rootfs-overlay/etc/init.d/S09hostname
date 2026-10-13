@@ -3,7 +3,7 @@
 #
 # Append the wired MAC to the base hostname so several identical controllers
 # don't collide on the LAN / mDNS / DHCP:
-#     openhc-ca1  ->  openhc-ca1-000FFF528265
+#     openhc800  ->  openhc800-000FFF57B978   (openea1-…, openea3-…, openca1-…)
 # The base is whatever the image was built with (BR2_TARGET_GENERIC_HOSTNAME, in
 # /etc/hostname); the MAC comes from the board's identity interface (OHC_ID_IFACE,
 # the wired port). Runs early — before the network, avahi (mDNS) and the Wi-Fi AP
