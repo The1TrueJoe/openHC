@@ -358,8 +358,12 @@ jobs:
       #                  dies at target-finalize with
       #                  "sed: can't read .../target/etc/hosts".
       #   staging/       NO, for the same reason.
+      # Not when cancelled: a cancel kills Buildroot mid-write, and that tree is
+      # poison to the next run (a half-linked host libcrypto broke every board
+      # that restored one). A FAILED build is still saved — its broken package
+      # has no stamp, so Buildroot redoes it — and keeps everything before it.
       - name: Trim the output tree before caching
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           O=output/build/${{ matrix.board }}
           [ -d "$O" ] || exit 0
@@ -367,7 +371,7 @@ jobs:
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
       - name: Save Buildroot output tree
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}
