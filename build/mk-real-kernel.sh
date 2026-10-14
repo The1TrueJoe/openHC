@@ -46,14 +46,17 @@ TUPLE="x86_64-buildroot-linux-gnu"
 echo "mk-real-kernel: toolchain $HOSTBIN/$TUPLE-gcc"
 
 export PATH="$HOSTBIN:$PATH"
-# Match Buildroot's own kernel make env (read off its invocation): the CROSS gcc
-# from host/bin for the target, but HOSTCC is the BUILD machine's gcc pointed at
-# Buildroot's host headers/libs — objtool/fixdep link host-libelf (gelf.h) which
-# Buildroot installs to host/include (BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF). Without
-# -isystem host/include the host-tool build dies on "gelf.h: No such file".
+# HOSTCC is the BUILD machine's gcc, left PLAIN (no -isystem/-L into Buildroot's
+# host/lib). The kernel's host tools link system libs: objtool needs libelf
+# (gelf.h) and certs/extract-cert needs libssl + the system libc. Pointing HOSTCC
+# at $OUT/host/lib made extract-cert's link pull a broken libc.so from there
+# ("ld: cannot find /lib64/libc.so.6"); and Buildroot only gets away with that
+# because its OWN kernel build leaves extract-cert out. So the workflow installs
+# libelf-dev + libssl-dev on the runner and we use them system-wide instead.
+# (CROSS gcc from host/bin still builds the target objects.)
 HOSTGCC="${HOSTGCC:-/usr/bin/gcc}"; command -v "$HOSTGCC" >/dev/null 2>&1 || HOSTGCC=gcc
 MAKE=(make -C "$SRC" ARCH=x86_64 CROSS_COMPILE="$HOSTBIN/$TUPLE-" \
-      HOSTCC="$HOSTGCC -O2 -isystem $OUT/host/include -L$OUT/host/lib -Wl,-rpath,$OUT/host/lib" \
+      HOSTCC="$HOSTGCC" \
       KCFLAGS="-Wno-attribute-alias" WERROR=0 \
       -j"$(nproc 2>/dev/null || echo 4)")
 
