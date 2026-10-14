@@ -81,6 +81,21 @@ else
 	cat "$FRAG" >> "$SRC/.config"
 fi
 "${MAKE[@]}" olddefconfig
+
+# Force the module-signing / trusted-key machinery OFF. The fragment's
+# "# ... is not set" lines don't stick (something selects the keyring), and with
+# certs on the build makes certs/extract-cert, a HOST tool that fails to link
+# here. scripts/config edits the .config directly; re-run olddefconfig to settle.
+if [ -x "$SRC/scripts/config" ]; then
+	"$SRC/scripts/config" --file "$SRC/.config" \
+		-d MODULE_SIG -d MODULE_SIG_ALL -d MODULE_SIG_FORCE \
+		-d SYSTEM_TRUSTED_KEYRING -d SYSTEM_REVOCATION_LIST \
+		-d SECONDARY_TRUSTED_KEYRING -d SYSTEM_DATA_VERIFICATION \
+		-d IMA -d IMA_APPRAISE_MODSIG -d INTEGRITY 2>/dev/null || true
+	"${MAKE[@]}" olddefconfig
+fi
+echo "mk-real-kernel: cert/keyring symbols after disable:"
+grep -E 'CONFIG_(MODULE_SIG|SYSTEM_TRUSTED_KEYRING|SYSTEM_DATA_VERIFICATION|SYSTEM_REVOCATION|SECONDARY_TRUSTED|IMA\b|INTEGRITY)' "$SRC/.config" || echo "  (none set — good)"
 rm -f "$SLOTCFG"
 
 # Sanity: the whole point is these must be built IN (=y), not modules.
