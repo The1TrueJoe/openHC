@@ -40,7 +40,16 @@ OHC_SHAIRPORT_SYNC_CONF_OPTS = \
 	--without-create-user-group \
 	--without-configfiles
 
-# The codegen above is a pipe, so a plistutil failure does not fail the build —
+# Always regenerate the embedded plist: a build tree restored from cache keeps
+# the generated get_info_response.{c,h} (newer than the .xml), so make never
+# reruns the codegen — which kept the empty one from the build before
+# host-ohc-plistutil existed.
+define OHC_SHAIRPORT_SYNC_REGENERATE_INFO_PLIST
+	rm -f $(@D)/plists/get_info_response.c $(@D)/plists/get_info_response.h
+endef
+OHC_SHAIRPORT_SYNC_PRE_BUILD_HOOKS += OHC_SHAIRPORT_SYNC_REGENERATE_INFO_PLIST
+
+# The codegen is a pipe, so a plistutil failure does not fail the build —
 # it embeds an empty plist and every AirPlay 2 connection fails at runtime.
 # Refuse to install one that is not a binary plist ("bplist00").
 define OHC_SHAIRPORT_SYNC_CHECK_INFO_PLIST
