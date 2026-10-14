@@ -55,8 +55,20 @@ export PATH="$HOSTBIN:$PATH"
 # libelf-dev + libssl-dev on the runner and we use them system-wide instead.
 # (CROSS gcc from host/bin still builds the target objects.)
 HOSTGCC="${HOSTGCC:-/usr/bin/gcc}"; command -v "$HOSTGCC" >/dev/null 2>&1 || HOSTGCC=gcc
+#
+# certs/extract-cert is the ONE host tool that trips here. It links libcrypto,
+# found via $(HOSTPKG_CONFIG). With $HOSTBIN on PATH that resolves to Buildroot's
+# host pkg-config, which returns `-L<host/lib>` where libcrypto.so sits next to a
+# GNU-ld `libc.so` script that GROUPs /lib64/libc.so.6 — a path that does not
+# exist on the runner, hence "ld: cannot find /lib64/libc.so.6". The trusted
+# keyring that pulls extract-cert in is SELECTED (SYSTEM_DATA_VERIFICATION), so it
+# cannot be config'd off. The fix is to point extract-cert at the runner's own
+# pkg-config + openssl (libssl-dev) with a clean pkg-config env, so it links the
+# system libcrypto and system libc instead of Buildroot's.
+HOSTPC=/usr/bin/pkg-config; command -v "$HOSTPC" >/dev/null 2>&1 || HOSTPC=pkg-config
 MAKE=(make -C "$SRC" ARCH=x86_64 CROSS_COMPILE="$HOSTBIN/$TUPLE-" \
-      HOSTCC="$HOSTGCC" \
+      HOSTCC="$HOSTGCC" HOSTPKG_CONFIG="$HOSTPC" \
+      PKG_CONFIG="$HOSTPC" PKG_CONFIG_LIBDIR= PKG_CONFIG_PATH= PKG_CONFIG_SYSROOT_DIR= \
       KCFLAGS="-Wno-attribute-alias" WERROR=0 \
       -j"$(nproc 2>/dev/null || echo 4)")
 
@@ -82,20 +94,18 @@ else
 fi
 "${MAKE[@]}" olddefconfig
 
-# Force the module-signing / trusted-key machinery OFF. The fragment's
-# "# ... is not set" lines don't stick (something selects the keyring), and with
-# certs on the build makes certs/extract-cert, a HOST tool that fails to link
-# here. scripts/config edits the .config directly; re-run olddefconfig to settle.
+# Turn module signing OFF (no signing key, no signed-module enforcement — secure
+# boot is off on this hardware). This one DOES stick. The trusted keyring and
+# SYSTEM_DATA_VERIFICATION cannot be turned off from here — they are SELECTed, not
+# user-settable — so certs/extract-cert is still built; it links fine now that
+# HOSTPKG_CONFIG points at the runner's openssl (see the MAKE[] note above).
 if [ -x "$SRC/scripts/config" ]; then
 	"$SRC/scripts/config" --file "$SRC/.config" \
-		-d MODULE_SIG -d MODULE_SIG_ALL -d MODULE_SIG_FORCE \
-		-d SYSTEM_TRUSTED_KEYRING -d SYSTEM_REVOCATION_LIST \
-		-d SECONDARY_TRUSTED_KEYRING -d SYSTEM_DATA_VERIFICATION \
-		-d IMA -d IMA_APPRAISE_MODSIG -d INTEGRITY 2>/dev/null || true
+		-d MODULE_SIG -d MODULE_SIG_ALL -d MODULE_SIG_FORCE 2>/dev/null || true
 	"${MAKE[@]}" olddefconfig
 fi
-echo "mk-real-kernel: cert/keyring symbols after disable:"
-grep -E 'CONFIG_(MODULE_SIG|SYSTEM_TRUSTED_KEYRING|SYSTEM_DATA_VERIFICATION|SYSTEM_REVOCATION|SECONDARY_TRUSTED|IMA\b|INTEGRITY)' "$SRC/.config" || echo "  (none set — good)"
+echo "mk-real-kernel: cert/keyring symbols:"
+grep -E 'CONFIG_(MODULE_SIG|SYSTEM_TRUSTED_KEYRING|SYSTEM_DATA_VERIFICATION)' "$SRC/.config" || echo "  (none set)"
 rm -f "$SLOTCFG"
 
 # Sanity: the whole point is these must be built IN (=y), not modules.

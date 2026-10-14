@@ -40,15 +40,13 @@ CONFIG_FB_SIMPLE=y
 # so the size ceiling stops dictating the design.
 CONFIG_MODULES=y
 
-# No module signing / trusted-key machinery. Secure boot is OFF on this hardware
-# (the bootstrap kernel signs nothing either), so none of this is wanted. It also
-# builds certs/extract-cert, a HOST tool that fails to link against Buildroot's
-# host/lib ("ld: cannot find /lib64/libc.so.6") — dropping the keyrings removes
-# that host build entirely. merge_config note: refer to the symbols below as
-# assignments only (that is the intent); they are disabled.
+# No module signing. Secure boot is OFF on this hardware (the bootstrap kernel
+# signs nothing either), so there is no signing key and nothing to enforce.
 # CONFIG_MODULE_SIG is not set
 # CONFIG_MODULE_SIG_ALL is not set
-# CONFIG_SYSTEM_TRUSTED_KEYRING is not set
-# CONFIG_SYSTEM_REVOCATION_LIST is not set
-# CONFIG_SECONDARY_TRUSTED_KEYRING is not set
-# CONFIG_IMA is not set
+#
+# NOTE: the trusted keyring / SYSTEM_DATA_VERIFICATION are NOT disabled here. They
+# are SELECTed by other enabled options, not user-settable, so a "# ... is not
+# set" line for them only produces a merge_config "redefined" warning and is
+# ignored. They pull in certs/extract-cert, a HOST tool — mk-real-kernel.sh builds
+# it against the runner's own openssl (HOSTPKG_CONFIG) so it links cleanly.
