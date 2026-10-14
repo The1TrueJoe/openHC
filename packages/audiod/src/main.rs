@@ -518,7 +518,7 @@ fn main() {
         }
         return;
     }
-    let bind = std::env::var("AUDIOD_BIND").unwrap_or_else(|_| "0.0.0.0:7072".into());
+    let bind = std::env::var("AUDIOD_BIND").unwrap_or_else(|_| "127.0.0.1:7072".into());
     let board = Board::from_env();
     let endpoints = Endpoints::load();
     if board.has_map() {
