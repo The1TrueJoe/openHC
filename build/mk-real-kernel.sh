@@ -106,6 +106,20 @@ if [ -x "$SRC/scripts/config" ]; then
 fi
 echo "mk-real-kernel: cert/keyring symbols:"
 grep -E 'CONFIG_(MODULE_SIG|SYSTEM_TRUSTED_KEYRING|SYSTEM_DATA_VERIFICATION)' "$SRC/.config" || echo "  (none set)"
+
+# DIAGNOSTIC: what did merge+olddefconfig change vs the known-good SLOT config?
+# The fat kernel hung on the EA1 bringing up the eMMC (mmc0 SDHCI ADMA/IRQ timeout,
+# error -110) even though the SLOT kernel — same source, same cmdline — brings it up
+# fine. So enabling DRM/SGX cascaded olddefconfig into flipping some storage/DMA/IRQ
+# symbol. Dump the full delta (slot -> fat) and spotlight the subsystems that would
+# explain an SDHCI ADMA/IRQ failure. normalize "# X is not set" to "X=n" so a flip
+# either direction shows.
+norm() { sed -E 's/^# (CONFIG_[A-Za-z0-9_]+) is not set/\1=n/; /^#/d; /^$/d' "$1" | sort; }
+echo "=== mk-real-kernel: CONFIG DELTA (slot -> fat) ============================"
+diff <(norm "$SLOTCFG") <(norm "$SRC/.config") | grep -E '^[<>]' || echo "  (no delta — unexpected)"
+echo "=== storage / DMA / IOMMU / IRQ symbols in the FAT config ================="
+grep -E 'CONFIG_(MMC|SDHCI|MMC_SDHCI|DMA|DMADEVICES|IOMMU|INTEL_IOMMU|SWIOTLB|PCI_MSI|X86_LOCAL_APIC|X86_IO_APIC|IRQ_REMAP|DMAR)' "$SRC/.config" | sort || true
+echo "=========================================================================="
 rm -f "$SLOTCFG"
 
 # Sanity: the whole point is these must be built IN (=y), not modules.
