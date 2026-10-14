@@ -4,5 +4,5 @@
 #
 # PROVEN on hardware: secure-boot fuse CLEAR, boots an unsigned kernel. Its radio
 # is the reachability path (ohc.features: wifi).
-BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1"
+BR2_TARGET_GENERIC_HOSTNAME="openea1"
 BR2_TARGET_GENERIC_ISSUE="openHC EA1"
