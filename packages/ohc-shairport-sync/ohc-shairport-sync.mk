@@ -19,9 +19,11 @@ OHC_SHAIRPORT_SYNC_LICENSE = MIT, BSD-3-Clause
 OHC_SHAIRPORT_SYNC_LICENSE_FILES = LICENSES
 # git clone, no configure
 OHC_SHAIRPORT_SYNC_AUTORECONF = YES
-# host-vim for xxd (the build embeds a plist as a C array).
+# The build embeds plists/get_info_response.xml as a C array of its binary
+# form: libplist's plistutil (host-ohc-plistutil, see that package for why it
+# must be libplist's) piped into xxd (host-vim).
 OHC_SHAIRPORT_SYNC_DEPENDENCIES = alsa-lib libconfig popt host-pkgconf avahi openssl \
-	libglib2 libplist libsodium libgcrypt ffmpeg util-linux host-vim
+	libglib2 libplist libsodium libgcrypt ffmpeg util-linux host-vim host-ohc-plistutil
 
 OHC_SHAIRPORT_SYNC_CONF_OPTS = \
 	--with-alsa \
@@ -38,22 +40,14 @@ OHC_SHAIRPORT_SYNC_CONF_OPTS = \
 	--without-create-user-group \
 	--without-configfiles
 
-# The build turns plists/get_info_response.xml into a binary plist with
-# libplist's `plistutil` on the BUILD host, which Buildroot does not package
-# (libplist is target-only). Python's plistlib writes the same format; a shim
-# named plistutil, first on the configure and make PATH, stands in for it.
-OHC_SHAIRPORT_SYNC_SHIM = $(@D)/.ohc-host-bin
-define OHC_SHAIRPORT_SYNC_PLISTUTIL_SHIM
-	mkdir -p $(OHC_SHAIRPORT_SYNC_SHIM)
-	printf '%s\n' '#!/bin/sh' \
-		'# plistutil -i <xml> : the binary plist on stdout (ohc-shairport-sync.mk)' \
-		'exec python3 -c "import plistlib,sys; plistlib.dump(plistlib.load(open(sys.argv[1],\"rb\")), sys.stdout.buffer, fmt=plistlib.FMT_BINARY)" "$$2"' \
-		> $(OHC_SHAIRPORT_SYNC_SHIM)/plistutil
-	chmod 0755 $(OHC_SHAIRPORT_SYNC_SHIM)/plistutil
+# The codegen above is a pipe, so a plistutil failure does not fail the build —
+# it embeds an empty plist and every AirPlay 2 connection fails at runtime.
+# Refuse to install one that is not a binary plist ("bplist00").
+define OHC_SHAIRPORT_SYNC_CHECK_INFO_PLIST
+	grep -q '0x62, 0x70, 0x6c, 0x69, 0x73, 0x74' $(@D)/plists/get_info_response.c || \
+		{ echo "ohc-shairport-sync: plists/get_info_response.c holds no binary plist" >&2; exit 1; }
 endef
-OHC_SHAIRPORT_SYNC_PRE_CONFIGURE_HOOKS += OHC_SHAIRPORT_SYNC_PLISTUTIL_SHIM
-OHC_SHAIRPORT_SYNC_CONF_ENV += PATH="$(OHC_SHAIRPORT_SYNC_SHIM):$(BR_PATH)"
-OHC_SHAIRPORT_SYNC_MAKE_ENV += PATH="$(OHC_SHAIRPORT_SYNC_SHIM):$(BR_PATH)"
+OHC_SHAIRPORT_SYNC_POST_BUILD_HOOKS += OHC_SHAIRPORT_SYNC_CHECK_INFO_PLIST
 
 define OHC_SHAIRPORT_SYNC_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/shairport-sync $(TARGET_DIR)/usr/bin/shairport-sync
