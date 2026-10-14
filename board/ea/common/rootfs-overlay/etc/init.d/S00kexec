@@ -42,7 +42,12 @@ command -v kexec >/dev/null 2>&1 || { echo "S00kexec: no kexec tool" >&2; exit 0
 # the board fragment would never take effect on the kexec boot path. PROVEN on an
 # EA1: this line brings MemTotal from ~176 MB to ~1.7 GB.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
-CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}"
+# intel_iommu=off: the fat real kernel builds Intel VT-d in (DRM pulls IOMMU_SUPPORT
+# -> INTEL_IOMMU defaults y). This SoC's VT-d is buggy and breaks SDHCI ADMA DMA, so
+# the eMMC fails to init and root never mounts. The driver is also disabled in
+# real-kernel.fragment; this is the runtime belt-and-suspenders. No-op on the lean
+# bootstrap kernel (no IOMMU driver), so it is safe to pass unconditionally.
+CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq intel_iommu=off root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}"
 
 echo "S00kexec: handing off to the staged kernel ($KERNEL)"
 if kexec -l "$KERNEL" --command-line="$CMDLINE"; then

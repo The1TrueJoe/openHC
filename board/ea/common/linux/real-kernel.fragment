@@ -40,6 +40,20 @@ CONFIG_FB_SIMPLE=y
 # so the size ceiling stops dictating the design.
 CONFIG_MODULES=y
 
+# --- KEEP THE IOMMU OFF (or the eMMC dies) -------------------------------------
+# Building DRM in pulls CONFIG_IOMMU_SUPPORT, and on x86 INTEL_IOMMU then defaults
+# =y — so the fat kernel, unlike the lean slot kernel, came up with Intel VT-d DMA
+# remapping active. This SoC's VT-d (Cedarview / CE5300, 2011-era Atom) is buggy:
+# with it on, the SDHCI controller's ADMA transfers hit an empty translation and
+# the eMMC never initialises (on a live EA1: "mmc0: sdhci: ADMA Err: 0x00000001",
+# "mmc0: Timeout waiting for hardware interrupt", "error -110 whilst initialising
+# MMC card"). With rootwait the box then hangs forever before mounting p1 — i.e.
+# the fat kernel bricks the boot for a reason that has nothing to do with the GPU.
+# The slot kernel never had VT-d, so match it: no IOMMU driver at all. (S00kexec
+# also appends intel_iommu=off on the kexec cmdline as a belt-and-suspenders.)
+# CONFIG_INTEL_IOMMU is not set
+# CONFIG_INTEL_IOMMU_DEFAULT_ON is not set
+
 # No module signing. Secure boot is OFF on this hardware (the bootstrap kernel
 # signs nothing either), so there is no signing key and nothing to enforce.
 # CONFIG_MODULE_SIG is not set
