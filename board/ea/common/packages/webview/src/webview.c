@@ -19,6 +19,13 @@
 #include <glib-object.h>
 #include <glib-unix.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 /*
  * The box already serves a UI: webd listens on :80 (S90ohcweb) and
@@ -55,6 +62,109 @@ static gboolean reload_cb(gpointer view)
 {
 	webkit_web_view_reload((WebKitWebView *)view);
 	return G_SOURCE_CONTINUE;
+}
+
+/* ── control channel: drive the view from outside (MQTT, an app, an IR remote) ──
+ *
+ * openHC exposes the hardware; a control system on top decides what to show and
+ * what the buttons do. So the on-panel view takes commands on a FIFO (default
+ * /run/ohc-display.ctl, OHC_DISPLAY_CTL overrides), one line each:
+ *
+ *   key <Name>     a keypress: Up/Down/Left/Right/Enter/Back/Home/Tab/digits/a char
+ *   text <string>  type a run of characters
+ *   url <uri>      load a page
+ *   reload         reload the current page
+ *
+ * A bridge (e.g. an MQTT subscriber on <base>/cmd/display/key) just echoes a line
+ * into the FIFO; no transport lives here. Keys become real WPE keyboard events
+ * dispatched into WebKit, so the page sees ordinary key input.
+ */
+struct ctl { struct wpe_view_backend *backend; WebKitWebView *view; };
+
+/* XKB/WPE keysyms for the names a remote sends; a printable ASCII char maps to itself. */
+static uint32_t keysym_for(const char *name)
+{
+	static const struct { const char *n; uint32_t k; } tab[] = {
+		{"Up",0xff52},{"Down",0xff54},{"Left",0xff51},{"Right",0xff53},
+		{"Enter",0xff0d},{"Return",0xff0d},{"OK",0xff0d},{"Select",0xff0d},
+		{"Back",0xff1b},{"Escape",0xff1b},{"Esc",0xff1b},
+		{"Home",0xff50},{"End",0xff57},{"Tab",0xff09},{"Menu",0xff67},
+		{"BackSpace",0xff08},{"Delete",0xffff},{"Space",0x0020},
+		{"PageUp",0xff55},{"PageDown",0xff56},
+	};
+	for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++)
+		if (g_ascii_strcasecmp(name, tab[i].n) == 0) return tab[i].k;
+	if (name[0] && !name[1] &&
+	    (unsigned char)name[0] >= 0x20 && (unsigned char)name[0] < 0x7f)
+		return (uint32_t)(unsigned char)name[0];	/* Latin-1 keysym == the char */
+	return 0;
+}
+
+static void dispatch_key(struct wpe_view_backend *b, uint32_t keysym)
+{
+	struct wpe_input_keyboard_event ev;
+	if (!keysym) return;
+	memset(&ev, 0, sizeof ev);
+	ev.key_code = keysym;
+	ev.pressed = true;
+	wpe_view_backend_dispatch_keyboard_event(b, &ev);
+	ev.pressed = false;
+	wpe_view_backend_dispatch_keyboard_event(b, &ev);
+}
+
+static gboolean on_ctl(GIOChannel *src, GIOCondition cond, gpointer data)
+{
+	struct ctl *c = data;
+	char *line = NULL;
+	gsize len;
+	(void)cond;
+	while (g_io_channel_read_line(src, &line, &len, NULL, NULL) == G_IO_STATUS_NORMAL) {
+		g_strchomp(line);
+		if (g_str_has_prefix(line, "key "))
+			dispatch_key(c->backend, keysym_for(line + 4));
+		else if (g_str_has_prefix(line, "text "))
+			for (const char *p = line + 5; *p; p++)
+				dispatch_key(c->backend, (uint32_t)(unsigned char)*p);
+		else if (g_str_has_prefix(line, "url "))
+			webkit_web_view_load_uri(c->view, line + 4);
+		else if (g_strcmp0(line, "reload") == 0)
+			webkit_web_view_reload(c->view);
+		else if (*line)
+			g_printerr("webview: unknown control line: %s\n", line);
+		g_free(line);
+		line = NULL;
+	}
+	return TRUE;	/* keep the watch armed */
+}
+
+static void control_open(struct wpe_view_backend *backend, WebKitWebView *view)
+{
+	const char *path = g_getenv("OHC_DISPLAY_CTL");
+	int fd;
+	struct ctl *c;
+	GIOChannel *ch;
+
+	if (!path || !*path) path = "/run/ohc-display.ctl";
+	if (mkfifo(path, 0600) != 0 && errno != EEXIST) {
+		g_printerr("webview: no control FIFO at %s (%s)\n", path, g_strerror(errno));
+		return;
+	}
+	/* O_RDWR so we always hold a writer too: the channel then never hits EOF when
+	 * an external writer closes, so one watch serves every command for the run. */
+	fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0) {
+		g_printerr("webview: cannot open %s (%s)\n", path, g_strerror(errno));
+		return;
+	}
+	c = g_new(struct ctl, 1);
+	c->backend = backend;
+	c->view = view;
+	ch = g_io_channel_unix_new(fd);
+	g_io_channel_set_flags(ch, G_IO_FLAG_NONBLOCK, NULL);
+	g_io_channel_set_close_on_unref(ch, TRUE);
+	g_io_add_watch(ch, G_IO_IN, on_ctl, c);
+	g_io_channel_unref(ch);
+	g_printerr("webview: control channel on %s (key/text/url/reload)\n", path);
 }
 
 int main(int argc, char **argv)
@@ -134,6 +244,9 @@ int main(int argc, char **argv)
 
 	g_signal_connect(view, "load-failed", G_CALLBACK(on_load_failed), NULL);
 	webkit_web_view_load_uri(view, url);
+
+	/* Take commands from outside — MQTT/app/IR via the FIFO (see control_open). */
+	control_open(backend, view);
 
 	GMainLoop *loop = g_main_loop_new(NULL, FALSE);
 	g_unix_signal_add(SIGINT,  on_signal, loop);
