@@ -78,63 +78,108 @@ the recessed button, so every write is the byte-exact inverse of the install's
              p3 = 32 MB
 ```
 
-## The one hard part: reimaging p1 while openHC runs from p1
+## The real mechanism (confirmed from p2's `factory_restore.sh`, 2026-10-15)
 
-In this model openHC runs **from** p1, so p1 cannot be reformatted in place — the
-reimage must run from an environment that is not rooted on p1. The EA3's stock
-`recovery_kernel.deb` is **not** the tool for this: its `./tmp/bzImage` is a
-7,009,216-byte Control4 **container** (== the stock kernel container size), not a
-Linux bzImage — `kexec` refuses it, and the deb's real recovery is CEFDK/script
-driven (`factory_restore.sh` / `init_kernel` / `kernel_size_writer`), not a Linux
-kexec. (`recovery_reimage_p1` now extracts correctly — `gzip -dc` then `tar -xf`,
-busybox `tar -a` can't autodetect gzip — and `classify_payload` detects the
-container and refuses rather than pretending to boot it.)
+The EA factory restore is **not** a Linux reimage of p1 at all. Control4's own
+`factory_restore.sh` (shipped in p2's `recovery_kernel.deb`) maps the EA family to
+`do_ninjago()`, whose entire body is:
 
-So we do it with **openHC's own machinery**, which is already proven to RAM-boot:
+```sh
+do_ninjago() {   # ea1 | ea3 | ea5 | amp1
+    /usr/dtsbin/flash mfhdelete -type spinor -mfh c4_params -id 0
+    echo -n -e "\x01\x00\x00\x00" > /tmp/c4_params.bin
+    /usr/dtsbin/flash mfhadd   -type spinor -mfh c4_params -id 0 -file /tmp/c4_params.bin
+}
+# …then main() does `reboot -f`.
+```
 
-1. `ohc-restore stock` boots openHC into a **RAM-only** environment (not pivoting
-   to p1) — either by kexec-ing the openHC kernel with a recovery initramfs, or by
-   having `boot-init` honour a one-shot `ohc.recovery` flag and stay in RAM instead
-   of pivoting. (The durable autoscript already stages kernel + boot-init in RAM
-   before the pivot, so the RAM stage exists.)
-2. In RAM (p1 is now free): `mount -o ro /dev/mmcblk0p2`, recreate the stock p1
-   filesystem, and `xz -dc recfs.tar.xz | tar -x` onto p1 — replicating whatever
-   `factory_restore.sh` does beyond the tar (partition flags, kernel-container
-   re-lay if any, psvn/serial handling).
-3. Undo openHC's SPI-NOR change (`revert`: remove the MFH item / clear the enable
-   byte), optionally zero the gap kernels.
-4. Reboot → enable byte is off → CEFDK boots the stock kernel item → stock on p1.
-   Pristine.
+That is the whole thing: **set an MFH `c4_params` item to `01 00 00 00`, reboot.**
+On the next boot CEFDK sees the flag and runs its own factory restore — reimaging
+p1 from `recfs.tar.xz` and whatever else the factory operation entails — then
+clears the flag. This is exactly what the recessed ID button triggers; the button
+and `factory_restore.sh` both just set `c4_params`, one in firmware and one via
+Control4's `/usr/dtsbin/flash`. `recovery_kernel.deb` is a **kernel-install**
+package (`kernel_size_writer` dd's the stock kernel container to eMMC `0x400`), not
+a rootfs tool — which is why our old `kexec`-the-deb approach was wrong, and why
+`recovery_reimage_p1` now classifies that container and refuses rather than booting
+it.
 
-Dependencies to confirm on the box (non-destructive reads):
-- openHC rootfs carries `xz`/`unxz` + `tar` (`which unxz xz; busybox | grep unxz`).
-- the exact `factory_restore.sh` contract:
-  ```
-  mount -o ro /dev/mmcblk0p2 /mnt/ohc-recovery
-  mkdir -p /tmp/rk && cd /tmp/rk
-  ar x /mnt/ohc-recovery/recovery_kernel.deb && gzip -dc data.tar.gz | tar -xf -
-  cat etc/factory_restore.sh etc/init.d/init_kernel ; file tmp/kernel_size_writer
-  ls -la /mnt/ohc-recovery        # confirm recfs.tar.xz name/size
-  ```
+### The MFH state on the live EA3 (why `c4_params` is the hard part)
+
+`ohc-restore status` dumps 13 items; **none is `c4_params`** — it is not a resident
+item, it is *created on demand* to request the restore (the factory tool does
+`mfhdelete` (no-op) then `mfhadd`). So setting the flag is an **MFH item append +
+SHA-256 rehash**, the same structural op as our autoscript append, and the table
+has room for exactly one more item (count 13 → item[13] at `0x801c0`, right before
+the hash at `0x801e0`). The freed, DELETED item[2] region (`0x90800`, 0x708 bytes,
+in the already-RMW'd `0x90000` block) is clean space for the 4-byte content.
+
+**The catch:** `mfh::append_script` is trusted because its output was captured
+byte-for-byte from CEFDK's own `mfh add script` on the **EA1's clean 12-item
+table** (the `b817c784…` hash in its tests). Appending `c4_params` on **this EA3's
+13-item, already-openHC-modified table** is an *unvalidated extrapolation* — and a
+wrong MFH write bricks past the button. So we do not hand-roll it blind.
+
+## Two ways to return to stock — pick one
+
+### Path 1 — CEFDK-native `c4_params` flag (faithful, needs validation)
+`ohc-restore stock` writes the `c4_params` MFH item (`01 00 00 00`) + clears
+openHC's autoscript (the proven `revert`), then reboots; CEFDK does the real
+factory restore. **Before any live write**, validate our computed table against
+CEFDK's own tool byte-for-byte, exactly as the autoscript was: capture
+`flash mfhadd -mfh c4_params` (over serial, or run the stock `/usr/dtsbin/flash`
+extracted from `recfs.tar.xz`) on this box and match the resulting table + hash in
+a `mfh.rs` unit test. Pros: faithful to the factory operation (CEFDK does the whole
+restore, including anything beyond the rootfs). Cons: a new MFH-table write to
+validate; brick-past-button if wrong (mitigated here — this lab box has serial +
+p2 + a CH341A SPI programmer, so it is recoverable).
+
+### Path 2 — userspace RAM-reimage (only proven SPI-NOR ops) ← **lower risk**
+Reproduce the *effect* without touching `c4_params`:
+1. `revert` openHC's autoscript — the enable byte + `remove_script`, both proven
+   byte-exact. (CEFDK will then boot the stock kernel item, which openHC never
+   touched — it lives at eMMC `0x400`, intact.)
+2. Reimage p1 from a RAM environment (openHC can RAM-boot; the autoscript already
+   stages kernel+boot-init in RAM before the pivot, so a one-shot `ohc.recovery`
+   flag that keeps `boot-init` in RAM gives us a non-p1 root): `mount -o ro
+   /dev/mmcblk0p2`, clean p1, `unxz -c recfs.tar.xz | tar -x -C /p1`. openHC has
+   `unxz` + `tar` (confirmed on the box).
+3. Reboot → stock kernel item → stock rootfs on p1.
+
+Pros: **no new MFH write** — only the already-proven `revert` touches SPI-NOR; the
+risky part is a userspace tar extract, fully recoverable. Cons: reproduces the
+rootfs restore ourselves rather than invoking CEFDK's, so if the factory restore
+does more than lay down `recfs.tar.xz` (unlikely to matter — kernel is untouched,
+p2 is intact) we would not replicate it; and it needs a small RAM-recovery mode in
+`boot-init`.
+
+**Recommendation: Path 2** as the default (it adds no unproven SPI-NOR write), with
+Path 1 available if you want the exact factory operation and are willing to capture
+a `flash mfhadd c4_params` diff first to validate it.
 
 ## The switch surface (ohc-restore → iod → web UI / MQTT)
 
-- **`ohc-restore status`** — report current boot target (enable byte) + whether a
-  stock restore is possible (p2 `recfs.tar.xz` present). (Done, extend wording.)
-- **`ohc-restore stock`** — the one-way return to factory above (RAM-boot →
-  reimage p1 from p2 → revert SPI-NOR → reboot). Destructive, confirm-gated. This
-  is the `restore.stock` iod already exposes; the web UI already has the red
-  two-step "Return to stock" control — its backend becomes the real reimage.
+- **`ohc-restore status`** — current boot target (enable byte) + whether a stock
+  restore is possible (p2 `recfs.tar.xz` present). (Wording to extend.)
+- **`ohc-restore stock`** — the one-way return to factory via the chosen path
+  above. Destructive, confirm-gated. This is the `restore.stock` iod already
+  exposes; the web UI already has the red two-step "Return to stock" control — its
+  backend becomes the real restore.
 - **stock → openHC** is the installer (`ohc-flash`), not `ohc-restore`; the box is
   stock Control4 at that point, with no openHC services to drive it.
 
-No `switch`/coexistence commands, no new partitions, no loopback image — those
-were for the instant-toggle model we rejected in favour of this one.
+No `switch`/coexistence commands, no new partitions, no loopback image — those were
+for the instant-toggle model we rejected in favour of this one.
 
 ## Status
 
 Landed (PR #43, no box needed): the tar-extraction fix and the
-container-classification guard so `stock` can never strand the box. Remaining,
-pending the box reads above and live validation: the RAM-boot reimage of p1 from
-`recfs.tar.xz` (step 1–3), wiring it behind `ohc-restore stock`, and confirming
-the factory_restore.sh contract so the reimage is faithful.
+container-classification guard so `stock` can never strand the box. Confirmed on
+the live EA3 (read-only, 2026-10-15): the real restore mechanism (`c4_params`
+flag), that `recovery_kernel.deb` is a kernel installer, that openHC has
+`unxz`/`tar`, the 13-item MFH table state, and that the box's installed
+`/opt/ohc/bin/ohc-restore` is **stale (pre-PR #40)** and misreports state — redeploy
+the new binary for any live test. Remaining (pending the Path 1 vs 2 choice):
+implement `ohc-restore stock` for that path, add the `boot-init` recovery mode
+(Path 2) or the validated `c4_params` append + `mfh.rs` test (Path 1), and wire the
+web-UI/iod backend to it.
