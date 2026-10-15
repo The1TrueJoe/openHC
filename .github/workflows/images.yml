@@ -198,9 +198,116 @@ jobs:
           printf -v j '"%s",' $(printf '%s\n' "${sel[@]}" | sort -u)
           echo "boards=[${j%,}]" >> "$GITHUB_OUTPUT"
 
-  build:
+  # Build the EA family's cross toolchain ONCE and hand it to the five EA image
+  # jobs, instead of each of them compiling the identical host-gcc from cold.
+  # Every EA board is the same target (x86_64 Bonnell, glibc, C++/wchar — see
+  # board/ea/common/common_defconfig), so the ~15-min toolchain is bit-for-bit
+  # shared. The image jobs below consume it as an external toolchain (see the
+  # "Fetch the shared EA toolchain" step and build/build.sh's OHC_EA_SDK path).
+  #
+  # Only runs when this change actually builds an EA board. The test is a
+  # substring match on the selected-board JSON: every EA name contains "ea" and
+  # none of ioxv1/ca1/hc800 does, so it is exactly "any EA board selected".
+  toolchain:
     needs: select
-    if: needs.select.outputs.boards != '[]'
+    if: needs.select.outputs.boards != '[]' && contains(needs.select.outputs.boards, 'ea')
+    runs-on: ubuntu-latest
+    # `make toolchain` is a fraction of a full image; cap well under the build's.
+    timeout-minutes: 120
+    steps:
+      # sgx545-ce is a submodule and board/Config.in sources its Config.in
+      # unconditionally, so `make defconfig` fails without it — same as `build`.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Same list as `build` and build/Dockerfile. No node/daemon staging here:
+      # `make toolchain` never touches the rootfs overlay.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex git rsync unzip wget cpio file figlet \
+            python3 libncurses-dev libssl-dev ca-certificates perl patch xz-utils
+
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
+          restore-keys: |
+            dl-${{ env.BUILDROOT_REF }}-
+
+      # Reuse a toolchain already built for this exact config across runs. Keyed
+      # on everything that defines the EA toolchain — the Buildroot ref, both
+      # common defconfigs, the glibc patch, the Buildroot patch set, and build.sh
+      # itself (it composes the defconfig). A hit means the tarball is already on
+      # disk and the build below is skipped; a miss builds it from cold. On a hit
+      # the artifact upload still runs, so the image jobs always get their SDK.
+      - name: Restore cached EA SDK
+        id: sdkcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ea-sdk.tar
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+
+      - name: Fetch Buildroot
+        if: steps.sdkcache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          git clone --depth 1 --branch "$BUILDROOT_REF" \
+            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          for p in build/buildroot-patches/*.patch; do
+            [ -e "$p" ] || continue
+            echo ">> buildroot patch: ${p##*/}"
+            patch -d "$HOME/buildroot" -p1 --forward --batch < "$p"
+          done
+
+      # Build only the cross toolchain, at a FIXED absolute path. The image jobs
+      # extract the tarball back to this SAME path, so the sysroot path baked
+      # into the compiler stays valid and no SDK relocation is needed ($GITHUB_
+      # WORKSPACE is identical across GitHub-hosted jobs). BOARD is any EA board:
+      # the toolchain config lives entirely in the shared common defconfigs, so
+      # all five resolve to the same toolchain. The glibc BZ33367 patch applies
+      # here (BR2_GLOBAL_PATCH_DIR is set in common_defconfig), baking it in.
+      - name: Build the EA toolchain (once)
+        if: steps.sdkcache.outputs.cache-hit != 'true'
+        env:
+          BOARD: ea3-v2
+          OHC_TOOLCHAIN_ONLY: "1"
+        run: |
+          set -e
+          BUILDROOT_DIR="$HOME/buildroot" BOARD=ea3-v2 OHC_TOOLCHAIN_ONLY=1 \
+            BR2_OUTPUT_DIR="$GITHUB_WORKSPACE/output/ea-toolchain" \
+            bash ./build/build.sh toolchain
+          tar -C "$GITHUB_WORKSPACE/output/ea-toolchain" -cf ea-sdk.tar host
+          test -x "$GITHUB_WORKSPACE/output/ea-toolchain/host/bin/x86_64-buildroot-linux-gnu-gcc"
+          ls -l ea-sdk.tar
+
+      - name: Save cached EA SDK
+        if: steps.sdkcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ea-sdk.tar
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+
+      # Reliable same-run handoff to the image jobs (they `needs: toolchain` and
+      # download this). Short retention — it is scratch, rebuilt whenever needed.
+      - name: Upload the EA SDK for the image jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ea-sdk
+          path: ea-sdk.tar
+          retention-days: 3
+          if-no-files-found: error
+
+  build:
+    needs: [select, toolchain]
+    # always(), so a run that selected only non-EA boards (toolchain skipped)
+    # still builds them, and a toolchain failure fails only the EA image jobs
+    # (at their download step), not ioxv1/ca1/hc800. select must have succeeded
+    # and picked at least one board.
+    if: always() && needs.select.result == 'success' && needs.select.outputs.boards != '[]'
     runs-on: ubuntu-latest
     # Buildroot from cold is long; the hard ceiling is 6 h and a job killed at
     # the limit leaves no artifact and no useful log tail.
@@ -304,9 +411,14 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: output/build/${{ matrix.board }}
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+          # EA jumps to r4: those boards now carry an EXTERNAL toolchain, so an
+          # r3 tree (its own internal glibc gcc) must never be restored into one.
+          # build.sh would wipe it anyway (BR2_TOOLCHAIN_EXTERNAL is in its
+          # toolchain-change detector), but a clean key is belt and braces and
+          # shrinks the EA caches at once; non-EA stay r3 and are untouched.
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
           restore-keys: |
-            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-
+            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-
 
       # The EA family shares ONE ccache, keyed on the family rather than the
       # board, so a translation unit compiled for ea1-v2 (WebKit, ICU, the
@@ -351,6 +463,25 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "openHC version: $v"
 
+      # EA boards consume the toolchain the `toolchain` job built, instead of
+      # building their own. download-artifact errors if ea-sdk is missing (a
+      # failed toolchain job), which correctly fails this EA image job while
+      # leaving non-EA jobs alone. Extract to the SAME absolute path the
+      # toolchain was built at so its baked-in sysroot path stays valid.
+      - name: Fetch the shared EA toolchain
+        if: startsWith(matrix.board, 'ea')
+        uses: actions/download-artifact@v4
+        with:
+          name: ea-sdk
+          path: ${{ github.workspace }}
+      - name: Unpack the EA toolchain to its fixed path
+        if: startsWith(matrix.board, 'ea')
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/output/ea-toolchain"
+          tar -C "$GITHUB_WORKSPACE/output/ea-toolchain" -xf ea-sdk.tar
+          test -x "$GITHUB_WORKSPACE/output/ea-toolchain/host/bin/x86_64-buildroot-linux-gnu-gcc"
+
       # Bake the on-panel WPE/SGX sysroot into EA images. These are i386 trees (the
       # only SGX545 DDK is 32-bit) built by sgx-wpe.yml / sgx-gpu.yml and harvested
       # as tarballs — Buildroot cannot multilib an i386 WebKit into this x86_64
@@ -394,6 +525,11 @@ jobs:
           # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
           # OHC_VERSION is exported here so Buildroot's post-build hook stamps it;
           # OHC_SGX_*_SYSROOT (step env above) reach post-build the same way.
+          # EA boards point build.sh at the pre-built toolchain; it then composes
+          # the external-toolchain defconfig instead of the internal glibc one.
+          case "${{ matrix.board }}" in
+            ea*) export OHC_EA_SDK="$GITHUB_WORKSPACE/output/ea-toolchain/host" ;;
+          esac
           BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
             OHC_VERSION="${{ steps.ver.outputs.version }}" bash ./build/build.sh
 
@@ -509,7 +645,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
 
       # Save the shared EA ccache on always(): even a failed build compiled
       # objects worth keeping for the next run, and a typo deep in WebKit should
@@ -596,7 +732,7 @@ jobs:
   # matrix. Passes when the work passed or was skipped as irrelevant.
   ok:
     name: images-ok
-    needs: [select, build]
+    needs: [select, toolchain, build]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
