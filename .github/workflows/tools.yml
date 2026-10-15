@@ -25,7 +25,10 @@ permissions:
   contents: read
 
 on:
+  # Scoped to main: a feature-branch push is already covered by the
+  # pull_request event, and firing on both doubled the runs for the same commit.
   push:
+    branches: [main]
     paths: &tool-paths
       - '.github/workflows/tools.yml'
   pull_request:

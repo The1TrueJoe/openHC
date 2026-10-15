@@ -16,7 +16,10 @@
 name: io-mcu
 
 on:
+  # Scoped to main: a feature-branch push is already covered by the
+  # pull_request event, and firing on both doubled every PR's runs.
   push:
+    branches: [main]
     paths:
       - 'board/*/firmware/io-mcu/**'
       - '.github/workflows/io-mcu.yml'
