@@ -1,0 +1,26 @@
+From edb6e6e408129b95d0470cf6cde85d96edbdf2d9 Mon Sep 17 00:00:00 2001
+From: openHC <openhc@localhost>
+Date: Wed, 14 Oct 2026 20:56:24 -0400
+Subject: [PATCH] D-Bus: setting Volume sets the volume a session starts at
+
+---
+ dbus/dbus-service.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/dbus/dbus-service.c b/dbus/dbus-service.c
+index 0486744..d3c5ae8 100644
+--- a/dbus/dbus-service.c
++++ b/dbus/dbus-service.c
+@@ -1133,8 +1133,10 @@ static void on_dbus_name_acquired(GDBusConnection *connection, const gchar *name
+   //                  G_CALLBACK(notify_loudness_threshold_callback), NULL);
+   // g_signal_connect(shairportSyncSkeleton, "notify::drift-tolerance",
+   //                  G_CALLBACK(notify_drift_tolerance_callback), NULL);
+-  // g_signal_connect(shairportSyncSkeleton, "notify::volume", G_CALLBACK(notify_volume_callback),
+-  //                  NULL);
++  // Setting Volume sets the AirPlay volume a session starts at (and reports to
++  // the sender as initialVolume), so a host can keep it at its own level.
++  g_signal_connect(shairportSyncSkeleton, "notify::volume", G_CALLBACK(notify_volume_callback),
++                   NULL);
+ 
+   g_signal_connect(shairportSyncSkeleton, "handle-quit", G_CALLBACK(on_handle_quit), NULL);
+ 

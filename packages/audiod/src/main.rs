@@ -97,6 +97,13 @@ impl App {
             }
             let live = self.live_inputs.lock().unwrap().clone();
             *inst = runner::start(&self.board, &e, &live, &self.up, old);
+            // Every AirPlay receiver starts its sessions at its output's level,
+            // not AirPlay's default (airplay.rs).
+            let levels = self.levels.lock().unwrap().clone();
+            for i in inst.iter().filter(|i| i.kind == "airplay") {
+                let level = i.output.as_ref().and_then(|o| levels.get(o)).copied().unwrap_or(levels::DEFAULT);
+                airplay::set_start_volume_when_up(i.pid_cell(), levels::airplay_volume(level));
+            }
             // One metadata reader per AirPlay endpoint, for the life of the
             // daemon (its FIFO outlives a shairport-sync restart).
             for i in inst.iter().filter(|i| i.kind == "airplay") {
@@ -127,15 +134,20 @@ impl App {
         let p = self.board.output(id).ok_or_else(|| format!("no output '{id}'"))?;
         let percent = percent.min(100);
         levels::cset(p, &levels::vol_control(p), levels::percent_to_raw(percent));
-        let mut l = self.levels.lock().unwrap();
-        l.insert(id.to_string(), percent);
-        levels::save(&l);
+        {
+            let mut l = self.levels.lock().unwrap();
+            l.insert(id.to_string(), percent);
+            levels::save(&l);
+        } // released before taking `instances`: restart() takes them in the other order
         // Move the app's slider on whatever is playing here: Spotify through
         // our librespot patch, AirPlay through the sender's DACP channel.
         for i in self.instances.lock().unwrap().iter().filter(|i| i.output.as_deref() == Some(id)) {
             match i.kind {
                 "spotify" => i.poke(),
-                "airplay" => airplay::set_sender_volume(i.pid(), levels::airplay_volume(percent)),
+                "airplay" => {
+                    airplay::set_sender_volume(i.pid(), levels::airplay_volume(percent));
+                    airplay::set_start_volume(i.pid(), levels::airplay_volume(percent));
+                }
                 _ => {}
             }
         }

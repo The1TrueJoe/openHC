@@ -14,7 +14,16 @@
 //! 5.x dropped that fallback; the ohc-shairport.conf D-Bus policy lets them). The
 //! bus says which pid owns the plain name. Best effort: with no sender
 //! connected, or one without DACP, there is nothing to move.
+//!
+//! The other half is where a session STARTS: AirPlay applies, and reports to a
+//! connecting sender as its `initialVolume`, the receiver's last volume —
+//! −24 (20%) on a fresh start — which would yank the output to it the moment a
+//! phone connects. `set_start_volume` keeps it at the output's level instead
+//! (the `Volume` D-Bus property; patch 0002 makes setting it do that).
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 const NAME: &str = "org.gnome.ShairportSync";
 
@@ -58,6 +67,45 @@ pub fn set_sender_volume(pid: u32, volume: f64) {
             "org.gnome.ShairportSync.RemoteControl.SetAirplayVolume",
             &format!("double:{volume:.6}"),
         ]);
+    });
+}
+
+/// Make `volume` the receiver's starting volume (see the module comment). Off
+/// the caller's thread, and retried for a few seconds: a receiver that has
+/// just started may not have its name on the bus yet.
+pub fn set_start_volume(pid: u32, volume: f64) {
+    if pid == 0 {
+        return;
+    }
+    std::thread::spawn(move || {
+        for _ in 0..10 {
+            let set = dbus_send(&[
+                &format!("--dest={}", name_for(pid)),
+                "/org/gnome/ShairportSync",
+                "org.freedesktop.DBus.Properties.Set",
+                "string:org.gnome.ShairportSync",
+                "string:Volume",
+                &format!("variant:double:{volume:.6}"),
+            ]);
+            if set.is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+/// `set_start_volume` for a receiver being started now: waits for its process.
+pub fn set_start_volume_when_up(pid: Arc<AtomicU32>, volume: f64) {
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            let p = pid.load(Ordering::Relaxed);
+            if p != 0 {
+                set_start_volume(p, volume);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
     });
 }
 

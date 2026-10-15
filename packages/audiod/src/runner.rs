@@ -172,6 +172,11 @@ impl Instance {
         self.pid.load(Ordering::Relaxed)
     }
 
+    /// The pid as it changes (0 until the process is up).
+    pub fn pid_cell(&self) -> Arc<AtomicU32> {
+        self.pid.clone()
+    }
+
     /// SIGUSR1 to the running process. For a Spotify endpoint (our librespot
     /// patch) it means "the output's level changed outside you": librespot
     /// reads its mixer and reports the level to Spotify, so the app's slider
