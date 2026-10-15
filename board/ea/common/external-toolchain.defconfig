@@ -23,8 +23,14 @@
 #   HEADERS_6_19 <- board/common sets BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_19
 #   CUSTOM_GLIBC <- the family runs glibc (PowerVR DDK blobs are glibc-linked)
 #   CXX          <- C++/wchar for WPE WebKit + ICU
-# For a glibc external toolchain Buildroot assumes wchar/locale/threads/NPTL/SSP/RPC,
-# so those are not (and cannot be) set here.
+# For a glibc external toolchain Buildroot assumes wchar/locale/threads/NPTL/SSP;
+# those knobs are hidden and come for free. RPC is the exception: the flag
+# defaults ON for glibc, but modern glibc (2.26+) dropped its SunRPC
+# implementation (it moved to libtirpc), so a Buildroot-built glibc toolchain has
+# no native RPC and the external-toolchain check aborts with "RPC support not
+# available in C library, please disable BR2_TOOLCHAIN_EXTERNAL_INET_RPC" unless
+# we turn it off here. The internal toolchain these boards used before had no
+# native RPC either, so nothing in the image regresses.
 BR2_TOOLCHAIN_EXTERNAL=y
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
 BR2_TOOLCHAIN_EXTERNAL_PREINSTALLED=y
@@ -33,4 +39,5 @@ BR2_TOOLCHAIN_EXTERNAL_GCC_14=y
 BR2_TOOLCHAIN_EXTERNAL_HEADERS_6_19=y
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM_GLIBC=y
 BR2_TOOLCHAIN_EXTERNAL_CXX=y
+# BR2_TOOLCHAIN_EXTERNAL_INET_RPC is not set
 # BR2_TOOLCHAIN_EXTERNAL_PATH is appended by build.sh from $OHC_EA_SDK.

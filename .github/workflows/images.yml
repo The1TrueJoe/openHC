@@ -246,7 +246,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ea-sdk.tar
-          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/external-toolchain.defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
 
       - name: Fetch Buildroot
         if: steps.sdkcache.outputs.cache-hit != 'true'
@@ -286,7 +286,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ea-sdk.tar
-          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/external-toolchain.defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
 
       # Reliable same-run handoff to the image jobs (they `needs: toolchain` and
       # download this). Short retention — it is scratch, rebuilt whenever needed.
