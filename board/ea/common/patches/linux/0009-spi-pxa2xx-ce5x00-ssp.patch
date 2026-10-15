@@ -39,8 +39,17 @@ routed through that path therefore gets Quark's SCR with the DDS half silently
 dropped, so the clock is wrong and the SSP never leaves BSY:
     b53-switch spi92.1: Flush failed
     b53-switch spi92.1: SPI transfer failed: -5
-Control4's driver uses a plain SSCR0_SCR divisor, so CE5X00 falls through to
-ssp_get_clk_div() like every non-Quark part.
+Control4's driver uses a plain SSCR0_SCR divisor, so CE5X00 takes an ordinary
+ssp_get_clk_div() SCR like every non-Quark part — BUT the Quark SSCR0 layout it
+is aliased to still gates the bit clock through DDS_RATE, which must therefore
+be driven at unity. Confirmed on a live EA3 with devmem: with the clock divider
+left non-Quark but DDS untouched, DDS_RATE read 0x000000, SSSR had BSY set, and
+every transfer failed -EIO. So pxa2xx_ssp_get_clk_div() gets a CE5X00 case that
+takes the plain SCR AND sets chip->dds_rate = GENMASK(23,0) (unity), and the
+DDS_RATE write is widened from an exact is_quark_x1000_ssp() to include CE5X00
+(the SSP zeroes DDS on each SSE toggle, so it must be rewritten every transfer —
+a one-shot devmem poke does not survive the next bind). With those two, the
+bcm53125 answers over SPI.
 
 Getting that split wrong is what made this take so long. An earlier attempt set
 CE4100_SSP (right chip select, wrong FIFO layout — reads returned 0xff), and a
@@ -140,6 +149,27 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		mask |= QUARK_X1000_SSCR1_RFT;
  		break;
+@@ -912,6 +918,12 @@
+ 	case QUARK_X1000_SSP:
+ 		clk_div = quark_x1000_get_clk_div(rate, &chip->dds_rate);
+ 		break;
++	case CE5X00_SSP:
++		/* CE5300: Quark SSCR0 layout but a plain SCR clock. Run DDS at
++		 * unity or DDS_RATE stays 0 and the bit clock is dead (-EIO). */
++		chip->dds_rate = GENMASK(23, 0);
++		clk_div = ssp_get_clk_div(drv_data, rate);
++		break;
+ 	default:
+ 		clk_div = ssp_get_clk_div(drv_data, rate);
+ 		break;
+@@ -1037,6 +1049,6 @@
+ 	}
+ 
+-	if (is_quark_x1000_ssp(drv_data))
++	if (is_quark_x1000_ssp(drv_data) || drv_data->ssp_type == CE5X00_SSP)
+ 		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), chip->dds_rate);
+ 
+ 	/* Stop the SSP */
 @@ -1135,6 +1142,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
