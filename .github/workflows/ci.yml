@@ -1,0 +1,1191 @@
+# openHC CI — one workflow, one required check.
+#
+# WHY THIS FILE EXISTS. Branch protection on `main` requires a named status
+# check, and a required check whose workflow never STARTS (because its trigger
+# is path-filtered out) sits "pending" forever and blocks every merge. That is
+# the documented GitHub trap that forced all six component workflows to trigger
+# on `pull_request` UNFILTERED and each carry a tiny always-running `<name>-ok`
+# job just to report. The side effect: every PR shows all six workflows as
+# checks even when the only thing that ran was a three-second gate — pure noise.
+#
+# THE FIX. Collapse the six workflows into this one, with a single aggregate job
+# `ci-ok` as the ONLY required check. Because jobs in one workflow CAN depend on
+# each other (`needs:`) — the thing jobs in SEPARATE workflows cannot do —
+# `ci-ok` can honestly reflect the real result of every component while still
+# ALWAYS reporting. Unrelated components show as `skipped`, not as six separate
+# pending/green workflow entries. One workflow run per PR, one required check,
+# and the check means what it says: it is NOT an always-green sentinel.
+#
+# HOW THE PER-COMPONENT GATING IS PRESERVED. Each former workflow triggered on a
+# different set of events (only images/flasher on release, only images on the
+# weekly schedule, tools' pull_request was itself path-filtered, ...). This
+# workflow triggers on the UNION of those events, so every component job carries
+# an `if:` that reproduces EXACTLY the events it used to run on:
+#   * images     — its `select` job (kept verbatim) already encodes all of it:
+#                  dispatch/release/schedule => all boards, push/PR => git-diff.
+#   * daemons    — push/PR (when its paths changed) or dispatch. No release/sched.
+#   * flasher    — push/PR (when its paths changed) or dispatch or release.
+#   * io-mcu     — push/PR (when its paths changed) or dispatch. No release/sched.
+#   * docs       — push/PR (when its paths changed) or dispatch; deploy on main push only.
+#   * tools      — push/PR (when its paths changed) or dispatch. (Was PR-path-filtered.)
+# The `changes` job (dorny/paths-filter) computes the per-component "did its
+# paths change?" booleans for push and pull_request, the same filters the old
+# per-workflow `changes` gates used. `.github/workflows/ci.yml` is in each
+# filter so a change to THIS file re-runs that component, exactly as each old
+# workflow watched its own file.
+#
+# MIGRATION — this is PR #1 of a staged rollout; order matters (bootstrap trap):
+#   (a) THIS PR adds ci.yml ALONGSIDE the six existing workflows. The old five
+#       *-ok checks still run and stay required, so this PR can merge; `ci-ok`
+#       runs too and goes green. Nothing is deleted here.
+#   (b) AFTER this merges, the maintainer swaps branch protection's required
+#       checks from the five *-ok to just `ci-ok` (see the handoff notes).
+#   (c) A FOLLOW-UP PR then deletes images.yml/daemons.yml/flasher.yml/
+#       io-mcu.yml/docs.yml/tools.yml (now fully represented here) and re-syncs
+#       the `images` section of this file to whatever images.yml is on main then.
+# Until (c), a board/flasher/etc. change builds twice (here and in the old
+# workflow). That is deliberate and temporary; this repo is public, so runner
+# minutes are free and only wall-clock matters.
+
+name: ci
+
+on:
+  # Push to main is path-filtered to the UNION of every component's paths (see
+  # PR #39: push stays filtered so a PR does not run twice). Pull requests are
+  # deliberately NOT filtered: `ci-ok` must report on every PR for branch
+  # protection, and the per-component `if:`/`select` resolve an unrelated change
+  # to "nothing to build" in seconds.
+  push:
+    branches: [main]
+    paths:
+      - 'board/**'
+      - 'packages/**'
+      - 'build/**'
+      - 'flasher/**'
+      - 'Makefile'
+      - 'site/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Single board to build (blank = all)"
+        required: false
+        default: ""
+  # Publishing a release rebuilds and attaches the images and the flasher.
+  release:
+    types: [published]
+  schedule:
+    # Weekly full image matrix (images only): catches upstream breakage on a
+    # week nobody touched a board. Monday 04:00 UTC.
+    - cron: "0 4 * * 1"
+
+# A second push supersedes the first; no value finishing a run for a commit that
+# is already history. event_name is in the group so a release run (its own tag
+# ref + event) is never cancelled by branch pushes.
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+# Floor for jobs that do not override. Jobs that need more (release uploads,
+# Pages) widen it themselves, so nothing runs with more than it needs.
+permissions:
+  contents: read
+
+env:
+  # Consumed only by the image jobs' cache keys and Buildroot fetch.
+  BUILDROOT_REF: 2026.02.3
+
+jobs:
+  # Per-component "did its paths change?" booleans, for push and pull_request.
+  # These are the SAME filters the old per-workflow `changes` gates used; the
+  # workflow file each one watched is now ci.yml. images does NOT appear here —
+  # its `select` job below does richer git-diff resolution into a board matrix.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      daemons: ${{ steps.filter.outputs.daemons }}
+      flasher: ${{ steps.filter.outputs.flasher }}
+      iomcu: ${{ steps.filter.outputs.iomcu }}
+      docs: ${{ steps.filter.outputs.docs }}
+      tools: ${{ steps.filter.outputs.tools }}
+    steps:
+      # Checkout so the filter can diff on push (before..after); on PR dorny uses
+      # the API and the working tree is not strictly needed, but this is cheap.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            daemons:
+              - 'packages/**'
+              - 'flasher/crates/core/**'
+              - '.github/workflows/ci.yml'
+            flasher:
+              - 'flasher/**'
+              - '.github/workflows/ci.yml'
+            iomcu:
+              - 'board/*/firmware/io-mcu/**'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'site/**'
+              - '.github/workflows/ci.yml'
+            tools:
+              - '.github/workflows/ci.yml'
+
+  # ===========================================================================
+  # IMAGES  (was images.yml — select + build + carry-forward, verbatim)
+  # ===========================================================================
+
+  # Which boards does this change actually affect? Everything below board/ is
+  # board-scoped except the shared trees, so a CA-1 change has no business
+  # rebuilding five EA images.
+  select:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      boards: ${{ steps.pick.outputs.boards }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Seconds, before any multi-hour build: every board.env and init script
+      # must at least PARSE. board.env is sourced by nearly every init script
+      # (networking included), so one bad line there yields an image that
+      # boots to a login prompt with no network — found the hard way.
+      - name: Shell syntax (board.env, init scripts, helpers)
+        shell: bash
+        run: |
+          set -e
+          bad=0
+          while IFS= read -r f; do
+            sh -n "$f" || { echo "::error file=$f::shell syntax error"; bad=1; }
+          done < <(git ls-files 'board/**/board.env' 'board/**/etc/init.d/*' 'board/**/opt/ohc/bin/*' 'board/**/opt/ohc/libexec/*' \
+                   | while read -r f; do head -c 64 "$f" | grep -q '^#!.*sh' && echo "$f" || case "$f" in *board.env) echo "$f";; esac; done)
+          exit $bad
+
+      - id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALL='["ea1-v1","ea1-v2","ea1-v2-poe","ea3-v1","ea3-v2","ioxv1","ca1","hc800"]'
+
+          # Explicit request, or a scheduled/dispatch run with no board: build all.
+          if [ -n "${{ github.event.inputs.board }}" ]; then
+            echo "boards=[\"${{ github.event.inputs.board }}\"]" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "${{ github.event_name }}" != "push" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          # First push to a branch has no usable base; build everything.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+
+          # Shared trees affect every board. build/ and the flasher are in here
+          # because build.sh drives the build and post-image calls ohc-flash.
+          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|packages/|build/|flasher/|Makefile)'; then
+            echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          sel=()
+          # ea/common is shared by the EA family only.
+          if echo "$changed" | grep -qE '^board/ea/common/'; then
+            sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
+          fi
+          # EA boards live under board/ea/<board>/; the others are top-level.
+          for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2; do
+            echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
+          done
+          for b in ioxv1 ca1 hc800; do
+            echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")
+          done
+          # Workflow-only or docs-only change: nothing to build.
+          if [ ${#sel[@]} -eq 0 ]; then
+            echo "boards=[]" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          printf -v j '"%s",' $(printf '%s\n' "${sel[@]}" | sort -u)
+          echo "boards=[${j%,}]" >> "$GITHUB_OUTPUT"
+
+  images-build:
+    needs: select
+    if: needs.select.outputs.boards != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # gh attaches image bundles to a release
+    # Buildroot from cold is long; the hard ceiling is 6 h and a job killed at
+    # the limit leaves no artifact and no useful log tail.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(needs.select.outputs.boards) }}
+    steps:
+      # sgx545-ce is a submodule and board/Config.in sources its Config.in
+      # unconditionally, so defconfig fails for every board without it.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/webd/ui/package-lock.json
+
+      # The daemons are cross-compiled and STAGED INTO THE ROOTFS OVERLAY before
+      # Buildroot runs, because that is where packages/build.sh puts them and
+      # where the image picks them up. Without this the overlay directory is
+      # empty and every image ships with no iod and no webd — the init scripts
+      # report "not installed" and the box boots with no IO server and no GUI.
+      # That was true of every image built before this step existed.
+      - name: Stage the openHC daemons into the rootfs overlay
+        run: |
+          set -euo pipefail
+          # Globs, so a future hc800-v2 or ca1-v2 does not fall through to the
+          # EA default and get silently cross-compiled for the wrong arch. This
+          # is only the C-shim compiler and its headers; which LINKER each
+          # target uses lives in packages/.cargo/config.toml, and build.sh
+          # refuses to run for a target that has no entry there.
+          case "${{ matrix.board }}" in
+            hc800*) target=x86_64-unknown-linux-musl;      cc=musl-gcc;                  apt="musl-tools" ;;
+            ca1*)   target=armv7-unknown-linux-musleabihf; cc=arm-linux-gnueabihf-gcc;   apt="gcc-arm-linux-gnueabihf libc6-dev-armhf-cross" ;;
+            ioxv1*) target=armv5te-unknown-linux-musleabi; cc=arm-linux-gnueabi-gcc;     apt="gcc-arm-linux-gnueabi libc6-dev-armel-cross" ;;
+            *)      target=i686-unknown-linux-musl;        cc=i686-linux-gnu-gcc;        apt="gcc-i686-linux-gnu libc6-dev-i386-cross" ;;
+          esac
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $apt
+          rustup target add "$target"
+          # ring compiles a few C shims; same reasoning as the daemons job.
+          export "CC_$(echo "$target" | tr '-' '_')=$cc"
+          bash ./packages/build.sh "${{ matrix.board }}"
+          ls -l board/common/rootfs-overlay/opt/ohc/bin/
+
+      # Same list as build/Dockerfile. If that changes, change it here too --
+      # they are two copies of one fact, and CI is the one that fails loudly.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex git rsync unzip wget cpio file figlet \
+            python3 libncurses-dev libssl-dev ca-certificates perl patch xz-utils
+
+      # The one genuinely shared artefact. Keyed on the board files that pin
+      # versions, NOT on the board, so all eight matrix jobs hit the same entry.
+      # restore-keys means a version bump reuses the previous download set and
+      # fetches only what actually moved.
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
+          restore-keys: |
+            dl-${{ env.BUILDROOT_REF }}-
+
+      # The expensive thing is the CROSS TOOLCHAIN, and it is identical on every
+      # run: host-gcc-initial and host-gcc-final are ~15 of the ~33 minutes, and
+      # nothing in this repo changes their config from one commit to the next.
+      # Caching dl/ above only saves the download, not a single compiled object.
+      #
+      # Safe to reuse because build/build.sh already defends the two ways an
+      # incremental Buildroot tree goes wrong:
+      #   * it WIPES $OUT when the resolved toolchain config changes, and again
+      #     when the on-disk compiler cannot do what .config claims;
+      #   * it runs `linux-dirclean` every time, so the kernel is always
+      #     re-extracted, re-patched and re-injected with our drivers — an
+      #     edit to board/*/kernel never rides on a stale stamp.
+      #
+      # Rolling key: the run id makes every run save a fresh entry, and
+      # restore-keys picks up the newest previous one.
+      # restore/save split rather than actions/cache, because the plain action
+      # does NOT save when the job fails — and a failed build is exactly when
+      # the toolchain is most worth keeping. A typo in a driver should cost one
+      # kernel rebuild, not another 15 minutes of gcc.
+      # CACHE EPOCH — bump this when a PACKAGE's config changes in a way
+      # Buildroot's per-package stamps do not notice (a cached package is not
+      # rebuilt just because the defconfig that selects its options changed). The
+      # kernel is safe (linux-dirclean runs every build), but packages are not:
+      # r2 forced one clean rebuild after round 2 added dbus, so avahi rebuilt
+      # with libavahi-client (shairport-sync needs it) instead of riding the
+      # pre-round-2 dbus-less avahi in the cache. r3 goes with the move to
+      # Buildroot 2026.02.3 (the ref is in the key too, so this is belt and braces).
+      - name: Restore Buildroot output tree
+        id: outcache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/build/${{ matrix.board }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+          restore-keys: |
+            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-
+
+      # The EA family shares ONE ccache, keyed on the family rather than the
+      # board, so a translation unit compiled for ea1-v2 (WebKit, ICU, the
+      # toolchain's own host-gcc) is a hit for every other EA board and every
+      # later run. The rolling run_id key saves a fresh entry each run and the
+      # restore-keys walk back: this board's newest ccache first, then any EA
+      # board's. restore/save split (not plain actions/cache) so a FAILED build
+      # still saves the objects it did compile — the save step runs on always().
+      - name: Restore the EA family ccache
+        if: startsWith(matrix.board, 'ea')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
+            ccache-ea-${{ env.BUILDROOT_REF }}-
+
+      - name: Fetch Buildroot
+        run: |
+          set -e
+          git clone --depth 1 --branch "$BUILDROOT_REF" \
+            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          for p in build/buildroot-patches/*.patch; do
+            [ -e "$p" ] || continue
+            echo ">> buildroot patch: ${p##*/}"
+            patch -d "$HOME/buildroot" -p1 --forward --batch < "$p"
+          done
+
+      # The version string CI stamps into the image and reuses as the bundle
+      # name: the release tag on a release, else <short-sha>-dev. post-build.sh
+      # reads OHC_VERSION and writes it into /etc/openhc-release so the flasher
+      # can compare an installed box against the latest release.
+      - name: Compute version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            v="${{ github.event.release.tag_name }}"
+          else
+            v="$(git rev-parse --short HEAD)-dev"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "openHC version: $v"
+
+      - name: Build ${{ matrix.board }}
+        env:
+          BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
+          BOARD: ${{ matrix.board }}
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+          # Shared ccache dir for the EA family (see the restore/save steps and
+          # board/ea/common/common_defconfig). build.sh forwards it to make only
+          # when set; a board whose defconfig has no BR2_CCACHE ignores it.
+          BR2_CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -e
+          # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
+          # OHC_VERSION is exported here so Buildroot's post-build hook stamps it.
+          BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
+            OHC_VERSION="${{ steps.ver.outputs.version }}" bash ./build/build.sh
+
+      # The HC-800's first install starts openHC from the RUNNING Control4 image
+      # with kexec (writes nothing). Control4 never shipped the userspace tool,
+      # and the vendor userland is 32-bit glibc, so the bundle carries a static
+      # i686 kexec the flasher pushes when the box has none. Same recipe as the
+      # tools job, built here so every hc800 release is self-sufficient instead
+      # of depending on a separate artifact that expires.
+      - name: Static i686 kexec (HC-800 stock-side launch)
+        if: success() && matrix.board == 'hc800'
+        env:
+          KEXEC_VERSION: "2.0.31"
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
+          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
+          ( cd "kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
+              --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
+              --without-zlib --without-lzma --without-xen >/dev/null && make -j"$(nproc)" >/dev/null )
+          out="output/build/${{ matrix.board }}/images/kexec-i686-static"
+          cp "kexec-tools-${KEXEC_VERSION}/build/sbin/kexec" "$out"
+          file "$out" | grep -q "ELF 32-bit.*Intel 80386" || { echo "not i386"; exit 1; }
+          file "$out" | grep -q "statically linked" || { echo "not static"; exit 1; }
+          ls -l "$out"
+
+      # Bundle the images into one zip the flasher can consume directly
+      # (Release::open reads the canonical filenames inside — bzImage,
+      # rootfs.ext2, ...). output/ also holds the multi-GB build tree and
+      # target/, which is of no use to anyone downloading this, so only images/
+      # goes in. The bundle name carries the version: openhc-<board>-<version>.
+      - name: Bundle images
+        if: success()
+        id: bundle
+        run: |
+          bundle="openhc-${{ matrix.board }}-${{ steps.ver.outputs.version }}.zip"
+          # build.sh writes to output/build/$BOARD/images, NOT output/images —
+          # it keeps a per-board output tree so switching boards does not force
+          # a full rebuild. This step looked in output/images and so had never
+          # produced an artifact for ANY board; every green build still ended
+          # here with "cd: output/images: No such file or directory".
+          imgdir="output/build/${{ matrix.board }}/images"
+          if [ ! -d "$imgdir" ]; then
+            echo "no images at $imgdir — build.sh layout changed?"
+            find output -maxdepth 4 -name images -type d 2>/dev/null
+            exit 1
+          fi
+          ls -l "$imgdir"
+          # Absolute destination: a relative one is interpreted from inside
+          # $imgdir, which is four levels down, not two.
+          ( cd "$imgdir" && zip -r -X "$GITHUB_WORKSPACE/$bundle" . )
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          ls -l "$bundle"
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          # Per-OS-unique artifact name (v4 requires it); the zip inside carries
+          # the versioned bundle name.
+          name: openhc-${{ matrix.board }}
+          path: ${{ steps.bundle.outputs.bundle }}
+          retention-days: 14
+          if-no-files-found: error
+
+      # Carry-forward store (main only). A newer push to main cancels the older
+      # run (see `concurrency`), and `select` then rebuilds only the boards THIS
+      # push changed — so without this, the boards the cancelled run had already
+      # built would vanish from the newest run's output. Each successful main
+      # build parks its bundle in a per-board cache under a stable `carry/` dir;
+      # the `images-carry-forward` job below republishes it for any board the
+      # newest run did not rebuild, so main always has a complete, current set.
+      - name: Persist this board's image for carry-forward (main)
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p carry
+          cp "${{ steps.bundle.outputs.bundle }}" carry/
+      - name: Save carry-forward image (main)
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: carry
+          key: img-main-${{ matrix.board }}-${{ github.run_id }}
+
+      # Drop only what is genuinely rebuilt. That is a shorter list than it
+      # looks:
+      #
+      #   build/linux-*  yes — build.sh runs linux-dirclean every time, so the
+      #                  kernel is re-extracted, re-patched and re-injected with
+      #                  our drivers on every build regardless.
+      #   images/        yes — pure output, and already uploaded above.
+      #   target/        NO. This looked regenerable and is not: packages
+      #                  install INTO it, and their stamps say "installed", so a
+      #                  restored tree without it never refills it and the build
+      #                  dies at target-finalize with
+      #                  "sed: can't read .../target/etc/hosts".
+      #   staging/       NO, for the same reason.
+      - name: Trim the output tree before caching
+        if: always()
+        run: |
+          O=output/build/${{ matrix.board }}
+          [ -d "$O" ] || exit 0
+          rm -rf "$O"/build/linux-* "$O"/images
+          echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
+
+      - name: Save Buildroot output tree
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: output/build/${{ matrix.board }}
+          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+
+      # Save the shared EA ccache on always(): even a failed build compiled
+      # objects worth keeping for the next run, and a typo deep in WebKit should
+      # not cost that work. ccache caps itself (--max-size in the defconfig), so
+      # this never grows without bound.
+      - name: Save the EA family ccache
+        if: always() && startsWith(matrix.board, 'ea')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+
+      # On a release, attach the bundle so the flasher can pull the latest image
+      # for a board straight from the release.
+      - name: Attach to release
+        if: success() && github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.bundle.outputs.bundle }}" --clobber
+
+      # A build that fails deep in a package leaves the reason in Buildroot's
+      # log, not in the step output, and without this you re-run the whole
+      # thing blind just to read it.
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ matrix.board }}
+          path: |
+            output/build/*/build/*/config.log
+            output/build/${{ matrix.board }}/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Republish the latest image for every board the newest main run did NOT
+  # rebuild, pulled from the per-board carry-forward cache the build job fills.
+  # This is what lets a newer push to main cancel the older run (see
+  # `concurrency`) without the boards that run had already built dropping out:
+  # main ends every run with a complete, current image set.
+  #
+  # Best-effort, and deliberately NOT in ci-ok's needs: a cold cache (no prior
+  # image for a board yet) just means nothing to carry, never a failed check.
+  images-carry-forward:
+    needs: [select, images-build]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same fleet as select's ALL; a board added there is added here.
+        board: [ea1-v1, ea1-v2, ea1-v2-poe, ea3-v1, ea3-v2, ioxv1, ca1, hc800]
+    steps:
+      # A board this run built already uploaded openhc-<board>; re-uploading the
+      # same artifact name would collide, so carry forward only the rest.
+      - name: Did this run build ${{ matrix.board }}?
+        id: built
+        run: echo "built=${{ contains(fromJSON(needs.select.outputs.boards), matrix.board) }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore last main image for ${{ matrix.board }}
+        if: steps.built.outputs.built == 'false'
+        uses: actions/cache/restore@v4
+        with:
+          path: carry
+          # No per-run key can match an earlier run, so this is a deliberate
+          # miss; restore-keys is what pulls the newest img-main-<board>- entry
+          # saved by whichever past run last built this board.
+          key: img-main-${{ matrix.board }}-none
+          restore-keys: |
+            img-main-${{ matrix.board }}-
+
+      - name: Republish carried-forward image for ${{ matrix.board }}
+        if: steps.built.outputs.built == 'false' && hashFiles('carry/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhc-${{ matrix.board }}
+          path: carry/*
+          retention-days: 14
+          if-no-files-found: error
+
+  # ===========================================================================
+  # DAEMONS  (was daemons.yml — push/PR when packages change, or dispatch)
+  # ===========================================================================
+  daemons-build:
+    needs: changes
+    # push/PR only when the daemon sources changed; always on dispatch. Never on
+    # release or schedule — daemons.yml never triggered on those.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.daemons == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: hc800
+            target: x86_64-unknown-linux-musl
+            # ring (iod's TLS, for the MQTT bridge) compiles a few C shims, so
+            # each target needs a C compiler even though rust-lld does the
+            # linking. Nothing else in the workspace needs one.
+            cc: musl-gcc
+            apt: musl-tools
+          # A real board directory (build.sh resolves its features from it);
+          # every EA variant ships the same crates (ea/common's features).
+          - board: ea1-v2
+            target: i686-unknown-linux-musl
+            cc: i686-linux-gnu-gcc
+            # libc6-dev-*-cross carries the target's headers. Without it the
+            # cross gcc falls back to /usr/include and dies on a missing
+            # bits/libc-header-start.h — and --no-install-recommends below is
+            # exactly what stops apt pulling it in on its own.
+            apt: gcc-i686-linux-gnu libc6-dev-i386-cross
+          - board: ca1
+            target: armv7-unknown-linux-musleabihf
+            cc: arm-linux-gnueabihf-gcc
+            apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+          # The IO Extender, and the ONLY ARMv5 target in the fleet. It was
+          # missing here, and that omission cost a whole image build to find
+          # something this job would have caught in three minutes: iod used
+          # std::sync::atomic::AtomicU64, which does not exist on a CPU with no
+          # 64-bit atomics. armv5te is soft-float (musleabi, not the CA-1's
+          # musleabihf) because the ARM926EJ-S has no FPU.
+          - board: ioxv1
+            target: armv5te-unknown-linux-musleabi
+            cc: arm-linux-gnueabi-gcc
+            apt: gcc-arm-linux-gnueabi libc6-dev-armel-cross
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the target's std and a C compiler for it
+        run: |
+          rustup target add ${{ matrix.target }}
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+          rustc --version && cargo --version
+          ${{ matrix.cc }} --version | head -1
+
+      # ring's build.rs reads CC_<target>. Setting it here rather than in
+      # .cargo/config.toml keeps the local Mac build (host-only, no cross C)
+      # working unchanged.
+      - name: Point ring at that compiler
+        run: |
+          # Only the TARGET is underscored — piping the whole line through tr
+          # would rewrite the compiler name too (musl-gcc -> musl_gcc).
+          echo "CC_$(echo '${{ matrix.target }}' | tr '-' '_')=${{ matrix.cc }}" >> "$GITHUB_ENV"
+
+      # Only what this board ships: packages/build.sh resolves the board's
+      # features to crates (core + each feature's `packages` file), the same
+      # list the image build stages. So a feature's daemon is compiled only for
+      # the boards that have the feature — the IO Extender (ARMv5, no 64-bit
+      # atomics) is not held to code it never runs, like ohc-storaged.
+      - name: Which crates ${{ matrix.board }} ships
+        run: |
+          crates=$(bash packages/build.sh ${{ matrix.board }} --crates)
+          bins=$(bash packages/build.sh ${{ matrix.board }} --bins)
+          echo "crates: $crates"; echo "bins: $bins"
+          echo "CRATES=$crates" >> "$GITHUB_ENV"
+          echo "BINS=$bins" >> "$GITHUB_ENV"
+          # `-p` flags for everything but webd (built after the UI, below).
+          echo "CARGO_PKGS=$(for c in $crates; do [ "$c" = webd ] || printf -- ' -p %s' "$c"; done)" >> "$GITHUB_ENV"
+
+      # Rust first, WITHOUT webd. webd's build.rs embeds ui/dist, so building it
+      # before the UI exists would produce a binary that silently serves the
+      # fallback page — and a Rust error would be buried under a frontend build.
+      # Checking the rest first keeps the two failures separable.
+      - name: cargo check — this board's crates but webd, for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo check --target ${{ matrix.target }} $CARGO_PKGS
+
+      # Host-target, once. The unit tests cover pure logic — base64 framing for
+      # serial payloads, event-topic filtering, state-delta suppression — none
+      # of which is target-specific, so running them three times proves nothing.
+      - name: cargo test
+        if: matrix.board == 'hc800'
+        working-directory: packages
+        run: cargo test -p iod
+
+      # portal too — it is in the artifact, and `cargo check` would not have
+      # produced a binary for it. The portal binary now lives in the `wifi`
+      # crate (merged with the shared Wi-Fi lib), so build that crate to get it.
+      - name: Build this board's daemons for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo build --release $CARGO_PKGS --target ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/webd/ui/package-lock.json
+
+      # MUST precede cargo: build.rs reads ui/dist at compile time, and an
+      # absent dist is not an error there — it is a binary with no UI in it.
+      - name: Build the config GUI
+        working-directory: packages/webd/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          test -f dist/index.html || { echo "UI build produced no index.html"; exit 1; }
+          du -sh dist
+
+      - name: Build webd for ${{ matrix.board }}
+        working-directory: packages
+        run: cargo build --release -p webd --target ${{ matrix.target }}
+
+      - name: Confirm the UI really got embedded
+        working-directory: packages
+        run: |
+          f=target/${{ matrix.target }}/release/webd
+          ls -l "$f"
+          # The fallback page ships in every build; the real UI does not. If the
+          # binary has no asset table entry for index.html, build.rs saw no dist.
+          if ! strings "$f" | grep -q "index.html"; then
+            echo "webd has no embedded index.html — build.rs did not see ui/dist"; exit 1
+          fi
+          echo "OK: UI embedded"
+
+      - name: What did we get?
+        working-directory: packages
+        run: |
+          f=target/${{ matrix.target }}/release/iod
+          ls -l "$f"
+          file "$f"
+          # Static musl: it has to run on a rootfs that may have no loader at
+          # all beyond busybox, so a NEEDED entry here is a bug, not a detail.
+          if command -v readelf >/dev/null && readelf -d "$f" 2>/dev/null | grep -q NEEDED; then
+            echo "iod is dynamically linked — expected a static musl binary"; exit 1
+          fi
+          echo "OK: static"
+
+      # Exactly the binaries this board ships; a missing one fails here.
+      - name: Collect ${{ matrix.board }}'s binaries
+        run: |
+          mkdir -p out
+          for b in $BINS; do cp "packages/target/${{ matrix.target }}/release/$b" out/; done
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daemons-${{ matrix.board }}
+          path: out/*
+          retention-days: 14
+          if-no-files-found: error
+
+  # ===========================================================================
+  # FLASHER  (was flasher.yml — push/PR when flasher changes, or dispatch/release)
+  # ===========================================================================
+  flasher-build:
+    needs: changes
+    # push/PR only when flasher sources changed; always on dispatch and release.
+    if: >-
+      github.event_name == 'workflow_dispatch' || github.event_name == 'release' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.flasher == 'true')
+    name: flasher (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write   # gh attaches assets to a release
+    defaults:
+      run:
+        # bash on every runner (Git Bash on Windows) so the naming logic is one
+        # script, not one per shell.
+        shell: bash
+        working-directory: flasher
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            ext: ""
+          - os: windows-latest
+            name: windows
+            ext: ".exe"
+          - os: macos-latest
+            name: macos
+            ext: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # eframe/egui (winit + glow) needs the xcb/xkb/wayland libs to link on
+      # Linux. rfd 0.17 defaults to the XDG desktop portal (pure-Rust D-Bus, no
+      # GTK), so its file dialog needs no extra system package here. macOS and
+      # Windows link frameworks already present on the runners.
+      - name: Linux build deps
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libwayland-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both Apple targets so the macOS build can be a universal binary that
+          # runs on Intel and Apple Silicon from one file.
+          targets: ${{ matrix.name == 'macos' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: flasher
+
+      # Version first, so the binary can bake it in (option_env!("OHC_VERSION"))
+      # and know whether it is itself up to date against the latest release: the
+      # release tag on a release, else <short-sha>-dev.
+      - name: Compute version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            v="${{ github.event.release.tag_name }}"
+          else
+            v="$(git rev-parse --short HEAD)-dev"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "flasher version: $v"
+
+      # RUN THE TESTS ON EVERY PLATFORM, and Windows is the reason.
+      #
+      # The discovery layer shells out to `arp`, `ping` and `ifconfig`, and all
+      # three are spelled differently on Windows — different flags, and MACs
+      # printed with dashes instead of colons. Getting that wrong does not fail
+      # to compile, it produces an empty scan that looks exactly like a quiet
+      # network, which is precisely how it shipped broken. The parsers are pure
+      # and have fixtures of real output from each platform; running them HERE,
+      # on a Windows runner, is the only thing that actually proves the Windows
+      # path works. A build-only job never could.
+      - name: Test
+        run: cargo test --workspace
+
+      # macOS: build each arch and lipo them into one universal binary.
+      - name: Build (macOS universal)
+        if: matrix.name == 'macos'
+        env:
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cargo build --release -p ohc-flash-gui --target x86_64-apple-darwin
+          cargo build --release -p ohc-flash-gui --target aarch64-apple-darwin
+          lipo -create -output ohc-flasher \
+            target/x86_64-apple-darwin/release/ohc-flasher \
+            target/aarch64-apple-darwin/release/ohc-flasher
+          lipo -info ohc-flasher
+
+      - name: Build
+        if: matrix.name != 'macos'
+        env:
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cargo build --release -p ohc-flash-gui
+          cp "target/release/ohc-flasher${{ matrix.ext }}" "ohc-flasher${{ matrix.ext }}"
+
+      # The CLI, which was never built here at all — while the README told
+      # people to download `ohc-flash` from a release and run it. Same workspace,
+      # same engine; it is a second binary because a GUI cannot be piped into
+      # anything.
+      - name: Build the CLI
+        env:
+          OHC_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cargo build --release -p ohc-flash-cli
+          cli="ohc-flash-${{ steps.ver.outputs.version }}-${{ matrix.name }}${{ matrix.ext }}"
+          cp "target/release/ohc-flash${{ matrix.ext }}" "$cli"
+          echo "CLI_ASSET=$cli" >> "$GITHUB_ENV"
+
+      # macOS ships as a zipped .app bundle: it gives the binary its Finder/Dock
+      # icon and a normal double-click launch (a bare Unix binary can carry
+      # neither). The self-updater knows to pull Contents/MacOS/ back out of this
+      # zip. __VERSION__ in the plist is filled from the same version string.
+      - name: Package .app (macOS)
+        if: matrix.name == 'macos'
+        run: |
+          app="ohc-flasher.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp ohc-flasher "$app/Contents/MacOS/ohc-flasher"
+          chmod +x "$app/Contents/MacOS/ohc-flasher"
+          cp crates/gui/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+          sed "s/__VERSION__/${{ steps.ver.outputs.version }}/g" \
+            crates/gui/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          asset="ohc-flasher-${{ steps.ver.outputs.version }}-macos.zip"
+          # -X drops extra macOS attributes so no __MACOSX/._ junk lands in the zip.
+          zip -r -X "$asset" "$app"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Name the binary
+        if: matrix.name != 'macos'
+        run: |
+          asset="ohc-flasher-${{ steps.ver.outputs.version }}-${{ matrix.name }}${{ matrix.ext }}"
+          mv "ohc-flasher${{ matrix.ext }}" "$asset"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      # Always available as a workflow artifact. The artifact name is per-OS (v4
+      # requires unique names); the file inside carries the <version> in its name.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohc-flasher-${{ matrix.name }}
+          path: |
+            flasher/${{ env.ASSET }}
+            flasher/${{ env.CLI_ASSET }}
+          if-no-files-found: error
+
+      # On a release, attach the binary/bundle to it.
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${{ env.ASSET }}" "${{ env.CLI_ASSET }}" --clobber
+
+  # ===========================================================================
+  # IO-MCU  (was io-mcu.yml — push/PR when the firmware changes, or dispatch)
+  # ===========================================================================
+  iomcu-build:
+    needs: changes
+    # push/PR only when the io-mcu firmware changed; always on dispatch. Never
+    # on release or schedule — io-mcu.yml never triggered on those.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.iomcu == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The EA tree emits a bare .bin; the HC-800 tree wraps it in
+          # Control4's container, so it gets the `image` target and a CRC check.
+          - name: tm4c1231d5-ea1
+            dir: board/ea/common/firmware/io-mcu/tm4c1231d5
+            target: fw
+            args: BOARD=ea1
+          - name: tm4c1231d5-ea3
+            dir: board/ea/common/firmware/io-mcu/tm4c1231d5
+            target: fw
+            args: BOARD=ea3
+          - name: lm3s1162-hc800
+            dir: board/hc800/firmware/io-mcu/lm3s1162
+            target: image
+            args: BOARD=hc800
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # libnewlib-arm-none-eabi is NOT optional, despite -nostdlib.
+      #
+      # We link -nostdlib and supply our own libc_min.c, so no newlib *library*
+      # is used — but both ohc_proto.c and main.c #include <string.h>, and the
+      # HEADERS live in libnewlib, which Ubuntu splits out of gcc-arm-none-eabi
+      # and lists only as a recommend. With --no-install-recommends every job
+      # died identically:
+      #
+      #     src/main.c:28:10: fatal error: string.h: No such file or directory
+      #
+      # This does not reproduce on the maintainer's Mac, where the
+      # gcc-arm-embedded cask bundles the headers with the compiler — which is
+      # exactly the class of difference this workflow exists to catch.
+      - name: Install the cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi
+          arm-none-eabi-gcc --version | head -1
+          # Ask the COMPILER whether it can find the header, rather than
+          # guessing where the header lives. -print-file-name=include returns
+          # GCC's own include dir (stddef.h, stdint.h), which never contains
+          # string.h — newlib's is elsewhere, and hardcoding that path is how
+          # this check failed the first time while the toolchain was fine.
+          echo '#include <string.h>' \
+            | arm-none-eabi-gcc -ffreestanding -E -xc - > /dev/null \
+            || { echo 'bare-metal string.h not found — is libnewlib installed?'; exit 1; }
+          echo "string.h resolves OK"
+
+      - name: Build ${{ matrix.name }}
+        run: make -C ${{ matrix.dir }} ${{ matrix.target }} ${{ matrix.args }}
+
+      # `make size` (invoked by the build) already refuses to call an image
+      # flashable if the vector table is wrong. This re-checks the container's
+      # CRC independently for the boards that build one, because a good ELF
+      # inside a mis-wrapped container is still a brick.
+      - name: Verify the flashable container
+        if: matrix.target == 'image'
+        run: make -C ${{ matrix.dir }} verify
+
+      # Prove the packer against Control4's OWN image, not just our own output:
+      # if mkimage.py stops reproducing the stock image's CRC, the container
+      # format has drifted and anything we flash is suspect.
+      #
+      # The stock image is NOT in this repository — it is proprietary firmware
+      # and redistributing it is not ours to do. So this check runs only for
+      # somebody who has pulled it off their own unit, and is skipped in CI
+      # rather than pretending to have verified something it could not see.
+      - name: Check the packer still reproduces the STOCK image's CRC
+        if: matrix.name == 'lm3s1162-hc800'
+        run: |
+          stock=board/hc800/firmware/io-mcu/lm3s1162/vendor/700-00165_LM3S1162_IoProcMultiConfig1162_03.26.15_2.8.0.507079-fw.bin
+          if [ -f "$stock" ]; then
+            python3 board/hc800/firmware/io-mcu/lm3s1162/tools/mkimage.py --verify "$stock"
+          else
+            echo "stock image not present (it is not redistributable) — skipping"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: io-mcu-${{ matrix.name }}
+          path: |
+            ${{ matrix.dir }}/build/*/io-mcu.elf
+            ${{ matrix.dir }}/build/*/io-mcu.bin
+            ${{ matrix.dir }}/build/*/io-mcu-fw.bin
+            ${{ matrix.dir }}/build/*/io-mcu.map
+          retention-days: 14
+          if-no-files-found: error
+
+  # ===========================================================================
+  # DOCS  (was docs.yml — build on push/PR when site changes or dispatch;
+  #        deploy to Pages on main push only)
+  # ===========================================================================
+  docs-build:
+    needs: changes
+    # push/PR only when the site changed; always on dispatch. Never on release
+    # or schedule — docs.yml never triggered on those.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.docs == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      # `npm ci` rather than `npm install`: the lockfile is committed, and a
+      # docs build should never silently pick up a different Starlight.
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Only the default branch publishes. On a pull request the build above is
+      # the whole point — it catches a broken link or a bad frontmatter schema
+      # before it reaches main.
+      - name: Upload artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  docs-deploy:
+    needs: docs-build
+    # Only a successful main-push build deploys; a skipped build (site unchanged)
+    # or a PR build never does.
+    if: needs.docs-build.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # ===========================================================================
+  # TOOLS  (was tools.yml — static i686 kexec for the VENDOR userspace;
+  #         push/PR when the workflow changes, or dispatch)
+  # ===========================================================================
+  tools-build:
+    needs: changes
+    # tools.yml's own pull_request trigger was path-filtered to the workflow
+    # file, so it ran on push/PR only when that file changed, plus dispatch.
+    # Here that file is ci.yml (see the `tools` filter). Never release/schedule.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.tools == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # kernel.org release. Pinned: this produces a binary someone will run as
+      # root on hardware with no recovery console, so "whatever is newest today"
+      # is not an acceptable input.
+      KEXEC_VERSION: "2.0.31"
+    steps:
+      - uses: actions/checkout@v4
+
+      # 32-bit, and STATIC. The target is Control4's OS 3.x userspace: i686
+      # glibc from 2015-ish, whose shared libraries we neither have nor want to
+      # match. A static binary removes the entire question.
+      - name: Install a 32-bit toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-multilib libc6-dev-i386 wget xz-utils
+          echo 'int main(void){return 0;}' > /tmp/t.c
+          gcc -m32 -static -o /tmp/t /tmp/t.c
+          file /tmp/t | grep -q "Intel 80386" \
+            || { echo "toolchain is not producing i386 binaries"; exit 1; }
+          echo "32-bit static toolchain OK"
+
+      - name: Fetch kexec-tools
+        run: |
+          set -e
+          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
+
+      # --host is what selects kexec's i386 architecture support. Building it
+      # x86_64 and passing -m32 would compile the wrong loader set.
+      - name: Build static i686 kexec
+        run: |
+          set -e
+          cd "kexec-tools-${KEXEC_VERSION}"
+          ./configure \
+            --host=i686-pc-linux-gnu \
+            --build=x86_64-pc-linux-gnu \
+            CC="gcc -m32" \
+            LDFLAGS="-static" \
+            --without-zlib --without-lzma --without-xen
+          make -j"$(nproc)"
+          cp build/sbin/kexec ../kexec-i686-static || cp build/sbin/kexec.static ../kexec-i686-static
+
+      - name: Verify it is what we claim
+        run: |
+          set -e
+          file kexec-i686-static
+          file kexec-i686-static | grep -q "ELF 32-bit.*Intel 80386" \
+            || { echo "not a 32-bit x86 binary"; exit 1; }
+          file kexec-i686-static | grep -q "statically linked" \
+            || { echo "NOT STATIC — it would need the vendor's glibc"; exit 1; }
+          # A dynamic section would mean a runtime dependency we cannot satisfy.
+          if readelf -d kexec-i686-static 2>/dev/null | grep -q NEEDED; then
+            echo "binary has NEEDED entries — not truly static"; exit 1
+          fi
+          ls -l kexec-i686-static
+          echo "OK: static i386, no shared-library dependencies"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kexec-i686-static
+          path: kexec-i686-static
+          retention-days: 30
+          if-no-files-found: error
+
+  # ===========================================================================
+  # THE ONE REQUIRED CHECK.
+  # ===========================================================================
+  # Replaces the five per-workflow *-ok checks with a single honest aggregate.
+  # `if: always()` so it ALWAYS reports (that is what keeps branch protection
+  # from deadlocking on an unrelated PR); it passes when every component it
+  # needs either passed or was skipped as irrelevant, and FAILS if any of them
+  # failed or was cancelled. It is NOT an always-green sentinel.
+  #
+  # `needs` lists every GATE and BUILD job. It deliberately OMITS
+  # images-carry-forward (best-effort, main-only; a cold cache is not a failure)
+  # and docs-deploy (main-only Pages publish; its failure is visible on its own
+  # but, like the old docs-ok, does not gate) — matching exactly what the old
+  # per-workflow *-ok jobs did and did not depend on.
+  ci-ok:
+    name: ci-ok
+    needs:
+      - changes
+      - select
+      - images-build
+      - daemons-build
+      - flasher-build
+      - iomcu-build
+      - docs-build
+      - tools-build
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Everything needed passed
+        run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
