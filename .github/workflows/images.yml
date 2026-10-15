@@ -279,8 +279,16 @@ jobs:
           set -e
           # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
           # OHC_VERSION is exported here so Buildroot's post-build hook stamps it.
+          #
+          # Its own deadline, 20 minutes inside the job's 350: a build that
+          # runs out of time must FAIL, not be cancelled — a failed build's
+          # tree is cached and the next run resumes from it, a cancelled one is
+          # not (see "Save Buildroot output tree"), so a first build longer than
+          # one job (LLVM + WebKit from scratch) would otherwise restart from
+          # zero every time. SIGINT lets make remove the half-built target.
           BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
-            OHC_VERSION="${{ steps.ver.outputs.version }}" bash ./build/build.sh
+            OHC_VERSION="${{ steps.ver.outputs.version }}" \
+            timeout --signal=INT --kill-after=2m 325m bash ./build/build.sh
 
       # The HC-800's first install starts openHC from the RUNNING Control4 image
       # with kexec (writes nothing). Control4 never shipped the userspace tool,
