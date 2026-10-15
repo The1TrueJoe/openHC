@@ -271,15 +271,45 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "openHC version: $v"
 
+      # Bake the on-panel WPE/SGX sysroot into EA images. These are i386 trees (the
+      # only SGX545 DDK is 32-bit) built by sgx-wpe.yml / sgx-gpu.yml and harvested
+      # as tarballs — Buildroot cannot multilib an i386 WebKit into this x86_64
+      # image, so post-build.sh extracts them into /opt. Absent (no successful build
+      # yet, or the 14-day artifact expired) => the image ships WITHOUT the on-panel
+      # browser, a clean no-op (S95ohc-display then stays off), so this never fails
+      # the build. Non-EA boards skip it entirely.
+      - name: Fetch the on-panel WPE/SGX sysroot (EA)
+        id: sgxsr
+        if: startsWith(matrix.board, 'ea')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grab() {  # $1=workflow  $2=artifact  $3=GITHUB_OUTPUT var
+            run=$(gh run list --workflow="$1" --branch "${{ github.ref_name }}" \
+                    --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+            [ -n "$run" ] || { echo ">> no successful $1 run — $2 will be absent"; return 0; }
+            d="$HOME/sgxsr/$2"; rm -rf "$d"; mkdir -p "$d"
+            gh run download "$run" -n "$2" -D "$d" 2>/dev/null \
+              || { echo ">> $2 artifact gone from run $run (expired?) — absent"; return 0; }
+            f=$(find "$d" -name '*.tar.gz' | head -1)
+            [ -n "$f" ] && { echo "$3=$f" >> "$GITHUB_OUTPUT"; echo ">> $2 -> $f ($(du -h "$f" | cut -f1))"; }
+          }
+          grab sgx-wpe.yml wpe-i386-sysroot wpe
+          grab sgx-gpu.yml sgx-i386-sysroot i386
+
       - name: Build ${{ matrix.board }}
         env:
           BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
           BOARD: ${{ matrix.board }}
           OHC_VERSION: ${{ steps.ver.outputs.version }}
+          # Consumed by board/common/post-build.sh (empty on non-EA / when absent).
+          OHC_SGX_WPE_SYSROOT: ${{ steps.sgxsr.outputs.wpe }}
+          OHC_SGX_I386_SYSROOT: ${{ steps.sgxsr.outputs.i386 }}
         run: |
           set -e
           # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
-          # OHC_VERSION is exported here so Buildroot's post-build hook stamps it.
+          # OHC_VERSION is exported here so Buildroot's post-build hook stamps it;
+          # OHC_SGX_*_SYSROOT (step env above) reach post-build the same way.
           BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
             OHC_VERSION="${{ steps.ver.outputs.version }}" bash ./build/build.sh
 
