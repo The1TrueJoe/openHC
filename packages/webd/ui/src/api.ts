@@ -395,6 +395,8 @@ export interface FanStatus {
 export interface DisplayCfg {
   enabled: boolean;
   url: string;
+  /** Day/night for the on-panel view: follow the page ('auto'), or force it. */
+  theme: 'auto' | 'light' | 'dark';
 }
 
 export const rest = {
@@ -405,7 +407,7 @@ export const rest = {
   /** Turn the on-panel view on/off and set its URL; webd applies it immediately
    *  (restarts the display service) and persists it for the next boot. */
   setDisplay: (d: DisplayCfg) =>
-    j<{ enabled: boolean; url: string; applied: boolean }>(`${location.origin}/api/display`, {
+    j<{ enabled: boolean; url: string; theme: DisplayCfg['theme']; applied: boolean }>(`${location.origin}/api/display`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(d),

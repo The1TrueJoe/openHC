@@ -150,9 +150,17 @@ struct Display {
     enabled: bool,
     /// Page the view loads; defaults to this controller's own dashboard.
     url: String,
+    /// Day/night for the on-panel view: "auto" (follow the page's own preference),
+    /// "light" or "dark". The panel has no OS light/dark signal, so this forces it;
+    /// passed to the dashboard as ?theme= (the UI keys off it).
+    #[serde(default = "default_theme")]
+    theme: String,
 }
+fn default_theme() -> String { "auto".into() }
 impl Default for Display {
-    fn default() -> Self { Self { enabled: false, url: "http://localhost/".into() } }
+    fn default() -> Self {
+        Self { enabled: false, url: "http://localhost/".into(), theme: default_theme() }
+    }
 }
 
 /// display.conf sits next to board.env (that path is overridable for tests).
@@ -171,6 +179,7 @@ fn read_display(cfg: &Config) -> Display {
             match k.trim() {
                 "OHC_DISPLAY_ENABLE" => d.enabled = v == "1",
                 "OHC_DISPLAY_URL" if !v.is_empty() => d.url = v.to_string(),
+                "OHC_DISPLAY_THEME" if !v.is_empty() => d.theme = v.to_string(),
                 _ => {}
             }
         }
@@ -198,10 +207,13 @@ async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Re
         return err(StatusCode::BAD_REQUEST, "url must start with http:// or https://");
     }
     let url = if url.is_empty() { "http://localhost/" } else { url };
+    let theme = match d.theme.trim() {
+        "light" => "light", "dark" => "dark", _ => "auto",
+    };
     let body = format!(
         "# written by webd POST /api/display — the on-panel web view\n\
-         OHC_DISPLAY_ENABLE={}\nOHC_DISPLAY_URL={}\n",
-        if d.enabled { 1 } else { 0 }, url);
+         OHC_DISPLAY_ENABLE={}\nOHC_DISPLAY_URL={}\nOHC_DISPLAY_THEME={}\n",
+        if d.enabled { 1 } else { 0 }, url, theme);
     let path = display_conf(&c);
     if let Err(e) = std::fs::write(&path, body) {
         return err(StatusCode::INTERNAL_SERVER_ERROR,
@@ -213,7 +225,7 @@ async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Re
     let svc = "/etc/init.d/S95ohc-display";
     let applied = std::path::Path::new(svc).exists()
         && std::process::Command::new(svc).arg("restart").spawn().is_ok();
-    Json(serde_json::json!({ "enabled": d.enabled, "url": url, "applied": applied }))
+    Json(serde_json::json!({ "enabled": d.enabled, "url": url, "theme": theme, "applied": applied }))
         .into_response()
 }
 

@@ -185,7 +185,7 @@ function DisplaySection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    rest.display().then(setCfg).catch(() => setCfg({ enabled: false, url: 'http://localhost/' }));
+    rest.display().then(setCfg).catch(() => setCfg({ enabled: false, url: 'http://localhost/', theme: 'auto' }));
   }, []);
 
   if (!cfg) return null;
@@ -195,7 +195,7 @@ function DisplaySection() {
     setNote(null);
     try {
       const r = await rest.setDisplay(next);
-      setCfg({ enabled: r.enabled, url: r.url });
+      setCfg({ enabled: r.enabled, url: r.url, theme: r.theme });
       setNote({
         ok: true,
         text: r.enabled
@@ -230,6 +230,22 @@ function DisplaySection() {
               placeholder="http://localhost/"
               onChange={(v) => setCfg({ ...cfg, url: v })}
             />
+          </Field>
+          <Field label="Day / night" hint="The panel has no light/dark sensor. Auto follows the page's own preference; Light and Dark force it.">
+            <div className="flex gap-1.5">
+              {(['auto', 'light', 'dark'] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => apply({ ...cfg, theme: t })}
+                  disabled={saving}
+                  className={`rounded-lg px-3 py-1.5 text-xs capitalize transition disabled:opacity-50 ${
+                    cfg.theme === t ? 'bg-accent/30 text-ink' : 'shade text-muted hover:bg-accent/20'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           </Field>
           <button
             onClick={() => apply(cfg)}
