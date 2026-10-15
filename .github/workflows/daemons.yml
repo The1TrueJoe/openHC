@@ -15,7 +15,12 @@
 name: daemons
 
 on:
+  # Scoped to main: a push to a feature branch is already covered by the
+  # pull_request event below, and firing on both doubled every PR's runs (one
+  # push run + one PR run for the same commit). images.yml and docs.yml are
+  # scoped this way for the same reason.
   push:
+    branches: [main]
     paths:
       - 'packages/**'
       - 'flasher/crates/core/**'   # ohc-restore links the flasher's core crate
