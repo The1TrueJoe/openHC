@@ -61,10 +61,17 @@ start() {
 
 stop() {
 	[ -f "$PIDF" ] && kill "$(cat "$PIDF")" 2>/dev/null
-	# webview spawns the WPE Web/Network processes; sweep the whole set.
-	pkill -f "$R/usr/bin/webview"   2>/dev/null
-	pkill -f WPEWebProcess          2>/dev/null
-	pkill -f WPENetworkProcess      2>/dev/null
+	# webview spawns the WPE Web/Network processes; sweep the whole set. BusyBox
+	# has killall but NOT pkill, so match by applet name (killall) with a `ps`
+	# fallback for anything it missed — using pkill here silently left the old
+	# view running, so a restart raced two webviews over /dev/fb0.
+	for n in webview WPEWebProcess WPENetworkProcess; do
+		killall -q "$n" 2>/dev/null || true
+	done
+	for p in $(ps 2>/dev/null | grep -E 'webview|WPEWebProcess|WPENetworkProcess' \
+	           | grep -v grep | awk '{print $1}'); do
+		kill -9 "$p" 2>/dev/null || true
+	done
 	rm -f "$PIDF"
 	# NOTE: the splash is NOT redrawn here — fb0 keeps whatever was last presented
 	# until something overdraws it. A caller that wants the splash back can run
