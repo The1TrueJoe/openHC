@@ -109,10 +109,32 @@ impl App {
             for i in inst.iter().filter(|i| i.kind == "airplay") {
                 if self.readers.lock().unwrap().insert(i.tag.clone()) {
                     let app = self.clone();
-                    meta::read_shairport(i.tag.clone(), move || app.changed.notify_one());
+                    let begun = (self.clone(), i.tag.clone());
+                    meta::read_shairport(
+                        i.tag.clone(),
+                        move || app.changed.notify_one(),
+                        move || begun.0.airplay_session_began(&begun.1),
+                    );
                 }
             }
         }
+    }
+
+    /// A sender connected to the AirPlay endpoint `tag`. Apple senders impose
+    /// the volume they remember for a speaker as the session starts, so the
+    /// output would jump to whatever the phone last had. The output keeps its
+    /// level instead: note it now, before the sender's volume lands, and send
+    /// it back once the session is up — the sender's slider moves to it.
+    fn airplay_session_began(self: &Arc<Self>, tag: &str) {
+        let output = self.instances.lock().unwrap().iter().find(|i| i.tag == tag).and_then(|i| i.output.clone());
+        let Some(output) = output else { return };
+        let level = self.levels.lock().unwrap().get(&output).copied().unwrap_or(levels::DEFAULT);
+        let (app, tag) = (self.clone(), tag.to_string());
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let pid = app.instances.lock().unwrap().iter().find(|i| i.tag == tag).map(|i| i.pid()).unwrap_or(0);
+            airplay::set_sender_volume(pid, level);
+        });
     }
 
     fn set_tone(&self, id: &str, knob: &str, v: i32) -> Result<(), String> {
@@ -145,7 +167,7 @@ impl App {
             match i.kind {
                 "spotify" => i.poke(),
                 "airplay" => {
-                    airplay::set_sender_volume(i.pid(), levels::airplay_volume(percent));
+                    airplay::set_sender_volume(i.pid(), percent);
                     airplay::set_start_volume(i.pid(), levels::airplay_volume(percent));
                 }
                 _ => {}

@@ -220,7 +220,9 @@ pub fn fifo(tag: &str) -> PathBuf {
 
 /// Read one AirPlay endpoint's metadata FIFO forever, keeping its file up to
 /// date and calling `changed` after each change.
-pub fn read_shairport(tag: String, changed: impl Fn() + Send + 'static) {
+/// `on_begin` is called when a sender connects (`ssnc/abeg`, the session going
+/// active) — before it has played anything.
+pub fn read_shairport(tag: String, changed: impl Fn() + Send + 'static, on_begin: impl Fn() + Send + 'static) {
     std::thread::spawn(move || {
         let pipe = fifo(&tag);
         let mut meta: Option<Meta> = None;
@@ -254,6 +256,9 @@ pub fn read_shairport(tag: String, changed: impl Fn() + Send + 'static) {
                     }
                 }
                 let Some(it) = parse_item(&String::from_utf8_lossy(&block)) else { continue };
+                if it.kind == "ssnc" && it.code == "abeg" {
+                    on_begin();
+                }
                 let had_cover = cover.is_some();
                 if apply_shairport(&mut meta, &it, &mut cover, &mut ver, &tag) {
                     if let Some(c) = &cover {

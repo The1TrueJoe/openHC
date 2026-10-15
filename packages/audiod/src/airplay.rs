@@ -52,20 +52,32 @@ fn parse_uint32(reply: &str) -> Option<u32> {
     reply.split_whitespace().skip_while(|w| *w != "uint32").nth(1)?.parse().ok()
 }
 
-/// Ask the sender playing to this shairport-sync to set its volume. Runs off
-/// the caller's thread: the D-Bus round trips and DACP can take a moment.
-pub fn set_sender_volume(pid: u32, volume: f64) {
+/// Ask the sender playing to this shairport-sync to set its volume to
+/// `percent` (openHC's level; on the shared curve that is also the sender's
+/// slider position). Two channels, because the sessions differ:
+///   * AirPlay 2: `AdvancedRemoteControl.SetVolume(percent)` — a `dvlc`
+///     command over the session's event channel. AirPlay 2 senders open no
+///     DACP server, so the classic call reaches nothing for them.
+///   * classic AirPlay: `RemoteControl.SetAirplayVolume(-30 … 0)` over DACP.
+///
+/// Whichever has no session does nothing. Runs off the caller's thread.
+pub fn set_sender_volume(pid: u32, percent: u8) {
     if pid == 0 {
         return;
     }
     std::thread::spawn(move || {
         let dest = format!("--dest={}", name_for(pid));
-        // Fails harmlessly when no sender is connected (or it has no DACP).
+        let _ = dbus_send(&[
+            &dest,
+            "/org/gnome/ShairportSync",
+            "org.gnome.ShairportSync.AdvancedRemoteControl.SetVolume",
+            &format!("int32:{}", percent.min(100)),
+        ]);
         let _ = dbus_send(&[
             &dest,
             "/org/gnome/ShairportSync",
             "org.gnome.ShairportSync.RemoteControl.SetAirplayVolume",
-            &format!("double:{volume:.6}"),
+            &format!("double:{:.6}", crate::levels::airplay_volume(percent)),
         ]);
     });
 }
