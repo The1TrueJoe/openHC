@@ -36,7 +36,10 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/tty.h>
+#include <linux/tty_driver.h>
+#include <linux/tty_flip.h>
 #include <linux/tty_ldisc.h>
+#include <linux/tty_port.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
@@ -86,6 +89,16 @@ static int ir_in;
 module_param(ir_in, int, 0644);
 MODULE_PARM_DESC(ir_in, "1 if the board has an IR receiver");
 
+/*
+ * MCU-routed user serial ports — the combo jacks when switched to serial. Each
+ * becomes a /dev/ttyOHC<n> tty whose bytes travel as UART_SEND / UART_RECEIVE
+ * frames over the same port as the relays and IR. Zero means this board routes
+ * no serial through the microcontroller.
+ */
+static int uarts;
+module_param(uarts, int, 0644);
+MODULE_PARM_DESC(uarts, "number of MCU-routed user serial ports (combo jacks in serial mode)");
+
 static int poll_ms = 200;
 module_param(poll_ms, int, 0644);
 MODULE_PARM_DESC(poll_ms, "contact poll interval in milliseconds (0 disables)");
@@ -103,9 +116,38 @@ MODULE_PARM_DESC(poll_ms, "contact poll interval in milliseconds (0 disables)");
 #define OP_IROUT_SEND       0x66
 #define OP_IRIN_SET_CAPTURE 0x77
 #define OP_IRIN_CAPTURED    0x97
+/*
+ * User-serial opcodes, verified on a live EA3. All three are UNACKNOWLEDGED —
+ * UART_SET_CONTROL and UART_SEND get no reply, and received bytes arrive
+ * asynchronously as UART_RECEIVE — which is why the serial path uses ohc_send
+ * (fire-and-forget) throughout and never ohc_request.
+ */
+#define OP_UART_SET_CONTROL 0xa0
+#define OP_UART_SEND        0xa1
+#define OP_UART_RECEIVE     0xa2
 
 #define OHC_MAX_PAYLOAD 512
 #define OHC_TIMEOUT_MS  600
+
+/*
+ * UART_SET_CONTROL takes a baud INDEX, not a rate. 0..6 are the rates below;
+ * anything else the firmware treats as 115200, and 7 is the first such value.
+ * One UART_SEND carries [port, data...]; it is chunked so a long write cannot
+ * overrun one frame.
+ */
+#define OHC_UART_TX_CHUNK 256
+static const u32 ohc_uart_baud_table[] = {
+	1200, 2400, 4800, 9600, 19200, 38400, 57600,
+};
+static u8 ohc_uart_baud_index(u32 baud)
+{
+	int i;
+
+	for (i = 0; i < (int)ARRAY_SIZE(ohc_uart_baud_table); i++)
+		if (ohc_uart_baud_table[i] == baud)
+			return (u8)i;
+	return 7;	/* firmware's "anything else" case: 115200 */
+}
 
 /*
  * The IR side, decoded from the vendor firmware.
@@ -137,6 +179,20 @@ enum rx_state {
 };
 
 struct ohc_iomcu;
+
+/*
+ * One MCU-routed user serial port: a tty whose bytes travel as UART_SEND /
+ * UART_RECEIVE frames over the same ttyS1 the gpiochip and IR use.
+ */
+struct ohc_uart {
+	struct tty_port port;
+	struct ohc_iomcu *mcu;
+	int index;		/* 0-based port selector on the wire */
+	u32 baud;
+	u8 data_bits;
+	u8 parity;		/* 0 none, 1 odd, 2 even */
+	u8 stop_bits;
+};
 
 /* One IR output: a lirc device that always drives its own bit. */
 struct ohc_emitter {
@@ -212,6 +268,16 @@ struct ohc_iomcu {
 	struct ohc_emitter *emitters;
 	int n_emitters;
 	struct rc_dev *rx;
+
+	/*
+	 * MCU-routed user serial ports, exposed as /dev/ttyOHC<n>. A port is
+	 * switched to serial mode (UART_SET_CONTROL) only when its tty is
+	 * opened, so the IR emitter sharing the same combo jack keeps working
+	 * until somebody actually asks for the console.
+	 */
+	struct tty_driver *serial_driver;
+	struct ohc_uart *uarts;
+	int n_uarts;
 
 	/*
 	 * Diagnostics. "No reply" has three very different causes — nothing was
@@ -644,6 +710,8 @@ static void ohc_poll(struct work_struct *work)
 
 /* ---- decoder ------------------------------------------------------------ */
 
+static void ohc_uart_rx(struct ohc_iomcu *mcu, const u8 *payload, int len);
+
 static void ohc_frame_complete(struct ohc_iomcu *mcu)
 {
 	int body_len = mcu->body_len;
@@ -682,11 +750,14 @@ static void ohc_frame_complete(struct ohc_iomcu *mcu)
 	spin_unlock_irqrestore(&mcu->rx_lock, flags);
 
 	/*
-	 * Unsolicited: a remote was pressed at the front receiver. This is the
-	 * whole reason the decoder keeps frames it did not ask for.
+	 * Unsolicited: a remote was pressed at the front receiver, or a byte
+	 * arrived on one of the MCU-routed serial ports. This is the whole
+	 * reason the decoder keeps frames it did not ask for.
 	 */
 	if (opcode == OP_IRIN_CAPTURED)
 		ohc_ir_capture(mcu, mcu->body + 5, len);
+	else if (opcode == OP_UART_RECEIVE)
+		ohc_uart_rx(mcu, mcu->body + 5, len);
 }
 
 static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
@@ -953,6 +1024,253 @@ static void ohc_del_nodes(struct ohc_iomcu *mcu, int lines)
 	mcu->nodes_added = false;
 }
 
+/* ---- MCU-routed user serial --------------------------------------------- *
+ *
+ * A combo jack in serial mode is a tty like any other: iod's host-UART bridge
+ * opens /dev/ttyOHC<n> and never learns that its bytes are UART_SEND frames
+ * multiplexed onto the same ttyS1 as the relays and the IR. This is the n_gsm
+ * pattern — a line discipline that also offers ttys of its own.
+ *
+ * The port is switched to serial (UART_SET_CONTROL) on OPEN, not at attach, so
+ * the IR emitter that shares the connector keeps working until a console is
+ * actually asked for. Every UART opcode is unacknowledged, so TX goes through
+ * ohc_send rather than ohc_request.
+ */
+
+/* Push the current line settings to the part. Fire-and-forget. */
+static int ohc_uart_apply(struct ohc_uart *u)
+{
+	u8 pl[6];
+
+	pl[0] = (u8)u->index;
+	pl[1] = 1;			/* enable / serial mode */
+	pl[2] = ohc_uart_baud_index(u->baud);
+	pl[3] = u->data_bits;
+	pl[4] = u->parity;
+	pl[5] = u->stop_bits;
+	return ohc_send(u->mcu, OP_UART_SET_CONTROL, pl, sizeof(pl));
+}
+
+static int ohc_serial_activate(struct tty_port *port, struct tty_struct *tty)
+{
+	struct ohc_uart *u = container_of(port, struct ohc_uart, port);
+
+	return ohc_uart_apply(u);
+}
+
+/*
+ * No modem lines on a 3.5 mm jack, so carrier is always present: a blocking
+ * open must not hang waiting for a DCD that can never assert.
+ */
+static bool ohc_serial_carrier_raised(struct tty_port *port)
+{
+	return true;
+}
+
+static const struct tty_port_operations ohc_serial_port_ops = {
+	.activate	= ohc_serial_activate,
+	.carrier_raised	= ohc_serial_carrier_raised,
+};
+
+static int ohc_serial_install(struct tty_driver *driver, struct tty_struct *tty)
+{
+	struct ohc_iomcu *mcu = driver->driver_state;
+	struct ohc_uart *u;
+
+	if (tty->index < 0 || tty->index >= mcu->n_uarts)
+		return -ENODEV;
+	u = &mcu->uarts[tty->index];
+	tty->driver_data = u;
+	return tty_port_install(&u->port, driver, tty);
+}
+
+static int ohc_serial_open(struct tty_struct *tty, struct file *filp)
+{
+	struct ohc_uart *u = tty->driver_data;
+
+	return tty_port_open(&u->port, tty, filp);
+}
+
+static void ohc_serial_close(struct tty_struct *tty, struct file *filp)
+{
+	struct ohc_uart *u = tty->driver_data;
+
+	tty_port_close(&u->port, tty, filp);
+}
+
+static void ohc_serial_hangup(struct tty_struct *tty)
+{
+	struct ohc_uart *u = tty->driver_data;
+
+	tty_port_hangup(&u->port);
+}
+
+static ssize_t ohc_serial_write(struct tty_struct *tty, const u8 *buf, size_t count)
+{
+	struct ohc_uart *u = tty->driver_data;
+	size_t done = 0;
+	u8 pl[1 + OHC_UART_TX_CHUNK];
+
+	/*
+	 * Each chunk becomes one UART_SEND [port, data...]. A short write (the
+	 * lower tty refusing bytes) stops here and the line discipline retries
+	 * the rest, exactly as it would for any tty.
+	 */
+	while (done < count) {
+		size_t n = min(count - done, (size_t)OHC_UART_TX_CHUNK);
+
+		pl[0] = (u8)u->index;
+		memcpy(pl + 1, buf + done, n);
+		if (ohc_send(u->mcu, OP_UART_SEND, pl, n + 1))
+			break;
+		done += n;
+	}
+	return done;
+}
+
+static unsigned int ohc_serial_write_room(struct tty_struct *tty)
+{
+	/* No queue of our own: each write turns straight into UART_SEND frames,
+	 * so report a chunk to keep the line discipline handing bytes down in
+	 * sane units. */
+	return OHC_UART_TX_CHUNK;
+}
+
+static void ohc_serial_set_termios(struct tty_struct *tty,
+				   const struct ktermios *old)
+{
+	struct ohc_uart *u = tty->driver_data;
+	tcflag_t c = tty->termios.c_cflag;
+
+	u->baud = tty_get_baud_rate(tty);
+	switch (c & CSIZE) {
+	case CS5: u->data_bits = 5; break;
+	case CS6: u->data_bits = 6; break;
+	case CS7: u->data_bits = 7; break;
+	default:  u->data_bits = 8; break;
+	}
+	u->parity = (c & PARENB) ? ((c & PARODD) ? 1 : 2) : 0;
+	u->stop_bits = (c & CSTOPB) ? 2 : 1;
+	ohc_uart_apply(u);
+}
+
+static const struct tty_operations ohc_serial_tty_ops = {
+	.install	= ohc_serial_install,
+	.open		= ohc_serial_open,
+	.close		= ohc_serial_close,
+	.hangup		= ohc_serial_hangup,
+	.write		= ohc_serial_write,
+	.write_room	= ohc_serial_write_room,
+	.set_termios	= ohc_serial_set_termios,
+};
+
+/*
+ * Deliver bytes that arrived as a UART_RECEIVE (0xa2) frame to the matching
+ * tty. Called from the decoder — the tty buffer worker — which is the context
+ * tty_insert_flip_string is built for. payload is [port, data...].
+ */
+static void ohc_uart_rx(struct ohc_iomcu *mcu, const u8 *payload, int len)
+{
+	struct ohc_uart *u;
+
+	if (len < 1 || payload[0] >= (u8)mcu->n_uarts)
+		return;
+	u = &mcu->uarts[payload[0]];
+	if (len > 1) {
+		tty_insert_flip_string(&u->port, payload + 1, len - 1);
+		tty_flip_buffer_push(&u->port);
+	}
+}
+
+static void ohc_register_serial(struct ohc_iomcu *mcu)
+{
+	struct tty_driver *drv;
+	int i, ret;
+
+	if (uarts <= 0)
+		return;
+	if (uarts > 32) {
+		pr_warn("%s: %d user serial ports is implausible; ignoring\n",
+			mcu->tty->name, uarts);
+		return;
+	}
+
+	mcu->uarts = kcalloc(uarts, sizeof(*mcu->uarts), GFP_KERNEL);
+	if (!mcu->uarts)
+		return;
+
+	drv = tty_alloc_driver(uarts, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
+	if (IS_ERR(drv)) {
+		kfree(mcu->uarts);
+		mcu->uarts = NULL;
+		return;
+	}
+
+	drv->driver_name = "ohc-iomcu-serial";
+	drv->name = "ttyOHC";
+	drv->type = TTY_DRIVER_TYPE_SERIAL;
+	drv->init_termios = tty_std_termios;
+	drv->init_termios.c_cflag = B115200 | CS8 | CREAD | CLOCAL | HUPCL;
+	drv->init_termios.c_ispeed = 115200;
+	drv->init_termios.c_ospeed = 115200;
+	tty_set_operations(drv, &ohc_serial_tty_ops);
+	drv->driver_state = mcu;
+
+	for (i = 0; i < uarts; i++) {
+		struct ohc_uart *u = &mcu->uarts[i];
+
+		tty_port_init(&u->port);
+		u->port.ops = &ohc_serial_port_ops;
+		u->mcu = mcu;
+		u->index = i;
+		u->baud = 115200;
+		u->data_bits = 8;
+		u->parity = 0;
+		u->stop_bits = 1;
+	}
+
+	ret = tty_register_driver(drv);
+	if (ret) {
+		pr_warn("%s: cannot register serial tty driver: %d\n",
+			mcu->tty->name, ret);
+		for (i = 0; i < uarts; i++)
+			tty_port_destroy(&mcu->uarts[i].port);
+		tty_driver_kref_put(drv);
+		kfree(mcu->uarts);
+		mcu->uarts = NULL;
+		return;
+	}
+
+	mcu->serial_driver = drv;
+	mcu->n_uarts = uarts;
+
+	for (i = 0; i < uarts; i++)
+		tty_port_register_device(&mcu->uarts[i].port, drv, i, NULL);
+
+	pr_info("%s: %d MCU-routed user serial port(s) as /dev/%s0..%d\n",
+		mcu->tty->name, uarts, drv->name, uarts - 1);
+}
+
+static void ohc_unregister_serial(struct ohc_iomcu *mcu)
+{
+	int i;
+
+	if (!mcu->serial_driver)
+		return;
+	for (i = 0; i < mcu->n_uarts; i++) {
+		tty_port_tty_hangup(&mcu->uarts[i].port, false);
+		tty_unregister_device(mcu->serial_driver, i);
+	}
+	tty_unregister_driver(mcu->serial_driver);
+	for (i = 0; i < mcu->n_uarts; i++)
+		tty_port_destroy(&mcu->uarts[i].port);
+	tty_driver_kref_put(mcu->serial_driver);
+	kfree(mcu->uarts);
+	mcu->uarts = NULL;
+	mcu->serial_driver = NULL;
+	mcu->n_uarts = 0;
+}
+
 /* ---- line discipline ---------------------------------------------------- */
 
 /*
@@ -1114,8 +1432,9 @@ static void ohc_probe(struct work_struct *work)
 
 	lines = mcu->n_relays + mcu->n_contacts;
 	if (!lines) {
-		/* IR-only board: no gpiochip to register, but the rc device below
-		 * is still worth having. */
+		/* No GPIO lines (the EA1): no gpiochip, but the IR emitters and
+		 * the MCU-routed serial ports below are still worth having. */
+		ohc_register_serial(mcu);
 		ohc_register_rc(mcu);
 		return;
 	}
@@ -1161,6 +1480,7 @@ static void ohc_probe(struct work_struct *work)
 	pr_info("%s: %d relays, %d contacts as GPIO lines\n",
 		mcu->tty->name, mcu->n_relays, mcu->n_contacts);
 
+	ohc_register_serial(mcu);
 	ohc_register_rc(mcu);
 	return;
 
@@ -1218,6 +1538,7 @@ static void ohc_ldisc_close(struct tty_struct *tty)
 
 	cancel_delayed_work_sync(&mcu->probe_work);
 	cancel_delayed_work_sync(&mcu->poll_work);
+	ohc_unregister_serial(mcu);
 	for (i = 0; i < mcu->n_emitters; i++) {
 		if (mcu->emitters[i].rc)
 			rc_unregister_device(mcu->emitters[i].rc);
