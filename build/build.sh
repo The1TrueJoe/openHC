@@ -531,8 +531,11 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     _pkg=$(basename "$(dirname "$_mk")")
     # only if this build selects it, else make has no such target
     _sym="BR2_PACKAGE_$(echo "$_pkg" | tr 'a-z-' 'A-Z_')"
-    _host=$(grep -l '\$(eval \$(host-' "$_mk" 2>/dev/null)
-    _want_sum=$(cat "$(dirname "$_mk")"/* 2>/dev/null | cksum | cut -d' ' -f1)
+    # Both of these must not fail under `set -e` (a failing command substitution
+    # in an assignment aborts the script): grep finding nothing, cat meeting a
+    # subdirectory.
+    if grep -q '\$(eval \$(host-' "$_mk"; then _host=1; else _host=""; fi
+    _want_sum=$(find "$(dirname "$_mk")" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
     _sumf="$OUT/build/.ohc-pkg-$_pkg.sum"
     # A changed recipe or patch set needs the source RE-EXTRACTED and
     # re-patched, which -rebuild never does (it keeps the patched tree): a
