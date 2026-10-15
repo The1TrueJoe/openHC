@@ -382,6 +382,14 @@ BR2_EXT="$REPO/board${OHC_EXTRA_EXTERNAL:+ $OHC_EXTRA_EXTERNAL}"
 M=(make -C "$BUILDROOT_DIR" O="$OUT" BR2_EXTERNAL="$BR2_EXT"
    BR2_DL_DIR="$DL" BR2_JLEVEL="$JOBS")
 
+# ccache lives OUTSIDE the per-board output tree so the whole family (and every
+# CI run) shares one, cached on its own key — see board/ea/common/common_defconfig
+# and .github/workflows/images.yml. Only override when BR2_CCACHE_DIR is set in
+# the environment: passing an empty value would blank Buildroot's own default
+# and scatter a fresh cache into $OUT, defeating the point. A board whose
+# defconfig does not enable BR2_CCACHE ignores this.
+[ -n "${BR2_CCACHE_DIR:-}" ] && M+=(BR2_CCACHE_DIR="$BR2_CCACHE_DIR")
+
 # Wipe the output tree, keeping the generated defconfig.
 #
 # $EFFECTIVE is written INSIDE $OUT, so a plain `rm -rf "$OUT"` deletes the
@@ -531,6 +539,26 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     _pkg=$(basename "$(dirname "$_mk")")
     # only if this build selects it, else make has no such target
     _sym="BR2_PACKAGE_$(echo "$_pkg" | tr 'a-z-' 'A-Z_')"
+    # Both of these must not fail under `set -e` (a failing command substitution
+    # in an assignment aborts the script): grep finding nothing, cat meeting a
+    # subdirectory.
+    if grep -q '\$(eval \$(host-' "$_mk"; then _host=1; else _host=""; fi
+    _want_sum=$(find "$(dirname "$_mk")" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
+    _sumf="$OUT/build/.ohc-pkg-$_pkg.sum"
+    # A changed recipe or patch set needs the source RE-EXTRACTED and
+    # re-patched, which -rebuild never does (it keeps the patched tree): a
+    # fixed patch for ohc-shairport-sync was ignored that way and the build kept
+    # failing on the old one. So when the package's directory changed since this
+    # tree last built it, dirclean it (and its host- variant) first.
+    if [ "$(cat "$_sumf" 2>/dev/null)" != "$_want_sum" ]; then
+        if grep -q "^$_sym=y\$" "$OUT/.config" 2>/dev/null; then
+            echo ">> $_pkg: recipe or patches changed — re-extracting"
+            "${M[@]}" "$_pkg-dirclean"
+        fi
+        [ -n "$_host" ] && [ -d "$OUT/build" ] && \
+            for _d in "$OUT"/build/host-"$_pkg"-*; do [ -d "$_d" ] && "${M[@]}" "host-$_pkg-dirclean" && break; done
+        mkdir -p "$OUT/build" && printf '%s\n' "$_want_sum" > "$_sumf"
+    fi
     grep -q "^$_sym=y\$" "$OUT/.config" 2>/dev/null || continue
     echo ">> $_pkg: forcing rebuild (we maintain it; its stamps mean nothing)"
     "${M[@]}" "$_pkg-rebuild"

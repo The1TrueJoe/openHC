@@ -42,9 +42,13 @@ on:
   release:
     types: [published]
   schedule:
-    # Nightly full matrix: catches upstream breakage (a Buildroot mirror going
-    # away, a package bumping) on a day nobody pushed.
-    - cron: "0 4 * * *"
+    # Weekly full matrix: catches upstream breakage (a Buildroot mirror going
+    # away, a package bumping) that lands on a week nobody touched a board.
+    # Was nightly, but eight boards every night is a lot of runner time for a
+    # tree that rarely moves; once a week (Monday 04:00 UTC) still surfaces a
+    # broken mirror long before it matters, and anything actually pushed is
+    # built on its own PR regardless.
+    - cron: "0 4 * * 1"
 
 # A second push supersedes the first; there is no value in finishing an image
 # for a commit that is already history.
@@ -112,11 +116,67 @@ jobs:
 
           # Shared trees affect every board. build/ and the flasher are in here
           # because build.sh drives the build and post-image calls ohc-flash.
-          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|packages/|build/|flasher/|Makefile)'; then
+          # packages/ is NOT here any more — a daemon change is scoped to the
+          # boards that actually ship it, further down.
+          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|flasher/|Makefile)'; then
             echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           sel=()
+
+          # packages/ — the Rust daemons, staged into the overlay. A change here
+          # used to rebuild all eight images; instead map it to the boards that
+          # ship the touched crate. packages/build.sh <board> --crates lists the
+          # top-level crates a board gets (core iod/webd/sysmond + its features'),
+          # resolved from ohc.features with no build, so it is cheap to ask here.
+          pkgchanged=$(echo "$changed" | grep -E '^packages/' || true)
+          if [ -n "$pkgchanged" ]; then
+            # Workspace-wide inputs rebuild every board: the lockfile, the
+            # workspace manifest, the shared cargo/toolchain config, and the
+            # staging driver itself all change what every board compiles.
+            if echo "$pkgchanged" | grep -qE '^packages/(Cargo\.(toml|lock)|\.cargo/|rust-toolchain|build\.sh|README)'; then
+              echo ">> packages/: workspace-wide file changed — building all"
+              echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            # The crate each changed file lives in (first path component). A file
+            # sitting directly under packages/ is not attributable to one crate,
+            # so treat it as workspace-wide and build everything.
+            crates=""
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              c=$(printf '%s\n' "$f" | sed -n 's#^packages/\([^/]*\)/.*#\1#p')
+              [ -z "$c" ] && { echo ">> packages/: unattributable file '$f' — building all"; echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0; }
+              crates="$crates $c"
+            done <<EOF
+          $pkgchanged
+          EOF
+            crates=$(printf '%s\n' $crates | awk 'NF' | sort -u | tr '\n' ' ')
+            echo ">> changed package crates: $crates"
+            # Each board's shipped crates, asked once, as padded lines
+            # "<board>  <crate> <crate> " so a whole-word " <crate> " grep cannot
+            # match a board name or a crate substring. No associative arrays —
+            # the select runner is bash but this stays portable regardless.
+            ships_table=$(for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
+              printf '%s  %s \n' "$b" "$(bash packages/build.sh "$b" --crates 2>/dev/null)"
+            done)
+            for c in $crates; do
+              # || true: a no-match grep under `set -o pipefail` would otherwise
+              # abort the whole step before the shared-dependency fallback below
+              # — and that silent abort resolves to an EMPTY board list, i.e. a
+              # crate change that builds nothing. The empty hits must reach the
+              # `[ -z ]` test, not kill the script.
+              hits=$(printf '%s\n' "$ships_table" | grep -F " $c " | awk '{print $1}' || true)
+              # A crate no board lists via --crates is a shared DEPENDENCY (e.g.
+              # librespot, alsa-ohceq, ohcmqtt — pulled in by audiod/iod, never
+              # built with their own -p). We cannot cheaply know which top-level
+              # crates depend on it, so be safe and build everything.
+              if [ -z "$hits" ]; then
+                echo ">> crate '$c' is a shared dependency (no board ships it directly) — building all"
+                echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+              for b in $hits; do sel+=("$b"); done
+            done
+          fi
           # ea/common is shared by the EA family only.
           if echo "$changed" | grep -qE '^board/ea/common/'; then
             sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
@@ -244,6 +304,23 @@ jobs:
           restore-keys: |
             out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-
 
+      # The EA family shares ONE ccache, keyed on the family rather than the
+      # board, so a translation unit compiled for ea1-v2 (WebKit, ICU, the
+      # toolchain's own host-gcc) is a hit for every other EA board and every
+      # later run. The rolling run_id key saves a fresh entry each run and the
+      # restore-keys walk back: this board's newest ccache first, then any EA
+      # board's. restore/save split (not plain actions/cache) so a FAILED build
+      # still saves the objects it did compile — the save step runs on always().
+      - name: Restore the EA family ccache
+        if: startsWith(matrix.board, 'ea')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
+            ccache-ea-${{ env.BUILDROOT_REF }}-
+
       - name: Fetch Buildroot
         run: |
           set -e
@@ -275,6 +352,10 @@ jobs:
           BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
           BOARD: ${{ matrix.board }}
           OHC_VERSION: ${{ steps.ver.outputs.version }}
+          # Shared ccache dir for the EA family (see the restore/save steps and
+          # board/ea/common/common_defconfig). build.sh forwards it to make only
+          # when set; a board whose defconfig has no BR2_CCACHE ignores it.
+          BR2_CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -e
           # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
@@ -353,6 +434,25 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # Carry-forward store (main only). A newer push to main cancels the older
+      # run (see `concurrency`), and `select` then rebuilds only the boards THIS
+      # push changed — so without this, the boards the cancelled run had already
+      # built would vanish from the newest run's output. Each successful main
+      # build parks its bundle in a per-board cache under a stable `carry/` dir;
+      # the `carry-forward` job below republishes it for any board the newest run
+      # did not rebuild, so main always has a complete, current image set.
+      - name: Persist this board's image for carry-forward (main)
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p carry
+          cp "${{ steps.bundle.outputs.bundle }}" carry/
+      - name: Save carry-forward image (main)
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: carry
+          key: img-main-${{ matrix.board }}-${{ github.run_id }}
+
       # Drop only what is genuinely rebuilt. That is a shorter list than it
       # looks:
       #
@@ -366,8 +466,12 @@ jobs:
       #                  dies at target-finalize with
       #                  "sed: can't read .../target/etc/hosts".
       #   staging/       NO, for the same reason.
+      # Not when cancelled: a cancel kills Buildroot mid-write, and that tree is
+      # poison to the next run (a half-linked host libcrypto broke every board
+      # that restored one). A FAILED build is still saved — its broken package
+      # has no stamp, so Buildroot redoes it — and keeps everything before it.
       - name: Trim the output tree before caching
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           O=output/build/${{ matrix.board }}
           [ -d "$O" ] || exit 0
@@ -375,11 +479,22 @@ jobs:
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
       - name: Save Buildroot output tree
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}
           key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+
+      # Save the shared EA ccache on always(): even a failed build compiled
+      # objects worth keeping for the next run, and a typo deep in WebKit should
+      # not cost that work. ccache caps itself (--max-size in the defconfig), so
+      # this never grows without bound.
+      - name: Save the EA family ccache
+        if: always() && startsWith(matrix.board, 'ea')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.
@@ -402,6 +517,52 @@ jobs:
             output/build/${{ matrix.board }}/*.log
           retention-days: 7
           if-no-files-found: ignore
+
+  # Republish the latest image for every board the newest main run did NOT
+  # rebuild, pulled from the per-board carry-forward cache the build job fills.
+  # This is what lets a newer push to main cancel the older run (see
+  # `concurrency`) without the boards that run had already built dropping out:
+  # main ends every run with a complete, current image set.
+  #
+  # Best-effort, and deliberately NOT in images-ok's needs: a cold cache (no
+  # prior image for a board yet) just means nothing to carry, never a failed
+  # required check.
+  carry-forward:
+    needs: [select, build]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same fleet as select's ALL; a board added there is added here.
+        board: [ea1-v1, ea1-v2, ea1-v2-poe, ea3-v1, ea3-v2, ioxv1, ca1, hc800]
+    steps:
+      # A board this run built already uploaded openhc-<board>; re-uploading the
+      # same artifact name would collide, so carry forward only the rest.
+      - name: Did this run build ${{ matrix.board }}?
+        id: built
+        run: echo "built=${{ contains(fromJSON(needs.select.outputs.boards), matrix.board) }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore last main image for ${{ matrix.board }}
+        if: steps.built.outputs.built == 'false'
+        uses: actions/cache/restore@v4
+        with:
+          path: carry
+          # No per-run key can match an earlier run, so this is a deliberate
+          # miss; restore-keys is what pulls the newest img-main-<board>- entry
+          # saved by whichever past run last built this board.
+          key: img-main-${{ matrix.board }}-none
+          restore-keys: |
+            img-main-${{ matrix.board }}-
+
+      - name: Republish carried-forward image for ${{ matrix.board }}
+        if: steps.built.outputs.built == 'false' && hashFiles('carry/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhc-${{ matrix.board }}
+          path: carry/*
+          retention-days: 14
+          if-no-files-found: error
 
   # The one check branch protection requires from this workflow. A required
   # check must ALWAYS report: a workflow that never starts (path filter) would
