@@ -34,18 +34,22 @@
 # filter so a change to THIS file re-runs that component, exactly as each old
 # workflow watched its own file.
 #
-# MIGRATION — this is PR #1 of a staged rollout; order matters (bootstrap trap):
-#   (a) THIS PR adds ci.yml ALONGSIDE the six existing workflows. The old five
-#       *-ok checks still run and stay required, so this PR can merge; `ci-ok`
-#       runs too and goes green. Nothing is deleted here.
-#   (b) AFTER this merges, the maintainer swaps branch protection's required
-#       checks from the five *-ok to just `ci-ok` (see the handoff notes).
-#   (c) A FOLLOW-UP PR then deletes images.yml/daemons.yml/flasher.yml/
-#       io-mcu.yml/docs.yml/tools.yml (now fully represented here) and re-syncs
-#       the `images` section of this file to whatever images.yml is on main then.
-# Until (c), a board/flasher/etc. change builds twice (here and in the old
-# workflow). That is deliberate and temporary; this repo is public, so runner
-# minutes are free and only wall-clock matters.
+# MIGRATION — two stages, designed so NO board ever double-builds. The lever is
+# the `config` job's `heavy` output, gating every real build job's `if:`.
+#   STAGE 1 (this PR): adds ci.yml with `heavy=false`, so it runs ONLY the cheap
+#       plumbing (changes/select/ci-ok). It merges ALONGSIDE the six existing
+#       workflows, which keep doing the real builds and stay the required checks;
+#       `ci-ok` goes green on the cheap jobs alone. Because the heavy jobs are
+#       gated off, merging this adds ZERO duplicated builds. Nothing is deleted.
+#   STAGE 2 (a separate PR): flips `heavy` to `true` AND deletes images.yml/
+#       daemons.yml/flasher.yml/io-mcu.yml/docs.yml/tools.yml (now represented
+#       here), re-syncing this file's `images` section to main's images.yml then.
+#       Cutover order on that PR (avoids both a double-build and a protection
+#       gap): open it (heavy ci.yml runs for real; the six are deleted on its
+#       branch so they do not run on it) -> once `ci-ok` is green there, the
+#       maintainer swaps branch protection's required checks from the five *-ok
+#       to just `ci-ok` -> THEN merge. After it merges, main runs heavy ci.yml
+#       only, one required check, and the old six are gone.
 
 name: ci
 
@@ -97,6 +101,28 @@ env:
   BUILDROOT_REF: 2026.02.3
 
 jobs:
+  # STAGE TOGGLE — the master switch for the two-stage rollout (see the header).
+  # `heavy=false` (stage 1) means this workflow runs ONLY the cheap plumbing
+  # (`changes`, `select`, `ci-ok`); every real build job is gated off. That lets
+  # ci.yml merge ALONGSIDE the still-present six old workflows with ZERO
+  # duplicated builds — the old six keep doing the real work and stay required,
+  # `ci-ok` goes green on the cheap jobs alone. Stage 2 (a separate PR that also
+  # deletes the old six) flips this ONE line to `heavy=true`, turning the real
+  # jobs on. Every heavy job carries `needs.config.outputs.heavy == 'true'` in
+  # its `if:`, so this is the only place to change.
+  #
+  # Why a job output and not `env`: the `env` context is not available in a
+  # job-level `if:` (only github/needs/vars/inputs are), so a workflow-level
+  # `env` flag cannot gate a job. A job output can.
+  config:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      heavy: ${{ steps.flag.outputs.heavy }}
+    steps:
+      - id: flag
+        run: echo "heavy=false" >> "$GITHUB_OUTPUT"
+
   # Per-component "did its paths change?" booleans, for push and pull_request.
   # These are the SAME filters the old per-workflow `changes` gates used; the
   # workflow file each one watched is now ci.yml. images does NOT appear here —
@@ -221,8 +247,9 @@ jobs:
           echo "boards=[${j%,}]" >> "$GITHUB_OUTPUT"
 
   images-build:
-    needs: select
-    if: needs.select.outputs.boards != '[]'
+    needs: [select, config]
+    # `config.heavy` is the stage-1/stage-2 master switch (see the `config` job).
+    if: needs.config.outputs.heavy == 'true' && needs.select.outputs.boards != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: write   # gh attaches image bundles to a release
@@ -542,8 +569,8 @@ jobs:
   # Best-effort, and deliberately NOT in ci-ok's needs: a cold cache (no prior
   # image for a board yet) just means nothing to carry, never a failed check.
   images-carry-forward:
-    needs: [select, images-build]
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [select, images-build, config]
+    if: always() && needs.config.outputs.heavy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -584,12 +611,14 @@ jobs:
   # DAEMONS  (was daemons.yml — push/PR when packages change, or dispatch)
   # ===========================================================================
   daemons-build:
-    needs: changes
+    needs: [changes, config]
     # push/PR only when the daemon sources changed; always on dispatch. Never on
-    # release or schedule — daemons.yml never triggered on those.
+    # release or schedule — daemons.yml never triggered on those. `config.heavy`
+    # is the stage-1/stage-2 master switch (see the `config` job).
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.daemons == 'true')
+      needs.config.outputs.heavy == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.daemons == 'true'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -750,11 +779,13 @@ jobs:
   # FLASHER  (was flasher.yml — push/PR when flasher changes, or dispatch/release)
   # ===========================================================================
   flasher-build:
-    needs: changes
+    needs: [changes, config]
     # push/PR only when flasher sources changed; always on dispatch and release.
+    # `config.heavy` is the stage-1/stage-2 master switch (see the `config` job).
     if: >-
-      github.event_name == 'workflow_dispatch' || github.event_name == 'release' ||
-      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.flasher == 'true')
+      needs.config.outputs.heavy == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'release' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.flasher == 'true'))
     name: flasher (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     permissions:
@@ -915,12 +946,14 @@ jobs:
   # IO-MCU  (was io-mcu.yml — push/PR when the firmware changes, or dispatch)
   # ===========================================================================
   iomcu-build:
-    needs: changes
+    needs: [changes, config]
     # push/PR only when the io-mcu firmware changed; always on dispatch. Never
-    # on release or schedule — io-mcu.yml never triggered on those.
+    # on release or schedule — io-mcu.yml never triggered on those. `config.heavy`
+    # is the stage-1/stage-2 master switch (see the `config` job).
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.iomcu == 'true')
+      needs.config.outputs.heavy == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.iomcu == 'true'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1021,12 +1054,14 @@ jobs:
   #        deploy to Pages on main push only)
   # ===========================================================================
   docs-build:
-    needs: changes
+    needs: [changes, config]
     # push/PR only when the site changed; always on dispatch. Never on release
-    # or schedule — docs.yml never triggered on those.
+    # or schedule — docs.yml never triggered on those. `config.heavy` is the
+    # stage-1/stage-2 master switch (see the `config` job).
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.docs == 'true')
+      needs.config.outputs.heavy == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.docs == 'true'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1083,13 +1118,15 @@ jobs:
   #         push/PR when the workflow changes, or dispatch)
   # ===========================================================================
   tools-build:
-    needs: changes
+    needs: [changes, config]
     # tools.yml's own pull_request trigger was path-filtered to the workflow
     # file, so it ran on push/PR only when that file changed, plus dispatch.
     # Here that file is ci.yml (see the `tools` filter). Never release/schedule.
+    # `config.heavy` is the stage-1/stage-2 master switch (see the `config` job).
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.tools == 'true')
+      needs.config.outputs.heavy == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.tools == 'true'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1175,6 +1212,7 @@ jobs:
   ci-ok:
     name: ci-ok
     needs:
+      - config
       - changes
       - select
       - images-build
