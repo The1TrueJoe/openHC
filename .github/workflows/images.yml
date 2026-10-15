@@ -42,9 +42,13 @@ on:
   release:
     types: [published]
   schedule:
-    # Nightly full matrix: catches upstream breakage (a Buildroot mirror going
-    # away, a package bumping) on a day nobody pushed.
-    - cron: "0 4 * * *"
+    # Weekly full matrix: catches upstream breakage (a Buildroot mirror going
+    # away, a package bumping) that lands on a week nobody touched a board.
+    # Was nightly, but eight boards every night is a lot of runner time for a
+    # tree that rarely moves; once a week (Monday 04:00 UTC) still surfaces a
+    # broken mirror long before it matters, and anything actually pushed is
+    # built on its own PR regardless.
+    - cron: "0 4 * * 1"
 
 # A second push supersedes the first; there is no value in finishing an image
 # for a commit that is already history.
