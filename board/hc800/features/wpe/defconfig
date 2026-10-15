@@ -36,6 +36,9 @@ BR2_PACKAGE_WPEBACKEND_FDO=y
 # board already runs). The URL is S97webview's, never a built-in home page.
 BR2_PACKAGE_COG=y
 BR2_PACKAGE_COG_PLATFORM_DRM=y
+# Its Wayland platform (on by default) is for running under a compositor, which
+# this box has none of — and it wants cairo.
+# BR2_PACKAGE_COG_PLATFORM_FDO is not set
 BR2_PACKAGE_COG_PROGRAMS_HOME_URI=""
 
 # Fonts for pages that do not bring their own, and the CA roots for https://.
