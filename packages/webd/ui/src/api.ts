@@ -282,9 +282,27 @@ export interface FanStatus {
   error?: string;
 }
 
+/** The opt-in on-panel web view. webd serves this on its OWN origin (not a
+ *  proxied daemon), hence `location.origin/api/display` rather than one of the
+ *  `/iod` `/sys` mounts. Off by default — the panel shows the splash until set. */
+export interface DisplayCfg {
+  enabled: boolean;
+  url: string;
+}
+
 export const rest = {
   /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
   telemetry: () => j<Telemetry>(`${SYS}/api/now`),
+  /** The on-panel web view's current config (webd's own endpoint). */
+  display: () => j<DisplayCfg>(`${location.origin}/api/display`),
+  /** Turn the on-panel view on/off and set its URL; webd applies it immediately
+   *  (restarts the display service) and persists it for the next boot. */
+  setDisplay: (d: DisplayCfg) =>
+    j<{ enabled: boolean; url: string; applied: boolean }>(`${location.origin}/api/display`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(d),
+    }),
   /** The telemetry ring. `seconds` trims the window; absent/0 is everything held. */
   history: (seconds?: number) =>
     j<History>(`${SYS}/api/history${seconds ? `?seconds=${seconds}` : ''}`),

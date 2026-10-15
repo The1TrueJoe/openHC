@@ -1,0 +1,79 @@
+#!/bin/sh
+# Opt-in on-panel web view.
+#
+# DISABLED BY DEFAULT: out of the box the panel shows the openHC splash (drawn by
+# S01splash, and on the bootstrap kernel by S00kexec before the handoff). This
+# service only takes over the panel when the web UI turns it on — webd writes
+# /opt/ohc/display.conf (OHC_DISPLAY_ENABLE=1 + OHC_DISPLAY_URL=...) and restarts
+# this script. So a fresh box is calm (splash), and the on-screen browser is a
+# deliberate choice made from the dashboard, not the default.
+#
+# Runs AFTER webd (S90) so the default localhost dashboard is already being served
+# by the time we point the view at it.
+#
+# The view is the i386 WPE WebKit + SGX545 DDK stack in /opt/sgx-i386-wpe (EA only;
+# see board/gpu-wpe-i386 and [[c4-ea-fat-kernel]]). It renders straight to /dev/fb0
+# through the LinuxFB WSEGL, overdrawing the splash. Everything here degrades to a
+# clean no-op (splash stays) when the stack is absent or fb0 is not up — this must
+# never be able to wedge the boot.
+CONF=/opt/ohc/display.conf
+R=/opt/sgx-i386-wpe
+PIDF=/run/ohc-display.pid
+
+# Defaults, overridden by the config the web UI writes.
+OHC_DISPLAY_ENABLE=0
+OHC_DISPLAY_URL=http://localhost/
+[ -r "$CONF" ] && . "$CONF"
+
+start() {
+	[ "$OHC_DISPLAY_ENABLE" = 1 ] || {
+		echo "ohc-display: disabled — panel shows the splash (enable it from the web UI)"
+		exit 0
+	}
+	[ -x "$R/usr/bin/webview" ] || {
+		echo "ohc-display: no webview in $R — WPE stack not installed on this image" >&2
+		exit 0
+	}
+	[ -e /dev/fb0 ] || { echo "ohc-display: no /dev/fb0 — no framebuffer" >&2; exit 0; }
+
+	# WebKit forks the i386 WPEWebProcess with a bare execve, so its PT_INTERP
+	# (/lib/ld-linux.so.2) has to resolve to the sysroot's 32-bit loader.
+	[ -e /lib/ld-linux.so.2 ] || ln -sf "$R/lib/ld-linux.so.2" /lib/ld-linux.so.2
+
+	# Prime the SGX microkernel once. The FIRST EGL client after boot fails to
+	# reach PVR services unless the ukernel is already up; a services client
+	# (sgxinit) brings it up and then EGL works (see [[c4-ea-fat-kernel]]).
+	[ -x /opt/sgx-i386/run.sh ] && /opt/sgx-i386/run.sh sgxinit >/dev/null 2>&1
+
+	echo "ohc-display: starting the on-panel web view -> $OHC_DISPLAY_URL"
+	# WEBVIEW_RETRY: webd may still be coming up; webview reloads until the page
+	# answers instead of sitting on a failed load. FONTCONFIG_PATH points at the
+	# sysroot fonts; the UI uses system fonts so there is no webfont to fetch.
+	LD_PRELOAD="$R/usr/lib/sgx-busidshim.so" \
+	WEBKIT_EXEC_PATH="$R/usr/libexec/wpe-webkit-2.0" \
+	LD_LIBRARY_PATH="$R/usr/lib:$R/lib" \
+	FONTCONFIG_PATH="$R/etc/fonts" \
+	WEBVIEW_URL="$OHC_DISPLAY_URL" WEBVIEW_RETRY=5 \
+	setsid "$R/lib/ld-linux.so.2" --library-path "$R/usr/lib:$R/lib" \
+		"$R/usr/bin/webview" </dev/null >/var/log/ohc-display.log 2>&1 &
+	echo $! > "$PIDF"
+}
+
+stop() {
+	[ -f "$PIDF" ] && kill "$(cat "$PIDF")" 2>/dev/null
+	# webview spawns the WPE Web/Network processes; sweep the whole set.
+	pkill -f "$R/usr/bin/webview"   2>/dev/null
+	pkill -f WPEWebProcess          2>/dev/null
+	pkill -f WPENetworkProcess      2>/dev/null
+	rm -f "$PIDF"
+	# NOTE: the splash is NOT redrawn here — fb0 keeps whatever was last presented
+	# until something overdraws it. A caller that wants the splash back can run
+	# /etc/init.d/S01splash start.
+}
+
+case "$1" in
+	start)          start ;;
+	stop)           stop ;;
+	restart|reload) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

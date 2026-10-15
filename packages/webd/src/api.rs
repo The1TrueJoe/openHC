@@ -9,7 +9,7 @@ use axum::{
     },
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, get},
     Json, Router,
 };
 use std::sync::Arc;
@@ -46,6 +46,8 @@ to rather than a request/response. See the AsyncAPI document.",
     tags(
         (name = "Board", description = "Identity, capabilities and runtime state of this unit."),
         (name = "Wi-Fi", description = "Setup-AP scanning and joining."),
+        (name = "Display", description = "The opt-in on-panel web view (off by default; the panel \
+shows the splash until it is enabled here)."),
         (name = "Reference", description = "The specifications this box serves."),
     )
 )]
@@ -60,6 +62,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
     .routes(utoipa_axum::routes!(sys))
     .routes(utoipa_axum::routes!(wifi_scan))
     .routes(utoipa_axum::routes!(wifi_connect))
+    .routes(utoipa_axum::routes!(display_get, display_set))
     .split_for_parts();
     OWN_SPEC.set(api).ok();
 
@@ -126,6 +129,83 @@ async fn wifi_connect(State(c): State<Arc<Config>>, Json(b): Json<WifiBody>) -> 
         Ok(ssid) => Json(serde_json::json!({ "joining": ssid })).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &e),
     }
+}
+
+// ── On-panel web view (opt-in) ───────────────────────────────────────────────
+// The panel shows the openHC splash by default; this turns the on-screen browser
+// on and points it somewhere. State lives in /opt/ohc/display.conf, which the
+// S95ohc-display init script sources — see that script for the launch itself.
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+struct Display {
+    /// Show the on-panel web view. Off by default: a fresh box shows the splash.
+    enabled: bool,
+    /// Page the view loads; defaults to this controller's own dashboard.
+    url: String,
+}
+impl Default for Display {
+    fn default() -> Self { Self { enabled: false, url: "http://localhost/".into() } }
+}
+
+/// display.conf sits next to board.env (that path is overridable for tests).
+fn display_conf(cfg: &Config) -> std::path::PathBuf {
+    std::path::Path::new(&cfg.board_env)
+        .parent().unwrap_or_else(|| std::path::Path::new("/opt/ohc"))
+        .join("display.conf")
+}
+
+fn read_display(cfg: &Config) -> Display {
+    let mut d = Display::default();
+    if let Ok(s) = std::fs::read_to_string(display_conf(cfg)) {
+        for line in s.lines() {
+            let Some((k, v)) = line.trim().split_once('=') else { continue };
+            let v = v.trim().trim_matches('"').trim_matches('\'');
+            match k.trim() {
+                "OHC_DISPLAY_ENABLE" => d.enabled = v == "1",
+                "OHC_DISPLAY_URL" if !v.is_empty() => d.url = v.to_string(),
+                _ => {}
+            }
+        }
+    }
+    d
+}
+
+#[utoipa::path(get, path = "/api/display", tag = "Display",
+    summary = "On-panel web-view state",
+    description = "Reads /opt/ohc/display.conf. Off by default — a fresh box shows the splash.",
+    responses((status = 200, description = "display config")))]
+async fn display_get(State(c): State<Arc<Config>>) -> Json<Display> {
+    Json(read_display(&c))
+}
+
+#[utoipa::path(post, path = "/api/display", tag = "Display",
+    summary = "Turn the on-panel web view on/off and set its URL",
+    description = "Writes /opt/ohc/display.conf and restarts the display service to apply it now \
+(EA only; a no-op on boards without the on-panel WPE stack). The config persists, so the choice \
+survives a reboot.",
+    responses((status = 200, description = "applied")))]
+async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Response {
+    let url = d.url.trim();
+    if d.enabled && !(url.starts_with("http://") || url.starts_with("https://")) {
+        return err(StatusCode::BAD_REQUEST, "url must start with http:// or https://");
+    }
+    let url = if url.is_empty() { "http://localhost/" } else { url };
+    let body = format!(
+        "# written by webd POST /api/display — the on-panel web view\n\
+         OHC_DISPLAY_ENABLE={}\nOHC_DISPLAY_URL={}\n",
+        if d.enabled { 1 } else { 0 }, url);
+    let path = display_conf(&c);
+    if let Err(e) = std::fs::write(&path, body) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("cannot write {}: {e}", path.display()));
+    }
+    // Apply now by restarting the display service — fire-and-forget (it backgrounds
+    // the view). Absent on non-EA boards; the persisted config still takes effect
+    // on the next boot, so a missing service is not an error.
+    let svc = "/etc/init.d/S95ohc-display";
+    let applied = std::path::Path::new(svc).exists()
+        && std::process::Command::new(svc).arg("restart").spawn().is_ok();
+    Json(serde_json::json!({ "enabled": d.enabled, "url": url, "applied": applied }))
+        .into_response()
 }
 
 // ── fallback: bounce to the setup portal while the AP is up, else the SPA ────

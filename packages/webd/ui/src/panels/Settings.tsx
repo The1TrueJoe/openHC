@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Check, Lock, AlertTriangle, Server, Share2, Hash } from 'lucide-react';
-import { rest, type ConfigDoc, type MqttWrite } from '../api';
+import { Check, Lock, AlertTriangle, Server, Share2, Hash, Monitor } from 'lucide-react';
+import { rest, type ConfigDoc, type MqttWrite, type DisplayCfg } from '../api';
 
 /** Fields the environment has pinned cannot be edited here: a restart would
  *  discard the change, and a form that silently ignores you is worse than one
@@ -154,6 +154,8 @@ export function SettingsPanel() {
         </Field>
       </section>
 
+      <DisplaySection />
+
       <div className="flex items-center gap-3">
         <button
           onClick={save}
@@ -170,6 +172,81 @@ export function SettingsPanel() {
         )}
       </div>
     </div>
+  );
+}
+
+/** The opt-in on-panel web view. Off by default (the panel shows the openHC
+ *  splash); turning it on runs a full-screen browser on the controller's own
+ *  video output. Its own section with its own apply, independent of the MQTT
+ *  form above — toggling applies at once, the URL has a separate Apply. */
+function DisplaySection() {
+  const [cfg, setCfg] = useState<DisplayCfg | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    rest.display().then(setCfg).catch(() => setCfg({ enabled: false, url: 'http://localhost/' }));
+  }, []);
+
+  if (!cfg) return null;
+
+  async function apply(next: DisplayCfg) {
+    setSaving(true);
+    setNote(null);
+    try {
+      const r = await rest.setDisplay(next);
+      setCfg({ enabled: r.enabled, url: r.url });
+      setNote({
+        ok: true,
+        text: r.enabled
+          ? (r.applied ? 'on — the panel is showing this page' : 'saved — takes effect on the next boot')
+          : 'off — the panel shows the splash',
+      });
+    } catch (e) {
+      setNote({ ok: false, text: String((e as Error).message) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="hair rounded-xl border bg-panel p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Monitor size={16} className="text-accent" />
+        <h2 className="text-sm font-medium">On-panel display</h2>
+      </div>
+      <Toggle
+        label="Show a web page on the controller's own screen"
+        hint="Off by default: the panel shows the openHC splash. Turn this on to run a full-screen browser on the controller's video output — this dashboard, or any page you point it at. EA controllers only; a board with no on-panel browser simply keeps the splash."
+        checked={cfg.enabled}
+        disabled={saving}
+        onChange={(v) => apply({ ...cfg, enabled: v })}
+      />
+      {cfg.enabled && (
+        <div className="mt-3 space-y-3 border-l-2 pl-4 hair">
+          <Field label="Page URL" hint="Defaults to this controller's own dashboard. Must be http:// or https://.">
+            <Text
+              value={cfg.url}
+              placeholder="http://localhost/"
+              onChange={(v) => setCfg({ ...cfg, url: v })}
+            />
+          </Field>
+          <button
+            onClick={() => apply(cfg)}
+            disabled={saving}
+            className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs transition hover:bg-accent/30 disabled:opacity-50"
+          >
+            {saving ? 'Applying…' : 'Apply URL'}
+          </button>
+        </div>
+      )}
+      {note && (
+        <div className={`mt-3 flex items-center gap-1.5 text-xs ${note.ok ? 'text-live' : 'text-alarm'}`}>
+          {note.ok ? <Check size={13} /> : <AlertTriangle size={13} />}
+          {note.text}
+        </div>
+      )}
+    </section>
   );
 }
 
