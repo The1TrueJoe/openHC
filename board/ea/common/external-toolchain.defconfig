@@ -1,0 +1,36 @@
+# openHC — EA family EXTERNAL toolchain selection.
+#
+# NOT part of the normal defconfig composition. build/build.sh appends this file
+# (plus a generated BR2_TOOLCHAIN_EXTERNAL_PATH line) ONLY when OHC_EA_SDK points
+# at a pre-built EA toolchain — see build.sh and .github/workflows/images.yml.
+# Without OHC_EA_SDK the EA boards build their own internal glibc toolchain from
+# board/ea/common/common_defconfig exactly as before; this file is never read.
+#
+# Why: all five EA boards are the SAME target (x86_64 Bonnell, glibc, C++/wchar),
+# so the ~15-min host-gcc is identical. CI builds it ONCE in a `toolchain` job,
+# packages output/host, and the five image jobs consume it here as an external
+# toolchain instead of each rebuilding it from cold.
+#
+# These lines appear AFTER the family common_defconfig in the composition, so the
+# BR2_TOOLCHAIN choice flips from the internal glibc toolchain to this external
+# one (kconfig takes the last assignment of a choice). The capability flags below
+# MUST match what the SDK actually is or Buildroot's toolchain check fails loudly
+# at configure time — EXCEPT BR2_TOOLCHAIN_EXTERNAL_CXX, which if omitted silently
+# drops every C++ package (ICU, harfbuzz, WPE WebKit), so it is the one to never miss.
+#
+# Must track board/ea/common/common_defconfig + board/common/common_defconfig:
+#   GCC_14      <- Buildroot 2026.02.3 default gcc for x86_64 (14.3.0)
+#   HEADERS_6_19 <- board/common sets BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_19
+#   CUSTOM_GLIBC <- the family runs glibc (PowerVR DDK blobs are glibc-linked)
+#   CXX          <- C++/wchar for WPE WebKit + ICU
+# For a glibc external toolchain Buildroot assumes wchar/locale/threads/NPTL/SSP/RPC,
+# so those are not (and cannot be) set here.
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
+BR2_TOOLCHAIN_EXTERNAL_PREINSTALLED=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="x86_64-buildroot-linux-gnu"
+BR2_TOOLCHAIN_EXTERNAL_GCC_14=y
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_6_19=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_GLIBC=y
+BR2_TOOLCHAIN_EXTERNAL_CXX=y
+# BR2_TOOLCHAIN_EXTERNAL_PATH is appended by build.sh from $OHC_EA_SDK.
