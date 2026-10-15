@@ -11,11 +11,14 @@
 # and Buildroot cannot multilib one tree, so these bits cannot be built in the
 # image's own tree. This board is that second tree.
 #
-# WHY STANDALONE (board/gpu-wpe-i386, NOT board/ea/...): build/build.sh routes
-# BOARD=ea* through the x86_64 family base board/ea/common/common_defconfig
-# (BR2_x86_64). Any OTHER board name gets COMMON_CFG="" and builds from the
-# fleet base board/common/common_defconfig + this file alone. The name
-# deliberately avoids the ea* prefix so we do NOT inherit the 64-bit family base.
+# WHY THE NAME IS NOT ea* (though this lives under board/ea/common/): it is
+# EA-specific — the SGX545 DDK is EA hardware — so the tree sits with the rest
+# of the EA display stack (sgx545-um, wpebackend-pvr, webview, sgx545-ce). But
+# build/build.sh routes BOARD=ea* through the x86_64 family base
+# board/ea/common/common_defconfig (BR2_x86_64), and an i386 tree must NOT
+# inherit that. So the board keeps the bare name `gpu-wpe-i386` (not ea*) and
+# build.sh has an explicit case pointing BOARD_DIR here with COMMON_CFG="" —
+# this file builds from the fleet base board/common/common_defconfig alone.
 #
 # The fleet base (board/common/common_defconfig) is always prepended and sets
 # musl + a 7.1.8 kernel + "headers as kernel". kconfig takes the LAST assignment,
@@ -99,4 +102,4 @@ BR2_PACKAGE_WEBVIEW=y
 # the WSEGL only accepts 0 -- without this the compositor renders offscreen and
 # nothing reaches /dev/fb0. (This is source patching; the build/buildroot-patches
 # set patches Buildroot ITSELF and is separate.)
-BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/gpu-wpe-i386/patches"
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/gpu-wpe-i386/patches"

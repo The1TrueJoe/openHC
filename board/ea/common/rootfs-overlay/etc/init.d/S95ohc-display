@@ -12,7 +12,7 @@
 # by the time we point the view at it.
 #
 # The view is the i386 WPE WebKit + SGX545 DDK stack in /opt/sgx-i386-wpe (EA only;
-# see board/gpu-wpe-i386 and [[c4-ea-fat-kernel]]). It renders straight to /dev/fb0
+# see board/ea/common/gpu-wpe-i386 and [[c4-ea-fat-kernel]]). It renders straight to /dev/fb0
 # through the LinuxFB WSEGL, overdrawing the splash. Everything here degrades to a
 # clean no-op (splash stays) when the stack is absent or fb0 is not up — this must
 # never be able to wedge the boot.

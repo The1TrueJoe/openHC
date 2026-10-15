@@ -83,7 +83,7 @@ fi
 
 # ---- bake in the on-panel WPE/SGX sysroot (EA, opt-in) ----------------------
 # The on-screen UI is a 32-bit sysroot: the only SGX545 DDK is i386, so WPE WebKit
-# + the DDK blobs are built in a SEPARATE i386 Buildroot tree (board/gpu-wpe-i386
+# + the DDK blobs are built in a SEPARATE i386 Buildroot tree (board/ea/common/gpu-wpe-i386
 # -> sgx-wpe.yml; /opt/sgx-i386 -> sgx-gpu.yml) and HARVESTED as tarballs, because
 # Buildroot cannot multilib an i386 WebKit into this x86_64 image — the `wpe`
 # feature's package lines `depend on BR2_i386` and kconfig drops them here. So the
