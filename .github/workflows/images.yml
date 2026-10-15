@@ -52,9 +52,12 @@ concurrency:
   group: images-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
-# gh needs write access to attach the image bundles to a release.
+# gh needs write access to attach the image bundles to a release; actions:read
+# lets the EA bake-in step list + download the sgx-wpe/sgx-gpu sysroot artifacts
+# from their own workflow runs (an explicit block defaults the rest to none).
 permissions:
   contents: write
+  actions: read
 
 env:
   BUILDROOT_REF: 2026.02.3
