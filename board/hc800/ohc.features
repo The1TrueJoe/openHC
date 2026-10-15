@@ -10,3 +10,5 @@ restore     # on-box return to stock: ohc-restore arms Control4's factory
             # Control4's own power-on factory reset
 storage     # USB (front) + eSATA (rear, ata2) drives mounted and shared over
             # SMB by ohc-storaged; music on them plays through ohc-audiod
+update      # software updates from the web UI (ohc-updated): stable releases or
+            # the dev channel, installed onto sda3 and rebooted

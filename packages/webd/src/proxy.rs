@@ -49,6 +49,11 @@ pub fn storaged_addr() -> String {
     std::env::var("WEBD_STORAGED_ADDR").unwrap_or_else(|_| "127.0.0.1:7073".into())
 }
 
+/// Where ohc-updated listens — software updates.
+pub fn updated_addr() -> String {
+    std::env::var("WEBD_UPDATED_ADDR").unwrap_or_else(|_| "127.0.0.1:7074".into())
+}
+
 /// The box's mosquitto WebSocket listener (loopback; see
 /// board/common/rootfs-overlay/etc/mosquitto/mosquitto.conf).
 pub fn mqtt_ws_addr() -> String {
@@ -65,6 +70,8 @@ pub async fn handler(mut req: Request) -> Response {
         (audiod_addr(), "/audio", "ohc-audiod")
     } else if path.starts_with("/storage/") {
         (storaged_addr(), "/storage", "ohc-storaged")
+    } else if path.starts_with("/update/") {
+        (updated_addr(), "/update", "ohc-updated")
     } else if path == "/mqtt" {
         (mqtt_ws_addr(), "", "mosquitto")
     } else {
