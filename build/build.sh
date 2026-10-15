@@ -564,6 +564,41 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     "${M[@]}" "$_pkg-rebuild"
 done
 
+# The same trap for Buildroot's OWN packages that a board patches through its
+# BR2_GLOBAL_PATCH_DIR (e.g. board/hc800/patches/cog): patches are applied only
+# at extract time, so a cached build tree keeps building the unpatched source.
+# Re-extract a patched package when one of its patches is not in the build
+# dir's .applied_patches_list (Buildroot records each one it applies), or when
+# the patch set changed since we last saw it. Seen for the first time with every
+# patch already applied, it is only recorded — so a toolchain package with a
+# long-standing patch is not rebuilt for nothing. linux is dircleaned above.
+_gpd=$(sed -n 's/^BR2_GLOBAL_PATCH_DIR="\(.*\)"$/\1/p' "$OUT/.config" | sed "s#\$(BR2_EXTERNAL_OPENHC_PATH)#$REPO/board#g")
+for _root in $_gpd; do
+    for _pd in "$_root"/*/; do
+        [ -d "$_pd" ] || continue
+        _pkg=$(basename "$_pd")
+        [ "$_pkg" = linux ] && continue
+        _bd=$(ls -d "$OUT"/build/"$_pkg"-[0-9]* 2>/dev/null | head -1 || true)
+        [ -n "$_bd" ] || continue        # not built yet: it gets patched when it is
+        _sum=$(find "$_pd" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
+        _sumf="$OUT/build/.ohc-gpatch-$_pkg.sum"
+        _stale=""
+        if [ -f "$_sumf" ]; then
+            [ "$(cat "$_sumf")" = "$_sum" ] || _stale=1
+        else
+            for _p in "$_pd"*.patch; do
+                [ -e "$_p" ] || continue
+                grep -q "$(basename "$_p")" "$_bd/.applied_patches_list" 2>/dev/null || _stale=1
+            done
+        fi
+        if [ -n "$_stale" ]; then
+            echo ">> $_pkg: board patches changed — re-extracting"
+            "${M[@]}" "$_pkg-dirclean"
+        fi
+        printf '%s\n' "$_sum" > "$_sumf"
+    done
+done
+
 "${M[@]}" "${@:-all}"
 
 echo ">> image: $OUT/images/openhc-$BOARD-kernel.img"
