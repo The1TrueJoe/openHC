@@ -78,6 +78,16 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INSTALL_LIBSTDCPP=y
 BR2_USE_WCHAR=y
 
+# A real font, in /usr/share/fonts. The on-panel WPE WebKit (the i386 sysroot in
+# /opt/sgx-i386-wpe) ships fontconfig but NO font files, and at runtime its
+# fontconfig <dir>/usr/share/fonts</dir> resolves to THIS image's /usr/share/fonts
+# — so without a font here every glyph on the panel renders invisibly and the
+# dashboard looks like a blank screen (its light background with no text). DejaVu
+# is fontconfig's canonical sans/serif/mono generic, so the UI's system-font stack
+# (system-ui -> sans-serif) lands on DejaVu Sans. Small, and only the display path
+# uses it; a board that never turns the on-panel view on just carries the files.
+BR2_PACKAGE_DEJAVU=y
+
 # Both point back into this directory, which is the giveaway that they were
 # never per-board settings.
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/patches"

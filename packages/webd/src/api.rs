@@ -63,6 +63,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
     .routes(utoipa_axum::routes!(wifi_scan))
     .routes(utoipa_axum::routes!(wifi_connect))
     .routes(utoipa_axum::routes!(display_get, display_set))
+    .routes(utoipa_axum::routes!(display_screenshot))
     .split_for_parts();
     OWN_SPEC.set(api).ok();
 
@@ -206,6 +207,75 @@ async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Re
         && std::process::Command::new(svc).arg("restart").spawn().is_ok();
     Json(serde_json::json!({ "enabled": d.enabled, "url": url, "applied": applied }))
         .into_response()
+}
+
+// ── Framebuffer screenshot ───────────────────────────────────────────────────
+// What is ACTUALLY on the panel right now, as an image — the on-panel view renders
+// straight to /dev/fb0 with no window system to ask, so a grab of the framebuffer
+// is the only way to see it remotely (and to tell "rendering blank" from "not
+// rendering"). BMP, deliberately: no compression, no new crate, and every browser
+// shows it. The panel is small (720x480) so the ~1.4 MB is fine for the occasional
+// look this is for.
+fn capture_fb() -> Result<Vec<u8>, String> {
+    let rd = |p: &str| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"));
+    let num = |s: &str| s.trim().parse::<usize>().map_err(|e| format!("{s:?}: {e}"));
+    // Geometry from sysfs — no ioctl, no fb_var_screeninfo struct to get wrong.
+    let vs = rd("/sys/class/graphics/fb0/virtual_size")?;
+    let (ws, hs) = vs.trim().split_once(',').ok_or("virtual_size has no comma")?;
+    let (w, h) = (num(ws)?, num(hs)?);
+    let bpp = num(&rd("/sys/class/graphics/fb0/bits_per_pixel")?)?;
+    if bpp != 32 {
+        return Err(format!("only 32bpp is handled, panel is {bpp}bpp"));
+    }
+    // stride (line_length) is usually padded past width*4 (the EA panel is 2944 for
+    // 720 px), so rows must be copied by stride, not width.
+    let stride = rd("/sys/class/graphics/fb0/stride").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(w * 4);
+    let fb = std::fs::read("/dev/fb0").map_err(|e| format!("/dev/fb0: {e}"))?;
+    let row = w * 4;
+    let img = row * h;
+    let mut out = Vec::with_capacity(54 + img);
+    // BITMAPFILEHEADER
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&((54 + img) as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&54u32.to_le_bytes());
+    // BITMAPINFOHEADER — 32bpp BI_RGB, positive height = bottom-up rows.
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(h as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(img as u32).to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    // Pixels bottom-up; fb0 is BGRA, which is exactly BMP 32bpp byte order.
+    for y in (0..h).rev() {
+        let s = y * stride;
+        out.extend_from_slice(fb.get(s..s + row).ok_or("framebuffer shorter than its geometry")?);
+    }
+    Ok(out)
+}
+
+#[utoipa::path(get, path = "/api/display/screenshot", tag = "Display",
+    summary = "Grab the controller's panel as an image",
+    description = "A BMP of /dev/fb0 — what is on the on-panel screen right now (splash, the web \
+view, whatever). Boards with no framebuffer return an error. Handy for a remote look without \
+standing in front of the unit.",
+    responses((status = 200, description = "image/bmp", content_type = "image/bmp")))]
+async fn display_screenshot() -> Response {
+    match capture_fb() {
+        Ok(bmp) => (
+            [(header::CONTENT_TYPE, "image/bmp"),
+             (header::CACHE_CONTROL, "no-store")],
+            bmp,
+        ).into_response(),
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, &format!("no framebuffer grab: {e}")),
+    }
 }
 
 // ── fallback: bounce to the setup portal while the AP is up, else the SPA ────
