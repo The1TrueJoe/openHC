@@ -149,20 +149,20 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		mask |= QUARK_X1000_SSCR1_RFT;
  		break;
-@@ -912,6 +918,12 @@
+@@ -911,6 +918,12 @@
+ 	switch (drv_data->ssp_type) {
  	case QUARK_X1000_SSP:
  		clk_div = quark_x1000_get_clk_div(rate, &chip->dds_rate);
- 		break;
++		break;
 +	case CE5X00_SSP:
 +		/* CE5300: Quark SSCR0 layout but a plain SCR clock. Run DDS at
 +		 * unity or DDS_RATE stays 0 and the bit clock is dead (-EIO). */
 +		chip->dds_rate = GENMASK(23, 0);
 +		clk_div = ssp_get_clk_div(drv_data, rate);
-+		break;
+ 		break;
  	default:
  		clk_div = ssp_get_clk_div(drv_data, rate);
- 		break;
-@@ -955,4 +967,13 @@
+@@ -955,6 +968,15 @@
  	}
  
  	/* Setup the transfer state based on the type of transfer */
@@ -176,7 +176,10 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), GENMASK(23, 0));
 +
  	if (pxa2xx_spi_flush(drv_data) == 0) {
-@@ -1037,6 +1049,6 @@
+ 		dev_err(&spi->dev, "Flush failed\n");
+ 		return -EIO;
+@@ -1036,7 +1058,7 @@
+ 		pxa2xx_spi_update(drv_data, SFIFOTT, mask, thresh);
  	}
  
 -	if (is_quark_x1000_ssp(drv_data))
@@ -184,7 +187,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), chip->dds_rate);
  
  	/* Stop the SSP */
-@@ -1135,6 +1142,7 @@
+@@ -1135,6 +1157,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -192,7 +195,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1181,7 @@
+@@ -1173,7 +1196,7 @@
  		break;
  	}
  
@@ -201,7 +204,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1216,7 @@
+@@ -1208,6 +1231,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -209,7 +212,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1309,7 +1318,8 @@
+@@ -1309,7 +1333,8 @@
  
  	if (pxa25x_ssp_comp(drv_data)) {
  		switch (drv_data->ssp_type) {
@@ -219,7 +222,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
  		default:
-@@ -1372,6 +1382,7 @@
+@@ -1372,6 +1397,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
