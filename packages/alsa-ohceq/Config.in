@@ -1,0 +1,10 @@
+config BR2_PACKAGE_ALSA_OHCEQ
+	bool "alsa-ohceq (per-output tone: bass, treble, balance)"
+	depends on BR2_PACKAGE_ALSA_LIB
+	select BR2_PACKAGE_ALSA_LIB_PCM
+	help
+	  openHC's tone stage, an ALSA filter plugin (pcm type "ohceq"):
+	  shelving bass and treble and left/right balance on 16-bit
+	  stereo, controlled live through mixer controls it creates on
+	  the card, the way softvol does. ohc-audiod puts one in front
+	  of every output and drives those controls.

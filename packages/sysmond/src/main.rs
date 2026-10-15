@@ -188,7 +188,7 @@ async fn fan_auto() -> Json<serde_json::Value> {
 }
 
 fn main() {
-    let bind = std::env::var("SYSMOND_BIND").unwrap_or_else(|_| "0.0.0.0:7071".into());
+    let bind = std::env::var("SYSMOND_BIND").unwrap_or_else(|_| "127.0.0.1:7071".into());
     // Six hours at five seconds is ~4300 samples. Compact, so a few hundred kB.
     let period: u64 = env_num("SYSMOND_PERIOD", 5);
     let window: u64 = env_num("SYSMOND_WINDOW", 6 * 3600);

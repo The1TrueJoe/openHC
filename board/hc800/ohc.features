@@ -8,3 +8,5 @@ audio       # ALC888 HDA: Analog 1 + 2 (rear RCA), coax, HDMI, line in;
 restore     # on-box return to stock: ohc-restore arms Control4's factory
             # restore for one boot (flasher + web UI); the ID button stays
             # Control4's own power-on factory reset
+storage     # USB (front) + eSATA (rear, ata2) drives mounted and shared over
+            # SMB by ohc-storaged; music on them plays through ohc-audiod

@@ -1,0 +1,35 @@
+#!/bin/sh
+# ohc-storaged — external drives (SHARED, board/common). Inert unless the
+# 'storage' feature staged it.
+#
+# Mounts USB (and, where board.env lists the ports, eSATA) drives under /media
+# as they are plugged in and shares them over SMB through the kernel's ksmbd
+# (ksmbd.mountd runs under it). Volumes and eject on the box's MQTT broker
+# (<base>/state/storage/*, <base>/cmd/storage/*), the share settings over REST
+# on :7073 (webd proxies it at /storage/). A udev rule (80-ohc-storage.rules)
+# pokes it when a disk comes or goes. board.env is exported into its
+# environment for OHC_STORAGE_ATA.
+DAEMON=/opt/ohc/bin/ohc-storaged
+PIDFILE=/var/run/ohc-storaged.pid
+
+case "$1" in
+    start)
+        [ -x "$DAEMON" ] || exit 0
+        start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec /bin/sh -- -c \
+            "set -a; . /opt/ohc/board.env; set +a; exec $DAEMON 2>&1 | logger -t ohc-storaged" \
+            && echo "storage: ohc-storaged on :7073"
+        ;;
+    stop)
+        [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE"
+        killall ohc-storaged 2>/dev/null
+        # It unmounts every drive on the way out; wait, so a stop really means
+        # the drives are safe to pull.
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            pidof ohc-storaged >/dev/null || break
+            sleep 0.5
+        done
+        rm -f "$PIDFILE"
+        ;;
+    restart) "$0" stop; sleep 1; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

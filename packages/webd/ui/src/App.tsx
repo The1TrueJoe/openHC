@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, HardDrive } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
@@ -7,6 +7,7 @@ import { SettingsPanel } from './panels/Settings';
 import { DocsPanel } from './panels/Docs';
 import { SystemPanel } from './panels/System';
 import { AudioPanel } from './panels/Audio';
+import { StoragePanel } from './panels/Storage';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -42,7 +43,14 @@ function destinations(c: Capabilities): Dest[] {
   // Audio appears only on a box that actually has it — a sound card or a
   // network receiver — the same "nothing behind it does not appear" rule.
   if (c.audio) {
-    d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} /> });
+    // Full-pane: the panel lays itself out (the switcher fills the window;
+    // the single-output view pads itself).
+    d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} />, full: true });
+  }
+  // Storage appears on boards that run ohc-storaged (the 'storage' feature:
+  // every board with USB).
+  if (c.storage) {
+    d.push({ id: 'storage', label: 'Storage', icon: HardDrive, render: (c) => <StoragePanel caps={c} /> });
   }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
@@ -68,10 +76,10 @@ export default function App() {
     // the topic root to subscribe under. Only then does the IO client connect.
     // Audio is ohc-audiod's (its own daemon and REST); a board without it, or
     // with it down, simply has no Audio entry.
-    Promise.all([rest.capabilities(), rest.config(), rest.audio().catch(() => null)])
-      .then(([caps, cfg, audio]) => {
+    Promise.all([rest.capabilities(), rest.config(), rest.audio().catch(() => null), rest.storage().catch(() => null)])
+      .then(([caps, cfg, audio, storage]) => {
         const hasAudio = !!audio && (!!audio.map || audio.outputs.length > 0 || audio.receivers.some((r) => r.installed));
-        setCaps(hasAudio ? { ...caps, audio: audio! } : caps);
+        setCaps({ ...caps, ...(hasAudio ? { audio: audio! } : {}), ...(storage ? { storage } : {}) });
         io.connect(cfg.topics.base);
       })
       .catch((e: unknown) => setErr(String((e as Error).message ?? e)));
@@ -127,7 +135,7 @@ export default function App() {
       <main
         className={
           here.full
-            ? 'min-w-0 flex-1 overflow-hidden'
+            ? 'relative min-w-0 flex-1 overflow-hidden'
             : 'min-w-0 flex-1 overflow-auto p-5 sm:p-7'
         }
       >

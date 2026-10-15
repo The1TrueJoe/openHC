@@ -20,6 +20,10 @@ LIBRESPOT_SITE_METHOD = git
 # Measured here: fetching the exact URL the github() macro builds gave
 # cc8cb81b..., while Buildroot's own fetch of the same URL got 4a9fdde3...
 # The git method clones the pinned tag and repacks it deterministically instead.
+# 0001: SIGUSR1 makes librespot report its mixer's current level to Spotify.
+# audiod sends it when openHC changes an output's level, so the app's volume
+# slider follows a change made from the web UI or MQTT (upstream librespot only
+# ever pushes volume one way, app -> box).
 LIBRESPOT_LICENSE = MIT
 LIBRESPOT_LICENSE_FILES = LICENSE
 LIBRESPOT_DEPENDENCIES = host-pkgconf alsa-lib

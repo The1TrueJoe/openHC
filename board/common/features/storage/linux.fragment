@@ -1,0 +1,35 @@
+# openHC feature: storage (kernel half) — USB/eSATA drives, mounted by
+# ohc-storaged and shared over SMB by ksmbd.
+#
+# The USB host controller (and, on the HC-800, the AHCI SATA controller behind
+# its eSATA jack) is board hardware and stays in each board's own fragment;
+# this is everything above it.
+
+# Disks over USB: classic mass storage and UAS (most USB 3 enclosures).
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_UAS=y
+CONFIG_MSDOS_PARTITION=y
+CONFIG_EFI_PARTITION=y
+
+# What drives come formatted as: FAT32 and exFAT (sticks, cards, anything
+# formatted on a Mac or PC for both), NTFS (Windows disks; ntfs3, the in-kernel
+# read-write driver), ext4 (Linux), HFS+ (older Mac disks).
+CONFIG_VFAT_FS=y
+CONFIG_EXFAT_FS=y
+CONFIG_NTFS3_FS=y
+CONFIG_EXT4_FS=y
+CONFIG_HFSPLUS_FS=y
+CONFIG_NLS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+
+# ksmbd: the kernel's SMB2/3 file server (Samba is ~40 MB; this is a module's
+# worth). ksmbd-tools' ksmbd.mountd is its user-space half. It pulls in the
+# crypto it needs (MD4/MD5/HMAC/AES-CMAC/GCM...) by itself.
+CONFIG_NETWORK_FILESYSTEMS=y
+CONFIG_SMB_SERVER=y
+CONFIG_FILE_LOCKING=y
+CONFIG_MULTIUSER=y

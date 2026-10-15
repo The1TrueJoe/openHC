@@ -1,5 +1,5 @@
 # openHC — Control4 EA1 v2 PoE. Drops the radio, gains the BCM53125 managed
 # switch (ohc.features: switch), so reachability is wired-only — configure it
 # like an ea3 rather than an ea1-v1. UNVERIFIED ON HARDWARE, including the fuse.
-BR2_TARGET_GENERIC_HOSTNAME="openhc-ea1-v2-poe"
+BR2_TARGET_GENERIC_HOSTNAME="openea1"
 BR2_TARGET_GENERIC_ISSUE="openHC EA1 v2 PoE"

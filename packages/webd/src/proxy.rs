@@ -44,6 +44,11 @@ pub fn audiod_addr() -> String {
     std::env::var("WEBD_AUDIOD_ADDR").unwrap_or_else(|_| "127.0.0.1:7072".into())
 }
 
+/// Where ohc-storaged listens — external drives and the SMB share.
+pub fn storaged_addr() -> String {
+    std::env::var("WEBD_STORAGED_ADDR").unwrap_or_else(|_| "127.0.0.1:7073".into())
+}
+
 /// The box's mosquitto WebSocket listener (loopback; see
 /// board/common/rootfs-overlay/etc/mosquitto/mosquitto.conf).
 pub fn mqtt_ws_addr() -> String {
@@ -58,6 +63,8 @@ pub async fn handler(mut req: Request) -> Response {
         (sysmond_addr(), "/sys", "sysmond")
     } else if path.starts_with("/audio/") {
         (audiod_addr(), "/audio", "ohc-audiod")
+    } else if path.starts_with("/storage/") {
+        (storaged_addr(), "/storage", "ohc-storaged")
     } else if path == "/mqtt" {
         (mqtt_ws_addr(), "", "mosquitto")
     } else {
@@ -70,7 +77,16 @@ pub async fn handler(mut req: Request) -> Response {
     let path = req.uri().path();
     let rest = path.strip_prefix(mount).unwrap_or(path);
     let rest = if rest.is_empty() { "/" } else { rest };
-    let q = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    // The token is for webd (auth.rs) and iod; mosquitto's WebSocket listener
+    // has no use for it, so it does not get it.
+    let q = match req.uri().query() {
+        Some(q) if mount.is_empty() => {
+            let kept: Vec<&str> = q.split('&').filter(|kv| !kv.starts_with("token=")).collect();
+            if kept.is_empty() { String::new() } else { format!("?{}", kept.join("&")) }
+        }
+        Some(q) => format!("?{q}"),
+        None => String::new(),
+    };
     *req.uri_mut() = match format!("{rest}{q}").parse::<Uri>() {
         Ok(u) => u,
         Err(_) => return (StatusCode::BAD_REQUEST, "bad path").into_response(),

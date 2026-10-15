@@ -3,3 +3,5 @@
 #            zigbee2mqtt bridge + cp210x. The CA-1's NCP is on a native UART
 #            (ttymxc4, DTR-reset), not USB, so cp210x just idles here.
 zigbee
+storage     # USB drives mounted and shared over SMB (ohc-storaged); no audio
+            # playback here, so a network share only

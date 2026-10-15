@@ -20,7 +20,8 @@
 //! The MFH is SHA-256 protected and a bad write bricks past the button (recovery
 //! needs an external programmer), so every write here is read-modify-ERASE-write
 //! then READ-BACK-VERIFIED, and the table edit is the byte-for-byte inverse of
-//! the install's (see mfh.rs, shared with the flasher and unit-tested).
+//! the install's (`ohc_flash_core::mfh` — the flasher's own module, unit-tested
+//! there, so the install and its inverse cannot drift apart).
 //!
 //! Subcommands (safe -> destructive):
 //!   status        parse and print the MFH table. No write.
@@ -33,7 +34,7 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
-mod mfh;
+use ohc_flash_core::mfh;
 mod hc800;
 
 const MTD: &str = "/dev/mtd0";

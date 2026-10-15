@@ -1,0 +1,14 @@
+# Storage: USB (and eSATA) drives mounted as they are plugged in and shared over
+# SMB for macOS and Windows. SHARED: every board with USB selects it (HC-800,
+# the EA family, CA-1); the IO Extender has no USB.
+#
+# The daemon is ohc-storaged (packages/storage, staged by this feature's
+# `packages` file): it finds drives on external buses only (USB, and the ATA
+# ports board.env lists in OHC_STORAGE_ATA — never an internal disk), mounts them
+# under /media/<label>, and serves each as an SMB share through ksmbd. Volumes
+# and eject are MQTT (<base>/state/storage/*, <base>/cmd/storage/*), the share
+# settings REST (:7073, webd /storage/). On audio boards ohc-audiod's library
+# player plays music from the same mounts.
+
+# ksmbd's user-space half (ksmbd.mountd, ksmbd.adduser, ksmbd.control).
+BR2_PACKAGE_KSMBD_TOOLS=y
