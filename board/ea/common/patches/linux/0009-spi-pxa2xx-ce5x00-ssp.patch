@@ -162,6 +162,20 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	default:
  		clk_div = ssp_get_clk_div(drv_data, rate);
  		break;
+@@ -955,4 +967,13 @@
+ 	}
+ 
+ 	/* Setup the transfer state based on the type of transfer */
++	/* CE5300: its Quark-style SSCR0 gates the bit clock through DDS_RATE, which
++	 * powers up 0 -> dead clock -> the SSP never leaves BSY and the flush below
++	 * times out ("Flush failed", -EIO). Unlike Quark it needs no fractional
++	 * divisor, so drive DDS at unity here, BEFORE the flush, every transfer; the
++	 * is_quark DDS write later in this function is too late (the flush already
++	 * failed and returned). */
++	if (drv_data->ssp_type == CE5X00_SSP)
++		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), GENMASK(23, 0));
++
+ 	if (pxa2xx_spi_flush(drv_data) == 0) {
 @@ -1037,6 +1049,6 @@
  	}
  
