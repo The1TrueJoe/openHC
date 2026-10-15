@@ -7,15 +7,19 @@
 # PowerVR backend is not needed here: stock wpebackend-fdo, and cog on its DRM
 # platform presents straight to KMS — no compositor, no X.
 #
-# The GPU is Shader Model 2.0 class (GLSL 1.20, 64 ALU / 32 TEX instructions,
-# vertex shaders on the CPU): plain compositing works, blurs and filters will
-# not. softpipe is the correctness fallback (GALLIUM_DRIVER=softpipe), slow on
-# this SSSE3-only Atom; there is no llvmpipe (LLVM is a very long build).
+# The GPU is Shader Model 2.0 class (GLSL 1.20, 64 ALU / 32 TEX instructions)
+# with NO vertex shader hardware: Mesa runs vertex shaders on the CPU through
+# LLVM (gallivm), and since Mesa 26 the i915 driver will not configure without
+# it ("i915 Gallium driver requires LLVM for vertex shaders"). LLVM is a long
+# first build; the CI build cache carries it after that. With it comes
+# llvmpipe, the software fallback (GALLIUM_DRIVER=llvmpipe) for what the GPU
+# cannot do — plain compositing works on i915, blurs and filters may not.
 
-# Mesa: i915 (+ softpipe), with EGL, GLES and GBM.
+# Mesa: i915 + llvmpipe, with EGL, GLES and GBM.
 BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_LLVM=y
 BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_I915=y
-BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SOFTPIPE=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_LLVMPIPE=y
 BR2_PACKAGE_MESA3D_OPENGL_EGL=y
 BR2_PACKAGE_MESA3D_OPENGL_ES=y
 BR2_PACKAGE_MESA3D_GBM=y
