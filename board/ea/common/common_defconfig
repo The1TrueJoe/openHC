@@ -62,6 +62,25 @@ BR2_PACKAGE_MTD=y
 BR2_PACKAGE_KEXEC=y
 BR2_PACKAGE_KEXEC_ZLIB=y
 
+# --- ccache: share compiled objects across the EA family and across CI runs ---
+# Every EA board is the same x86_64 glibc target and compiles the SAME heavy
+# common userspace — glibc, ICU, harfbuzz, libstdc++ and above all WPE WebKit
+# (~1.1 GB/job, the single dominant cost). Without a shared cache each of the
+# five EA images recompiles all of it from source, and a cold CI runner does it
+# again every time the per-board output cache is evicted. ccache wraps HOSTCC
+# and the cross compiler, so a translation unit built once for ea1-v2 is a cache
+# hit for ea3-v2 and for the next run — the toolchain build included.
+#
+# CI points BR2_CCACHE_DIR at a cached directory (see .github/workflows/images.yml)
+# and the whole EA family shares one key, so the cache fills on the first board
+# and every later board/run reads it. Harmless locally: with no cached dir it
+# lands in Buildroot's default and simply starts empty.
+#
+# Capped so one family's cache cannot crowd the others out of GitHub's 10 GB
+# repo-cache budget; ccache evicts its own LRU objects past the limit.
+BR2_CCACHE=y
+BR2_CCACHE_INITIAL_SETUP="--max-size=3G"
+
 # --- C library: glibc, not the shared musl default ---
 # The EA family runs Intel's PowerVR DDK userspace (packages/sgx545-um) for 3D,
 # and those blobs are glibc-linked — a musl system cannot load them at all.

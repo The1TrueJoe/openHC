@@ -382,6 +382,14 @@ BR2_EXT="$REPO/board${OHC_EXTRA_EXTERNAL:+ $OHC_EXTRA_EXTERNAL}"
 M=(make -C "$BUILDROOT_DIR" O="$OUT" BR2_EXTERNAL="$BR2_EXT"
    BR2_DL_DIR="$DL" BR2_JLEVEL="$JOBS")
 
+# ccache lives OUTSIDE the per-board output tree so the whole family (and every
+# CI run) shares one, cached on its own key — see board/ea/common/common_defconfig
+# and .github/workflows/images.yml. Only override when BR2_CCACHE_DIR is set in
+# the environment: passing an empty value would blank Buildroot's own default
+# and scatter a fresh cache into $OUT, defeating the point. A board whose
+# defconfig does not enable BR2_CCACHE ignores this.
+[ -n "${BR2_CCACHE_DIR:-}" ] && M+=(BR2_CCACHE_DIR="$BR2_CCACHE_DIR")
+
 # Wipe the output tree, keeping the generated defconfig.
 #
 # $EFFECTIVE is written INSIDE $OUT, so a plain `rm -rf "$OUT"` deletes the
