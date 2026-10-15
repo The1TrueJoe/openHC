@@ -279,8 +279,9 @@ async fn restore_stock(confirm: bool) -> Out {
         return Err(Fault::NoSuch("no restore support on this board".into()));
     }
     // Detached: the recovery kexec reboots the box, so we must not wait on it.
+    // `--yes` is ohc-restore's own confirm gate (this call is the UI's confirm).
     std::process::Command::new(RESTORE_BIN)
-        .arg("stock")
+        .args(["stock", "--yes"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

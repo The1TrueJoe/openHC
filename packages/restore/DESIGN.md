@@ -153,9 +153,36 @@ does more than lay down `recfs.tar.xz` (unlikely to matter — kernel is untouch
 p2 is intact) we would not replicate it; and it needs a small RAM-recovery mode in
 `boot-init`.
 
-**Recommendation: Path 2** as the default (it adds no unproven SPI-NOR write), with
-Path 1 available if you want the exact factory operation and are willing to capture
-a `flash mfhadd c4_params` diff first to validate it.
+**Chosen: Path 2** (no unproven SPI-NOR write). Path 1 remains available later if a
+byte-exact factory operation is ever wanted (capture a `flash mfhadd c4_params` diff
+first to validate it).
+
+### Path 2 as implemented (`ohc-restore stock --yes`)
+
+1. Preconditions (fail before anything destructive): `kexec`/`unxz`/`tar`/
+   `busybox`/`cpio` present; p2 holds `recfs.tar.xz`.
+2. Stage the openHC kernel from the eMMC gap (`0x800000`; `/boot` is empty), verify
+   its `HdrS` magic.
+3. Build a tiny **recovery initramfs** (busybox + its loader/libc + `ohc-restore`
+   itself + a shell `/init`) and `kexec -l … --initrd=… --command-line="… ohc.recovery=stock"`.
+4. The recovery `/init`, running in RAM (p1 is not its root): mount p2 ro; **reuse
+   p1's existing ext4** (empty it — no `mkfs`, so no e2fsprogs closure, and p1 keeps
+   its LABEL/UUID); `unxz -c recfs.tar.xz | tar -x -C /mnt/p1`; then — **only after a
+   verified-good extract** — `ohc-restore revert` (the proven enable-byte + MFH-item
+   clear, the one and only SPI-NOR write); `reboot -f`.
+5. Cold boot → CEFDK (autoscript reverted) → stock kernel item → stock p1.
+
+Fail-safe: if the extract fails, the autoscript is left enabled, so the next boot
+re-runs openHC's `boot-init`, which reinstalls openHC from the eMMC-staged image —
+the box heals back to openHC rather than stranding. kexec is a soft load that
+ignores the MFH, so the recovery runs regardless of boot-config state.
+
+**The one destructive live test** (box recoverable here via serial + p2 + CH341A):
+cross-build `ohc-restore` (host → i686-musl, run from `/tmp`), then
+`ohc-restore stock --yes` and watch serial: expect the kexec into the recovery
+initramfs, the p1 empty+extract, `revert`, reboot, and stock Control4 back on p1
+(nginx at the stock IP). The on-box `/opt/ohc/bin/ohc-restore` is stale (pre-#40),
+so use the freshly built one.
 
 ## The switch surface (ohc-restore → iod → web UI / MQTT)
 
@@ -173,13 +200,13 @@ for the instant-toggle model we rejected in favour of this one.
 
 ## Status
 
-Landed (PR #43, no box needed): the tar-extraction fix and the
-container-classification guard so `stock` can never strand the box. Confirmed on
-the live EA3 (read-only, 2026-10-15): the real restore mechanism (`c4_params`
-flag), that `recovery_kernel.deb` is a kernel installer, that openHC has
-`unxz`/`tar`, the 13-item MFH table state, and that the box's installed
-`/opt/ohc/bin/ohc-restore` is **stale (pre-PR #40)** and misreports state — redeploy
-the new binary for any live test. Remaining (pending the Path 1 vs 2 choice):
-implement `ohc-restore stock` for that path, add the `boot-init` recovery mode
-(Path 2) or the validated `c4_params` append + `mfh.rs` test (Path 1), and wire the
-web-UI/iod backend to it.
+Landed (PR #43): `ohc-restore stock --yes` implements Path 2 end to end (kexec a
+recovery initramfs → rebuild p1 from `recfs.tar.xz` → proven `revert` → reboot),
+host-compiles with unit tests pinning the recovery `/init` contract; iod's
+`restore.stock` passes `--yes`; the web UI's existing red "Return to stock" control
+drives it unchanged. Confirmed on the live EA3 (read-only, 2026-10-15): the real
+restore mechanism, that `recovery_kernel.deb` is a kernel installer, that openHC
+has `unxz`/`tar`/`kexec`, that p1 is ext4 `LABEL=rootfs` and `recfs.tar.xz` is a
+plain tar, and that the box's installed `/opt/ohc/bin/ohc-restore` is **stale
+(pre-#40)**. Remaining: the one destructive live test above (not run — the box is
+mid switch-DDS reflash and owned by that session).
