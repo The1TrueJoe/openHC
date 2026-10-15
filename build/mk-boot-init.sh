@@ -52,6 +52,12 @@ if ! ls "$WORK"/lib/ld-*.so* >/dev/null 2>&1; then
     echo "mk-boot-init: ERROR no dynamic loader (ld-*.so) found in $TARGET/lib" >&2
     exit 1
 fi
+# The x86_64 busybox's PT_INTERP is /lib64/ld-linux-x86-64.so.2, but the loader
+# was copied into /lib. Without /lib64 the kernel cannot resolve the interpreter
+# and `exec /init` fails with ENOENT -> "Kernel panic - No working init found".
+# A /lib64 -> lib symlink makes the interp path resolve. PROVEN failure on an EA3
+# (x86_64 userspace): every boot-init panicked here until this symlink existed.
+ln -sf lib "$WORK/lib64"
 
 # Applet symlinks the /init calls (busybox resolves the rest by argv[0]). The
 # second group is the no-serial network-install path (see board/.../boot-init/init

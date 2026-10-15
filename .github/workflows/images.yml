@@ -119,11 +119,67 @@ jobs:
 
           # Shared trees affect every board. build/ and the flasher are in here
           # because build.sh drives the build and post-image calls ohc-flash.
-          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|packages/|build/|flasher/|Makefile)'; then
+          # packages/ is NOT here any more — a daemon change is scoped to the
+          # boards that actually ship it, further down.
+          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|flasher/|Makefile)'; then
             echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           sel=()
+
+          # packages/ — the Rust daemons, staged into the overlay. A change here
+          # used to rebuild all eight images; instead map it to the boards that
+          # ship the touched crate. packages/build.sh <board> --crates lists the
+          # top-level crates a board gets (core iod/webd/sysmond + its features'),
+          # resolved from ohc.features with no build, so it is cheap to ask here.
+          pkgchanged=$(echo "$changed" | grep -E '^packages/' || true)
+          if [ -n "$pkgchanged" ]; then
+            # Workspace-wide inputs rebuild every board: the lockfile, the
+            # workspace manifest, the shared cargo/toolchain config, and the
+            # staging driver itself all change what every board compiles.
+            if echo "$pkgchanged" | grep -qE '^packages/(Cargo\.(toml|lock)|\.cargo/|rust-toolchain|build\.sh|README)'; then
+              echo ">> packages/: workspace-wide file changed — building all"
+              echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            # The crate each changed file lives in (first path component). A file
+            # sitting directly under packages/ is not attributable to one crate,
+            # so treat it as workspace-wide and build everything.
+            crates=""
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              c=$(printf '%s\n' "$f" | sed -n 's#^packages/\([^/]*\)/.*#\1#p')
+              [ -z "$c" ] && { echo ">> packages/: unattributable file '$f' — building all"; echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0; }
+              crates="$crates $c"
+            done <<EOF
+          $pkgchanged
+          EOF
+            crates=$(printf '%s\n' $crates | awk 'NF' | sort -u | tr '\n' ' ')
+            echo ">> changed package crates: $crates"
+            # Each board's shipped crates, asked once, as padded lines
+            # "<board>  <crate> <crate> " so a whole-word " <crate> " grep cannot
+            # match a board name or a crate substring. No associative arrays —
+            # the select runner is bash but this stays portable regardless.
+            ships_table=$(for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
+              printf '%s  %s \n' "$b" "$(bash packages/build.sh "$b" --crates 2>/dev/null)"
+            done)
+            for c in $crates; do
+              # || true: a no-match grep under `set -o pipefail` would otherwise
+              # abort the whole step before the shared-dependency fallback below
+              # — and that silent abort resolves to an EMPTY board list, i.e. a
+              # crate change that builds nothing. The empty hits must reach the
+              # `[ -z ]` test, not kill the script.
+              hits=$(printf '%s\n' "$ships_table" | grep -F " $c " | awk '{print $1}' || true)
+              # A crate no board lists via --crates is a shared DEPENDENCY (e.g.
+              # librespot, alsa-ohceq, ohcmqtt — pulled in by audiod/iod, never
+              # built with their own -p). We cannot cheaply know which top-level
+              # crates depend on it, so be safe and build everything.
+              if [ -z "$hits" ]; then
+                echo ">> crate '$c' is a shared dependency (no board ships it directly) — building all"
+                echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+              for b in $hits; do sel+=("$b"); done
+            done
+          fi
           # ea/common is shared by the EA family only.
           if echo "$changed" | grep -qE '^board/ea/common/'; then
             sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
@@ -436,8 +492,12 @@ jobs:
       #                  dies at target-finalize with
       #                  "sed: can't read .../target/etc/hosts".
       #   staging/       NO, for the same reason.
+      # Not when cancelled: a cancel kills Buildroot mid-write, and that tree is
+      # poison to the next run (a half-linked host libcrypto broke every board
+      # that restored one). A FAILED build is still saved — its broken package
+      # has no stamp, so Buildroot redoes it — and keeps everything before it.
       - name: Trim the output tree before caching
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           O=output/build/${{ matrix.board }}
           [ -d "$O" ] || exit 0
@@ -445,7 +505,7 @@ jobs:
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
       - name: Save Buildroot output tree
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}

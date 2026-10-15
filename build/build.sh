@@ -539,6 +539,26 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     _pkg=$(basename "$(dirname "$_mk")")
     # only if this build selects it, else make has no such target
     _sym="BR2_PACKAGE_$(echo "$_pkg" | tr 'a-z-' 'A-Z_')"
+    # Both of these must not fail under `set -e` (a failing command substitution
+    # in an assignment aborts the script): grep finding nothing, cat meeting a
+    # subdirectory.
+    if grep -q '\$(eval \$(host-' "$_mk"; then _host=1; else _host=""; fi
+    _want_sum=$(find "$(dirname "$_mk")" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
+    _sumf="$OUT/build/.ohc-pkg-$_pkg.sum"
+    # A changed recipe or patch set needs the source RE-EXTRACTED and
+    # re-patched, which -rebuild never does (it keeps the patched tree): a
+    # fixed patch for ohc-shairport-sync was ignored that way and the build kept
+    # failing on the old one. So when the package's directory changed since this
+    # tree last built it, dirclean it (and its host- variant) first.
+    if [ "$(cat "$_sumf" 2>/dev/null)" != "$_want_sum" ]; then
+        if grep -q "^$_sym=y\$" "$OUT/.config" 2>/dev/null; then
+            echo ">> $_pkg: recipe or patches changed — re-extracting"
+            "${M[@]}" "$_pkg-dirclean"
+        fi
+        [ -n "$_host" ] && [ -d "$OUT/build" ] && \
+            for _d in "$OUT"/build/host-"$_pkg"-*; do [ -d "$_d" ] && "${M[@]}" "host-$_pkg-dirclean" && break; done
+        mkdir -p "$OUT/build" && printf '%s\n' "$_want_sum" > "$_sumf"
+    fi
     grep -q "^$_sym=y\$" "$OUT/.config" 2>/dev/null || continue
     echo ">> $_pkg: forcing rebuild (we maintain it; its stamps mean nothing)"
     "${M[@]}" "$_pkg-rebuild"
