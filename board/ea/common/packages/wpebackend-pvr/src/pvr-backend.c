@@ -24,6 +24,7 @@
  * included directly, and EGL/egl.h is needed for EGL_DEFAULT_DISPLAY.
  */
 #include <EGL/egl.h>
+#include <GLES2/gl2.h>
 #include <wpe/wpe.h>
 #include <wpe/wpe-egl.h>
 
@@ -107,18 +108,25 @@ static void rt_initialize(void *data, void *backend, uint32_t width, uint32_t he
 		t->width = width;
 		t->height = height;
 	}
+	fprintf(stderr, "pvrbk: rt_initialize %ux%u\n", width, height); fflush(stderr);
 }
 
 static EGLNativeWindowType rt_get_native_window(void *data)
 {
 	(void)data;
+	fprintf(stderr, "pvrbk: rt_get_native_window\n"); fflush(stderr);
 	/*
-	 * With MESA_EGL_NO_X11_HEADERS the DDK's EGLNativeWindowType is a plain
-	 * integer, and its LinuxFB WSEGL ignores the value -- there is exactly
-	 * one surface and it is the framebuffer. Returning 0 is correct, not a
-	 * placeholder.
+	 * MUST be non-zero. The DDK's LinuxFB WSEGL ignores the handle value (there
+	 * is one surface and it is the framebuffer), so the value itself is a
+	 * don't-care to EGL. But WebKit's GLContext::create() treats the handle as a
+	 * truthiness flag: `window ? createWindowContext() : createOffscreenContext()`
+	 * (GLContext.cpp). Returning 0 sent the compositor down the OFFSCREEN path --
+	 * it rendered to a surfaceless/pbuffer target and swapped to nothing, so not
+	 * one frame reached /dev/fb0 despite a clean, "rendered" frame. Any non-zero
+	 * value makes WebKit create a real fbdev window surface via
+	 * eglCreateWindowSurface, whose swap the WSEGL blits to the panel.
 	 */
-	return (EGLNativeWindowType)0;
+	return (EGLNativeWindowType)1;
 }
 
 static void rt_resize(void *data, uint32_t width, uint32_t height)
@@ -135,6 +143,7 @@ static void rt_resize(void *data, uint32_t width, uint32_t height)
 static void rt_frame_will_render(void *data)
 {
 	(void)data;
+	fprintf(stderr, "pvrbk: rt_frame_will_render\n"); fflush(stderr);
 }
 
 static void rt_frame_rendered(void *data)
@@ -156,6 +165,22 @@ static void rt_frame_rendered(void *data)
 	 * regardless of scene complexity -- the cost is one full-surface copy
 	 * per frame, not the rendering.
 	 */
+	{
+		/* DIAG: can we even read WebKit's rendered frame here? If the centre
+		 * pixel comes back as the page colour, a web-process readback->fb0
+		 * present is viable; glErr/fbo tell us what is bound. */
+		GLint fbo = -1;
+		GLubyte px[4] = { 0, 0, 0, 0 };
+		GLenum err;
+		GLint cx = t ? (GLint)(t->width / 2) : 360;
+		GLint cy = t ? (GLint)(t->height / 2) : 240;
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+		glReadPixels(cx, cy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+		err = glGetError();
+		fprintf(stderr, "pvrbk: rt_frame_rendered fbo=%d center=%02x%02x%02x%02x glErr=0x%x\n",
+			fbo, px[0], px[1], px[2], px[3], err);
+		fflush(stderr);
+	}
 	if (t && t->wpe)
 		wpe_renderer_backend_egl_target_dispatch_frame_complete(t->wpe);
 }
@@ -300,6 +325,18 @@ static void vb_initialize(void *data)
 	if (v && v->wpe) {
 		pvr_panel_size(&w, &h);
 		wpe_view_backend_dispatch_set_size(v->wpe, w, h);
+		/*
+		 * ...and report the view visible/in-window/focused. WebKit renders
+		 * nothing for a view it believes is hidden: on a desktop the toolkit
+		 * tracks window visibility and drives this, but this is a single
+		 * full-screen surface with no window system, so the backend must
+		 * assert the active state itself. Without it webview starts cleanly,
+		 * the WebProcess initialises EGL, and not one frame reaches /dev/fb0.
+		 */
+		wpe_view_backend_add_activity_state(v->wpe,
+			wpe_view_activity_state_visible |
+			wpe_view_activity_state_in_window |
+			wpe_view_activity_state_focused);
 	}
 }
 

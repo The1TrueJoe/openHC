@@ -1,0 +1,65 @@
+#!/bin/sh
+# Opt-in on-screen web view — HC-800.
+#
+# Same contract as the EAs' S95ohc-display (board/ea/common): DISABLED BY
+# DEFAULT, the screen shows the openHC splash (S01splash) until the web UI turns
+# the view on. webd's POST /api/display writes the config (OHC_DISPLAY_ENABLE=1,
+# OHC_DISPLAY_URL=..., OHC_DISPLAY_THEME=auto|light|dark) and restarts this.
+# Here the config lives on /data (board.env OHC_DISPLAY_CONF): /opt is the
+# initramfs on this board, so it would not survive a reboot.
+#
+# What differs from the EA is only the display stack (the wpe feature): cog on
+# its DRM platform, through Mesa's i915 driver on the GMA 3150, straight to KMS on
+# the output that feeds the component jack. Restarted if it exits.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+CONF="${OHC_DISPLAY_CONF:-/opt/ohc/display.conf}"
+RUN=/run/ohc/display
+PIDF=/run/ohc-display.pid
+
+OHC_DISPLAY_ENABLE=0
+OHC_DISPLAY_URL=http://localhost/
+OHC_DISPLAY_THEME=auto
+[ -r "$CONF" ] && . "$CONF"
+
+start() {
+	[ "$OHC_DISPLAY_ENABLE" = 1 ] || {
+		echo "ohc-display: disabled — the screen shows the splash (enable it from the web UI)"
+		exit 0
+	}
+	[ -x /usr/bin/cog ] || { echo "ohc-display: no cog — the wpe feature is not in this image" >&2; exit 0; }
+	[ -e /dev/dri/card0 ] || { echo "ohc-display: no /dev/dri/card0" >&2; exit 0; }
+	url="$OHC_DISPLAY_URL"
+	# cog has no native light/dark switch (the EA's webview has); the openHC
+	# dashboard reads ?theme= instead, so pass it there.
+	case "$OHC_DISPLAY_THEME:$url" in
+		light:http://localhost/*|dark:http://localhost/*)
+			case "$url" in *\?*) url="$url&theme=$OHC_DISPLAY_THEME" ;; *) url="$url?theme=$OHC_DISPLAY_THEME" ;; esac ;;
+	esac
+	mkdir -p "$RUN" && chmod 0700 "$RUN"
+	echo "ohc-display: starting the on-screen web view -> $url"
+	# WebKit wants a HOME for its caches, wpebackend-fdo an XDG_RUNTIME_DIR for
+	# its private Wayland socket.
+	start-stop-daemon -S -q -b -m -p "$PIDF" -x /bin/sh -- -c "
+		export HOME=$RUN XDG_RUNTIME_DIR=$RUN
+		while :; do
+			/usr/bin/cog --platform=drm '$url' 2>&1 | logger -t ohc-display
+			sleep 3
+		done"
+}
+
+stop() {
+	[ -f "$PIDF" ] && start-stop-daemon -K -q -p "$PIDF"
+	rm -f "$PIDF"
+	for n in cog WPEWebProcess WPENetworkProcess; do
+		killall -q "$n" 2>/dev/null || true
+	done
+	# Give the screen back to the splash.
+	[ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash start >/dev/null 2>&1
+}
+
+case "$1" in
+	start)          start ;;
+	stop)           stop ;;
+	restart|reload) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

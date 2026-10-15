@@ -9,7 +9,7 @@ use axum::{
     },
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, get},
     Json, Router,
 };
 use std::sync::Arc;
@@ -46,7 +46,8 @@ to rather than a request/response. See the AsyncAPI document.",
     tags(
         (name = "Board", description = "Identity, capabilities and runtime state of this unit."),
         (name = "Wi-Fi", description = "Setup-AP scanning and joining."),
-        (name = "Display", description = "The on-screen web surface: what the TV shows."),
+        (name = "Display", description = "The opt-in on-panel web view (off by default; the panel \
+shows the splash until it is enabled here)."),
         (name = "Reference", description = "The specifications this box serves."),
     )
 )]
@@ -61,7 +62,8 @@ pub fn router(cfg: Arc<Config>) -> Router {
     .routes(utoipa_axum::routes!(sys))
     .routes(utoipa_axum::routes!(wifi_scan))
     .routes(utoipa_axum::routes!(wifi_connect))
-    .routes(utoipa_axum::routes!(display_get, display_put))
+    .routes(utoipa_axum::routes!(display_get, display_set))
+    .routes(utoipa_axum::routes!(display_screenshot))
     .split_for_parts();
     OWN_SPEC.set(api).ok();
 
@@ -138,32 +140,177 @@ async fn wifi_connect(State(c): State<Arc<Config>>, Json(b): Json<WifiBody>) -> 
     }
 }
 
-// ── the on-screen URL (display.rs; shown by S97webview) ──────────────────────
-#[utoipa::path(get, path = "/api/display", tag = "Display",
-    summary = "The on-screen URL",
-    description = "The page the board shows full screen on its video output. Empty: the splash \
-only. `available` says whether this image has a display program at all.",
-    responses((status = 200, description = "display", body = crate::display::Display)))]
-async fn display_get() -> Json<crate::display::Display> {
-    Json(crate::display::get())
+// ── On-panel web view (opt-in) ───────────────────────────────────────────────
+// The panel shows the openHC splash by default; this turns the on-screen browser
+// on and points it somewhere. State lives in /opt/ohc/display.conf, which the
+// S95ohc-display init script sources — see that script for the launch itself.
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+struct Display {
+    /// Show the on-panel web view. Off by default: a fresh box shows the splash.
+    enabled: bool,
+    /// Page the view loads; defaults to this controller's own dashboard.
+    url: String,
+    /// Day/night for the on-panel view: "auto" (follow the page's own preference),
+    /// "light" or "dark". The panel has no OS light/dark signal, so this forces it;
+    /// passed to the dashboard as ?theme= (the UI keys off it).
+    #[serde(default = "default_theme")]
+    theme: String,
+}
+fn default_theme() -> String { "auto".into() }
+impl Default for Display {
+    fn default() -> Self {
+        Self { enabled: false, url: "http://localhost/".into(), theme: default_theme() }
+    }
 }
 
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-struct DisplayBody {
-    /// http(s) URL, or empty for the splash only.
-    url: String,
+/// display.conf sits next to board.env (that path is overridable for tests) —
+/// unless board.env names another with OHC_DISPLAY_CONF. That matters where
+/// /opt is RAM: the HC-800's rootfs is an initramfs, so it keeps the setting on
+/// /data instead (the EAs' eMMC rootfs keeps /opt across reboots).
+fn display_conf(cfg: &Config) -> std::path::PathBuf {
+    let named = std::fs::read_to_string(&cfg.board_env).ok().and_then(|env| {
+        env.lines().find_map(|l| {
+            let v = l.trim().strip_prefix("OHC_DISPLAY_CONF=")?;
+            let v = v.split('#').next().unwrap_or("").trim().trim_matches('"').trim_matches('\'');
+            (!v.is_empty()).then(|| std::path::PathBuf::from(v))
+        })
+    });
+    if let Some(p) = named {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        return p;
+    }
+    std::path::Path::new(&cfg.board_env)
+        .parent().unwrap_or_else(|| std::path::Path::new("/opt/ohc"))
+        .join("display.conf")
 }
-#[utoipa::path(put, path = "/api/display", tag = "Display",
-    summary = "Set (or clear) the on-screen URL",
-    description = "Saved on /data and shown at once (the display program restarts on it); empty \
-gives the screen back to the splash. Survives reboots.",
-    request_body = DisplayBody,
-    responses((status = 200, description = "saved", body = crate::display::Display),
-              (status = 400, description = "not an http(s) URL it can carry")))]
-async fn display_put(Json(b): Json<DisplayBody>) -> Response {
-    match crate::display::set(&b.url) {
-        Ok(d) => Json(d).into_response(),
-        Err(e) => err(StatusCode::BAD_REQUEST, &e),
+
+fn read_display(cfg: &Config) -> Display {
+    let mut d = Display::default();
+    if let Ok(s) = std::fs::read_to_string(display_conf(cfg)) {
+        for line in s.lines() {
+            let Some((k, v)) = line.trim().split_once('=') else { continue };
+            let v = v.trim().trim_matches('"').trim_matches('\'');
+            match k.trim() {
+                "OHC_DISPLAY_ENABLE" => d.enabled = v == "1",
+                "OHC_DISPLAY_URL" if !v.is_empty() => d.url = v.to_string(),
+                "OHC_DISPLAY_THEME" if !v.is_empty() => d.theme = v.to_string(),
+                _ => {}
+            }
+        }
+    }
+    d
+}
+
+#[utoipa::path(get, path = "/api/display", tag = "Display",
+    summary = "On-panel web-view state",
+    description = "Reads /opt/ohc/display.conf. Off by default — a fresh box shows the splash.",
+    responses((status = 200, description = "display config")))]
+async fn display_get(State(c): State<Arc<Config>>) -> Json<Display> {
+    Json(read_display(&c))
+}
+
+#[utoipa::path(post, path = "/api/display", tag = "Display",
+    summary = "Turn the on-panel web view on/off and set its URL",
+    description = "Writes /opt/ohc/display.conf and restarts the display service to apply it now \
+(the EAs and the HC-800; a no-op on boards without an on-screen display program). The config persists, so the choice \
+survives a reboot.",
+    responses((status = 200, description = "applied")))]
+async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Response {
+    let url = d.url.trim();
+    if d.enabled && !(url.starts_with("http://") || url.starts_with("https://")) {
+        return err(StatusCode::BAD_REQUEST, "url must start with http:// or https://");
+    }
+    let url = if url.is_empty() { "http://localhost/" } else { url };
+    let theme = match d.theme.trim() {
+        "light" => "light", "dark" => "dark", _ => "auto",
+    };
+    let body = format!(
+        "# written by webd POST /api/display — the on-panel web view\n\
+         OHC_DISPLAY_ENABLE={}\nOHC_DISPLAY_URL={}\nOHC_DISPLAY_THEME={}\n",
+        if d.enabled { 1 } else { 0 }, url, theme);
+    let path = display_conf(&c);
+    if let Err(e) = std::fs::write(&path, body) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("cannot write {}: {e}", path.display()));
+    }
+    // Apply now by restarting the display service — fire-and-forget (it backgrounds
+    // the view). Absent on non-EA boards; the persisted config still takes effect
+    // on the next boot, so a missing service is not an error.
+    let svc = "/etc/init.d/S95ohc-display"; // per board: the EAs' webview, the HC-800's cog
+    let applied = std::path::Path::new(svc).exists()
+        && std::process::Command::new(svc).arg("restart").spawn().is_ok();
+    Json(serde_json::json!({ "enabled": d.enabled, "url": url, "theme": theme, "applied": applied }))
+        .into_response()
+}
+
+// ── Framebuffer screenshot ───────────────────────────────────────────────────
+// What is ACTUALLY on the panel right now, as an image — the on-panel view renders
+// straight to /dev/fb0 with no window system to ask, so a grab of the framebuffer
+// is the only way to see it remotely (and to tell "rendering blank" from "not
+// rendering"). BMP, deliberately: no compression, no new crate, and every browser
+// shows it. The panel is small (720x480) so the ~1.4 MB is fine for the occasional
+// look this is for.
+fn capture_fb() -> Result<Vec<u8>, String> {
+    let rd = |p: &str| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"));
+    let num = |s: &str| s.trim().parse::<usize>().map_err(|e| format!("{s:?}: {e}"));
+    // Geometry from sysfs — no ioctl, no fb_var_screeninfo struct to get wrong.
+    let vs = rd("/sys/class/graphics/fb0/virtual_size")?;
+    let (ws, hs) = vs.trim().split_once(',').ok_or("virtual_size has no comma")?;
+    let (w, h) = (num(ws)?, num(hs)?);
+    let bpp = num(&rd("/sys/class/graphics/fb0/bits_per_pixel")?)?;
+    if bpp != 32 {
+        return Err(format!("only 32bpp is handled, panel is {bpp}bpp"));
+    }
+    // stride (line_length) is usually padded past width*4 (the EA panel is 2944 for
+    // 720 px), so rows must be copied by stride, not width.
+    let stride = rd("/sys/class/graphics/fb0/stride").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(w * 4);
+    let fb = std::fs::read("/dev/fb0").map_err(|e| format!("/dev/fb0: {e}"))?;
+    let row = w * 4;
+    let img = row * h;
+    let mut out = Vec::with_capacity(54 + img);
+    // BITMAPFILEHEADER
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&((54 + img) as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&54u32.to_le_bytes());
+    // BITMAPINFOHEADER — 32bpp BI_RGB, positive height = bottom-up rows.
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(h as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(img as u32).to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    // Pixels bottom-up; fb0 is BGRA, which is exactly BMP 32bpp byte order.
+    for y in (0..h).rev() {
+        let s = y * stride;
+        out.extend_from_slice(fb.get(s..s + row).ok_or("framebuffer shorter than its geometry")?);
+    }
+    Ok(out)
+}
+
+#[utoipa::path(get, path = "/api/display/screenshot", tag = "Display",
+    summary = "Grab the controller's panel as an image",
+    description = "A BMP of /dev/fb0 — what is on the on-panel screen right now (splash, the web \
+view, whatever). Boards with no framebuffer return an error. Handy for a remote look without \
+standing in front of the unit.",
+    responses((status = 200, description = "image/bmp", content_type = "image/bmp")))]
+async fn display_screenshot() -> Response {
+    match capture_fb() {
+        Ok(bmp) => (
+            [(header::CONTENT_TYPE, "image/bmp"),
+             (header::CACHE_CONTROL, "no-store")],
+            bmp,
+        ).into_response(),
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, &format!("no framebuffer grab: {e}")),
     }
 }
 

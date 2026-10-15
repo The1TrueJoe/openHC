@@ -12,7 +12,6 @@
 //! terminal. Single-threaded tokio runtime — this box has one Cortex-A9.
 mod api;
 mod auth;
-mod display;
 mod proxy;
 mod board;
 mod system;

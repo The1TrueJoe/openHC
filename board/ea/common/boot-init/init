@@ -61,6 +61,38 @@ valid_p1() {
     return 1
 }
 
+# NO-SERIAL NETWORK INSTALL. openHC's EA rootfs (~512 MB, ~47 MB gzipped) is far
+# bigger than the 16 MiB raw gap ahead of p1, so it cannot be staged there for
+# the on-device install above. Instead the flasher RAM-boots THIS initramfs with
+# no staged image, we come up on the network, and the flasher streams the rootfs
+# straight to p1 over SSH (ohc-flash's stage2_write_rootfs: `dd of=/dev/mmcblk0p1`).
+# It then reboots us; the next run of /init finds a valid p1 and pivots. We never
+# touch p1 here, so there is no race with the flasher's write and nothing to undo
+# if it is interrupted — a power cycle just lands back in stock (p2 untouched).
+#
+# WHY eth0 reaches the network without the switch driver: b53 is a module loaded
+# from the real rootfs (S39ea-switch), absent here, so DSA never attaches and
+# eth0 is a plain e1000. Measured on a live EA3: without DSA the PRIMARY jack
+# forwards to the CPU, which is exactly the one path an installer needs.
+net_serve() {
+    [ -x /usr/sbin/dropbear ] || { echo "openHC: no dropbear in boot-init"; return 1; }
+    /bin/mount -t devpts devpts /dev/pts 2>/dev/null
+    /sbin/ifconfig lo 127.0.0.1 up 2>/dev/null
+    /sbin/ifconfig eth0 up 2>/dev/null
+    echo "openHC: requesting an address on eth0..."
+    /sbin/udhcpc -i eth0 -n -q -t 15 -T 2 2>/dev/null \
+        || echo "openHC: no DHCP lease (the flasher can still reach a static/link-local box)"
+    ip=$(/sbin/ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+    echo "openHC: boot-init up at ${ip:-<no address>} — waiting for the flasher to write p1 over SSH"
+    # -R: generate host keys on demand (none are baked in). Daemonises, so /init
+    # continues to the wait below. root logs in with the openHC password (see
+    # build/mk-boot-init.sh), which is what ohc-flash tries first.
+    /usr/sbin/dropbear -R -p 22 2>/dev/null
+    # Hold the box up with SSH available. The flasher writes p1 and reboots us;
+    # we do NOT poll valid_p1 here (mounting p1 mid-write would corrupt it).
+    while :; do /bin/sleep 3600; done
+}
+
 if ! valid_p1; then
     echo "openHC: no rootfs on $ROOT — installing from the eMMC-staged image..."
     # Raw stream: eMMC gap -> gunzip -> p1. dd/gunzip work on tiny buffers, so
@@ -73,7 +105,9 @@ if ! valid_p1; then
         echo "openHC: install stream failed"
     fi
     if ! valid_p1; then
-        echo "openHC: no valid rootfs after install — dropping to a shell."
+        echo "openHC: no staged image to install — coming up on the network instead."
+        net_serve   # does not return on success (reboots or pivots)
+        echo "openHC: no valid rootfs and no network — dropping to a shell."
         exec /bin/sh
     fi
 fi
