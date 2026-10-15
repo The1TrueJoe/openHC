@@ -14,8 +14,12 @@
 //!   1. REMOVE that MFH item  (this tool, over /dev/mtd0) — CEFDK then boots the
 //!      stock kernel item again, exactly as it did from the factory;
 //!   2. REIMAGE p1 from p2    — the stock rootfs. p1 is the running root, so this
-//!      cannot be done in place; it is handed to CEFDK's own recovery kernel,
-//!      which is what the recessed button triggers and what `stock` kexecs.
+//!      cannot be done in place; it is handed to CEFDK's own recovery, the same
+//!      path the recessed ID button triggers. On the EA that recovery is
+//!      CEFDK-driven through p2's recovery scripts, NOT a Linux kexec of a
+//!      bzImage (see `recovery_reimage_p1` and packages/restore/DESIGN.md), so
+//!      `stock` validates the recovery payload first and refuses rather than
+//!      stranding the box when that path is not yet wired up.
 //!
 //! The MFH is SHA-256 protected and a bad write bricks past the button (recovery
 //! needs an external programmer), so every write here is read-modify-ERASE-write
@@ -245,21 +249,40 @@ fn cmd_install() -> io::Result<()> {
 }
 
 fn cmd_stock() -> io::Result<()> {
-    cmd_revert()?;
-    println!("stock: MFH reverted. Handing p1 to CEFDK's recovery kernel...");
-    recovery_reimage_p1()?;
-    Ok(())
+    // Prepare and VALIDATE the p1 reimage BEFORE touching the boot path. If the
+    // reimage can't be carried out (the EA3 case today — see
+    // `recovery_reimage_p1`), this returns an error and `revert` is never run, so
+    // the box is left exactly as it was (on openHC) rather than stranded on
+    // "stock kernel item + openHC p1", which boots to nothing. The enable-byte
+    // flip is done inside the recovery flow, immediately before the kexec, once a
+    // genuinely bootable recovery kernel is in hand.
+    recovery_reimage_p1()
 }
 
-/// Reimage p1 by kexec-ing p2's stock recovery kernel with `recovery` on its
-/// command line — the same path the recessed button takes, but from software. The
-/// recovery kernel's initramfs reformats p1 and unpacks the stock rootfs from p2.
-/// p1 is our running root, which is exactly why this must run from a different
-/// kernel rather than in place.
+/// Reimage p1 back to the stock rootfs, from software, the way the recessed ID
+/// button does it — without the button.
 ///
-/// The recovery kernel ships in p2 as recovery_kernel.deb (an ar archive whose
-/// data.tar.gz holds the kernel). We extract it with the box's own ar + busybox
-/// tar (`-xa`, autodetect), find the bzImage inside, and kexec it.
+/// p1 is our running root, so it cannot be reformatted in place: the reimage has
+/// to run from a *different* kernel. The stock recovery payload ships in p2 as
+/// `recovery_kernel.deb` (an `ar` archive whose `data.tar.gz` carries it). We
+/// extract it with the box's own `ar` + busybox tooling and inspect it.
+///
+/// IMPORTANT (measured on the live EA3, 2026-10-15): `./tmp/bzImage` inside that
+/// .deb is NOT a Linux bzImage. It is 7,009,216 bytes — byte-for-byte the size of
+/// the *stock kernel container* (`cefdk::round`… `0x6af3c0`) — with no `0x55aa`
+/// at 0x1fe and a Control4 container header at offset 0, i.e. a `[header][bzImage]`
+/// wrapper that only CEFDK knows how to load. `kexec` cannot boot it, and a
+/// `-t bzImage64` attempt fails "Not a PE file / can not find .linux section".
+/// The .deb also ships `./etc/factory_restore.sh`, `./etc/init.d/init_kernel` and
+/// `./tmp/kernel_size_writer`, which is the real shape of the EA recovery: it is
+/// CEFDK-driven through those scripts (re-lay the kernel container at eMMC 0x400,
+/// set the recovery flag, let CEFDK boot recovery), NOT a plain Linux kexec.
+///
+/// Until that CEFDK path is implemented and proven, this function extracts and
+/// *classifies* the payload, and REFUSES (without reverting the boot path) if it
+/// is a container rather than a real bzImage — so `stock` can never half-wipe or
+/// strand the box. If a future recovery image genuinely ships a kexec-able
+/// bzImage, that path still works: it reverts then kexecs.
 fn recovery_reimage_p1() -> io::Result<()> {
     let p2 = "/mnt/ohc-recovery";
     std::fs::create_dir_all(p2)?;
@@ -269,36 +292,125 @@ fn recovery_reimage_p1() -> io::Result<()> {
     if !std::path::Path::new(&deb).exists() {
         return Err(io::Error::other(format!("{deb} missing — cannot recover p1")));
     }
-    // ar p <deb> data.tar.gz | tar -x -a -f - -C /tmp/ohc-rk
+
     let work = "/tmp/ohc-rk";
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work)?;
+
+    // 1. Pull data.tar.gz out of the .deb (ar member) to a file.
     let tgz = format!("{work}/data.tar.gz");
     let data = std::process::Command::new("ar").args(["p", &deb, "data.tar.gz"]).output()?;
     if !data.status.success() || data.stdout.is_empty() {
         return Err(io::Error::other("ar: could not read data.tar.gz from recovery_kernel.deb"));
     }
     std::fs::write(&tgz, &data.stdout)?;
-    run("tar", &["-x", "-a", "-f", &tgz, "-C", work])?;
 
-    // Find the kernel: a file whose 0x202 magic is "HdrS" (the bzImage setup sig).
-    let kern = find_bzimage(std::path::Path::new(work))
-        .ok_or_else(|| io::Error::other("no bzImage (HdrS magic) found in recovery_kernel.deb"))?;
-    eprintln!("stock: recovery kernel = {}", kern.display());
+    // 2. Decompress THEN untar. The box's busybox `tar -a` does not autodetect
+    //    gzip (the data really is gzip, magic 1f8b), so `tar -xaf data.tar.gz`
+    //    dies "invalid tar magic". Do it in two explicit steps: `gzip -dc` (which
+    //    busybox does have) to data.tar, then `tar -xf`.
+    let tar = format!("{work}/data.tar");
+    let dec = std::process::Command::new("gzip").args(["-dc", &tgz]).output()?;
+    if !dec.status.success() || dec.stdout.is_empty() {
+        return Err(io::Error::other("gzip -dc: could not decompress recovery_kernel.deb data.tar.gz"));
+    }
+    std::fs::write(&tar, &dec.stdout)?;
+    run("tar", &["-xf", &tar, "-C", work])?;
 
-    let cmdline = "console=ttyS0,115200 pci=realloc,nocrs,routeirq recovery";
-    run("kexec", &["-l", kern.to_str().unwrap(), &format!("--command-line={cmdline}")])?;
-    eprintln!("stock: kexec -e (reimaging p1 from p2; the box reboots to stock)");
-    run("sync", &[])?;
-    run("kexec", &["-e"])?; // does not return
-    Ok(())
+    // 3. Note the recovery scripts the .deb carries — these define the real
+    //    (CEFDK-driven) recovery path, and are what the container classification
+    //    below points the operator at.
+    for s in [
+        "etc/factory_restore.sh",
+        "etc/init.d/init_kernel",
+        "tmp/kernel_size_writer",
+    ] {
+        if std::path::Path::new(&format!("{work}/{s}")).exists() {
+            eprintln!("stock: recovery_kernel.deb ships ./{s}");
+        }
+    }
+
+    // 4. Classify the payload. A real bzImage we can kexec; a Control4 container
+    //    we cannot, and must not pretend to.
+    let (kern, payload) = find_kernel_candidate(std::path::Path::new(work))
+        .ok_or_else(|| io::Error::other("no kernel-shaped payload found in recovery_kernel.deb"))?;
+    let len = std::fs::metadata(&kern).map(|m| m.len()).unwrap_or(0);
+    eprintln!("stock: recovery payload = {} ({len} bytes)", kern.display());
+
+    match payload {
+        Payload::BzImage => {
+            // Genuinely kexec-able: now it is safe to flip the boot path, then go.
+            cmd_revert()?;
+            let cmdline = "console=ttyS0,115200 pci=realloc,nocrs,routeirq recovery";
+            run("kexec", &["-l", kern.to_str().unwrap(), &format!("--command-line={cmdline}")])?;
+            eprintln!("stock: kexec -e (reimaging p1 from p2; the box reboots to stock)");
+            run("sync", &[])?;
+            run("kexec", &["-e"])?; // does not return
+            Ok(())
+        }
+        Payload::Container { inner } => Err(io::Error::other(format!(
+            "recovery payload is a Control4 CONTAINER, not a kexec-able bzImage \
+             (inner bzImage {}). The EA recovery is CEFDK-driven via the scripts \
+             above (factory_restore.sh / init_kernel / kernel_size_writer), not a \
+             Linux kexec — see packages/restore/DESIGN.md. Refusing so the box is \
+             not stranded on a stock kernel over an openHC p1; boot path left \
+             unchanged (still openHC).",
+            match inner {
+                Some(off) => format!("found at container offset 0x{off:x}"),
+                None => "not located".into(),
+            }
+        ))),
+        Payload::Unknown => Err(io::Error::other(
+            "recovery payload is neither a bzImage nor a recognised Control4 container; refusing",
+        )),
+    }
 }
 
-/// Walk `dir` and return the first file that is a Linux bzImage (the "HdrS" setup
-/// magic at offset 0x202), so we kexec the kernel regardless of how the .deb lays
-/// its payload out.
-fn find_bzimage(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+/// What a candidate recovery-kernel file actually is.
+#[derive(Debug)]
+enum Payload {
+    /// A raw Linux bzImage (`0x55aa` at 0x1fe, `HdrS` at 0x202) — kexec-able.
+    BzImage,
+    /// A Control4 container: a wrapper header followed by a bzImage. `inner` is
+    /// the byte offset of the wrapped bzImage's start (the `HdrS` position minus
+    /// 0x202) when one is found inside, else `None`. NOT kexec-able as-is.
+    Container { inner: Option<u64> },
+    /// Neither.
+    Unknown,
+}
+
+/// Classify a file as a bzImage, a Control4 container wrapping one, or neither.
+fn classify_payload(data: &[u8]) -> Payload {
+    let has_boot_sig = |at: usize| data.get(at..at + 2) == Some(&[0x55, 0xaa][..]);
+    let has_hdrs = |at: usize| data.get(at..at + 4) == Some(b"HdrS");
+    // Raw bzImage: boot signature at 0x1fe, setup magic at 0x202.
+    if has_boot_sig(0x1fe) && has_hdrs(0x202) {
+        return Payload::BzImage;
+    }
+    // Container: find an embedded bzImage by scanning for the HdrS magic and
+    // confirming the boot signature sits 4 bytes before it (0x202 -> 0x1fe).
+    let mut off = 0usize;
+    while off + 4 <= data.len() {
+        if has_hdrs(off) && off >= 0x202 && has_boot_sig(off - 0x202 + 0x1fe) {
+            return Payload::Container { inner: Some((off - 0x202) as u64) };
+        }
+        off += 1;
+    }
+    // A header with no locatable inner bzImage still reads as a container if the
+    // boot signature is absent at 0x1fe (a real bzImage would have had it).
+    if !has_boot_sig(0x1fe) {
+        Payload::Container { inner: None }
+    } else {
+        Payload::Unknown
+    }
+}
+
+/// Walk `dir`, classify each file, and return the best kernel candidate: a real
+/// bzImage if any file is one, otherwise the first Control4 container found (so
+/// the caller can report precisely what the .deb actually holds).
+fn find_kernel_candidate(dir: &std::path::Path) -> Option<(std::path::PathBuf, Payload)> {
     let mut stack = vec![dir.to_path_buf()];
+    let mut container: Option<(std::path::PathBuf, Payload)> = None;
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).ok()?.flatten() {
             let p = e.path();
@@ -306,16 +418,15 @@ fn find_bzimage(dir: &std::path::Path) -> Option<std::path::PathBuf> {
                 stack.push(p);
                 continue;
             }
-            if let Ok(mut f) = std::fs::File::open(&p) {
-                let mut sig = [0u8; 4];
-                use std::io::{Read, Seek, SeekFrom};
-                if f.seek(SeekFrom::Start(0x202)).is_ok() && f.read_exact(&mut sig).is_ok() && &sig == b"HdrS" {
-                    return Some(p);
-                }
+            let Ok(data) = std::fs::read(&p) else { continue };
+            match classify_payload(&data) {
+                Payload::BzImage => return Some((p, Payload::BzImage)),
+                c @ Payload::Container { .. } if container.is_none() => container = Some((p, c)),
+                _ => {}
             }
         }
     }
-    None
+    container
 }
 
 fn run(cmd: &str, args: &[&str]) -> io::Result<()> {
@@ -438,5 +549,56 @@ fn main() {
     if let Err(e) = r {
         eprintln!("ohc-restore {cmd}: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal raw bzImage: boot signature at 0x1fe, setup magic at 0x202.
+    fn raw_bzimage() -> Vec<u8> {
+        let mut v = vec![0u8; 0x1000];
+        v[0x1fe] = 0x55;
+        v[0x1ff] = 0xaa;
+        v[0x202..0x206].copy_from_slice(b"HdrS");
+        v
+    }
+
+    #[test]
+    fn raw_bzimage_is_bzimage() {
+        assert!(matches!(classify_payload(&raw_bzimage()), Payload::BzImage));
+    }
+
+    #[test]
+    fn container_wrapping_a_bzimage_is_container_with_inner_offset() {
+        // The EA3 shape: a 0x580-byte Control4 header, then a bzImage. No boot
+        // signature at 0x1fe (so it is not mistaken for a raw bzImage), and the
+        // inner image's HdrS is at 0x580 + 0x202.
+        let header = 0x580usize;
+        let mut v = vec![0u8; header];
+        v[0] = 0x06; // part of the container header seen on hardware
+        v.extend_from_slice(&raw_bzimage());
+        match classify_payload(&v) {
+            Payload::Container { inner: Some(off) } => assert_eq!(off, header as u64),
+            other => panic!("expected Container{{inner: Some(0x{header:x})}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn headerless_blob_without_boot_sig_reads_as_container() {
+        // No boot signature at 0x1fe and no embedded HdrS: still clearly not a
+        // kexec-able bzImage, so we classify it as a container we can't boot
+        // rather than claim it is one.
+        let v = vec![0u8; 0x4000];
+        assert!(matches!(classify_payload(&v), Payload::Container { inner: None }));
+    }
+
+    #[test]
+    fn plain_bzimage_boot_sig_but_no_hdrs_is_unknown() {
+        let mut v = vec![0u8; 0x1000];
+        v[0x1fe] = 0x55;
+        v[0x1ff] = 0xaa; // boot sig present, but no HdrS anywhere
+        assert!(matches!(classify_payload(&v), Payload::Unknown));
     }
 }
