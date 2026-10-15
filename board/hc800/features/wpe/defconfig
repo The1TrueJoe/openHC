@@ -1,0 +1,40 @@
+# openHC feature: wpe — the on-screen web surface, HC-800 edition.
+#
+# Same job as board/ea/common/features/wpe (one full-screen WPE WebKit page on
+# the TV, shown only when an on-screen URL is configured; S97webview), on very
+# different graphics: the HC-800's GMA 3150 ("Pineview", 8086:a001) is driven by
+# Mesa's open i915 gallium driver, which gives real EGL + GBM. So the EA's custom
+# PowerVR backend is not needed here: stock wpebackend-fdo, and cog on its DRM
+# platform presents straight to KMS — no compositor, no X.
+#
+# The GPU is Shader Model 2.0 class (GLSL 1.20, 64 ALU / 32 TEX instructions,
+# vertex shaders on the CPU): plain compositing works, blurs and filters will
+# not. softpipe is the correctness fallback (GALLIUM_DRIVER=softpipe), slow on
+# this SSSE3-only Atom; there is no llvmpipe (LLVM is a very long build).
+
+# Mesa: i915 (+ softpipe), with EGL, GLES and GBM.
+BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_I915=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SOFTPIPE=y
+BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+BR2_PACKAGE_MESA3D_OPENGL_ES=y
+BR2_PACKAGE_MESA3D_GBM=y
+
+# WPE WebKit. build/buildroot-patches/0001 (for the EA's PowerVR backend) stops
+# wpewebkit selecting wpebackend-fdo; cog needs it, so it is named here. No
+# multimedia: video in a page is not this surface's job, and GStreamer is a
+# large build.
+BR2_PACKAGE_WPEWEBKIT=y
+# BR2_PACKAGE_WPEWEBKIT_MULTIMEDIA is not set
+BR2_PACKAGE_WPEBACKEND_FDO=y
+
+# cog: the launcher, on its DRM/KMS platform (libinput needs the eudev the
+# board already runs). The URL is S97webview's, never a built-in home page.
+BR2_PACKAGE_COG=y
+BR2_PACKAGE_COG_PLATFORM_DRM=y
+BR2_PACKAGE_COG_PROGRAMS_HOME_URI=""
+
+# Fonts for pages that do not bring their own, and the CA roots for https://.
+BR2_PACKAGE_FONTCONFIG=y
+BR2_PACKAGE_DEJAVU=y
+BR2_PACKAGE_CA_CERTIFICATES=y

@@ -389,7 +389,22 @@ export interface FanStatus {
   error?: string;
 }
 
+/** The on-screen URL (webd): what the board's video output shows full screen.
+ *  Empty means the splash only; `available` is false on images with no
+ *  display program. */
+export interface DisplaySetting {
+  url: string;
+  available: boolean;
+}
+
 export const rest = {
+  display: () => j<DisplaySetting>(`${location.origin}/api/display`),
+  saveDisplay: (url: string) =>
+    j<DisplaySetting>(`${location.origin}/api/display`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+    }),
   /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
   telemetry: () => j<Telemetry>(`${SYS}/api/now`),
   /** The telemetry ring. `seconds` trims the window; absent/0 is everything held. */

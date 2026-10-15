@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Check, Lock, AlertTriangle, Server, Share2, Hash } from 'lucide-react';
-import { rest, type ConfigDoc, type MqttWrite } from '../api';
+import { Check, Lock, AlertTriangle, Server, Share2, Hash, Tv } from 'lucide-react';
+import { rest, type ConfigDoc, type DisplaySetting, type MqttWrite } from '../api';
 
 /** Fields the environment has pinned cannot be edited here: a restart would
  *  discard the change, and a form that silently ignores you is worse than one
@@ -60,6 +60,7 @@ export function SettingsPanel() {
 
   return (
     <div className="max-w-2xl space-y-4">
+      <OnScreen />
       {/* The box's own broker: not a setting, but worth stating, because it is
           what Home Assistant / Control4 connect to. */}
       <section className="hair rounded-xl border bg-panel p-4">
@@ -170,6 +171,74 @@ export function SettingsPanel() {
         )}
       </div>
     </div>
+  );
+}
+
+/** The on-screen URL: the splash only until one is set; set, the board's video
+ *  output shows that page full screen (S97webview). Its own Save, apart from
+ *  the broker form above it. Hidden on images with no display program. */
+function OnScreen() {
+  const [d, setD] = useState<DisplaySetting | null>(null);
+  const [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    rest.display().then((x) => { setD(x); setUrl(x.url); }).catch(() => setD(null));
+  }, []);
+  if (!d?.available) return null;
+
+  async function save(next: string) {
+    setBusy(true);
+    setNote(null);
+    try {
+      const x = await rest.saveDisplay(next.trim());
+      setD(x);
+      setUrl(x.url);
+      setNote({ ok: true, text: x.url ? 'showing it on screen' : 'cleared — the splash is back' });
+    } catch (e) {
+      setNote({ ok: false, text: String((e as Error).message) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="hair rounded-xl border bg-panel p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Tv size={16} className="text-accent" />
+        <h2 className="text-sm font-medium">On-screen display</h2>
+      </div>
+      <p className="text-xs text-muted">
+        The video output shows the openHC splash until a page is set here; then it shows that page
+        full screen — a Home Assistant dashboard, this controller's own <code>http://localhost/</code>,
+        anything served over http(s). Clear it to get the splash back.
+      </p>
+      <Field label="Page URL">
+        <Text value={url} placeholder="http://homeassistant.local:8123/dashboard-tv" onChange={setUrl} />
+      </Field>
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          onClick={() => save(url)}
+          disabled={busy || url.trim() === d.url}
+          className="rounded-lg bg-accent/20 px-4 py-2 text-sm transition hover:bg-accent/30 disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : 'Show'}
+        </button>
+        {d.url && (
+          <button onClick={() => save('')} disabled={busy}
+                  className="rounded-lg px-3 py-2 text-sm text-muted transition hover:text-ink disabled:opacity-50">
+            Clear
+          </button>
+        )}
+        {note && (
+          <span className={`flex items-center gap-1.5 text-xs ${note.ok ? 'text-live' : 'text-alarm'}`}>
+            {note.ok ? <Check size={13} /> : <AlertTriangle size={13} />}
+            {note.text}
+          </span>
+        )}
+      </div>
+    </section>
   );
 }
 

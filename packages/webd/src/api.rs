@@ -46,6 +46,7 @@ to rather than a request/response. See the AsyncAPI document.",
     tags(
         (name = "Board", description = "Identity, capabilities and runtime state of this unit."),
         (name = "Wi-Fi", description = "Setup-AP scanning and joining."),
+        (name = "Display", description = "The on-screen web surface: what the TV shows."),
         (name = "Reference", description = "The specifications this box serves."),
     )
 )]
@@ -60,6 +61,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
     .routes(utoipa_axum::routes!(sys))
     .routes(utoipa_axum::routes!(wifi_scan))
     .routes(utoipa_axum::routes!(wifi_connect))
+    .routes(utoipa_axum::routes!(display_get, display_put))
     .split_for_parts();
     OWN_SPEC.set(api).ok();
 
@@ -132,6 +134,35 @@ async fn wifi_connect(State(c): State<Arc<Config>>, Json(b): Json<WifiBody>) -> 
     let iface = load(&c).wifi_iface;
     match wifi::apply(&iface, b.ssid.trim(), b.psk.as_deref().unwrap_or("").trim()) {
         Ok(ssid) => Json(serde_json::json!({ "joining": ssid })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+// ── the on-screen URL (display.rs; shown by S97webview) ──────────────────────
+#[utoipa::path(get, path = "/api/display", tag = "Display",
+    summary = "The on-screen URL",
+    description = "The page the board shows full screen on its video output. Empty: the splash \
+only. `available` says whether this image has a display program at all.",
+    responses((status = 200, description = "display", body = crate::display::Display)))]
+async fn display_get() -> Json<crate::display::Display> {
+    Json(crate::display::get())
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct DisplayBody {
+    /// http(s) URL, or empty for the splash only.
+    url: String,
+}
+#[utoipa::path(put, path = "/api/display", tag = "Display",
+    summary = "Set (or clear) the on-screen URL",
+    description = "Saved on /data and shown at once (the display program restarts on it); empty \
+gives the screen back to the splash. Survives reboots.",
+    request_body = DisplayBody,
+    responses((status = 200, description = "saved", body = crate::display::Display),
+              (status = 400, description = "not an http(s) URL it can carry")))]
+async fn display_put(Json(b): Json<DisplayBody>) -> Response {
+    match crate::display::set(&b.url) {
+        Ok(d) => Json(d).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &e),
     }
 }
