@@ -40,6 +40,31 @@ start() {
 	# (/lib/ld-linux.so.2) has to resolve to the sysroot's 32-bit loader.
 	[ -e /lib/ld-linux.so.2 ] || ln -sf "$R/lib/ld-linux.so.2" /lib/ld-linux.so.2
 
+	# Make the UI's web fonts resolve on the panel. The dashboard CSS leads its
+	# font stack with system-ui / -apple-system / Segoe UI / Roboto — ideal on a
+	# phone, none of which exist here — and the embedded WebKit does NOT fall
+	# through to the generic family that DOES resolve (sans-serif -> DejaVu, from
+	# the image's /usr/share/fonts), so every glyph rendered invisibly: icons and
+	# layout but no text. Alias those families to the generic. Written here rather
+	# than shipped inside the harvested sysroot, so it applies to any baked
+	# /opt/sgx-i386-wpe without rebuilding it; idempotent (rewritten each start).
+	if [ -d "$R/etc/fonts" ]; then
+		mkdir -p "$R/etc/fonts/conf.d"
+		cat > "$R/etc/fonts/conf.d/99-openhc-ui.conf" <<-'XEOF'
+			<?xml version="1.0"?>
+			<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+			<fontconfig>
+			  <match target="pattern"><test name="family"><string>system-ui</string></test><edit name="family" mode="prepend" binding="strong"><string>sans-serif</string></edit></match>
+			  <match target="pattern"><test name="family"><string>-apple-system</string></test><edit name="family" mode="prepend" binding="strong"><string>sans-serif</string></edit></match>
+			  <match target="pattern"><test name="family"><string>BlinkMacSystemFont</string></test><edit name="family" mode="prepend" binding="strong"><string>sans-serif</string></edit></match>
+			  <match target="pattern"><test name="family"><string>Segoe UI</string></test><edit name="family" mode="prepend" binding="strong"><string>sans-serif</string></edit></match>
+			  <match target="pattern"><test name="family"><string>Roboto</string></test><edit name="family" mode="prepend" binding="strong"><string>sans-serif</string></edit></match>
+			  <match target="pattern"><test name="family"><string>ui-sans-serif</string></test><edit name="family" mode="prepend" binding="strong"><string>sans-serif</string></edit></match>
+			  <match target="pattern"><test name="family"><string>ui-monospace</string></test><edit name="family" mode="prepend" binding="strong"><string>monospace</string></edit></match>
+			</fontconfig>
+		XEOF
+	fi
+
 	# Prime the SGX microkernel once. The FIRST EGL client after boot fails to
 	# reach PVR services unless the ukernel is already up; a services client
 	# (sgxinit) brings it up and then EGL works (see [[c4-ea-fat-kernel]]).
