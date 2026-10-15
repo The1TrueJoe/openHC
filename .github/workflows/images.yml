@@ -56,9 +56,12 @@ concurrency:
   group: images-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
-# gh needs write access to attach the image bundles to a release.
+# gh needs write access to attach the image bundles to a release; actions:read
+# lets the EA bake-in step list + download the sgx-wpe/sgx-gpu sysroot artifacts
+# from their own workflow runs (an explicit block defaults the rest to none).
 permissions:
   contents: write
+  actions: read
 
 env:
   BUILDROOT_REF: 2026.02.3
@@ -344,7 +347,8 @@ jobs:
             hc800*) target=x86_64-unknown-linux-musl;      cc=musl-gcc;                  apt="musl-tools" ;;
             ca1*)   target=armv7-unknown-linux-musleabihf; cc=arm-linux-gnueabihf-gcc;   apt="gcc-arm-linux-gnueabihf libc6-dev-armhf-cross" ;;
             ioxv1*) target=armv5te-unknown-linux-musleabi; cc=arm-linux-gnueabi-gcc;     apt="gcc-arm-linux-gnueabi libc6-dev-armel-cross" ;;
-            *)      target=i686-unknown-linux-musl;        cc=i686-linux-gnu-gcc;        apt="gcc-i686-linux-gnu libc6-dev-i386-cross" ;;
+            # EA default — modern 64-bit userspace (x86_64 static-musl daemons).
+            *)      target=x86_64-unknown-linux-musl;      cc=musl-gcc;                  apt="musl-tools" ;;
           esac
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends $apt
@@ -361,7 +365,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex git rsync unzip wget cpio file figlet \
-            python3 libncurses-dev libssl-dev ca-certificates perl patch xz-utils
+            python3 libncurses-dev libssl-dev libelf-dev ca-certificates perl patch xz-utils
 
       # The one genuinely shared artefact. Keyed on the board files that pin
       # versions, NOT on the board, so all eight matrix jobs hit the same entry.
@@ -478,11 +482,40 @@ jobs:
           tar -C "$GITHUB_WORKSPACE/output/ea-toolchain" -xf ea-sdk.tar
           test -x "$GITHUB_WORKSPACE/output/ea-toolchain/host/bin/x86_64-buildroot-linux-gnu-gcc"
 
+      # Bake the on-panel WPE/SGX sysroot into EA images. These are i386 trees (the
+      # only SGX545 DDK is 32-bit) built by sgx-wpe.yml / sgx-gpu.yml and harvested
+      # as tarballs — Buildroot cannot multilib an i386 WebKit into this x86_64
+      # image, so post-build.sh extracts them into /opt. Absent (no successful build
+      # yet, or the 14-day artifact expired) => the image ships WITHOUT the on-panel
+      # browser, a clean no-op (S95ohc-display then stays off), so this never fails
+      # the build. Non-EA boards skip it entirely.
+      - name: Fetch the on-panel WPE/SGX sysroot (EA)
+        id: sgxsr
+        if: startsWith(matrix.board, 'ea')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grab() {  # $1=workflow  $2=artifact  $3=GITHUB_OUTPUT var
+            run=$(gh run list --workflow="$1" --branch "${{ github.ref_name }}" \
+                    --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+            [ -n "$run" ] || { echo ">> no successful $1 run — $2 will be absent"; return 0; }
+            d="$HOME/sgxsr/$2"; rm -rf "$d"; mkdir -p "$d"
+            gh run download "$run" -n "$2" -D "$d" 2>/dev/null \
+              || { echo ">> $2 artifact gone from run $run (expired?) — absent"; return 0; }
+            f=$(find "$d" -name '*.tar.gz' | head -1)
+            [ -n "$f" ] && { echo "$3=$f" >> "$GITHUB_OUTPUT"; echo ">> $2 -> $f ($(du -h "$f" | cut -f1))"; }
+          }
+          grab sgx-wpe.yml wpe-i386-sysroot wpe
+          grab sgx-gpu.yml sgx-i386-sysroot i386
+
       - name: Build ${{ matrix.board }}
         env:
           BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
           BOARD: ${{ matrix.board }}
           OHC_VERSION: ${{ steps.ver.outputs.version }}
+          # Consumed by board/common/post-build.sh (empty on non-EA / when absent).
+          OHC_SGX_WPE_SYSROOT: ${{ steps.sgxsr.outputs.wpe }}
+          OHC_SGX_I386_SYSROOT: ${{ steps.sgxsr.outputs.i386 }}
           # Shared ccache dir for the EA family (see the restore/save steps and
           # board/ea/common/common_defconfig). build.sh forwards it to make only
           # when set; a board whose defconfig has no BR2_CCACHE ignores it.
@@ -490,7 +523,8 @@ jobs:
         run: |
           set -e
           # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
-          # OHC_VERSION is exported here so Buildroot's post-build hook stamps it.
+          # OHC_VERSION is exported here so Buildroot's post-build hook stamps it;
+          # OHC_SGX_*_SYSROOT (step env above) reach post-build the same way.
           # EA boards point build.sh at the pre-built toolchain; it then composes
           # the external-toolchain defconfig instead of the internal glibc one.
           case "${{ matrix.board }}" in
@@ -594,8 +628,12 @@ jobs:
       #                  dies at target-finalize with
       #                  "sed: can't read .../target/etc/hosts".
       #   staging/       NO, for the same reason.
+      # Not when cancelled: a cancel kills Buildroot mid-write, and that tree is
+      # poison to the next run (a half-linked host libcrypto broke every board
+      # that restored one). A FAILED build is still saved — its broken package
+      # has no stamp, so Buildroot redoes it — and keeps everything before it.
       - name: Trim the output tree before caching
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           O=output/build/${{ matrix.board }}
           [ -d "$O" ] || exit 0
@@ -603,7 +641,7 @@ jobs:
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
       - name: Save Buildroot output tree
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}

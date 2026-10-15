@@ -1,0 +1,35 @@
+From: openHC <noreply@openhc>
+Subject: [PATCH] GLContextLibWPE: hand the PowerVR LinuxFB WSEGL a 0 native window
+
+WebKit's GLContext::create() treats the native-window handle as a flag:
+`window ? createWindowContext() : createOffscreenContext()`. A WPE view backend
+must therefore return a NON-ZERO native window for the compositor to get a real
+on-screen (window) GL context rather than an offscreen one.
+
+The Imagination DDK's LinuxFB WSEGL, however, exposes a single surface -- the
+framebuffer -- and accepts ONLY a 0 native-window handle; eglCreateWindowSurface
+with any other value fails (EGL_NO_SURFACE), leaving the compositor with no
+context and nothing ever reaching /dev/fb0.
+
+wpebackend-pvr resolves the flag side by returning a non-zero sentinel from
+get_native_window; this resolves the EGL side by ignoring that sentinel in the
+one place the WPE window surface is actually created and passing the WSEGL the 0
+it requires. Only affects the USE(WPE_RENDERER) LinuxFB path.
+
+--- a/Source/WebCore/platform/graphics/egl/GLContextLibWPE.cpp	2026-10-06 16:44:47
++++ b/Source/WebCore/platform/graphics/egl/GLContextLibWPE.cpp	2026-10-06 16:44:47
+@@ -56,7 +56,13 @@
+     // EGLNativeWindowType changes depending on the EGL implementation, reinterpret_cast
+     // would work for pointers, and static_cast for numeric types only; so use a plain
+     // C cast expression which works in all possible cases.
+-    return eglCreateWindowSurface(display, config, (EGLNativeWindowType) window, nullptr);
++    // openHC: the PowerVR SGX LinuxFB WSEGL exposes a single surface (the framebuffer)
++    // and accepts ONLY a 0 native-window handle; any other value fails surface creation.
++    // But WebKit's GLContext uses the handle as a flag (window ? createWindowContext :
++    // createOffscreenContext), so wpebackend-pvr must return a non-zero sentinel to get a
++    // window context at all. Reconcile here: ignore the sentinel, hand the WSEGL its 0.
++    (void) window;
++    return eglCreateWindowSurface(display, config, (EGLNativeWindowType) 0, nullptr);
+ }
+ 
+ std::unique_ptr<GLContext> GLContext::createWPEContext(GLDisplay& display, EGLContext sharingContext)
