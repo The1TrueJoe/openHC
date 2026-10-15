@@ -22,6 +22,7 @@
 
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -64,6 +65,7 @@ pub fn netboot(
     mac: &str,
     cmdline: &str,
     wait: bool,
+    shell_only: bool,
     p: &Progress,
 ) -> Result<()> {
     let server_ip: Ipv4Addr = server_ip.parse().with_context(|| format!("bad --server-ip {server_ip}"))?;
@@ -74,21 +76,27 @@ pub fn netboot(
     // rootfs.cpio.gz: the kernel's gzip/cpio reader is given this as the ramdisk
     // size and needs the whole image (a bzImage self-describes its end; a cpio.gz
     // does not, so an over- or under-count corrupts the rootfs).
-    let kernel = images.get(KERNEL_NAME).context("release has no bzImage")?;
-    let initrd = images.get(INITRD_NAME).context("release has no rootfs.cpio.gz")?;
-    let initrd_len = initrd.len() as u64;
-
-    // Serve the two images by their canonical names. Staging from the in-memory
-    // Release (rather than pointing TFTP at the source) makes a dir and a .zip
-    // release behave identically and guarantees the served names match the shell
-    // commands.
+    //
+    // In --shell-only mode we never ramboot, so the images are irrelevant: the
+    // cookie answer carries a deliberately-missing bootfile, the empty TFTP dir
+    // answers "not found", and CEFDK drops to its shell. We leave the box there.
     let stage = StageDir::new()?;
-    stage.write(KERNEL_NAME, kernel)?;
-    stage.write(INITRD_NAME, initrd)?;
-    p.emit(Event::detail(format!(
-        "staged {KERNEL_NAME} ({} B) and {INITRD_NAME} ({initrd_len} B) for TFTP",
-        kernel.len()
-    )));
+    let mut initrd_len = 0u64;
+    if !shell_only {
+        let kernel = images.get(KERNEL_NAME).context("release has no bzImage")?;
+        let initrd = images.get(INITRD_NAME).context("release has no rootfs.cpio.gz")?;
+        initrd_len = initrd.len() as u64;
+        // Serve the two images by their canonical names. Staging from the
+        // in-memory Release (rather than pointing TFTP at the source) makes a dir
+        // and a .zip release behave identically and guarantees the served names
+        // match the shell commands.
+        stage.write(KERNEL_NAME, kernel)?;
+        stage.write(INITRD_NAME, initrd)?;
+        p.emit(Event::detail(format!(
+            "staged {KERNEL_NAME} ({} B) and {INITRD_NAME} ({initrd_len} B) for TFTP",
+            kernel.len()
+        )));
+    }
 
     // 1. Start the two servers. Bind failures here are almost always "not root".
     let bootp_p = p.clone();
@@ -97,8 +105,18 @@ pub fn netboot(
     })
     .map_err(|e| bind_error("BOOTP", 67, e))?;
     let tftp_p = p.clone();
-    let tftp = TftpServer::start(stage.path().to_path_buf(), move |m| tftp_p.emit(Event::detail(m)))
-        .map_err(|e| bind_error("TFTP", 69, e))?;
+    // Set true when the TFTP server finishes SENDING the (large) initramfs. The
+    // 3 s inter-command gap is nowhere near a ~50 MB pull, so without this the
+    // server was torn down mid-transfer, truncating the ramdisk -> kernel panic.
+    let initrd_sent = Arc::new(Mutex::new(false));
+    let initrd_sent_cb = initrd_sent.clone();
+    let tftp = TftpServer::start(stage.path().to_path_buf(), move |m| {
+        if m.contains("sent") && m.contains(INITRD_NAME) {
+            *initrd_sent_cb.lock().unwrap() = true;
+        }
+        tftp_p.emit(Event::detail(m))
+    })
+    .map_err(|e| bind_error("TFTP", 69, e))?;
     p.emit(Event::step(format!(
         "serving {KERNEL_NAME}/{INITRD_NAME} over TFTP and answering BOOTP for {}",
         mac
@@ -119,6 +137,17 @@ pub fn netboot(
         );
     }
 
+    if shell_only {
+        // The box is parked at `shell>`. Release the servers and the serial so
+        // another tool can drive the shell; type nothing and boot nothing.
+        bootp.stop();
+        tftp.stop();
+        p.emit(Event::resolved(
+            "CEFDK shell reached — box parked at shell> (no ramboot, nothing written)".into(),
+        ));
+        return Ok(());
+    }
+
     // 3. At the shell: type the ramboot sequence. core owns the exact commands.
     let cmds = cefdk::ramboot_tftp_for(
         &server_ip.to_string(),
@@ -129,10 +158,26 @@ pub fn netboot(
         cmdline,
     );
     send_ramboot(&mut serial, &cmds, p)?;
+
+    // Keep the TFTP server alive until the initramfs has FULLY transferred.
+    // CEFDK buffers the shell lines and runs them in order, so bootlinux will not
+    // execute until the rootfs pull completes — but stopping the server first
+    // cuts that pull and truncates the ramdisk. Wait for the server's own
+    // "sent <rootfs>" (a ~50 MB pull over CEFDK tftp is minutes) before teardown.
+    let deadline = Instant::now() + Duration::from_secs(300);
+    p.emit(Event::step(format!("waiting for {INITRD_NAME} to finish transferring to the box")));
+    while !*initrd_sent.lock().unwrap() {
+        if Instant::now() >= deadline {
+            p.emit(Event::warn(format!(
+                "{INITRD_NAME} did not finish transferring within 300s; the ramdisk may be truncated"
+            )));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
     p.emit(Event::resolved("ramboot sequence sent — the box is booting openHC into RAM".into()));
 
-    // The servers have done their job once bootlinux runs; keep them alive until
-    // now (the TFTP transfer happens while we type), then stop.
+    // Both images fully pulled; the servers have done their job.
     bootp.stop();
     tftp.stop();
 
