@@ -580,10 +580,14 @@ fn install(rest: &[String]) -> bool {
     let yes = rest.iter().any(|a| a == "--yes");
     let Some((host, ssh)) = connect(rest) else { return false };
     let forced = rest.windows(2).find(|w| w[0] == "--board").map(|w| w[1].clone());
-    let id = tp::identify(&ssh);
+    let mut id = tp::identify(&ssh);
     let board = if let Some(name) = forced {
         match board::by_name(&name) {
-            Some(b) => { println!("  target: {} ({}) [forced]", b.name, b.desc); b }
+            // Seed the identity with the forced board so method::choose (which
+            // keys off id.board) can pick a method even when the running system
+            // could not be pinned to one board on its own — e.g. a RAM-booted
+            // openHC that identifies as openHC but not as a specific EA model.
+            Some(b) => { println!("  target: {} ({}) [forced]", b.name, b.desc); id.board = Some(b); b }
             None => { eprintln!("  unknown board '{name}'"); return false; }
         }
     } else {
@@ -728,14 +732,22 @@ fn netboot_cmd(rest: &[String]) -> bool {
     let box_ip = flag("--box-ip").unwrap_or_else(|| "10.0.0.200".into());
     let cmdline = flag("--cmdline").unwrap_or_else(|| cefdk::RAMBOOT_CMDLINE.to_string());
     let wait = !rest.iter().any(|a| a == "--no-wait");
+    // --shell-only: answer the cookie to drop CEFDK to its shell, then stop and
+    // release the serial (no TFTP, no ramboot). For MFH/script surgery over
+    // serial when the box's MFH differs from the proven ramboot layout.
+    let shell_only = rest.iter().any(|a| a == "--shell-only");
 
     let images = images_arg(rest);
     let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
 
-    println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
-    println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    if shell_only {
+        println!("  netboot {mac}: drop CEFDK to its shell (cookie only — nothing booted or written)");
+    } else {
+        println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
+        println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    }
     let p = Progress::stdout();
-    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, wait, &p) {
+    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, wait, shell_only, &p) {
         Ok(()) => { println!("\n  done — openHC was netbooted into RAM."); true }
         Err(e) => { eprintln!("  netboot failed: {e:#}"); false }
     }
