@@ -36,7 +36,7 @@ SGX545_UM_REDISTRIBUTE = NO
 #
 #   * the real EA image (BR2_x86_64, a kernel, the `sgx`+`wpe` features) selects
 #     the CE driver, so the pin is kept and the two stay on one DDK;
-#   * the standalone i386 sysroot build (board/gpu-wpe-i386 — no kernel, so
+#   * the standalone i386 sysroot build (board/ea/common/gpu-wpe-i386 — no kernel, so
 #     BR2_PACKAGE_SGX545_CE can never be y) drops it and builds userspace-only.
 #
 # Gating on the symbol rather than on BR2_LINUX_KERNEL keeps this correct even
