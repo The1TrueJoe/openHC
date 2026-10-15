@@ -567,7 +567,10 @@ fn write_mtd_block(ssh: &Ssh, off: u64, data: &[u8]) -> Result<()> {
 /// with mtd0 access.
 pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     let kernel = rel.get("bzImage").context("release has no bzImage")?;
-    let initrd = rel.get("rootfs.cpio.gz").context("release has no rootfs.cpio.gz")?;
+    // The RAM installer is the TINY networked boot-init (~2 MB), not the full
+    // rootfs (~49 MB, which does not fit the gap ahead of p1). boot-init comes up
+    // on the network and stage2_write_rootfs streams the real rootfs to p1.
+    let initrd = rel.get("boot-init.cpio.gz").context("release has no boot-init.cpio.gz")?;
     let klen = kernel.len() as u64;
     let ilen = initrd.len() as u64;
 

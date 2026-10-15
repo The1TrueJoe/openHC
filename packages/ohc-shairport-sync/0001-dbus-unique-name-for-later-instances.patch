@@ -1,0 +1,54 @@
+From f7104b676b9ad1e3d0055ca26ba9585a5e167350 Mon Sep 17 00:00:00 2001
+From: openHC <openhc@localhost>
+Date: Tue, 13 Oct 2026 19:35:19 -0400
+Subject: [PATCH] D-Bus: a second instance on the bus takes
+ org.gnome.ShairportSync.i<pid>
+
+---
+ dbus/dbus-service.c | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/dbus/dbus-service.c b/dbus/dbus-service.c
+index 46091f2..0486744 100644
+--- a/dbus/dbus-service.c
++++ b/dbus/dbus-service.c
+@@ -27,6 +27,7 @@
+ #include <inttypes.h>
+ #include <math.h>
+ #include <stdio.h>
++#include <unistd.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -1226,14 +1227,28 @@ static void on_dbus_name_acquired(GDBusConnection *connection, const gchar *name
+   service_is_running = 1;
+ }
+ 
+-static void on_dbus_name_lost(__attribute__((unused)) GDBusConnection *connection,
+-                              __attribute__((unused)) const gchar *name,
+-                              __attribute__((unused)) gpointer user_data) {
++static void on_dbus_name_lost_again(__attribute__((unused)) GDBusConnection *connection,
++                                    __attribute__((unused)) const gchar *name,
++                                    __attribute__((unused)) gpointer user_data) {
+   warn("could not acquire a Shairport Sync native D-Bus interface \"%s\" on the %s bus.", name,
+        (dbus_bus_type == G_BUS_TYPE_SESSION) ? "session" : "system");
+   ownerID = 0;
+ }
+ 
++// Several instances share one bus when they share a host: the first owns
++// "org.gnome.ShairportSync", and each later one takes
++// "org.gnome.ShairportSync.i<pid>", as 4.x did, instead of having no D-Bus
++// interface at all.
++static void on_dbus_name_lost(__attribute__((unused)) GDBusConnection *connection,
++                              const gchar *name,
++                              __attribute__((unused)) gpointer user_data) {
++  static char unique_name[64];
++  snprintf(unique_name, sizeof(unique_name), "org.gnome.ShairportSync.i%d", (int)getpid());
++  debug(1, "\"%s\" is taken; trying \"%s\".", name, unique_name);
++  ownerID = g_bus_own_name(dbus_bus_type, unique_name, G_BUS_NAME_OWNER_FLAGS_NONE, NULL,
++                           on_dbus_name_acquired, on_dbus_name_lost_again, NULL, NULL);
++}
++
+ int start_dbus_service() {
+ 
+   // set up default message bus
