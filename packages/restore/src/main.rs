@@ -57,35 +57,90 @@ struct EraseInfoUser {
 // c_ulong on glibc/macOS, so let the cast coerce to whatever the target wants.
 const MEMERASE: u32 = 0x4008_4d02;
 
-fn read_block() -> io::Result<Vec<u8>> {
+fn read_block_at(block_off: u64) -> io::Result<Vec<u8>> {
     let mut f = std::fs::OpenOptions::new().read(true).open(MTD)?;
-    f.seek(SeekFrom::Start(BLOCK_OFF))?;
+    f.seek(SeekFrom::Start(block_off))?;
     let mut buf = vec![0u8; ERASE_BLOCK];
     f.read_exact(&mut buf)?;
     Ok(buf)
 }
+fn read_block() -> io::Result<Vec<u8>> {
+    read_block_at(BLOCK_OFF)
+}
 
-/// Erase the MFH block and write `block` (the full 64 KiB) back, then read it
+/// Erase the 64 KiB block at `block_off` and write `block` back, then read it
 /// back and confirm it is identical. Anything but an exact match is an error —
-/// we never leave the box with a half-written MFH silently.
-fn erase_and_write(block: &[u8]) -> io::Result<()> {
+/// we never leave the box with a half-written block silently. Used for both the
+/// MFH table block (0x80000) and the cefdk_params block (0xa0000) that holds the
+/// script-enable byte.
+fn erase_and_write_at(block_off: u64, block: &[u8]) -> io::Result<()> {
     assert_eq!(block.len(), ERASE_BLOCK);
     let mut f = std::fs::OpenOptions::new().read(true).write(true).open(MTD)?;
-    let ei = EraseInfoUser { start: BLOCK_OFF as u32, length: ERASE_BLOCK as u32 };
+    let ei = EraseInfoUser { start: block_off as u32, length: ERASE_BLOCK as u32 };
     let rc = unsafe { libc::ioctl(f.as_raw_fd(), MEMERASE as _, &ei) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
-    f.seek(SeekFrom::Start(BLOCK_OFF))?;
+    f.seek(SeekFrom::Start(block_off))?;
     f.write_all(block)?;
     f.flush()?;
     drop(f);
 
-    let back = read_block()?;
+    let back = read_block_at(block_off)?;
     if back != block {
-        return Err(io::Error::other("read-back verify FAILED — MFH block mismatch"));
+        return Err(io::Error::other("read-back verify FAILED — block mismatch"));
     }
     Ok(())
+}
+fn erase_and_write(block: &[u8]) -> io::Result<()> {
+    erase_and_write_at(BLOCK_OFF, block)
+}
+
+/// CEFDK's autoscript enable byte, inside the cefdk_params item: 0x00 = the
+/// autoscript runs, 0x01 (or erased 0xff) = off. This is the byte CEFDK's own
+/// `script on` / `script off` writes, and it is the AUTHORITATIVE gate on whether
+/// the autoscript runs — independent of how the script MFH item was created.
+/// Value mirrors `ohc_flash_core::cefdk::SCRIPT_ENABLE_OFF`.
+const SCRIPT_ENABLE_OFF: u64 = 0xa0f1c;
+const ENABLE_BLOCK_OFF: u64 = SCRIPT_ENABLE_OFF & !(ERASE_BLOCK as u64 - 1); // 0xa0000
+const ENABLE_IN_BLK: usize = (SCRIPT_ENABLE_OFF - ENABLE_BLOCK_OFF) as usize; // 0xf1c
+
+/// True when the autoscript is enabled (CEFDK will run it at boot).
+fn script_enable_byte() -> io::Result<u8> {
+    Ok(read_block_at(ENABLE_BLOCK_OFF)?[ENABLE_IN_BLK])
+}
+
+/// Clear the autoscript enable byte (0x00 -> 0x01), i.e. CEFDK `script off`, so
+/// CEFDK boots the stock kernel item instead. Returns whether a change was made.
+/// This is what disables the autoscript on a box whose script item was created
+/// with CEFDK's own `mfh add script` (the full-MFH-table EA3 case), which the
+/// MFH-table edits below never recognise.
+fn set_script_enabled(on: bool) -> io::Result<bool> {
+    let want = if on { 0x00 } else { 0x01 };
+    let mut blk = read_block_at(ENABLE_BLOCK_OFF)?;
+    if blk[ENABLE_IN_BLK] == want {
+        return Ok(false);
+    }
+    blk[ENABLE_IN_BLK] = want;
+    erase_and_write_at(ENABLE_BLOCK_OFF, &blk)?;
+    Ok(true)
+}
+
+/// True when a valid MFH item points at the autoscript CONTENT region
+/// ([`mfh::EA_CONTENT_OFF`] = 0x91200) — covering BOTH openHC's append_script
+/// item (type 0, last) and a CEFDK `mfh add script` item (any slot, type != 0).
+/// Keyed on the exact content offset, NOT the whole 0x9xxxx window, so it does
+/// not false-match the neighbouring ip_params item at 0x91000. Lets
+/// `status`/`install` recognise a CEFDK-created autoscript, not just openHC's.
+fn script_item_present(tbl: &[u8]) -> bool {
+    let rd = |o: usize| u32::from_le_bytes([tbl[o], tbl[o + 1], tbl[o + 2], tbl[o + 3]]);
+    let count = rd(mfh::COUNT_OFF) as usize;
+    (0..count).any(|i| {
+        let o = mfh::HDR_LEN + i * mfh::ITEM_LEN;
+        rd(o) == mfh::FLAG_VALID
+            && rd(o + 4) == mfh::EA_CONTENT_OFF
+            && rd(o + 0x18) != 0xffff_ffff
+    })
 }
 
 fn table_slice(block: &mut [u8]) -> &mut [u8] {
@@ -106,33 +161,84 @@ fn cmd_status() -> io::Result<()> {
         );
     }
     let last = mfh::HDR_LEN + (count - 1) * mfh::ITEM_LEN;
-    let openhc = count >= 2
+    let append_item = count >= 2
         && rd(last + 0x18) == mfh::TYPE_SCRIPT
         && (0x9_0000..0xa_0000).contains(&rd(last + 4));
+    let cefdk_item = script_item_present(tbl);
+    let enable = script_enable_byte().unwrap_or(0xff);
+    let enabled = enable == 0x00;
+    println!(
+        "script-enable byte @0x{:x} = 0x{:02x} ({})",
+        SCRIPT_ENABLE_OFF,
+        enable,
+        if enabled { "autoscript ON" } else { "off" }
+    );
+    // The autoscript is live if CEFDK's enable byte is on, OR a script item is
+    // present — whether it is openHC's appended item (TYPE_SCRIPT, last) or one
+    // CEFDK's own `mfh add script` created (any slot) on a full-table box.
+    let openhc = enabled || append_item || cefdk_item;
     println!(
         "state: {}",
-        if openhc { "openHC (last item is the install's script)" } else { "stock (no openHC script item)" }
+        if !openhc {
+            "stock (no openHC autoscript)"
+        } else if append_item {
+            "openHC (openHC-appended MFH script item)"
+        } else {
+            "openHC (CEFDK-created autoscript; enable byte / mid-table item)"
+        }
     );
     Ok(())
 }
 
 fn cmd_revert() -> io::Result<()> {
+    let mut did = false;
+    // 1. Remove openHC's appended MFH script item (type-0 last item) if present.
     let mut block = read_block()?;
-    let removed = mfh::remove_script(table_slice(&mut block))
-        .map_err(io::Error::other)?;
-    println!("revert: MFH now has {removed} items (stock); writing + verifying...");
-    erase_and_write(&block)?;
-    println!("revert: OK — CEFDK will boot the stock kernel item. (p1 still openHC;");
-    println!("        run `ohc-restore install` to undo, or `stock` to finish.)");
+    match mfh::remove_script(table_slice(&mut block)) {
+        Ok(removed) => {
+            println!("revert: removed openHC's appended MFH item -> {removed} items; writing + verifying...");
+            erase_and_write(&block)?;
+            did = true;
+        }
+        // Expected when the autoscript was created with CEFDK's own `mfh add
+        // script` (the full-MFH-table EA3 case): there is no openHC-appended item
+        // to remove, and the enable byte below is the real gate.
+        Err(e) => println!("revert: no openHC-appended MFH item to remove ({e})."),
+    }
+    // 2. Clear CEFDK's script-enable byte (= `script off`) — the authoritative
+    //    gate, and the ONLY thing that disables a CEFDK-created autoscript.
+    if set_script_enabled(false)? {
+        println!("revert: cleared CEFDK script-enable byte @0x{SCRIPT_ENABLE_OFF:x} (autoscript OFF).");
+        did = true;
+    } else {
+        println!("revert: script-enable byte already off.");
+    }
+    if did {
+        println!("revert: OK — CEFDK will boot the stock kernel item. (p1 still openHC;");
+        println!("        run `ohc-restore install` to undo, or `stock` to finish.)");
+    } else {
+        println!("revert: nothing to do — already stock.");
+    }
     Ok(())
 }
 
 fn cmd_install() -> io::Result<()> {
     let mut block = read_block()?;
+    // If a script item is already present (e.g. a CEFDK-created one on a
+    // full-table box), don't append a duplicate — just re-enable it.
+    if script_item_present(table_slice(&mut block)) {
+        if set_script_enabled(true)? {
+            println!("install: re-enabled the existing autoscript (script-enable byte ON).");
+        } else {
+            println!("install: autoscript already enabled; nothing to do.");
+        }
+        return Ok(());
+    }
     mfh::append_script(table_slice(&mut block), mfh::EA_CONTENT_OFF, SCRIPT_LEN, mfh::TYPE_KERNEL)
         .map_err(io::Error::other)?;
     println!("install: re-appended openHC's MFH script item; writing + verifying...");
     erase_and_write(&block)?;
+    set_script_enabled(true)?;
     println!("install: OK — CEFDK will boot openHC again.");
     Ok(())
 }
