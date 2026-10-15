@@ -173,18 +173,19 @@ fn cmd_status() -> io::Result<()> {
         enable,
         if enabled { "autoscript ON" } else { "off" }
     );
-    // The autoscript is live if CEFDK's enable byte is on, OR a script item is
-    // present — whether it is openHC's appended item (TYPE_SCRIPT, last) or one
-    // CEFDK's own `mfh add script` created (any slot) on a full-table box.
-    let openhc = enabled || append_item || cefdk_item;
+    // The ENABLE byte is the authoritative gate on what CEFDK boots. The script
+    // item (openHC-appended type-0, or a CEFDK `mfh add script` one) may linger
+    // after `revert` disables the byte — re-enablable with `install`, but the box
+    // boots stock meanwhile.
+    let item_present = append_item || cefdk_item;
     println!(
         "state: {}",
-        if !openhc {
-            "stock (no openHC autoscript)"
-        } else if append_item {
-            "openHC (openHC-appended MFH script item)"
-        } else {
-            "openHC (CEFDK-created autoscript; enable byte / mid-table item)"
+        match (enabled, item_present) {
+            (true, _) if append_item => "openHC (openHC-appended script item, enabled)",
+            (true, _) => "openHC (CEFDK-created autoscript, enabled)",
+            (false, true) =>
+                "stock boot (autoscript DISABLED; script item still present — `install` re-enables)",
+            (false, false) => "stock (no openHC autoscript)",
         }
     );
     Ok(())
