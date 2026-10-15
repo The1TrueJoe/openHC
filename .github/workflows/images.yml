@@ -42,9 +42,13 @@ on:
   release:
     types: [published]
   schedule:
-    # Nightly full matrix: catches upstream breakage (a Buildroot mirror going
-    # away, a package bumping) on a day nobody pushed.
-    - cron: "0 4 * * *"
+    # Weekly full matrix: catches upstream breakage (a Buildroot mirror going
+    # away, a package bumping) that lands on a week nobody touched a board.
+    # Was nightly, but eight boards every night is a lot of runner time for a
+    # tree that rarely moves; once a week (Monday 04:00 UTC) still surfaces a
+    # broken mirror long before it matters, and anything actually pushed is
+    # built on its own PR regardless.
+    - cron: "0 4 * * 1"
 
 # A second push supersedes the first; there is no value in finishing an image
 # for a commit that is already history.
@@ -244,6 +248,23 @@ jobs:
           restore-keys: |
             out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-
 
+      # The EA family shares ONE ccache, keyed on the family rather than the
+      # board, so a translation unit compiled for ea1-v2 (WebKit, ICU, the
+      # toolchain's own host-gcc) is a hit for every other EA board and every
+      # later run. The rolling run_id key saves a fresh entry each run and the
+      # restore-keys walk back: this board's newest ccache first, then any EA
+      # board's. restore/save split (not plain actions/cache) so a FAILED build
+      # still saves the objects it did compile — the save step runs on always().
+      - name: Restore the EA family ccache
+        if: startsWith(matrix.board, 'ea')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
+            ccache-ea-${{ env.BUILDROOT_REF }}-
+
       - name: Fetch Buildroot
         run: |
           set -e
@@ -275,6 +296,10 @@ jobs:
           BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
           BOARD: ${{ matrix.board }}
           OHC_VERSION: ${{ steps.ver.outputs.version }}
+          # Shared ccache dir for the EA family (see the restore/save steps and
+          # board/ea/common/common_defconfig). build.sh forwards it to make only
+          # when set; a board whose defconfig has no BR2_CCACHE ignores it.
+          BR2_CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -e
           # build.sh caps parallelism by RAM; the runner has 4 cores / 16 GB.
@@ -345,6 +370,25 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # Carry-forward store (main only). A newer push to main cancels the older
+      # run (see `concurrency`), and `select` then rebuilds only the boards THIS
+      # push changed — so without this, the boards the cancelled run had already
+      # built would vanish from the newest run's output. Each successful main
+      # build parks its bundle in a per-board cache under a stable `carry/` dir;
+      # the `carry-forward` job below republishes it for any board the newest run
+      # did not rebuild, so main always has a complete, current image set.
+      - name: Persist this board's image for carry-forward (main)
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p carry
+          cp "${{ steps.bundle.outputs.bundle }}" carry/
+      - name: Save carry-forward image (main)
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: carry
+          key: img-main-${{ matrix.board }}-${{ github.run_id }}
+
       # Drop only what is genuinely rebuilt. That is a shorter list than it
       # looks:
       #
@@ -372,6 +416,17 @@ jobs:
         with:
           path: output/build/${{ matrix.board }}
           key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-r3-${{ github.run_id }}
+
+      # Save the shared EA ccache on always(): even a failed build compiled
+      # objects worth keeping for the next run, and a typo deep in WebKit should
+      # not cost that work. ccache caps itself (--max-size in the defconfig), so
+      # this never grows without bound.
+      - name: Save the EA family ccache
+        if: always() && startsWith(matrix.board, 'ea')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.
@@ -450,6 +505,52 @@ jobs:
             gh release upload dev "$z" --clobber
             echo "dev: $n"
           done
+
+  # Republish the latest image for every board the newest main run did NOT
+  # rebuild, pulled from the per-board carry-forward cache the build job fills.
+  # This is what lets a newer push to main cancel the older run (see
+  # `concurrency`) without the boards that run had already built dropping out:
+  # main ends every run with a complete, current image set.
+  #
+  # Best-effort, and deliberately NOT in images-ok's needs: a cold cache (no
+  # prior image for a board yet) just means nothing to carry, never a failed
+  # required check.
+  carry-forward:
+    needs: [select, build]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same fleet as select's ALL; a board added there is added here.
+        board: [ea1-v1, ea1-v2, ea1-v2-poe, ea3-v1, ea3-v2, ioxv1, ca1, hc800]
+    steps:
+      # A board this run built already uploaded openhc-<board>; re-uploading the
+      # same artifact name would collide, so carry forward only the rest.
+      - name: Did this run build ${{ matrix.board }}?
+        id: built
+        run: echo "built=${{ contains(fromJSON(needs.select.outputs.boards), matrix.board) }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore last main image for ${{ matrix.board }}
+        if: steps.built.outputs.built == 'false'
+        uses: actions/cache/restore@v4
+        with:
+          path: carry
+          # No per-run key can match an earlier run, so this is a deliberate
+          # miss; restore-keys is what pulls the newest img-main-<board>- entry
+          # saved by whichever past run last built this board.
+          key: img-main-${{ matrix.board }}-none
+          restore-keys: |
+            img-main-${{ matrix.board }}-
+
+      - name: Republish carried-forward image for ${{ matrix.board }}
+        if: steps.built.outputs.built == 'false' && hashFiles('carry/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhc-${{ matrix.board }}
+          path: carry/*
+          retention-days: 14
+          if-no-files-found: error
 
   # The one check branch protection requires from this workflow. A required
   # check must ALWAYS report: a workflow that never starts (path filter) would

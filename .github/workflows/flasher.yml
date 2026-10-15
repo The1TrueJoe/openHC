@@ -15,7 +15,11 @@ on:
   # Only the flasher's own sources can change the binaries. `paths` applies to
   # push and pull_request only, so releases, schedules and manual runs are
   # unaffected by it and still build everything.
+  #
+  # Scoped to main: a feature-branch push is already covered by the
+  # pull_request event, and firing on both doubled every PR's runs.
   push:
+    branches: [main]
     paths:
       - 'flasher/**'
       - '.github/workflows/flasher.yml'
