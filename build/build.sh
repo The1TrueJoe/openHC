@@ -39,6 +39,10 @@ DL="${BR2_DL_DIR:-$REPO/dl}"
 # — is what everything below has to use to find a board's files. BOARD stays the
 # bare name (ea3-v2); only where it lives on disk changed.
 case "$BOARD" in
+  # EA display build input: a standalone i386 WPE/SGX tree (not a bootable
+  # board). Bare name (not ea*) so it does NOT inherit the x86_64 EA family
+  # base; COMMON_CFG="" builds it from the fleet base + its own defconfig.
+  gpu-wpe-i386) COMMON_CFG=""; BOARD_DIR="$REPO/board/ea/common/gpu-wpe-i386" ;;
   ea*)  COMMON_CFG="$REPO/board/ea/common/common_defconfig"; BOARD_DIR="$REPO/board/ea/$BOARD" ;;
   *)    COMMON_CFG=""; BOARD_DIR="$REPO/board/$BOARD" ;;
 esac

@@ -4,7 +4,7 @@
 # DDK blobs) is 32-bit: the only SGX545 DDK that exists is Intel's i386 Cedarview
 # 1.7, so sgx545-um `depends on BR2_i386`. The EA image is BR2_x86_64 and
 # Buildroot cannot multilib one tree, so these bits are built HERE in a separate
-# standalone i386 Buildroot tree (board/gpu-wpe-i386) and HARVESTED into a
+# standalone i386 Buildroot tree (board/ea/common/gpu-wpe-i386) and HARVESTED into a
 # self-contained glibc sysroot tarball. That tarball drops into /opt/sgx-i386 of
 # the x86_64 EA image and runs under IA32 emulation against the in-tree sgx545ce
 # kernel driver (same mechanism as the /opt/sgx-i386 smoke tests in sgx-gpu.yml).
@@ -27,10 +27,10 @@ on:
   # workflow_dispatch only registers from the default branch, so until this
   # lands on main a path-filtered push is how it runs on the feature branch.
   push:
-    branches: [ea1-gpu-2026]
+    branches: [ea-display-daynight]
     paths:
       - .github/workflows/sgx-wpe.yml
-      - board/gpu-wpe-i386/**
+      - board/ea/common/gpu-wpe-i386/**
       - board/ea/common/packages/sgx545-um/**
       - board/ea/common/packages/wpebackend-pvr/**
       - board/ea/common/packages/webview/**
@@ -113,7 +113,7 @@ jobs:
         run: |
           set -e
           # Force wpewebkit to re-extract + re-apply its SOURCE patches
-          # (BR2_GLOBAL_PATCH_DIR board/gpu-wpe-i386/patches/wpewebkit/*) + rebuild.
+          # (BR2_GLOBAL_PATCH_DIR board/ea/common/gpu-wpe-i386/patches/wpewebkit/*) + rebuild.
           # The restored output-tree cache carries wpewebkit's .stamp_built, so an
           # incremental build would SKIP re-patching entirely and silently ship an
           # unpatched libWPEWebKit -- which is exactly how the GLContext fix went
