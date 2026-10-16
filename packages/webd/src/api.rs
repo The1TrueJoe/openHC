@@ -155,16 +155,39 @@ struct Display {
     /// passed to the dashboard as ?theme= (the UI keys off it).
     #[serde(default = "default_theme")]
     theme: String,
+    /// Read-only: this board has an on-screen display program (S95ohc-display).
+    /// The UI shows its Display tab only where it does; ignored on POST.
+    #[serde(default)]
+    available: bool,
 }
 fn default_theme() -> String { "auto".into() }
 impl Default for Display {
     fn default() -> Self {
-        Self { enabled: false, url: "http://localhost/".into(), theme: default_theme() }
+        Self { enabled: false, url: "http://localhost/".into(), theme: default_theme(), available: false }
     }
 }
 
-/// display.conf sits next to board.env (that path is overridable for tests).
+/// The per-board display service: the EAs' webview, the HC-800's cog.
+const DISPLAY_SVC: &str = "/etc/init.d/S95ohc-display";
+
+/// display.conf sits next to board.env (that path is overridable for tests) —
+/// unless board.env names another with OHC_DISPLAY_CONF. That matters where
+/// /opt is RAM: the HC-800's rootfs is an initramfs, so it keeps the setting on
+/// /data instead (the EAs' eMMC rootfs keeps /opt across reboots).
 fn display_conf(cfg: &Config) -> std::path::PathBuf {
+    let named = std::fs::read_to_string(&cfg.board_env).ok().and_then(|env| {
+        env.lines().find_map(|l| {
+            let v = l.trim().strip_prefix("OHC_DISPLAY_CONF=")?;
+            let v = v.split('#').next().unwrap_or("").trim().trim_matches('"').trim_matches('\'');
+            (!v.is_empty()).then(|| std::path::PathBuf::from(v))
+        })
+    });
+    if let Some(p) = named {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        return p;
+    }
     std::path::Path::new(&cfg.board_env)
         .parent().unwrap_or_else(|| std::path::Path::new("/opt/ohc"))
         .join("display.conf")
@@ -192,13 +215,13 @@ fn read_display(cfg: &Config) -> Display {
     description = "Reads /opt/ohc/display.conf. Off by default — a fresh box shows the splash.",
     responses((status = 200, description = "display config")))]
 async fn display_get(State(c): State<Arc<Config>>) -> Json<Display> {
-    Json(read_display(&c))
+    Json(Display { available: std::path::Path::new(DISPLAY_SVC).exists(), ..read_display(&c) })
 }
 
 #[utoipa::path(post, path = "/api/display", tag = "Display",
     summary = "Turn the on-panel web view on/off and set its URL",
-    description = "Writes /opt/ohc/display.conf and restarts the display service to apply it now \
-(EA only; a no-op on boards without the on-panel WPE stack). The config persists, so the choice \
+    description = "Writes /opt/ohc/display.conf and reloads the display service to apply it now \
+(the EAs and the HC-800, where a URL or theme change on a running view is live; a no-op on boards without an on-screen display program). The config persists, so the choice \
 survives a reboot.",
     responses((status = 200, description = "applied")))]
 async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Response {
@@ -219,12 +242,14 @@ async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Re
         return err(StatusCode::INTERNAL_SERVER_ERROR,
             &format!("cannot write {}: {e}", path.display()));
     }
-    // Apply now by restarting the display service — fire-and-forget (it backgrounds
-    // the view). Absent on non-EA boards; the persisted config still takes effect
-    // on the next boot, so a missing service is not an error.
-    let svc = "/etc/init.d/S95ohc-display";
-    let applied = std::path::Path::new(svc).exists()
-        && std::process::Command::new(svc).arg("restart").spawn().is_ok();
+    // Apply now by reloading the display service — fire-and-forget (it backgrounds
+    // the view). reload, not restart: where the board can (the HC-800's cog) it
+    // points the running view at the new URL instead of dropping to the splash;
+    // it starts or stops the view when `enabled` changed. Absent on boards with
+    // no display; the persisted config still takes effect on the next boot, so a
+    // missing service is not an error.
+    let applied = std::path::Path::new(DISPLAY_SVC).exists()
+        && std::process::Command::new(DISPLAY_SVC).arg("reload").spawn().is_ok();
     Json(serde_json::json!({ "enabled": d.enabled, "url": url, "theme": theme, "applied": applied }))
         .into_response()
 }

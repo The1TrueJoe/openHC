@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, HardDrive } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, HardDrive, Monitor } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
@@ -8,6 +8,7 @@ import { DocsPanel } from './panels/Docs';
 import { SystemPanel } from './panels/System';
 import { AudioPanel } from './panels/Audio';
 import { StoragePanel } from './panels/Storage';
+import { DisplayPanel } from './panels/Display';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -52,6 +53,11 @@ function destinations(c: Capabilities): Dest[] {
   if (c.storage) {
     d.push({ id: 'storage', label: 'Storage', icon: HardDrive, render: (c) => <StoragePanel caps={c} /> });
   }
+  // Display appears on boards with an on-screen web view (S95ohc-display: the
+  // EAs and the HC-800).
+  if (c.display) {
+    d.push({ id: 'display', label: 'Display', icon: Monitor, render: () => <DisplayPanel /> });
+  }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
   // The controller itself: sensors, fan, front panel. Distinct from IO, which
@@ -76,10 +82,18 @@ export default function App() {
     // the topic root to subscribe under. Only then does the IO client connect.
     // Audio is ohc-audiod's (its own daemon and REST); a board without it, or
     // with it down, simply has no Audio entry.
-    Promise.all([rest.capabilities(), rest.config(), rest.audio().catch(() => null), rest.storage().catch(() => null)])
-      .then(([caps, cfg, audio, storage]) => {
+    Promise.all([
+      rest.capabilities(), rest.config(),
+      rest.audio().catch(() => null), rest.storage().catch(() => null), rest.display().catch(() => null),
+    ])
+      .then(([caps, cfg, audio, storage, display]) => {
         const hasAudio = !!audio && (!!audio.map || audio.outputs.length > 0 || audio.receivers.some((r) => r.installed));
-        setCaps({ ...caps, ...(hasAudio ? { audio: audio! } : {}), ...(storage ? { storage } : {}) });
+        setCaps({
+          ...caps,
+          ...(hasAudio ? { audio: audio! } : {}),
+          ...(storage ? { storage } : {}),
+          ...(display?.available ? { display } : {}),
+        });
         io.connect(cfg.topics.base);
       })
       .catch((e: unknown) => setErr(String((e as Error).message ?? e)));
