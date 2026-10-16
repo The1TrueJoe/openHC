@@ -75,6 +75,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .route("/sys/{*rest}", any(crate::proxy::handler))
         .route("/audio/{*rest}", any(crate::proxy::handler))
         .route("/storage/{*rest}", any(crate::proxy::handler))
+        .route("/update/{*rest}", any(crate::proxy::handler))
         // IO control is MQTT, and the browser speaks it here. Same origin as
         // the page, so one open port is enough for the whole GUI.
         .route("/mqtt", any(crate::proxy::handler))
@@ -390,6 +391,7 @@ async fn openapi() -> Response {
         (crate::proxy::sysmond_addr(), "/sys", "sysmond"),
         (crate::proxy::audiod_addr(), "/audio", "ohc-audiod"),
         (crate::proxy::storaged_addr(), "/storage", "ohc-storaged"),
+        (crate::proxy::updated_addr(), "/update", "ohc-updated"),
     ] {
         if let Some(sub) = fetch_spec(&addr).await {
             merge_spec(&mut doc, sub, mount, group);

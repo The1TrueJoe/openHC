@@ -790,6 +790,64 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The rolling `dev` pre-release: the dev update channel (ohc-update on the
+  # box; stable is a published release, which `Attach to release` fills). CI
+  # artifacts need a GitHub token to download; release assets do not, so a box
+  # can fetch these directly. A push rebuilds only the boards it touches, so
+  # each board's zip is replaced on its own and the others stay — the zip names
+  # carry their own versions (openhc-<board>-<sha>-dev.zip). The `dev` tag
+  # follows the newest commit that published.
+  images-dev-release:
+    name: dev release
+    needs: [config, select, images-build]
+    # Whatever built: one board failing must not hold back the others' images
+    # (only successful boards upload an artifact).
+    if: >-
+      !cancelled() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: dev-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: openhc-*
+          path: bundles
+          merge-multiple: true
+      - name: Publish to the dev pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -l bundles
+          # The tag first (create, or move it here), then the release on it.
+          if gh api "repos/$GH_REPO/git/refs/tags/dev" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/dev" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/dev -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          notes="Rolling development builds of main — the dev update channel. Each board's image is replaced when a commit that affects it builds, so the zips can come from different commits; the version is in each name (openhc-<board>-<sha>-dev.zip). Not a release: for that, use the latest published one."
+          gh release view dev >/dev/null 2>&1 || \
+            gh release create dev --prerelease --title "dev (rolling)" --notes "$notes"
+          existing=$(gh release view dev --json assets -q '.assets[].name')
+          for z in bundles/openhc-*.zip; do
+            n=$(basename "$z")
+            # openhc-<board>-<version>.zip: the board is everything before the
+            # version, which starts with the 7-hex short sha.
+            board=$(echo "$n" | sed -E 's/^openhc-(.*)-[0-9a-f]{7,}-dev\.zip$/\1/')
+            for old in $(echo "$existing" | grep -E "^openhc-${board}-[0-9a-f]{7,}-dev\.zip$" || true); do
+              [ "$old" = "$n" ] || gh release delete-asset dev "$old" --yes
+            done
+            gh release upload dev "$z" --clobber
+            echo "dev: $n"
+          done
+
+
   # Republish the latest image for every board the newest main run did NOT
   # rebuild, pulled from the per-board carry-forward cache the build job fills.
   # This is what lets a newer push to main cancel the older run (see
