@@ -15,6 +15,11 @@ config that does not ask), plus BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM for the
 KMS platform, which needs libinput (>= 1.19) and udev at build time
 (OptionsWPE.cmake) and GBM/libdrm to allocate and scan out buffers.
 
+WPE Platform builds its keymaps through libxkbcommon, which needs the XKB data
+(xkeyboard-config) at RUN time: without /usr/share/X11/xkb the keymap is NULL and
+the application segfaults inside libxkbcommon as the display connects (seen on a
+musl/eudev target with no X). So the option selects it.
+
 The headless platform is built with it (no dependencies). The Wayland platform
 is left off: it is for running under a compositor, and would bring wayland and
 wayland-protocols back, which 0001 took out.
@@ -23,14 +28,15 @@ Applies on top of 0001. A candidate to send upstream to Buildroot.
 
 diff -ruN a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
 --- a/package/wpewebkit/Config.in	2026-10-16 02:06:04
-+++ b/package/wpewebkit/Config.in	2026-10-16 02:06:25
-@@ -83,6 +83,36 @@
++++ b/package/wpewebkit/Config.in	2026-10-16 15:08:06
+@@ -83,6 +83,37 @@
  	depends on BR2_PACKAGE_LIBSECCOMP_ARCH_SUPPORTS
  	depends on !BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_12
  
 +config BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM
 +	bool "WPE Platform API"
 +	select BR2_PACKAGE_LIBXKBCOMMON
++	select BR2_PACKAGE_XKEYBOARD_CONFIG # runtime, keymaps
 +	help
 +	  Build the WPE Platform library (libWPEPlatform), the API
 +	  that replaces the libwpe backend interface: the application

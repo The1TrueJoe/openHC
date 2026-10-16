@@ -84,6 +84,7 @@ reload() {
 # names the DRM platform outright, so a failure to drive KMS is an error in the
 # log rather than a silent fall back to the headless platform. WEBVIEW_RETRY:
 # webd may still be starting; a failed load is retried after that many seconds.
+# The log is the current run's (no syslog on this image), like the EAs'.
 run() {
 	export HOME="$RUN" XDG_RUNTIME_DIR="$RUN"
 	while :; do
@@ -91,7 +92,7 @@ run() {
 		printf '%s\n' "$url" > "$RUN/url"
 		WPE_DISPLAY=wpe-display-drm OHC_DISPLAY_CTL="$CTL" OHC_DISPLAY_THEME="$theme" \
 		WEBVIEW_URL="$url" WEBVIEW_RETRY=5 \
-			/usr/bin/webview 2>&1 | logger -t ohc-display
+			/usr/bin/webview >/var/log/ohc-display.log 2>&1
 		sleep 3
 	done
 }
