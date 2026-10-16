@@ -26,6 +26,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 
+Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
 `compatible = "intel,xscale-uart"`), **0011** (keep 8250_pci off the 0x2e66 UART
 — now `status = "disabled"` on that PCI node), and the IRQ half of **0002** (the
@@ -97,7 +98,12 @@ What the move changed, beyond deleting C:
   as XScale at 14.7456 MHz with no IRQ (polled), each taking over the legacy
   slot at its address so ttyS numbers stay put; the 0x2e66 PCI face of UART1 is
   disabled so it cannot steal the IO-MCU's 0x2f8 decode. 0010 (TX from the LSR)
-  and 0012 (GEN3 FCR/FIFO) are still driver changes.
+  is still a driver change.
+* **0012 (GEN3 FCR with DMA_SELECT, 64-byte FIFO) is retired.** Tested live on an
+  EA3: with ttyS1's FCR rewritten to mainline XScale's 0x81 (and to 0x01) through
+  /dev/port, relay reads (10/10) and 99-pulse IR sends (10/10, frames of several
+  FIFO-loads) were all answered by the IO-MCU. DMA_SELECT made no difference;
+  mainline's 32-byte tx_loadsz is below the hardware FIFO, so it cannot hurt.
 * **The switch is described the supported way.** DSA's platform_data path is
   legacy and silently needs `dsa_chip_data.netdev[cpu_port]`; the OF path
   resolves the conduit from `ethernet = <&gbe>`. The CPU port carries no
