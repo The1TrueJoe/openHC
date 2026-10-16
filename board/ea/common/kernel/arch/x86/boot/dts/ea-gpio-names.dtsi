@@ -25,6 +25,9 @@
 #ifndef EA_LINE_27
 #define EA_LINE_27 ""
 #endif
+#ifndef EA_LINE_44
+#define EA_LINE_44 ""
+#endif
 #ifndef EA_LINE_54
 #define EA_LINE_54 ""
 #endif
@@ -51,7 +54,7 @@
 		/*  16 */ "", "board_id0", "board_id1", "board_id2", "board_id3", "board_id4", "board_id5", "",
 		/*  24 */ EA_LINE_24, "", "usb_2_serial_reset", EA_LINE_27, "", "zigbee_reset", "", "",
 		/*  32 */ "id_button", "", "", "", "", "", "", "",
-		/*  40 */ "", "", "", "ldo_enable", "", "", "", "",
+		/*  40 */ "", "", "", "ldo_enable", EA_LINE_44, "", "", "",
 		/*  48 */ "", "", "", "", "", "", EA_LINE_54, "",
 		/*  56 */ "", "n_fpga_reload", "", "", "", "", "", "",
 		/*  64 */ "", "", "", "", "", "", "", "",

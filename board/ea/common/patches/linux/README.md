@@ -65,7 +65,7 @@ They are gone. Each board's tree is now linked into the kernel:
 |---|---|
 | `ce5300.dtsi` | the PCI functions used (audio, GPIO, 4×I2C, SSP, GbE) + `i2cN` aliases |
 | `ea.dtsi` | every EA: LEDs, common reset/enable hogs (IO-MCU, Zigbee, USB-serial, LDO, FPGA), LM75, CEFDK framebuffer |
-| `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) |
+| `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) + gpio44 rear-USB power (stock drove it from its closed platform driver; PR #51) |
 | `ea-wifi.dtsi` | the `wifi` feature: `wlan_disable` |
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
 | `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3, the card node, `codec_reset`/`dsp_reset` |

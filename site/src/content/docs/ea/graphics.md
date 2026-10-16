@@ -283,7 +283,7 @@ SoC is a set-top box, and a controller running a launcher isn't one.
 
 | Check | Result |
 |---|---|
-| `/proc/iomem` claims inside the 1.8 GB | exactly one: `ce5300-fb` at `0x7fc00000` |
+| `/proc/iomem` claims inside the 1.8 GB | exactly one: the framebuffer at `0x7fc00000` (then `ce5300-fb`, now simplefb from the board DTB) |
 | does DRAM exist at the top of the range? | yes — simplefb draws through it and the panel shows it |
 | write test at `0x40000000` (1 GB) | `0xa5a5a5a5` and `0x5a5a5a5a` both read back; original restored |
 | aliasing into low memory? | no — neighbour word undisturbed, low addresses read different values |

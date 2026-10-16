@@ -86,6 +86,8 @@ config BR2_OHC_IOXV1_KERNEL_DRIVERS
 # Buildroot packages live in <repo>/packages/ (BR2_EXTERNAL_OPENHC_PATH is board/).
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/figlet/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-nqptp/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-shairport-sync/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/splash/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/iomcu-attach/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/alsa-ohceq/Config.in"
