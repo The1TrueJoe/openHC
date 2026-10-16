@@ -9,6 +9,10 @@
 # everything it shows comes from /opt/ohc/board.env, so this one init script +
 # one binary run on every board.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+# The controller's API token (IOD_TOKEN, see S89ohcio): webd enforces it on its
+# own API and on the daemons it proxies, which listen on loopback only.
+[ -r /etc/openhc/iod.conf ] && . /etc/openhc/iod.conf
+export IOD_TOKEN
 WEB_PORT="${OHC_WEB_PORT:-80}"
 WEBD=/opt/ohc/bin/webd
 

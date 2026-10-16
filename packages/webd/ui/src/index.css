@@ -18,11 +18,15 @@
   --color-warm: var(--warm);
   --color-alarm: var(--alarm);
 
-  /* Manrope first, as the house UI specifies. A controller on a LAN cannot
-     fetch a webfont, so a panel without it installed gets the system face
-     rather than a blank page. */
-  --font-sans: Manrope, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Browser-default (system) fonts, no webfont. The UI is served by a controller
+     on a LAN with no guaranteed internet, and the on-panel WebKit surface renders
+     this same page — a render-blocking Google Fonts <link> stalled its first paint
+     for ~20 s while the CDN request timed out. So whatever device shows the UI (a
+     phone, a laptop, or the panel itself) uses its own installed face. These stacks
+     name common OS faces first and end in the generic family, so every platform
+     gets a good native sans/mono with nothing to download. */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, ui-sans-serif, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 }
 
 /* Light is the base definition so every token has a value unconditionally.

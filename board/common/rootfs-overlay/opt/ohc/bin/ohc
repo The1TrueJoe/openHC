@@ -33,7 +33,7 @@ stop_one() {
 boot() {
   echo "ohc: bring-up"
   "$BIN/ohc-tz"                      # host timezone
-  "$BIN/ohc-mdns"                    # advertise openhc-<model>-<mac>.local
+  "$BIN/ohc-mdns"                    # advertise <hostname>.local (openhc800-<mac>)
   start_one mdns-watch "$BIN/ohc-mdns" --watch
   # Board-specific hardware bring-up (the EA's lm75 + fan, etc.) is NOT here: it
   # is its own per-family init so this dispatcher stays the universal identity

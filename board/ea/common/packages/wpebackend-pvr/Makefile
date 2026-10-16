@@ -21,6 +21,10 @@ CC          ?= cc
 WPE_CFLAGS  ?= $(shell pkg-config --cflags wpe-1.0 2>/dev/null)
 WPE_LIBS    ?= $(shell pkg-config --libs   wpe-1.0 2>/dev/null)
 EGL_CFLAGS  ?= $(shell pkg-config --cflags egl 2>/dev/null)
+# The backend presents the WebProcess's rendered frame to /dev/fb0 itself (this
+# DDK has no dmabuf export, so there is no cross-process buffer handoff), which
+# needs glReadPixels from the DDK's GLESv2. Resolved against the sysroot by CC.
+GLES_LIBS   ?= -lGLESv2
 
 # -fvisibility=hidden: libwpe looks up exactly one symbol,
 # _wpe_loader_interface, which is marked visible in the source. Everything else
@@ -37,7 +41,7 @@ all: $(TARGET)
 
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) -DMESA_EGL_NO_X11_HEADERS $(WPE_CFLAGS) $(EGL_CFLAGS) $(LDFLAGS) -Wl,-soname,$(SONAME) \
-		-o $@ $(SRC) $(WPE_LIBS)
+		-o $@ $(SRC) $(WPE_LIBS) $(GLES_LIBS)
 	ln -sf $(TARGET) $(SONAME)
 	ln -sf $(SONAME) libWPEBackend-pvr.so
 

@@ -12,7 +12,7 @@
       "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio), ohc-storaged (drives) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
       "variables": {
         "host": {
-          "default": "openhc-<board>-<mac>.local"
+          "default": "<openhc800|openea1|openea3|openca1|openioxv1>-<mac>.local"
         }
       }
     },
@@ -22,7 +22,7 @@
       "description": "The same broker over WebSocket, proxied by webd on port 80 so a page needs one origin.",
       "variables": {
         "host": {
-          "default": "openhc-<board>-<mac>.local"
+          "default": "<openhc800|openea1|openea3|openca1|openioxv1>-<mac>.local"
         }
       }
     }
@@ -207,6 +207,46 @@
       },
       "summary": "Pulse the microcontroller's reset line",
       "description": "Recovery for a wedged part. Tries both polarities and reports which worked. Note: on the HC-800 a wedged MCU has NOT been recoverable by reset — it needs a power cycle."
+    },
+    "displayKey": {
+      "address": "openhc/{box}/cmd/display/key",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Press a key on the on-panel view",
+      "description": "A key name — `Up`/`Down`/`Left`/`Right`/`Enter`/`Back`/`Home`/`End`/`Tab`/`PageUp`/`PageDown`/`Menu` — or a single character. openHC only delivers the keystroke; what it does is up to the page that is loaded, so this is a 10-foot remote for whatever control system owns the screen. EA boards with the on-panel view enabled; when no view is running the command reports that rather than doing anything."
+    },
+    "displayText": {
+      "address": "openhc/{box}/cmd/display/text",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Type text into the on-panel view",
+      "description": "The payload is typed character by character into the page that is loaded."
+    },
+    "displayUrl": {
+      "address": "openhc/{box}/cmd/display/url",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Load a URL in the on-panel view",
+      "description": "Point the view at a page. The default is the openHC dashboard; this overrides it until the next load or reload."
+    },
+    "displayReload": {
+      "address": "openhc/{box}/cmd/display/reload",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Empty"
+        }
+      },
+      "summary": "Reload the on-panel view",
+      "description": "Reload the current page."
     },
     "audioOutputState": {
       "address": "openhc/{box}/state/audio/output",
@@ -630,6 +670,34 @@
         "$ref": "#/channels/mcuReset"
       },
       "summary": "Pulse the microcontroller's reset line"
+    },
+    "displayKey": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/displayKey"
+      },
+      "summary": "Press a key on the on-panel view"
+    },
+    "displayText": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/displayText"
+      },
+      "summary": "Type text into the on-panel view"
+    },
+    "displayUrl": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/displayUrl"
+      },
+      "summary": "Load a URL in the on-panel view"
+    },
+    "displayReload": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/displayReload"
+      },
+      "summary": "Reload the on-panel view"
     },
     "audioOutputState": {
       "action": "send",

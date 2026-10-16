@@ -2,7 +2,7 @@
 //!
 //! Classic AirPlay only carries volume sender → receiver. The way back is DACP,
 //! the remote-control channel a sender (iPhone, Music) opens to the receiver:
-//! shairport-sync's D-Bus interface (BR2_PACKAGE_SHAIRPORT_SYNC_DBUS) exposes it
+//! shairport-sync's D-Bus interface (packages/ohc-shairport-sync) exposes it
 //! as `RemoteControl.SetAirplayVolume(-30 … 0)`, which tells the sender to set
 //! its volume for this receiver. The sender then sends that volume back as
 //! usual, and because openHC's level and shairport-sync's mixer share one curve
@@ -10,10 +10,20 @@
 //!
 //! Every endpoint is its own shairport-sync on the system bus: the first to
 //! start owns `org.gnome.ShairportSync`, each later one
-//! `org.gnome.ShairportSync.i<pid>` (dbus-ohc-shairport.conf lets them). The
+//! `org.gnome.ShairportSync.i<pid>` (packages/ohc-shairport-sync patch 0001 —
+//! 5.x dropped that fallback; the ohc-shairport.conf D-Bus policy lets them). The
 //! bus says which pid owns the plain name. Best effort: with no sender
 //! connected, or one without DACP, there is nothing to move.
+//!
+//! The other half is where a session STARTS: AirPlay applies, and reports to a
+//! connecting sender as its `initialVolume`, the receiver's last volume —
+//! −24 (20%) on a fresh start — which would yank the output to it the moment a
+//! phone connects. `set_start_volume` keeps it at the output's level instead
+//! (the `Volume` D-Bus property; patch 0002 makes setting it do that).
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 const NAME: &str = "org.gnome.ShairportSync";
 
@@ -42,21 +52,72 @@ fn parse_uint32(reply: &str) -> Option<u32> {
     reply.split_whitespace().skip_while(|w| *w != "uint32").nth(1)?.parse().ok()
 }
 
-/// Ask the sender playing to this shairport-sync to set its volume. Runs off
-/// the caller's thread: the D-Bus round trips and DACP can take a moment.
-pub fn set_sender_volume(pid: u32, volume: f64) {
+/// Ask the sender playing to this shairport-sync to set its volume to
+/// `percent` (openHC's level; on the shared curve that is also the sender's
+/// slider position). Two channels, because the sessions differ:
+///   * AirPlay 2: `AdvancedRemoteControl.SetVolume(percent)` — a `dvlc`
+///     command over the session's event channel. AirPlay 2 senders open no
+///     DACP server, so the classic call reaches nothing for them.
+///   * classic AirPlay: `RemoteControl.SetAirplayVolume(-30 … 0)` over DACP.
+///
+/// Whichever has no session does nothing. Runs off the caller's thread.
+pub fn set_sender_volume(pid: u32, percent: u8) {
     if pid == 0 {
         return;
     }
     std::thread::spawn(move || {
         let dest = format!("--dest={}", name_for(pid));
-        // Fails harmlessly when no sender is connected (or it has no DACP).
+        let _ = dbus_send(&[
+            &dest,
+            "/org/gnome/ShairportSync",
+            "org.gnome.ShairportSync.AdvancedRemoteControl.SetVolume",
+            &format!("int32:{}", percent.min(100)),
+        ]);
         let _ = dbus_send(&[
             &dest,
             "/org/gnome/ShairportSync",
             "org.gnome.ShairportSync.RemoteControl.SetAirplayVolume",
-            &format!("double:{volume:.6}"),
+            &format!("double:{:.6}", crate::levels::airplay_volume(percent)),
         ]);
+    });
+}
+
+/// Make `volume` the receiver's starting volume (see the module comment). Off
+/// the caller's thread, and retried for a few seconds: a receiver that has
+/// just started may not have its name on the bus yet.
+pub fn set_start_volume(pid: u32, volume: f64) {
+    if pid == 0 {
+        return;
+    }
+    std::thread::spawn(move || {
+        for _ in 0..10 {
+            let set = dbus_send(&[
+                &format!("--dest={}", name_for(pid)),
+                "/org/gnome/ShairportSync",
+                "org.freedesktop.DBus.Properties.Set",
+                "string:org.gnome.ShairportSync",
+                "string:Volume",
+                &format!("variant:double:{volume:.6}"),
+            ]);
+            if set.is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+/// `set_start_volume` for a receiver being started now: waits for its process.
+pub fn set_start_volume_when_up(pid: Arc<AtomicU32>, volume: f64) {
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            let p = pid.load(Ordering::Relaxed);
+            if p != 0 {
+                set_start_volume(p, volume);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
     });
 }
 

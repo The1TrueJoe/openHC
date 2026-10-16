@@ -85,7 +85,16 @@ pub async fn handler(mut req: Request) -> Response {
     let path = req.uri().path();
     let rest = path.strip_prefix(mount).unwrap_or(path);
     let rest = if rest.is_empty() { "/" } else { rest };
-    let q = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    // The token is for webd (auth.rs) and iod; mosquitto's WebSocket listener
+    // has no use for it, so it does not get it.
+    let q = match req.uri().query() {
+        Some(q) if mount.is_empty() => {
+            let kept: Vec<&str> = q.split('&').filter(|kv| !kv.starts_with("token=")).collect();
+            if kept.is_empty() { String::new() } else { format!("?{}", kept.join("&")) }
+        }
+        Some(q) => format!("?{q}"),
+        None => String::new(),
+    };
     *req.uri_mut() = match format!("{rest}{q}").parse::<Uri>() {
         Ok(u) => u,
         Err(_) => return (StatusCode::BAD_REQUEST, "bad path").into_response(),

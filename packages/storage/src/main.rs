@@ -445,10 +445,35 @@ async fn mqtt(app: Arc<App>) {
     }
 }
 
+/// Stop every ksmbd.mountd, politely. It is a manager plus a forked worker; the
+/// worker holds the kernel server's netlink socket, so one left behind (the
+/// manager SIGKILLed by kill_on_drop, or a crashed storaged) makes every new
+/// mountd fail at once ("nl_recv() failed") and the share stays down. SIGTERM
+/// lets the manager take its worker with it.
+async fn stop_mountd() {
+    let _ = Command::new("killall").args(["-q", "-TERM", "ksmbd.mountd"]).status().await;
+    for _ in 0..20 {
+        let running = Command::new("pidof").arg("ksmbd.mountd").output().await.map(|o| !o.stdout.is_empty()).unwrap_or(false);
+        if !running {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = Command::new("killall").args(["-q", "-KILL", "ksmbd.mountd"]).status().await;
+}
+
 /// ksmbd.mountd, in the foreground, restarted if it exits.
 async fn mountd() {
+    // One left over from an earlier run would hold the kernel side.
+    stop_mountd().await;
     // ksmbd may be a module (the EA kernels build it as one); built in, this is a no-op.
-    let _ = Command::new("modprobe").arg("ksmbd").status().await;
+    // Quietly: where it is built in there is often no /lib/modules to look in.
+    let _ = Command::new("modprobe")
+        .arg("ksmbd")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
     loop {
         let r = Command::new("ksmbd.mountd")
             .args(["-n", "-C", &smb::conf().display().to_string(), "-P", &smb::pwddb().display().to_string()])
@@ -465,7 +490,7 @@ fn hostname() -> String {
 }
 
 fn main() {
-    let bind = std::env::var("STORAGED_BIND").unwrap_or_else(|_| "0.0.0.0:7073".into());
+    let bind = std::env::var("STORAGED_BIND").unwrap_or_else(|_| "127.0.0.1:7073".into());
     let ata_ports = std::env::var("OHC_STORAGE_ATA").unwrap_or_default().split_whitespace().map(str::to_string).collect();
     let _ = std::fs::create_dir_all(smb::RUN);
     let _ = std::fs::create_dir_all(drives::MEDIA);
@@ -596,6 +621,7 @@ fn main() {
         }
         // Leave nothing half-written on a drive someone pulls after a stop.
         mountd_task.abort();
+        stop_mountd().await;
         smb::withdraw();
         wsd::bye(&wsd_host);
         let _ = std::process::Command::new("sync").status();

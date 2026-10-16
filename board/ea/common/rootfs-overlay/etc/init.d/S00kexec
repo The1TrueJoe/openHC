@@ -41,8 +41,24 @@ command -v kexec >/dev/null 2>&1 || { echo "S00kexec: no kexec tool" >&2; exit 0
 # IGNORED here because this --command-line replaces it, so a reclaim set only in
 # the board fragment would never take effect on the kexec boot path. PROVEN on an
 # EA1: this line brings MemTotal from ~176 MB to ~1.7 GB.
+# Splash on the FIRST (bootstrap) kernel, before we hand off. This script runs on
+# BOTH kernels but exits at the ohc_kexec= guard above on the fat one, so the draw
+# here happens only on the bootstrap — exactly the window (bootstrap -> kexec ->
+# fat-kernel boot, several seconds, longest of all with the eMMC bring-up) that
+# otherwise shows nothing. /dev/fb0's scanout buffer SURVIVES kexec, so the banner
+# drawn here stays on the panel straight through the handoff; the fat kernel's
+# S01splash then redraws the identical banner. Reuses S01splash (same figlet|splash
+# + its own diagnostics); it is a no-op if the board didn't opt into splash or fb0
+# isn't up yet, and must never fail the handoff — hence the `|| true`.
+[ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash start >/dev/null 2>&1 || true
+
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
-CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}"
+# intel_iommu=off: the fat real kernel builds Intel VT-d in (DRM pulls IOMMU_SUPPORT
+# -> INTEL_IOMMU defaults y). This SoC's VT-d is buggy and breaks SDHCI ADMA DMA, so
+# the eMMC fails to init and root never mounts. The driver is also disabled in
+# real-kernel.fragment; this is the runtime belt-and-suspenders. No-op on the lean
+# bootstrap kernel (no IOMMU driver), so it is safe to pass unconditionally.
+CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq intel_iommu=off root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}"
 
 echo "S00kexec: handing off to the staged kernel ($KERNEL)"
 if kexec -l "$KERNEL" --command-line="$CMDLINE"; then

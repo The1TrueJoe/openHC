@@ -26,13 +26,14 @@ const AUDIO = `${location.origin}/audio`;
 const SWITCH = `${location.origin}/switch`;
 /* ohc-storaged's REST (external drives, the SMB share), proxied at /storage. */
 const STORAGE = `${location.origin}/storage`;
-const WS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
+const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
 /** Set when the daemon runs with IOD_TOKEN. Read from the page URL so a
  *  protected controller can be opened with ?token=… without a login screen the
  *  firmware has nowhere to store an account for. */
 const token = new URLSearchParams(location.search).get('token') ?? '';
 const auth = (u: string) => (token ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : u);
+const WS = auth(WS_BASE);
 
 export type Backend = 'mcu' | 'gpio' | 'none';
 
@@ -483,9 +484,29 @@ export interface FanStatus {
   error?: string;
 }
 
+/** The opt-in on-panel web view. webd serves this on its OWN origin (not a
+ *  proxied daemon), hence `location.origin/api/display` rather than one of the
+ *  `/iod` `/sys` mounts. Off by default — the panel shows the splash until set. */
+export interface DisplayCfg {
+  enabled: boolean;
+  url: string;
+  /** Day/night for the on-panel view: follow the page ('auto'), or force it. */
+  theme: 'auto' | 'light' | 'dark';
+}
+
 export const rest = {
   /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
   telemetry: () => j<Telemetry>(`${SYS}/api/now`),
+  /** The on-panel web view's current config (webd's own endpoint). */
+  display: () => j<DisplayCfg>(`${location.origin}/api/display`),
+  /** Turn the on-panel view on/off and set its URL; webd applies it immediately
+   *  (restarts the display service) and persists it for the next boot. */
+  setDisplay: (d: DisplayCfg) =>
+    j<{ enabled: boolean; url: string; theme: DisplayCfg['theme']; applied: boolean }>(`${location.origin}/api/display`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(d),
+    }),
   /** The telemetry ring. `seconds` trims the window; absent/0 is everything held. */
   history: (seconds?: number) =>
     j<History>(`${SYS}/api/history${seconds ? `?seconds=${seconds}` : ''}`),
