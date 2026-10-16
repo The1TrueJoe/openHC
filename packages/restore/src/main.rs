@@ -11,11 +11,17 @@
 //! kernel item, the stock kernel, and p2's entire factory recovery payload are
 //! left intact. So returning to stock is two steps:
 //!
-//!   1. REMOVE that MFH item  (this tool, over /dev/mtd0) — CEFDK then boots the
-//!      stock kernel item again, exactly as it did from the factory;
-//!   2. REIMAGE p1 from p2    — the stock rootfs. p1 is the running root, so this
-//!      cannot be done in place; it is handed to CEFDK's own recovery kernel,
-//!      which is what the recessed button triggers and what `stock` kexecs.
+//!   1. REIMAGE p1 from p2    — the stock rootfs (`recfs.tar.xz`). p1 is the
+//!      running root, so this cannot be done in place; `stock` kexecs the openHC
+//!      kernel into a tiny recovery initramfs (nothing holding p1) that rebuilds
+//!      p1 from p2 — Path 2 in packages/restore/DESIGN.md. (The stock
+//!      `recovery_kernel.deb` is a kernel *installer*, not a rootfs tool, and its
+//!      payload is a Control4 container `kexec` cannot boot — so we use openHC's
+//!      own kernel, not CEFDK's recovery.)
+//!   2. REMOVE that MFH item  (this tool, over /dev/mtd0) — CEFDK then boots the
+//!      stock kernel item again, exactly as from the factory. Done by the recovery
+//!      initramfs (`ohc-restore revert`) ONLY after a verified-good reimage, so a
+//!      failed extract never strands the box on a stock kernel over a wiped p1.
 //!
 //! The MFH is SHA-256 protected and a bad write bricks past the button (recovery
 //! needs an external programmer), so every write here is read-modify-ERASE-write
@@ -28,8 +34,8 @@
 //!   revert        remove openHC's MFH item (stock boot). Writes mtd0. REVERSIBLE
 //!                 with `install` as long as p1 still holds openHC.
 //!   install       re-append openHC's MFH item (undo `revert`). Writes mtd0.
-//!   stock         revert, then kexec p2's recovery kernel to reimage p1. The
-//!                 complete, one-way return to stock.
+//!   stock --yes   kexec a recovery initramfs that rebuilds p1 from p2, then
+//!                 reverts. The complete, one-way return to stock (destructive).
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -285,78 +291,257 @@ fn cmd_install() -> io::Result<()> {
     Ok(())
 }
 
-fn cmd_stock() -> io::Result<()> {
-    cmd_revert()?;
-    println!("stock: MFH reverted. Handing p1 to CEFDK's recovery kernel...");
-    recovery_reimage_p1()?;
-    Ok(())
-}
+/// eMMC byte offset where the openHC kernel bzImage is staged (the durable
+/// autoscript's `emmc rd_up` source). `/boot` is empty on the box, so this is the
+/// only copy of the kernel available to kexec. We read a generous slice past the
+/// image: a bzImage self-describes its length, so kexec ignores the trailing
+/// bytes. 8 MiB in (0x800000), confirmed by the "HdrS" magic at 0x800202.
+const GAP_KERNEL_OFF_MIB: u64 = 8;
+const GAP_KERNEL_READ_MIB: u64 = 12; // ≥ the ~7 MB kernel
+const EMMC: &str = "/dev/mmcblk0";
+const P2: &str = "/dev/mmcblk0p2";
 
-/// Reimage p1 by kexec-ing p2's stock recovery kernel with `recovery` on its
-/// command line — the same path the recessed button takes, but from software. The
-/// recovery kernel's initramfs reformats p1 and unpacks the stock rootfs from p2.
-/// p1 is our running root, which is exactly why this must run from a different
-/// kernel rather than in place.
+/// Return the EA to stock Control4 (Path 2 — see packages/restore/DESIGN.md).
 ///
-/// The recovery kernel ships in p2 as recovery_kernel.deb (an ar archive whose
-/// data.tar.gz holds the kernel). We extract it with the box's own ar + busybox
-/// tar (`-xa`, autodetect), find the bzImage inside, and kexec it.
-fn recovery_reimage_p1() -> io::Result<()> {
-    let p2 = "/mnt/ohc-recovery";
-    std::fs::create_dir_all(p2)?;
-    run("mount", &["-o", "ro", "/dev/mmcblk0p2", p2])
-        .or_else(|_| run("mount", &["-o", "ro,remount", "/dev/mmcblk0p2", p2]))?;
-    let deb = format!("{p2}/recovery_kernel.deb");
-    if !std::path::Path::new(&deb).exists() {
-        return Err(io::Error::other(format!("{deb} missing — cannot recover p1")));
+/// openHC runs *from* p1, so p1 cannot be reimaged in place. We `kexec` the openHC
+/// kernel into a tiny purpose-built **recovery initramfs** (nothing holding p1),
+/// which rebuilds p1 from p2's stock `recfs.tar.xz`, then runs `ohc-restore revert`
+/// (the proven enable-byte + MFH-item clear — the ONLY SPI-NOR write, no new/unvalidated
+/// MFH edit) and reboots. On the cold reboot CEFDK boots the stock kernel item over
+/// the stock p1: a factory box.
+///
+/// Fail-safe: the recovery reverts the SPI-NOR autoscript ONLY after a verified
+/// good extract. If the extract fails first, the autoscript stays enabled, so the
+/// next boot re-runs openHC's `boot-init`, which reinstalls openHC from the
+/// eMMC-staged image — the box heals back to openHC rather than stranding.
+///
+/// Destructive and one-way; guarded by `--yes` (iod / the web UI pass it after
+/// their own confirm). NOT yet live-validated — the one destructive on-box test is
+/// in DESIGN.md.
+fn cmd_stock(yes: bool) -> io::Result<()> {
+    if !yes {
+        return Err(io::Error::other(
+            "`stock` is a destructive factory restore (wipes openHC from p1). \
+             Re-run with --yes; iod and the web UI pass it after their own confirm.",
+        ));
     }
-    // ar p <deb> data.tar.gz | tar -x -a -f - -C /tmp/ohc-rk
-    let work = "/tmp/ohc-rk";
+    // Preconditions, BEFORE anything destructive: the tools the recovery needs,
+    // and p2's stock rootfs source.
+    for t in ["kexec", "unxz", "tar", "busybox", "cpio", "gzip"] {
+        require_tool(t)?;
+    }
+    let p2mnt = "/mnt/ohc-recovery";
+    std::fs::create_dir_all(p2mnt)?;
+    let _ = run("mount", &["-o", "ro", P2, p2mnt])
+        .or_else(|_| run("mount", &["-o", "ro,remount", P2, p2mnt]));
+    let recfs = format!("{p2mnt}/recfs.tar.xz");
+    let have_recfs = std::path::Path::new(&recfs).exists();
+    let _ = run("umount", &[p2mnt]); // the recovery env mounts p2 itself
+    if !have_recfs {
+        return Err(io::Error::other(
+            "/mnt/ohc-recovery/recfs.tar.xz not found on p2 — no stock rootfs to restore from",
+        ));
+    }
+
+    // Stage the openHC kernel out of the eMMC gap.
+    let work = "/tmp/ohc-stock";
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work)?;
-    let tgz = format!("{work}/data.tar.gz");
-    let data = std::process::Command::new("ar").args(["p", &deb, "data.tar.gz"]).output()?;
-    if !data.status.success() || data.stdout.is_empty() {
-        return Err(io::Error::other("ar: could not read data.tar.gz from recovery_kernel.deb"));
+    let kernel = format!("{work}/bzImage");
+    dd_extract(EMMC, GAP_KERNEL_OFF_MIB, GAP_KERNEL_READ_MIB, &kernel)?;
+    // Sanity: the staged bytes really are a bzImage (HdrS at 0x202).
+    {
+        let mut f = std::fs::File::open(&kernel)?;
+        let mut sig = [0u8; 4];
+        f.seek(SeekFrom::Start(0x202))?;
+        f.read_exact(&mut sig)?;
+        if &sig != b"HdrS" {
+            return Err(io::Error::other(
+                "staged kernel at eMMC 0x800000 is not a bzImage (no HdrS) — aborting before kexec",
+            ));
+        }
     }
-    std::fs::write(&tgz, &data.stdout)?;
-    run("tar", &["-x", "-a", "-f", &tgz, "-C", work])?;
 
-    // Find the kernel: a file whose 0x202 magic is "HdrS" (the bzImage setup sig).
-    let kern = find_bzimage(std::path::Path::new(work))
-        .ok_or_else(|| io::Error::other("no bzImage (HdrS magic) found in recovery_kernel.deb"))?;
-    eprintln!("stock: recovery kernel = {}", kern.display());
-
-    let cmdline = "console=ttyS0,115200 pci=realloc,nocrs,routeirq recovery";
-    run("kexec", &["-l", kern.to_str().unwrap(), &format!("--command-line={cmdline}")])?;
-    eprintln!("stock: kexec -e (reimaging p1 from p2; the box reboots to stock)");
+    // Build the recovery initramfs and kexec into it. No `root=`: the recovery
+    // runs entirely from the initramfs, so p1 is free to rebuild.
+    let cpio = build_recovery_initramfs(work)?;
+    let cmdline = "console=ttyS0,115200 pci=realloc,nocrs,routeirq rw ohc.recovery=stock";
+    run("kexec", &["-l", &kernel, &format!("--initrd={cpio}"), &format!("--command-line={cmdline}")])?;
+    eprintln!("stock: kexec -e into the RAM recovery (rebuild p1 from p2, revert SPI-NOR, reboot)");
     run("sync", &[])?;
     run("kexec", &["-e"])?; // does not return
     Ok(())
 }
 
-/// Walk `dir` and return the first file that is a Linux bzImage (the "HdrS" setup
-/// magic at offset 0x202), so we kexec the kernel regardless of how the .deb lays
-/// its payload out.
-fn find_bzimage(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).ok()?.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
+/// `dd if=<dev> of=<out> bs=1M skip=<off_mib> count=<read_mib>`.
+fn dd_extract(dev: &str, off_mib: u64, read_mib: u64, out: &str) -> io::Result<()> {
+    run(
+        "dd",
+        &[
+            &format!("if={dev}"),
+            &format!("of={out}"),
+            "bs=1M",
+            &format!("skip={off_mib}"),
+            &format!("count={read_mib}"),
+        ],
+    )
+}
+
+/// True if `tool` is runnable on this image (a real binary or a busybox applet).
+fn require_tool(tool: &str) -> io::Result<()> {
+    let ok = std::process::Command::new("sh")
+        .args(["-c", &format!("command -v {tool} >/dev/null 2>&1")])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("required tool '{tool}' not found on this openHC image")))
+    }
+}
+
+/// The recovery initramfs `/init` (see DESIGN.md Path 2). Kept as a readable shell
+/// script — not buried in Rust — so it can be inspected in the cpio and tweaked
+/// during the live test. It reuses the existing ext4 on p1 (empties it) rather
+/// than re-`mkfs`, so it needs no e2fsprogs library closure, and preserves p1's
+/// LABEL/UUID. The SPI-NOR flip is the already-proven `ohc-restore revert`, run
+/// ONLY after a verified extract.
+const RECOVERY_INIT: &str = r#"#!/bin/sh
+# openHC return-to-stock recovery initramfs. kexec'd by `ohc-restore stock`, so
+# /dev/mmcblk0p1 is NOT our root and can be rebuilt.
+export PATH=/bin:/sbin
+mount -t proc     proc     /proc 2>/dev/null
+mount -t sysfs    sysfs    /sys  2>/dev/null
+mount -t devtmpfs devtmpfs /dev  2>/dev/null
+echo
+echo "openHC: *** RETURN TO STOCK *** reimaging p1 from p2 recfs.tar.xz"
+
+i=0
+while [ ! -b /dev/mmcblk0p1 ] && [ $i -lt 100 ]; do
+    mount -t devtmpfs devtmpfs /dev 2>/dev/null
+    sleep 0.1 2>/dev/null || usleep 100000 2>/dev/null || :
+    i=$((i + 1))
+done
+
+mkdir -p /mnt/p1 /mnt/p2
+mount -o ro /dev/mmcblk0p2 /mnt/p2 || { echo "FATAL: cannot mount p2"; exec sh; }
+[ -f /mnt/p2/recfs.tar.xz ] || { echo "FATAL: no recfs.tar.xz on p2"; exec sh; }
+
+echo "openHC: emptying p1 (keeping its ext4 + label) and extracting stock rootfs..."
+umount /mnt/p1 2>/dev/null
+mount /dev/mmcblk0p1 /mnt/p1 || { echo "FATAL: cannot mount p1"; exec sh; }
+rm -rf /mnt/p1/..?* /mnt/p1/.[!.]* /mnt/p1/* 2>/dev/null
+if ! unxz -c /mnt/p2/recfs.tar.xz | tar -x -C /mnt/p1; then
+    echo "FATAL: extract failed — leaving the autoscript ENABLED so the box re-boots openHC"
+    sync
+    exec sh
+fi
+sync
+umount /mnt/p2 2>/dev/null
+
+echo "openHC: stock rootfs in place — reverting the SPI-NOR autoscript (ohc-restore revert)"
+# Only now (p1 is good stock) do we disable openHC's boot path, so a failed
+# extract above never leaves a box that boots the stock kernel over a wiped p1.
+/bin/ohc-restore revert || echo "WARNING: revert failed; clear the autoscript from stock or via serial"
+sync
+echo "openHC: done — rebooting to stock Control4"
+reboot -f
+while :; do sleep 10 2>/dev/null || :; done
+"#;
+
+/// Assemble the recovery initramfs cpio.gz in `work` and return its path. Mirrors
+/// build/mk-boot-init.sh: busybox + its dynamic loader/libc, plus `ohc-restore`
+/// itself (for the SPI-NOR revert) and the `/init` above.
+fn build_recovery_initramfs(work: &str) -> io::Result<String> {
+    let root = format!("{work}/initramfs");
+    let _ = std::fs::remove_dir_all(&root);
+    for d in ["bin", "sbin", "dev", "proc", "sys", "lib", "mnt/p1", "mnt/p2"] {
+        std::fs::create_dir_all(format!("{root}/{d}"))?;
+    }
+    // busybox + the dynamic loader/libc it needs. On x86_64 the loader lives in
+    // /lib64; copy from both and symlink lib64 -> lib so the interp path resolves.
+    std::fs::copy("/bin/busybox", format!("{root}/bin/busybox"))?;
+    copy_runtime_libs(&format!("{root}/lib"))?;
+    let _ = std::os::unix::fs::symlink("lib", format!("{root}/lib64"));
+
+    // ohc-restore itself — the recovery /init calls it for the proven SPI-NOR
+    // revert. It is small and (cross-built) often musl-static, so this is cheap.
+    let me = std::fs::read_link("/proc/self/exe")
+        .unwrap_or_else(|_| std::path::PathBuf::from("/opt/ohc/bin/ohc-restore"));
+    std::fs::copy(&me, format!("{root}/bin/ohc-restore"))?;
+    let _ = copy_ldd_libs(me.to_str().unwrap_or(""), &format!("{root}/lib"));
+
+    // Applet symlinks busybox resolves by argv[0].
+    for a in [
+        "sh", "mount", "umount", "mkdir", "rm", "dd", "sync", "cat", "ls", "unxz", "tar", "reboot",
+        "sleep", "usleep",
+    ] {
+        let _ = std::os::unix::fs::symlink("/bin/busybox", format!("{root}/bin/{a}"));
+    }
+
+    let init = format!("{root}/init");
+    std::fs::write(&init, RECOVERY_INIT)?;
+    set_exec(&init)?;
+
+    let out = format!("{work}/recovery.cpio.gz");
+    let st = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("cd '{root}' && find . | cpio -o -H newc 2>/dev/null | gzip -9 > '{out}'"),
+        ])
+        .status()?;
+    if !st.success() {
+        return Err(io::Error::other("failed to pack the recovery initramfs"));
+    }
+    Ok(out)
+}
+
+/// Copy busybox's likely runtime dependencies (the dynamic loader + libc family)
+/// out of /lib and /lib64 into `dst`. Missing ones are harmless; a static busybox
+/// simply needs none.
+fn copy_runtime_libs(dst: &str) -> io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    let prefixes = [
+        "ld-linux", "ld-musl", "ld-", "libc.so", "libm.so", "libresolv", "libdl", "libpthread",
+        "librt", "libgcc_s",
+    ];
+    for dir in ["/lib", "/lib64"] {
+        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if prefixes.iter().any(|p| name.starts_with(p)) {
+                let _ = std::fs::copy(e.path(), format!("{dst}/{name}"));
             }
-            if let Ok(mut f) = std::fs::File::open(&p) {
-                let mut sig = [0u8; 4];
-                use std::io::{Read, Seek, SeekFrom};
-                if f.seek(SeekFrom::Start(0x202)).is_ok() && f.read_exact(&mut sig).is_ok() && &sig == b"HdrS" {
-                    return Some(p);
+        }
+    }
+    Ok(())
+}
+
+/// Copy a binary's resolved shared libraries (from `ldd`) into `dst`, flattening
+/// them into the one lib dir. A no-op (Ok) if `ldd` is absent or the binary is
+/// static — `copy_runtime_libs` already covers the common case.
+fn copy_ldd_libs(bin: &str, dst: &str) -> io::Result<()> {
+    let Ok(out) = std::process::Command::new("ldd").arg(bin).output() else {
+        return Ok(());
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        for tok in line.split_whitespace() {
+            if tok.starts_with('/') && tok.contains(".so") {
+                if let Some(name) = std::path::Path::new(tok).file_name() {
+                    let _ = std::fs::copy(tok, format!("{dst}/{}", name.to_string_lossy()));
                 }
             }
         }
     }
-    None
+    Ok(())
+}
+
+fn set_exec(path: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
 fn run(cmd: &str, args: &[&str]) -> io::Result<()> {
@@ -424,7 +609,7 @@ fn cmd_restore_mfh(file: &str, compensate: bool) -> io::Result<()> {
 /// means the erase did not take (which is why writes can't fix the flash).
 fn cmd_erasetest() -> io::Result<()> {
     let blk = (mfh::TABLE_OFF & !(ERASE_BLOCK - 1)) as u32;
-    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(MTD)?;
+    let f = std::fs::OpenOptions::new().read(true).write(true).open(MTD)?;
     let ei = EraseInfoUser { start: blk, length: ERASE_BLOCK as u32 };
     let rc = unsafe { libc::ioctl(f.as_raw_fd(), MEMERASE as _, &ei) };
     println!("erasetest: MEMERASE(0x{blk:x}, 0x{:x}) rc={rc} errno={}",
@@ -461,7 +646,7 @@ fn main() {
         "erasetest" => cmd_erasetest(),
         "revert" => cmd_revert(),
         "install" => cmd_install(),
-        "stock" => cmd_stock(),
+        "stock" => cmd_stock(args.iter().any(|a| a == "--yes" || a == "--no-prompt")),
         "restore-mfh" => {
             let file = args.get(2).map(String::as_str).unwrap_or("");
             let comp = args.iter().any(|a| a == "--compensate");
@@ -472,12 +657,45 @@ fn main() {
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: ohc-restore {{status|revert|install|stock|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: ohc-restore {{status|revert|install|stock --yes|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };
     if let Err(e) = r {
         eprintln!("ohc-restore {cmd}: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The kernel is staged 8 MiB into the eMMC (0x800000), matching the durable
+    // autoscript's `emmc rd_up` source and the HdrS magic confirmed at 0x800202.
+    #[test]
+    fn gap_kernel_offset_is_0x800000() {
+        assert_eq!(GAP_KERNEL_OFF_MIB * 1024 * 1024, 0x80_0000);
+        assert!(GAP_KERNEL_READ_MIB * 1024 * 1024 >= 0x70_a000, "read must cover the ~7 MB kernel");
+    }
+
+    // The recovery /init is Path 2's contract. Pin the invariants a careless edit
+    // could break and strand or re-strand a box.
+    #[test]
+    fn recovery_init_contract() {
+        let s = RECOVERY_INIT;
+        assert!(s.starts_with("#!/bin/sh"), "must be a shell script");
+        // Rebuilds p1 from p2's stock rootfs.
+        assert!(s.contains("/mnt/p2/recfs.tar.xz"));
+        assert!(s.contains("unxz -c /mnt/p2/recfs.tar.xz | tar -x -C /mnt/p1"));
+        // Reuses the existing ext4 (no mkfs) — empties p1 before extracting.
+        assert!(s.contains("rm -rf /mnt/p1/..?* /mnt/p1/.[!.]* /mnt/p1/*"));
+        assert!(!s.contains("mke2fs") && !s.contains("mkfs"), "Path 2 must not re-mkfs p1");
+        // The ONLY SPI-NOR write is the proven revert, and it must come AFTER the
+        // extract (the extract's failure path must be above the revert).
+        let revert = s.find("ohc-restore revert").expect("must revert the SPI-NOR autoscript");
+        let extract_fail = s.find("FATAL: extract failed").expect("extract must have a failure guard");
+        assert!(extract_fail < revert, "revert must only run after a successful extract");
+        assert!(s.contains("reboot -f"));
     }
 }
