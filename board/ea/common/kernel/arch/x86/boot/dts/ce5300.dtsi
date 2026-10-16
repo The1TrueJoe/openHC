@@ -121,6 +121,12 @@
 			gbe: ethernet@c,0 {
 				reg = <0x16000 0 0 0 0>;
 			};
+
+			/* ehci-pci (TDI 192e:0101, patch 0014): the rear USB port.
+			 * 01:0d.0 and 01:0d.2 (the Zigbee CP2104) need no node. */
+			usb_rear: usb@d,1 {
+				reg = <0x16900 0 0 0 0>;
+			};
 		};
 	};
 };

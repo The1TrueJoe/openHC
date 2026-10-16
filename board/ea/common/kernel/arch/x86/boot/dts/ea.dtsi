@@ -101,27 +101,30 @@
 		output-high;
 		line-name = "ldo_enable";
 	};
-	/*
-	 * Rear USB port power (EHCI 01:0d.1). NOT in the stock script: the stock
-	 * kernel's closed ninjago_platform driver drives it high at boot, and
-	 * nothing else does. Measured on an EA3 (PR #51): the bootloader leaves it
-	 * low and the port sees nothing (PORTSC SE0, no connect); driven high, a
-	 * USB stick enumerates as high-speed; low again, it disconnects. Every EA
-	 * has the rear port, so it is released on all of them (EA1 not yet
-	 * measured). The vendor name is unknown, so "usb_rear_power" is ours.
-	 */
-	usb-rear-power-hog {
-		gpio-hog;
-		gpios = <44 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "usb_rear_power";
-	};
 	n-fpga-reload-hog {
 		gpio-hog;
 		gpios = <57 GPIO_ACTIVE_HIGH>;
 		output-high;
 		line-name = "n_fpga_reload";
 	};
+};
+
+/*
+ * Rear USB port power: a load switch on gpio44 (EHCI 01:0d.1). NOT in the stock
+ * script: the stock kernel's closed ninjago_platform driver drove it high at
+ * boot, and nothing else does. Measured on an EA3 (PR #51): the bootloader
+ * leaves it low and the port sees nothing (PORTSC SE0, no connect); high, a USB
+ * stick enumerates as high-speed; low again, it disconnects. Every EA has the
+ * rear port (EA1 not yet measured). The vendor name is unknown, so
+ * "usb_rear_power" is ours.
+ *
+ * Not a hog: as the controller's VBUS switch (patch 0016) it follows root-hub
+ * port power, so usbcore's port control cuts the port's 5 V --
+ *   echo 1 > /sys/bus/usb/devices/<roothub>-0:1.0/<roothub>-port1/disable
+ * or uhubctl.
+ */
+&usb_rear {
+	vbus-gpios = <&gpio 44 GPIO_ACTIVE_HIGH>;
 };
 
 /* Heatsink sensor; ohc-fand drives the fan from its hwmon. */

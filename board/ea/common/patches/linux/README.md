@@ -24,6 +24,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB` |
+| 0016 | ehci-pci VBUS GPIO | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 
 New-file drivers in `board/ea/common/kernel/drivers/`:
 
@@ -64,7 +65,7 @@ They are gone. Each board's tree is now linked into the kernel:
 | File | Describes |
 |---|---|
 | `ce5300.dtsi` | the PCI functions used (audio, GPIO, 4×I2C, SSP, GbE) + `i2cN` aliases |
-| `ea.dtsi` | every EA: LEDs, common reset/enable hogs (IO-MCU, Zigbee, USB-serial, LDO, FPGA, rear-USB power gpio44 from PR #51), LM75, CEFDK framebuffer |
+| `ea.dtsi` | every EA: LEDs, common reset/enable hogs (IO-MCU, Zigbee, USB-serial, LDO, FPGA), rear-USB VBUS (gpio44, PR #51) on the EHCI node, LM75, CEFDK framebuffer |
 | `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) |
 | `ea-wifi.dtsi` | the `wifi` feature: `wlan_disable` |
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
@@ -129,6 +130,19 @@ What the move changed, beyond deleting C:
 **Necessary as a patch: yes** — it adds Kconfig symbols and an early-boot hook
 to `arch/x86`. See "The board device tree" above.
 
+
+### 0016 — ehci-pci: board VBUS GPIO follows root-hub port power
+
+**Necessary as a patch: yes** — it adds a `.port_power` hook to ehci-pci.
+The rear USB port's 5 V is a load switch on gpio44 that the controller knows
+nothing about (stock drove it high from a closed board driver; PR #51 found it).
+With `vbus-gpios` on the controller's DT node, the hook drives it from root-hub
+port power, the way chipidea drives its VBUS regulator, so the port's `disable`
+attribute and uhubctl really cut VBUS. The root hub has to advertise per-port
+power switching for usbcore to send PORT_POWER at all, so the patch sets
+`HCS_PPC` in the cached `hcs_params` when the GPIO is present (single-port
+controllers only). A GPIO rather than a regulator because the EA3 slot kernel is
+~40 KB under CEFDK's copy window and the regulator core would not fit.
 ### 0003 — e1000 CE5300 fake PHY
 
 **Necessary as a patch: yes, unavoidably.** Modifies three upstream files in
