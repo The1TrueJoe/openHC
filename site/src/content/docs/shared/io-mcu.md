@@ -198,6 +198,44 @@ port:
 
 An EA1 sends two; an EA3 sends three.
 
+## User serial — confirmed on an EA3
+
+The combo jacks' serial mode was settled against a live EA3 (ldisc detached,
+raw app protocol on `ttyS1` @460800), with port 0 looped back so one write
+proved the whole chain end to end:
+
+| Request | Reply | Payload | Meaning |
+|---|---|---|---|
+| `0xa0` | *(none)* | `[port, 1, baud_index, data_bits, parity, stop_bits]` | UART_SET_CONTROL — switch a jack to serial + set line |
+| `0xa1` | *(none)* | `[port, data…]` | UART_SEND — transmit bytes |
+| `0xa2` | *(async)* | `[port, data…]` | UART_RECEIVE — bytes that arrived |
+
+All three are **fire-and-forget**: `UART_SET_CONTROL` and `UART_SEND` get no
+reply, and received bytes arrive unsolicited as `UART_RECEIVE`. `baud_index`
+0–6 is `1200/2400/4800/9600/19200/38400/57600`; **anything else is 115200**.
+`port` is 0-based (port 0 is the jack labelled "Serial 1").
+
+```
+--> 10 02 a0 .. 00 01 03 08 00 01     UART_SET_CONTROL port 0 -> 9600 8N1
+--> 10 02 a1 .. 00 41 54 0d           UART_SEND       port 0, "AT\r"
+<-- 10 02 a2 03 00 00 04 00 41 54 0d  UART_RECEIVE     port 0, "AT\r"   (looped back)
+```
+
+:::note[There is no READY_FOR_DATA handshake on the normal path]
+An earlier opcode sweep recorded `0xa1 → 0xa4` (`READY_FOR_DATA`), which read
+like a two-step flow-control handshake. It is not: a bare `UART_SEND [port]`
+with no data returns nothing, and `UART_SEND [port, data…]` transmits
+immediately. Send the bytes in the one frame.
+:::
+
+**openHC bridges this in the kernel, not in iod.** The `ohc-iomcu` line
+discipline owns `ttyS1`, so nothing in userspace can speak these opcodes on it
+directly. The discipline therefore mux-es each MCU-routed port onto a
+`/dev/ttyOHC<n>` tty — the n_gsm pattern — and iod's ordinary host-UART bridge
+opens that. A jack is switched to serial (`UART_SET_CONTROL`) only when its tty
+is opened, so the IR emitter on the same combo jack keeps working until a
+console is actually asked for.
+
 ## The per-board profile table
 
 One image serves ea1, ea3 and ea5. It does that with a table of **six board

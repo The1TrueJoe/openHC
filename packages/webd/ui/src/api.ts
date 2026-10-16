@@ -39,7 +39,10 @@ export interface SerialPort {
   dev: string | null;
   label: string;
   baud: number;
-  /** 'host' — a real tty. 'mcu' — routed through the IO protocol, no device node. */
+  /** 'host' — a real tty on a SoC UART. 'mcu' — a tty the ohc-iomcu line
+   *  discipline mux-es over the IO protocol's UART opcodes (shown with a "via
+   *  MCU" hint). Both are openable; `dev === null` is the only non-bridgeable
+   *  case. */
   transport: 'host' | 'mcu';
   /** What THIS port will actually run at. Per port, not one global list: a
    *  host 16550A and a UART reached over the IO microcontroller's protocol do
