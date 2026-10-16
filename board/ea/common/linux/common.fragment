@@ -95,9 +95,8 @@ CONFIG_E1000=y
 # and the GPU driver becomes rmmod/insmod-iterable instead of a reflash.
 #
 # What must stay BUILT-IN: anything needed to reach the rootfs (e1000, sdhci,
-# ext4, 8250), and board glue whose initcall ordering matters —
-# spi-ea-b53-board registers its board info at subsys_initcall, BEFORE the SPI
-# controller registers, which a userspace-loaded module cannot do.
+# ext4, 8250), and the SoC drivers the board DTB's devices hang off (gpio-intelce
+# for the LEDs and reset hogs, i2c-pxa for the LM75).
 #
 # Caution when curating: with MODULES=n every `=m` symbol inherited from the
 # i386 defconfig is silently dropped; turning modules on resurrects the whole
@@ -186,15 +185,22 @@ CONFIG_MODULE_UNLOAD=y
 # GPIO controller is PCI 8086:2e67. Mainline's gpio-sodaville binds it with the
 # CE4100 layout (12 lines) — WRONG for the CE5300 (4 banks x 32 = 128 lines for
 # the reset/LED pins). So sodaville is OFF and our gpio-intelce driver binds
-# 8086:2e67 and exposes all 128. It and i2c-pxa depend on OF, so OF must be a
-# plain bool — NOT flattree, NOT the CE4100 platform (bootlinux passes no DTB).
+# 8086:2e67 and exposes all 128. NOT the CE4100 platform (X86_INTEL_CE is 32-bit
+# only and replaces ACPI); the EA keeps ACPI and adds a device tree beside it.
+#
+# DEVICE TREE. bootlinux passes no DTB, so the board's own is linked into the
+# kernel (patches/linux/0015, BUILTIN_DTB) and picked per board by
+# CONFIG_BUILTIN_DTB_NAME in board/ea/<board>/linux/<board>.fragment. The sources
+# are kernel/arch/x86/boot/dts/; they describe the switch, codec, LEDs, reset
+# lines, LM75 and framebuffer that used to be C board files. kexec --dtb
+# overrides the built-in tree, so a test tree needs no rebuild.
 CONFIG_OF=y
-# CONFIG_OF_EARLY_FLATTREE is not set
 # CONFIG_X86_INTEL_CE is not set
+CONFIG_BUILTIN_DTB=y
 CONFIG_GPIOLIB=y
 
-# Front-panel LEDs (leds-ea-board.c). Needs gpio-intelce above, because three of
-# them sit on GPIOs 99-102, far past what gpio-sodaville exposed.
+# Front-panel LEDs (gpio-leds in ea.dtsi). Needs gpio-intelce above, because
+# three of them sit on GPIOs 99-102, far past what gpio-sodaville exposed.
 CONFIG_NEW_LEDS=y
 CONFIG_LEDS_CLASS=y
 CONFIG_LEDS_GPIO=y
@@ -212,7 +218,8 @@ CONFIG_GPIO_CDEV=y
 CONFIG_GPIO_CDEV_V1=y
 
 # I2C: i2c-pxa (REGS_CE4100 variant) behind PCI 8086:2e68. Needs TWO patches on
-# this x86_64 kernel: 0001 enumerates it without a device tree, and 0013 widens
+# this x86_64 kernel: 0001 enumerates the CE5300's fourth controller and binds
+# each adapter to its node in the board DTB, and 0013 widens
 # I2C_PXA/I2C_PXA_PCI from X86_32 to X86 so the CONFIG_I2C_PXA=y below is not
 # silently dropped — without 0013 there is no i2c bus at all (no LM75/fan, no
 # DS1339 RTC, no codec).
@@ -220,10 +227,9 @@ CONFIG_I2C=y
 CONFIG_I2C_PXA=y
 CONFIG_I2C_CHARDEV=y
 
-# COMMON_CLK must be ON: i2c-pxa's unconditional devm_clk_get() becomes a real
-# lookup once a clock framework exists, and this SoC registers no provider —
-# patch 0001 registers a fixed-rate clock per adapter so the lookup succeeds.
-# It is also load-bearing for SPI (derived symbols below depend on it).
+# COMMON_CLK must be ON for SPI (derived symbols below depend on it). This SoC
+# registers no clock provider, so patch 0001 makes i2c-pxa's clock optional —
+# with COMMON_CLK a required clock would fail every adapter with -ENOENT.
 CONFIG_COMMON_CLK=y
 
 # LM75 heatsink temp sensor on i2c-0 @ 0x48 -> /sys/class/hwmon/hwmon0/temp1_input.

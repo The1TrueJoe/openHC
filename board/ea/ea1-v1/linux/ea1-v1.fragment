@@ -15,3 +15,6 @@
 # which S00kexec appends. (The EA3 boots direct, so its reclaim IS in its fragment
 # CONFIG_CMDLINE — see ea3-v2.fragment for the full per-entry derivation.)
 CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
+
+# Board device tree: kernel/arch/x86/boot/dts/ea1-v1.dts (see common.fragment).
+CONFIG_BUILTIN_DTB_NAME="ea1-v1"

@@ -8,7 +8,7 @@
 # (FBIOGET_[VF]SCREENINFO) rather than being told.
 #
 # Where /dev/fb0 comes from is per-board and does not change anything here:
-#   ea*    ce5300-fb, the scanout CEFDK leaves running (CONFIG_FB_SIMPLE)
+#   ea*    simplefb on the scanout CEFDK leaves running (board DTB, CONFIG_FB_SIMPLE)
 #   hc800  i915 fbdev emulation on the GMA 3150 (CONFIG_DRM_FBDEV_EMULATION)
 # On the EA there is no modeset to wait for; on the HC-800 the fbdev client has
 # already done it by the time init runs. Either way: if the node is there, it is
@@ -47,7 +47,7 @@ case "$1" in
 		}
 		if [ ! -e "$FBDEV" ]; then
 			echo "Splash: no $FBDEV -- no framebuffer driver bound."
-			echo "Splash:   ea*   expected ce5300-fb   (check CONFIG_FB_SIMPLE)"
+			echo "Splash:   ea*   expected simplefb    (check CONFIG_FB_SIMPLE)"
 			echo "Splash:   hc800 expected i915 fbdev  (check CONFIG_DRM_I915,"
 			echo "Splash:         CONFIG_DRM_FBDEV_EMULATION, CONFIG_FB_DEVICE)"
 			exit 0

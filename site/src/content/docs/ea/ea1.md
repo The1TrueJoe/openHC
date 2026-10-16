@@ -120,7 +120,7 @@ Three things worth knowing about the radio:
 Two things changed since this recon. First, the CP2104 USB-UART bridge didn't
 enumerate at all on an early openHC kernel; the EHCI `has_hostpc` fix for the
 CE5300 TDI USB core (patch `0014`) fixes that, so `/dev/ttyUSB0` appears. Second,
-`gpio-ea-board` drives `zigbee_reset` (gpio29) high=released at boot, so the EM357
+the board device tree hogs `zigbee_reset` (gpio29) high=released at boot, so the EM357
 runs its application from power-on rather than sitting in the serial bootloader —
 opening the port does **not** drop it to the bootloader. Measured on hardware: a
 bare ASH `RST` returns `RSTACK` (0xc1) at 115200 8N1, no RTS/CTS. The sequence
@@ -188,7 +188,7 @@ that needs no serial: openHC's install adds exactly one `script` item to the
 SPI-NOR MFH, and `ohc-restore` removes it. It can be triggered from iod (REST/MQTT),
 the web UI System panel, or by **holding the front ID button** — a bare SoC GPIO
 (`gpiochip0` line 32, active-low: released `1`, pressed `0`, confirmed on this
-EA1) that `gpio-ea-board` leaves unclaimed. The watcher is fail-safe: it arms only
+EA1) that the board device tree leaves unclaimed. The watcher is fail-safe: it arms only
 after one clean released reading, so a wrong polarity stays inert.
 
 This matters on the EA1 specifically: with the boot fuse blown, the native

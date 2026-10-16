@@ -11,15 +11,11 @@
 # common.fragment doing nothing. Gate a driver by putting it behind a feature's
 # .fragment + a real upstream symbol, not by inventing one.
 #
-# ce5300-fb is the exception: FB_SIMPLE is a real upstream symbol.
-drivers/video/fbdev/Makefile|obj-$(CONFIG_FB_SIMPLE) += ce5300-fb.o
+# Board DESCRIPTION is not here: the switch, codec, LEDs, reset lines, LM75 and
+# framebuffer are nodes in arch/x86/boot/dts/ (linked in by BUILTIN_DTB). Only
+# drivers for the SoC's own PCI functions belong in this table.
 drivers/gpio/Makefile|obj-y += gpio-intelce.o
-# Board GPIO init: names the vendor lines and releases the resets. Must build
-# alongside gpio-intelce, not instead of it -- it requests lines from that chip.
-drivers/gpio/Makefile|obj-y += gpio-ea-board.o
 drivers/pwm/Makefile|obj-y += pwm-ce5300.o
-drivers/leds/Makefile|obj-y += leds-ea-board.o
-drivers/spi/Makefile|obj-y += spi-ea-b53-board.o
 # Boot SPI-NOR controller: the boot flash is NOT on the pxa2xx SSP (8086:2e6a,
 # the general-purpose SPI the switch rides). It is on a DEDICATED block, PCI
 # 01:17.0 "FLASH memory [0501]" 8086:08a0, which has no mainline driver. This is

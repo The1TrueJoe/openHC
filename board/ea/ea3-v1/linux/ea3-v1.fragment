@@ -3,3 +3,6 @@
 # pci=routeirq enables the CE5300 UART interrupt link (LUAR/GSI 38) for the IO-MCU
 # on ttyS1 — see board/ea/common/linux/common.fragment.
 CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
+
+# Board device tree: kernel/arch/x86/boot/dts/ea3-v1.dts (see common.fragment).
+CONFIG_BUILTIN_DTB_NAME="ea3-v1"

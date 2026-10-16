@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * ADAU1451 SigmaDSP analog audio -- the `audio-dsp` feature (EA3 only).
+ *
+ * The codec sits at 0x38 on the FOURTH I2C controller (vendor i2c-3); the DAC
+ * soft mute is vendor GPIO 61, active high = muted. The card node binds the
+ * ce5300-ea3 machine driver, which links ce5300-i2s to "adau1451.3-0038" --
+ * the i2c3 alias in ce5300.dtsi is what keeps that name stable.
+ */
+/ {
+	sound {
+		compatible = "control4,ea-audio";
+	};
+};
+
+&i2c3 {
+	audio-codec@38 {
+		compatible = "adi,adau1451";
+		reg = <0x38>;
+		mute-gpios = <&gpio 61 GPIO_ACTIVE_HIGH>;
+	};
+};

@@ -254,8 +254,8 @@ libraries conditional on a driver actually wanting them.
 
 The panel is 720x480 and that isn't a setting anywhere in openHC. CEFDK leaves
 the display pipe enabled with a 720x480 timing scanning ARGB8888 out of
-`0x7fc00000`; all `ce5300-fb` does is hand that existing buffer to
-`simple-framebuffer`. **simplefb has no modeset path by design**, it describes a
+`0x7fc00000`; the board device tree just describes that existing buffer to
+`simple-framebuffer` (a `/chosen/framebuffer` node). **simplefb has no modeset path by design**, it describes a
 framebuffer somebody else configured.
 
 So the UI is SD until someone drives the display controller properly, which means

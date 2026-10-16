@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * What every Control4 EA board shares: front-panel LEDs, the reset/enable lines
+ * stock firmware releases at boot, the heatsink sensor, and the framebuffer
+ * CEFDK leaves scanning out. Boards add their own differences on top.
+ */
+#include "ce5300.dtsi"
+
+/ {
+	chosen {
+		/*
+		 * CEFDK leaves the VDC pipe running 720x480 out of a fixed buffer in
+		 * an e820-reserved window; simplefb takes it over as /dev/fb0.
+		 * Values read off the VDC on an EA-3 (upp_c surface 0x7fc00000,
+		 * stride 0xb80 = 736 px * 4). Size = stride * height.
+		 */
+		framebuffer@7fc00000 {
+			compatible = "simple-framebuffer";
+			reg = <0x7fc00000 (2944 * 480)>;
+			width = <720>;
+			height = <480>;
+			stride = <2944>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	/*
+	 * Recovered verbatim from the stock kernel's gpio_led[] (num_leds = 6);
+	 * the two 4-ball LEDs are active low. The names are ABI: iod and
+	 * OHC_RESTORE_BUTTON_LED address them under /sys/class/leds.
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		led-network {
+			label = "c4::network";
+			gpios = <&gpio 15 GPIO_ACTIVE_HIGH>;
+		};
+		led-warn-red {
+			label = "warn::red";
+			gpios = <&gpio 99 GPIO_ACTIVE_HIGH>;
+		};
+		led-warn-yellow {
+			label = "warn::yellow";
+			gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+		};
+		led-warn-blue {
+			label = "warn::blue";
+			gpios = <&gpio 100 GPIO_ACTIVE_HIGH>;
+		};
+		led-4ball-red {
+			label = "c4::4ball_red";
+			gpios = <&gpio 102 GPIO_ACTIVE_LOW>;
+		};
+		led-4ball-blue {
+			label = "c4::4ball_blue";
+			gpios = <&gpio 34 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+/*
+ * Line names and boot-time states from stock /etc/init.d/c4_gpio_config,
+ * setup_gpio_common(). These have to be driven from the kernel, not an init
+ * script: by the time userspace runs, everything the kernel probes at boot has
+ * already missed its device (measured on an EA3: gpio26 usb_2_serial_reset was
+ * an output driven LOW, holding the USB-serial bridge down).
+ *
+ * Outputs are hogged high (released from reset / enabled). Inputs -- the board
+ * id straps and the ID button -- are only named, so gpioget/gpiofind can read
+ * them; 32 (id_button) in particular must stay free for ohc-restore-button.
+ * 23 (src_reset) is left alone, as stock does.
+ *
+ * gpio-line-names is one property, so a board names its own lines by defining
+ * EA_LINE_<n> before including this file (see ea3.dtsi) instead of repeating
+ * all 128 entries.
+ */
+#ifndef EA_LINE_54
+#define EA_LINE_54 ""
+#endif
+#ifndef EA_LINE_75
+#define EA_LINE_75 ""
+#endif
+#ifndef EA_LINE_80
+#define EA_LINE_80 ""
+#endif
+#ifndef EA_LINE_121
+#define EA_LINE_121 ""
+#endif
+#ifndef EA_LINE_122
+#define EA_LINE_122 ""
+#endif
+
+&gpio {
+	gpio-line-names =
+		/*   0 */ "", "", "", "", "", "gb_eth_reset", "", "io_reset",
+		/*   8 */ "gb_sw_reset", "", "", "", "", "", "", "",
+		/*  16 */ "", "board_id0", "board_id1", "board_id2", "board_id3", "board_id4", "board_id5", "",
+		/*  24 */ "codec_reset", "", "usb_2_serial_reset", "wlan_disable", "", "zigbee_reset", "", "",
+		/*  32 */ "id_button", "", "", "", "", "", "", "",
+		/*  40 */ "", "", "", "ldo_enable", "", "", "", "",
+		/*  48 */ "", "", "", "", "", "", EA_LINE_54, "",
+		/*  56 */ "", "n_fpga_reload", "", "", "", "", "", "",
+		/*  64 */ "", "", "", "", "", "", "", "",
+		/*  72 */ "", "", "", EA_LINE_75, "", "", "", "",
+		/*  80 */ EA_LINE_80, "", "", "", "", "", "", "",
+		/*  88 */ "", "", "", "", "", "", "", "",
+		/*  96 */ "", "", "", "", "", "dsp_reset", "", "",
+		/* 104 */ "", "", "", "", "", "", "", "",
+		/* 112 */ "", "", "", "", "", "", "", "",
+		/* 120 */ "", EA_LINE_121, EA_LINE_122, "", "", "", "", "";
+
+	wlan-disable-hog {
+		gpio-hog;
+		gpios = <27 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "wlan_disable";
+	};
+	zigbee-reset-hog {
+		gpio-hog;
+		gpios = <29 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "zigbee_reset";
+	};
+	usb-2-serial-reset-hog {
+		gpio-hog;
+		gpios = <26 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb_2_serial_reset";
+	};
+	dsp-reset-hog {
+		gpio-hog;
+		gpios = <101 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "dsp_reset";
+	};
+	codec-reset-hog {
+		gpio-hog;
+		gpios = <24 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "codec_reset";
+	};
+	io-reset-hog {
+		gpio-hog;
+		gpios = <7 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "io_reset";
+	};
+	gb-sw-reset-hog {
+		gpio-hog;
+		gpios = <8 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "gb_sw_reset";
+	};
+	gb-eth-reset-hog {
+		gpio-hog;
+		gpios = <5 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "gb_eth_reset";
+	};
+	ldo-enable-hog {
+		gpio-hog;
+		gpios = <43 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "ldo_enable";
+	};
+	n-fpga-reload-hog {
+		gpio-hog;
+		gpios = <57 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_fpga_reload";
+	};
+};
+
+/* Heatsink sensor; ohc-fand drives the fan from its hwmon. */
+&i2c0 {
+	temperature-sensor@48 {
+		compatible = "national,lm75";
+		reg = <0x48>;
+	};
+};

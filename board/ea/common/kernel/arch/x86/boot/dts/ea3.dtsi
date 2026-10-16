@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * EA3 (both board revisions): setup_gpio_ea3() from stock c4_gpio_config. The
+ * EA1 and EA5 blocks differ, which is why stock branches on the board and why
+ * these lines live here and not in ea.dtsi.
+ */
+#define EA_LINE_54	"poe_type"
+#define EA_LINE_75	"n_twelve_volt_current_limit"
+#define EA_LINE_80	"ac_pwr"
+#define EA_LINE_121	"n_usb_current_limit"
+#define EA_LINE_122	"twelve_volt_ok"
+#include "ea.dtsi"
+
+&gpio {
+	n-twelve-volt-current-limit-hog {
+		gpio-hog;
+		gpios = <75 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_twelve_volt_current_limit";
+	};
+	n-usb-current-limit-hog {
+		gpio-hog;
+		gpios = <121 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_usb_current_limit";
+	};
+};
