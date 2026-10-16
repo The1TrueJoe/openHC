@@ -63,11 +63,15 @@ pub fn netboot(
     box_ip: &str,
     mac: &str,
     cmdline: &str,
+    broadcast: Option<&str>,
     wait: bool,
     p: &Progress,
 ) -> Result<()> {
     let server_ip: Ipv4Addr = server_ip.parse().with_context(|| format!("bad --server-ip {server_ip}"))?;
     let box_ip: Ipv4Addr = box_ip.parse().with_context(|| format!("bad --box-ip {box_ip}"))?;
+    let broadcast: Option<Ipv4Addr> = broadcast
+        .map(|b| b.parse().with_context(|| format!("bad --broadcast {b}")))
+        .transpose()?;
     let target_mac = bootp::parse_mac(mac).ok_or_else(|| anyhow!("bad --mac {mac:?} (want aa:bb:cc:dd:ee:ff)"))?;
 
     // The initrd length handed to bootlinux MUST be the exact byte count of
@@ -92,7 +96,7 @@ pub fn netboot(
 
     // 1. Start the two servers. Bind failures here are almost always "not root".
     let bootp_p = p.clone();
-    let bootp = BootpResponder::start(target_mac, box_ip, server_ip, move |m| {
+    let bootp = BootpResponder::start(target_mac, box_ip, server_ip, broadcast, move |m| {
         bootp_p.emit(Event::detail(m))
     })
     .map_err(|e| bind_error("BOOTP", 67, e))?;

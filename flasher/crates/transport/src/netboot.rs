@@ -393,7 +393,7 @@ fn pin_to_interface(sock: &socket2::Socket, iface: &str) -> io::Result<()> {
 /// The DHCP socket: bound to every address (a client with no lease broadcasts,
 /// so a socket bound to one unicast address would never see a DISCOVER) but
 /// PINNED to one interface, so replies leave by the wire the request arrived on.
-fn bind_dhcp(server_ip: Ipv4Addr) -> io::Result<(UdpSocket, Option<String>)> {
+pub(crate) fn bind_dhcp(server_ip: Ipv4Addr) -> io::Result<(UdpSocket, Option<String>)> {
     use socket2::{Domain, Protocol, Socket, Type};
 
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;

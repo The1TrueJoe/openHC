@@ -76,6 +76,8 @@ fn help() {
            netboot --serial <dev> --mac <aa:bb:..> [--images <dir|zip>]\n\
                    [--server-ip <ip>] [--box-ip <ip>] [--cmdline <str>] [--no-wait]\n\
                                     EA bring-up: netboot openHC into RAM from CEFDK's\n\
+                   [--broadcast <ip>]  BOOTP reply address (default: server's /24\n\
+                                    broadcast; 255.255.255.255 for a link-local link)\n\
                                     manufacturing shell — answers BOOTP with the C4 cookie,\n\
                                     serves the images over TFTP, and drives the serial\n\
                                     console. Writes NOTHING to the box. Needs sudo (binds\n\
@@ -735,7 +737,7 @@ fn netboot_cmd(rest: &[String]) -> bool {
     println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
     println!("  serving {} over TFTP; nothing is written to the box", rel.source);
     let p = Progress::stdout();
-    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, wait, &p) {
+    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, broadcast.as_deref(), wait, &p) {
         Ok(()) => { println!("\n  done — openHC was netbooted into RAM."); true }
         Err(e) => { eprintln!("  netboot failed: {e:#}"); false }
     }
@@ -781,6 +783,9 @@ fn netboot_dhcp(rest: &[String]) -> bool {
     };
     let Some(mac) = tp::netboot::parse_mac(&mac_s) else {
         eprintln!("  '{mac_s}' is not a MAC address");
+    // BOOTP replies go to the server's /24 broadcast unless told otherwise;
+    // a link-local /16 point-to-point link needs --broadcast 255.255.255.255.
+    let broadcast = flag("--broadcast");
         return false;
     };
     let refuse = rest.iter().any(|a| a == "--refuse");
