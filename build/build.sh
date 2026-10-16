@@ -519,6 +519,13 @@ if [ -d "$OUT/host/bin" ] && grep -q '^BR2_INSTALL_LIBSTDCPP=y$' "$EFFECTIVE" 2>
     fi
 fi
 
+# Every package symbol the tree was last configured with — for the options
+# check further down (empty on a fresh or wiped tree, which needs none).
+_pkg_syms() {
+    sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=(.*)$/\1=\2/p; s/^# (BR2_PACKAGE_[A-Z0-9_]+) is not set$/\1=n/p' "$1" 2>/dev/null | sort
+}
+_pkg_was=$(_pkg_syms "$OUT/.config" || true)   # no .config: not a failure (set -e)
+
 "${M[@]}" defconfig BR2_DEFCONFIG="$EFFECTIVE"
 # Record the toolchain this tree now carries, for the next run's comparison.
 mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
@@ -644,6 +651,31 @@ for _root in $_gpd; do
         printf '%s\n' "$_sum" > "$_sumf"
     done
 done
+
+# And once more for a package's OPTIONS: Buildroot configures a package once,
+# so flipping one of its sub-options (e.g. BR2_PACKAGE_COG_USE_SYSTEM_DBUS, a
+# meson -D flag) in a defconfig leaves a cached tree building it the old way.
+# Compare every package symbol with the tree's .config from before defconfig,
+# and for each that changed, dirclean the package that owns it: the longest
+# enabled BR2_PACKAGE_<PKG> prefix that is not the symbol itself. A package that
+# was only turned on or off needs nothing — Buildroot handles that.
+if [ -n "$_pkg_was" ]; then
+    _cleaned=" "
+    for _s in $(printf '%s\n' "$_pkg_was" "$(_pkg_syms "$OUT/.config")" | sort | uniq -u | sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=.*/\1/p' | sort -u); do
+        _c=${_s#BR2_PACKAGE_}
+        while [ "${_c%_*}" != "$_c" ]; do
+            _c=${_c%_*}
+            grep -q "^BR2_PACKAGE_$_c=y\$" "$OUT/.config" || continue
+            _pkg=$(echo "$_c" | tr 'A-Z_' 'a-z-')
+            case "$_cleaned" in *" $_pkg "*) ;; *)
+                echo ">> $_pkg: option $_s changed — re-extracting"
+                "${M[@]}" "$_pkg-dirclean"
+                _cleaned="$_cleaned$_pkg " ;;
+            esac
+            break
+        done
+    done
+fi
 
 "${M[@]}" "${@:-all}"
 
