@@ -356,7 +356,11 @@ pub fn stage2_write_rootfs(
     }
 
     p.emit(Event::step("rebooting — the box will boot openHC from p1".into()));
-    let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
+    // `reboot -f`, not `reboot`: stage 2 normally runs in boot-init, which has
+    // no `reboot` applet and whose PID 1 is the /init shell script, which
+    // ignores the signal a plain reboot sends. The EA-3 sat in boot-init with
+    // p1 written until this was fixed (2026-10-16). p1 is synced first.
+    let _ = ssh.run("sync; (sleep 1; busybox reboot -f) >/dev/null 2>&1 &", false);
     Ok(())
 }
 
