@@ -80,6 +80,7 @@ pub fn netboot(
     // does not, so an over- or under-count corrupts the rootfs).
     let kernel = images.get(KERNEL_NAME).context("release has no bzImage")?;
     let initrd = images.get(INITRD_NAME).context("release has no rootfs.cpio.gz")?;
+    cefdk::netboot_fits(kernel.len() as u64, initrd.len() as u64).map_err(|e| anyhow!("{e}"))?;
     let initrd_len = initrd.len() as u64;
 
     // Serve the two images by their canonical names. Staging from the in-memory
