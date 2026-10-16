@@ -25,6 +25,17 @@ config BR2_OHC_EA_KERNEL_DRIVERS
 	  registers them per board/ea/common/kernel/objs.mk. EA family only —
 	  every driver behind it is Intel CE5300 specific.
 
+# Which EA board is being built, so external.mk can also mirror that board's own
+# kernel/ (its device tree). Written by build/build.sh for every family board —
+# the defconfigs are assembled by convention there, so it already knows. Has a
+# prompt for the same reason as above: without one the line would be discarded.
+config BR2_OHC_EA_BOARD
+	string "EA family: board name (board/ea/<name>)"
+	depends on BR2_OHC_EA_KERNEL_DRIVERS
+	help
+	  Mirrors board/ea/<name>/kernel/ into the kernel tree after the
+	  family mirror. Set by build/build.sh; empty mirrors nothing extra.
+
 # The IO microcontroller's gpiochip driver. Same gating reason as the two below,
 # and it arrived the same way: board/common/kernel held exactly one driver and
 # the hook mirrored it into EVERY board, so ca1 and ioxv1 — neither of which has

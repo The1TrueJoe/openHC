@@ -22,7 +22,28 @@
  * The node is always present; whether b53 binds is S39ea-switch's call (it
  * loads b53_spi only with ohc.switch=1), because a half-attached switch takes
  * the SoC MAC with it.
+ *
+ * The switch and GbE reset lines are released here, not in ea.dtsi, so a board
+ * without the switch never drives them.
  */
+#define EA_LINE_5	"gb_eth_reset"
+#define EA_LINE_8	"gb_sw_reset"
+
+&gpio {
+	gb-eth-reset-hog {
+		gpio-hog;
+		gpios = <5 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "gb_eth_reset";
+	};
+	gb-sw-reset-hog {
+		gpio-hog;
+		gpios = <8 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "gb_sw_reset";
+	};
+};
+
 &ssp {
 	switch@1 {
 		compatible = "brcm,bcm53125";

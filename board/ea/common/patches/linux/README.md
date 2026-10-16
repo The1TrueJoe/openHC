@@ -6,7 +6,7 @@ There are three kinds of EA kernel source, and each has one home:
 
 | Where | What belongs there |
 |---|---|
-| `board/ea/common/kernel/arch/x86/boot/dts/` | **board description** — which device sits where (a device tree) |
+| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<board>/kernel/arch/x86/boot/dts/` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
 | `board/ea/common/kernel/drivers/`, `sound/` | new drivers for the SoC's own PCI functions (a copy) |
 | `board/ea/common/patches/linux/` | edits to existing upstream files (a diff) |
 
@@ -64,19 +64,26 @@ They are gone. Each board's tree is now linked into the kernel:
 | File | Describes |
 |---|---|
 | `ce5300.dtsi` | the PCI functions used (audio, GPIO, 4×I2C, SSP, GbE) + `i2cN` aliases |
-| `ea.dtsi` | every EA: LEDs, GPIO line names + reset/enable hogs, LM75, CEFDK framebuffer |
+| `ea.dtsi` | every EA: LEDs, common reset/enable hogs (IO-MCU, Zigbee, USB-serial, LDO, FPGA), LM75, CEFDK framebuffer |
 | `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) |
-| `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 |
-| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3 + the card node |
-| `<board>.dts` | includes matching `board/ea/<board>/ohc.features` |
+| `ea-wifi.dtsi` | the `wifi` feature: `wlan_disable` |
+| `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
+| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3, the card node, `codec_reset`/`dsp_reset` |
+| `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
+| `board/ea/<board>/kernel/arch/x86/boot/dts/<board>.dts` | the board: includes matching its `ohc.features` |
+
+A GPIO line is hogged by the file for the hardware it serves, so a board without
+that hardware never drives it; an unhogged line keeps whatever CEFDK left it at.
 
 What the move changed, beyond deleting C:
 
 * **GPIO lines have names now** (`gpio-line-names`), so `gpiofind dsp_reset`
   works. The old file only set consumer labels, which no by-name tool sees.
   Inputs (board-id straps, the ID button) are named but not claimed.
-* **EA1s no longer drive the EA3-only lines** (75, 121). `gpio-ea-board.c`
-  applied the EA3 block to every board.
+* **Each line is driven only where its hardware is.** `gpio-ea-board.c` drove
+  every line on every board, including the EA3 block (75, 121) on EA1s. Now the
+  DSP/codec resets come with `audio-dsp`, the switch/GbE resets with `switch`,
+  `wlan_disable` with `wifi`.
 * **The switch gate moved.** `ohc.switch=1` was read by the C file that
   registered the switch. The device now always exists, and `S39ea-switch`
   decides whether `b53_spi` loads — same flag, same default (off).

@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * AR9485 Wi-Fi -- the `wifi` feature (ea1-v1, ea1-v2, ea3-v1). Stock drives
+ * wlan_disable HIGH in setup_gpio_common(), and wlan0 comes up that way, so
+ * high is the radio's enabled state despite the name.
+ */
+#define EA_LINE_27	"wlan_disable"
+
+&gpio {
+	wlan-disable-hog {
+		gpio-hog;
+		gpios = <27 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "wlan_disable";
+	};
+};

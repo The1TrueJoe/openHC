@@ -285,6 +285,7 @@ fi
         [ -n "$merged" ]   && echo "BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=\"$merged\""
         [ -n "$ovmerged" ] && echo "BR2_ROOTFS_OVERLAY=\"$ovmerged\""
         echo "BR2_ROOTFS_POST_SCRIPT_ARGS=\"$BOARD\""
+        echo "BR2_OHC_EA_BOARD=\"$BOARD\""
     elif [ -n "$FEAT_FRAGMENTS" ]; then
         # Standalone board (hc800, IO Extender): unchanged — only the selected
         # features' kernel fragments are appended to the board's own list.

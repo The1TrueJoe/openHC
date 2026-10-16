@@ -60,103 +60,40 @@
 };
 
 /*
- * Line names and boot-time states from stock /etc/init.d/c4_gpio_config,
- * setup_gpio_common(). These have to be driven from the kernel, not an init
- * script: by the time userspace runs, everything the kernel probes at boot has
- * already missed its device (measured on an EA3: gpio26 usb_2_serial_reset was
- * an output driven LOW, holding the USB-serial bridge down).
+ * Boot-time states from stock /etc/init.d/c4_gpio_config, setup_gpio_common(),
+ * for the lines EVERY EA board uses. Lines that belong to one feature (the
+ * switch, the DSP, Wi-Fi) or one board (EA3) live in that feature's or board's
+ * .dtsi, so a board without the hardware never drives them. A line no file
+ * hogs keeps whatever CEFDK left it at.
  *
- * Outputs are hogged high (released from reset / enabled). Inputs -- the board
- * id straps and the ID button -- are only named, so gpioget/gpiofind can read
- * them; 32 (id_button) in particular must stay free for ohc-restore-button.
- * 23 (src_reset) is left alone, as stock does.
- *
- * gpio-line-names is one property, so a board names its own lines by defining
- * EA_LINE_<n> before including this file (see ea3.dtsi) instead of repeating
- * all 128 entries.
+ * These have to be driven from the kernel, not an init script: by the time
+ * userspace runs, everything the kernel probes at boot has already missed its
+ * device (measured on an EA3: gpio26 usb_2_serial_reset was an output driven
+ * LOW, holding the USB-serial bridge down). Outputs are hogged high (released
+ * from reset / enabled). Names for all of them are assembled in
+ * ea-gpio-names.dtsi, which every board includes last.
  */
-#ifndef EA_LINE_54
-#define EA_LINE_54 ""
-#endif
-#ifndef EA_LINE_75
-#define EA_LINE_75 ""
-#endif
-#ifndef EA_LINE_80
-#define EA_LINE_80 ""
-#endif
-#ifndef EA_LINE_121
-#define EA_LINE_121 ""
-#endif
-#ifndef EA_LINE_122
-#define EA_LINE_122 ""
-#endif
-
 &gpio {
-	gpio-line-names =
-		/*   0 */ "", "", "", "", "", "gb_eth_reset", "", "io_reset",
-		/*   8 */ "gb_sw_reset", "", "", "", "", "", "", "",
-		/*  16 */ "", "board_id0", "board_id1", "board_id2", "board_id3", "board_id4", "board_id5", "",
-		/*  24 */ "codec_reset", "", "usb_2_serial_reset", "wlan_disable", "", "zigbee_reset", "", "",
-		/*  32 */ "id_button", "", "", "", "", "", "", "",
-		/*  40 */ "", "", "", "ldo_enable", "", "", "", "",
-		/*  48 */ "", "", "", "", "", "", EA_LINE_54, "",
-		/*  56 */ "", "n_fpga_reload", "", "", "", "", "", "",
-		/*  64 */ "", "", "", "", "", "", "", "",
-		/*  72 */ "", "", "", EA_LINE_75, "", "", "", "",
-		/*  80 */ EA_LINE_80, "", "", "", "", "", "", "",
-		/*  88 */ "", "", "", "", "", "", "", "",
-		/*  96 */ "", "", "", "", "", "dsp_reset", "", "",
-		/* 104 */ "", "", "", "", "", "", "", "",
-		/* 112 */ "", "", "", "", "", "", "", "",
-		/* 120 */ "", EA_LINE_121, EA_LINE_122, "", "", "", "", "";
-
-	wlan-disable-hog {
-		gpio-hog;
-		gpios = <27 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "wlan_disable";
-	};
-	zigbee-reset-hog {
-		gpio-hog;
-		gpios = <29 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "zigbee_reset";
-	};
-	usb-2-serial-reset-hog {
-		gpio-hog;
-		gpios = <26 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "usb_2_serial_reset";
-	};
-	dsp-reset-hog {
-		gpio-hog;
-		gpios = <101 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "dsp_reset";
-	};
-	codec-reset-hog {
-		gpio-hog;
-		gpios = <24 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "codec_reset";
-	};
+	/* IO microcontroller (relays, contacts, IR) */
 	io-reset-hog {
 		gpio-hog;
 		gpios = <7 GPIO_ACTIVE_HIGH>;
 		output-high;
 		line-name = "io_reset";
 	};
-	gb-sw-reset-hog {
+	/* CP2104 USB-serial bridge in front of the EM357 Zigbee radio */
+	usb-2-serial-reset-hog {
 		gpio-hog;
-		gpios = <8 GPIO_ACTIVE_HIGH>;
+		gpios = <26 GPIO_ACTIVE_HIGH>;
 		output-high;
-		line-name = "gb_sw_reset";
+		line-name = "usb_2_serial_reset";
 	};
-	gb-eth-reset-hog {
+	/* EM357: released, so it runs its application from power-on */
+	zigbee-reset-hog {
 		gpio-hog;
-		gpios = <5 GPIO_ACTIVE_HIGH>;
+		gpios = <29 GPIO_ACTIVE_HIGH>;
 		output-high;
-		line-name = "gb_eth_reset";
+		line-name = "zigbee_reset";
 	};
 	ldo-enable-hog {
 		gpio-hog;

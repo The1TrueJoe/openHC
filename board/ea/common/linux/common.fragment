@@ -190,8 +190,9 @@ CONFIG_MODULE_UNLOAD=y
 #
 # DEVICE TREE. bootlinux passes no DTB, so the board's own is linked into the
 # kernel (patches/linux/0015, BUILTIN_DTB) and picked per board by
-# CONFIG_BUILTIN_DTB_NAME in board/ea/<board>/linux/<board>.fragment. The sources
-# are kernel/arch/x86/boot/dts/; they describe the switch, codec, LEDs, reset
+# CONFIG_BUILTIN_DTB_NAME in board/ea/<board>/linux/<board>.fragment. Shared
+# .dtsi files are in kernel/arch/x86/boot/dts/, each board's .dts in
+# board/ea/<board>/kernel/arch/x86/boot/dts/; they describe the switch, codec, LEDs, reset
 # lines, LM75 and framebuffer that used to be C board files. kexec --dtb
 # overrides the built-in tree, so a test tree needs no rebuild.
 CONFIG_OF=y
