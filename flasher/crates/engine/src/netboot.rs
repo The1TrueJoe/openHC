@@ -194,20 +194,65 @@ fn drive_to_shell(serial: &mut Serial, p: &Progress) -> Result<bool> {
 /// shell has no flow control, so a burst can drop characters.
 fn send_ramboot(serial: &mut Serial, cmds: &[String], p: &Progress) -> Result<()> {
     for cmd in cmds {
+        let is_tftp = cmd.starts_with("tftp get");
+        if is_tftp {
+            // Earlier commands' echoes and prompts are still sitting unread;
+            // drop them so an old `shell>` cannot pass for this one finishing.
+            drain(serial)?;
+        }
         p.emit(Event::detail(format!("shell> {cmd}")));
         serial.write_line(cmd).map_err(|e| anyhow!("{e}"))?;
-        // The two tftp transfers take longer than a poke; the fixed gap is a
-        // floor, and the box's own output (surfaced by the TFTP server's
-        // announce) shows the transfer proceeding.
+        if is_tftp {
+            // A fixed gap is not enough: a 7 MB kernel outlasts it, the next
+            // line lands mid-transfer, and the servers are stopped under it.
+            // Wait for CEFDK to finish and hand back its prompt instead.
+            wait_for_tftp(serial, p)?;
+        }
         std::thread::sleep(inter_command_gap(cmd));
     }
     Ok(())
 }
 
-/// How long to pause after a command before sending the next. A `tftp get`
-/// pulls megabytes and must finish before the following line is typed, or that
-/// line lands in the middle of the transfer; everything else is a register poke
-/// that returns immediately.
+/// How long a single `tftp get` may take before we call it hung.
+const TFTP_DEADLINE: Duration = Duration::from_secs(180);
+
+/// Read and discard whatever the console has buffered, until it goes quiet.
+fn drain(serial: &mut Serial) -> Result<()> {
+    while !serial.read_lines(Duration::from_millis(200)).map_err(|e| anyhow!("{e}"))?.is_empty() {}
+    serial.take_pending();
+    Ok(())
+}
+
+/// Wait for the `tftp get` just typed to finish: its echo, then CEFDK's next
+/// `shell>` prompt (printed without a newline, so it is only visible in the
+/// pending tail). "tftp failed" is fatal -- booting a partial image is not.
+fn wait_for_tftp(serial: &mut Serial, p: &Progress) -> Result<()> {
+    let start = Instant::now();
+    let mut echoed = false;
+    while start.elapsed() < TFTP_DEADLINE {
+        let lines = serial.read_lines(Duration::from_millis(500)).map_err(|e| anyhow!("{e}"))?;
+        for line in &lines {
+            p.emit(Event::detail(format!(". {line}")));
+            if line.contains("tftp failed") {
+                bail!("CEFDK: {line}");
+            }
+            echoed |= line.contains("tftp get");
+        }
+        if lines.is_empty() && echoed {
+            if let Some(tail) = serial.take_pending() {
+                if tail.contains("shell>") {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    bail!("tftp get did not finish within {}s", TFTP_DEADLINE.as_secs())
+}
+
+/// How long to pause after a command before sending the next. A `tftp get` has
+/// already been waited out by `wait_for_tftp`; this is only breathing room for
+/// CEFDK's line editor. Everything else is a register poke that returns
+/// immediately.
 fn inter_command_gap(cmd: &str) -> Duration {
     if cmd.starts_with("tftp get") {
         Duration::from_secs(3)
