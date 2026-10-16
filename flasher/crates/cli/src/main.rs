@@ -735,22 +735,21 @@ fn install(rest: &[String]) -> bool {
         println!("\n  done — the box is rebooting; first boot self-installs p1 and pivots.");
         return true;
     }
-    // The proven no-serial conversion: kernel+initrd into the eMMC user-partition
-    // gap, a CEFDK `script` autoscript created over SSH with the correct SHA-256
-    // table hash (see engine::network::install_ramboot / core::mfh), enable it,
-    // reboot. The stock kernel at eMMC 0x400 is left as a clean fallback.
-    if let Err(e) = network::install_ramboot(&ssh, &rel, &p) {
-        eprintln!("  install failed: {e:#}");
-        return false;
-    }
+    // Stage 1: kernel + the tiny networked boot-init into raw eMMC slots and a
+    // RAM-boot autoscript, then reboot into boot-init (see network::stage1 for
+    // which autoscript scheme a given box gets).
+    let sizes = match network::stage1(&ssh, &rel, board.secure_boot, &p) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("  install failed: {e:#}"); return false; }
+    };
     if rest.iter().any(|a| a == "--ram-only") || rest.iter().any(|a| a == "--no-wait") {
         println!("\n  done — the box is rebooting into openHC (RAM). Give it ~90s.");
         return true;
     }
-    // Stage 2: once openHC is RAM-booted, write the real rootfs to p1. The same
+    // Stage 2: once boot-init is up, stream the real rootfs to p1. The same
     // RAM-boot autoscript then pivots to p1 on the next reboot (/init checks for
     // /etc/openhc-release), so persistence needs no autoscript rewrite.
-    println!("  waiting up to 300s for openHC (RAM) to come up...");
+    println!("  waiting up to 300s for boot-init (RAM) to come up...");
     let ssh2 = match tp::wait_for_login(&host, 300) {
         Some(s) => { println!("  — up; writing the persistent rootfs to p1"); s }
         None => {
@@ -758,7 +757,7 @@ fn install(rest: &[String]) -> bool {
             return false;
         }
     };
-    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, &p) {
+    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, sizes, &p) {
         eprintln!("  stage 2 (p1) failed: {e:#}");
         eprintln!("  openHC still auto-boots from RAM; p1 persistence is not set up.");
         return false;
@@ -823,7 +822,7 @@ fn rootfs(rest: &[String]) -> bool {
         if !matches!(line.trim(), "y" | "yes") { return false; }
     }
     let p = Progress::stdout();
-    match network::stage2_write_rootfs(&ssh, &rel, &p) {
+    match network::stage2_write_rootfs(&ssh, &rel, None, &p) {
         Ok(()) => { println!("\n  done — the box is rebooting into openHC on p1."); true }
         Err(e) => { eprintln!("  stage 2 failed: {e:#}"); false }
     }

@@ -49,6 +49,17 @@ fn wr32(b: &mut [u8], o: usize, v: u32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
 
+/// Is there a valid item at `off` of exactly `len` bytes in the table `tbl`?
+pub fn has_item(tbl: &[u8], off: u32, len: u32) -> bool {
+    if tbl.len() < HASH_OFF {
+        return false;
+    }
+    let count = (rd32(tbl, COUNT_OFF) as usize).min((HASH_OFF - HDR_LEN) / ITEM_LEN);
+    (0..count).map(|i| HDR_LEN + i * ITEM_LEN).any(|o| {
+        rd32(tbl, o) == FLAG_VALID && rd32(tbl, o + 4) == off && rd32(tbl, o + 8) == len
+    })
+}
+
 /// Append a `script` item to the MFH table region `tbl` (exactly the 0x200 bytes
 /// starting at [`TABLE_OFF`]), pointing at `content_off`/`content_len`, and
 /// recompute the SHA-256. `prev_last_type` is the real type of the item that is
@@ -196,6 +207,24 @@ mod tests {
         let n = remove_script(&mut t).unwrap();
         assert_eq!(n, 12);
         assert_eq!(t, orig, "remove_script must restore the clean table exactly");
+    }
+
+    // The 13-item MFH table of the EA-3 v2 (00:0f:ff:94:ee:02), read 2026-10-15:
+    // CEFDK's `script on` inserted item [7] (0x91000, 0x800, type 0x12) and moved
+    // ip_params to 0x91800.
+    const EA3_SCRIPT_ON_TABLE: &str = "0100000000000000000208000d0000000100000000000000000000000000000000000080000000000000010000000000000000000000000001000000000000000000008000f00700000800000000000000000000000000000900000000000000000000800008090008070000000000000000000000000000ffffffff00000000000000800000e000000000000000000000000000000000000200000000000000000000800000010000f0060000000000000000000000000003000000000000000000008000f8070000080000000000000000000000000000100000000000000000000080000808000000010000000000000000000000000015000000000000000000008000100900000800000000000000000000000000001200000000000000000000800018090010000000000000000000000000000000040000000000000000000080080f0a00f0050000000000000000000000000000080000000000000000000080f8140a0038d20f0000000000000000000000000005000000000000000000008000e819000000010000000000000000000000000007000000000000000000008000e81a004056680000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a6090e3258f8b46ea2d96b94692c01a985357e3002149bfdd9a22a0289c737aa";
+
+    #[test]
+    fn has_item_tells_a_script_on_box_from_a_virgin_one() {
+        let ea3: Vec<u8> = (0..EA3_SCRIPT_ON_TABLE.len() / 2)
+            .map(|i| u8::from_str_radix(&EA3_SCRIPT_ON_TABLE[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        assert_eq!(&Sha256::digest(&ea3[0..HASH_OFF])[..], &ea3[HASH_OFF..HASH_OFF + 32]);
+        assert!(has_item(&ea3, 0x91000, 0x800), "the EA-3 has the script slot");
+        // The virgin EA1 has only ip_params at 0x91000, so it gets the appended item.
+        let ea1 = clean();
+        assert!(has_item(&ea1, 0x91000, 0x10));
+        assert!(!has_item(&ea1, 0x91000, 0x800));
     }
 
     #[test]
