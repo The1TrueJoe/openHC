@@ -40,6 +40,9 @@ BR2_PACKAGE_COG_PLATFORM_DRM=y
 # this box has none of — and it wants cairo.
 # BR2_PACKAGE_COG_PLATFORM_FDO is not set
 BR2_PACKAGE_COG_PROGRAMS_HOME_URI=""
+# Its remote control (open/reload) on the SYSTEM bus, so S95ohc-display can
+# point the running view at a new URL with cogctl instead of restarting it.
+BR2_PACKAGE_COG_USE_SYSTEM_DBUS=y
 
 # Fonts for pages that do not bring their own, and the CA roots for https://.
 BR2_PACKAGE_FONTCONFIG=y

@@ -4,22 +4,43 @@
 # Same contract as the EAs' S95ohc-display (board/ea/common): DISABLED BY
 # DEFAULT, the screen shows the openHC splash (S01splash) until the web UI turns
 # the view on. webd's POST /api/display writes the config (OHC_DISPLAY_ENABLE=1,
-# OHC_DISPLAY_URL=..., OHC_DISPLAY_THEME=auto|light|dark) and restarts this.
+# OHC_DISPLAY_URL=..., OHC_DISPLAY_THEME=auto|light|dark) and reloads this.
 # Here the config lives on /data (board.env OHC_DISPLAY_CONF): /opt is the
 # initramfs on this board, so it would not survive a reboot.
 #
 # What differs from the EA is only the display stack (the wpe feature): cog on
-# its DRM platform, through Mesa's i915 driver on the GMA 3150, straight to KMS on
-# the output that feeds the component jack. Restarted if it exits.
+# its DRM platform, through Mesa's i915 driver on the GMA 3150, straight to KMS.
+# Restarted if it exits.
+#
+# reload is live: a running view is pointed at the new URL over cog's system-bus
+# remote control (cogctl), so a URL or theme change never drops to the splash —
+# only enabling/disabling starts or stops cog.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 CONF="${OHC_DISPLAY_CONF:-/opt/ohc/display.conf}"
+CTL="${OHC_DISPLAY_CTL:-/run/ohc-display.ctl}"
 RUN=/run/ohc/display
 PIDF=/run/ohc-display.pid
+CTLPIDF=/run/ohc-display-ctl.pid
 
-OHC_DISPLAY_ENABLE=0
-OHC_DISPLAY_URL=http://localhost/
-OHC_DISPLAY_THEME=auto
-[ -r "$CONF" ] && . "$CONF"
+# Read the config into $OHC_DISPLAY_* and the URL cog loads into $url. cog has
+# no native light/dark switch (the EA's webview has); the openHC dashboard reads
+# ?theme= instead, so pass it there.
+load() {
+	OHC_DISPLAY_ENABLE=0
+	OHC_DISPLAY_URL=http://localhost/
+	OHC_DISPLAY_THEME=auto
+	[ -r "$CONF" ] && . "$CONF"
+	url="$OHC_DISPLAY_URL"
+	case "$OHC_DISPLAY_THEME:$url" in
+		light:http://localhost/*|dark:http://localhost/*)
+			case "$url" in *\?*) url="$url&theme=$OHC_DISPLAY_THEME" ;; *) url="$url?theme=$OHC_DISPLAY_THEME" ;; esac ;;
+	esac
+}
+load
+
+running() {
+	[ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null && pidof cog >/dev/null
+}
 
 start() {
 	[ "$OHC_DISPLAY_ENABLE" = 1 ] || {
@@ -28,28 +49,16 @@ start() {
 	}
 	[ -x /usr/bin/cog ] || { echo "ohc-display: no cog — the wpe feature is not in this image" >&2; exit 0; }
 	[ -e /dev/dri/card0 ] || { echo "ohc-display: no /dev/dri/card0" >&2; exit 0; }
-	url="$OHC_DISPLAY_URL"
-	# cog has no native light/dark switch (the EA's webview has); the openHC
-	# dashboard reads ?theme= instead, so pass it there.
-	case "$OHC_DISPLAY_THEME:$url" in
-		light:http://localhost/*|dark:http://localhost/*)
-			case "$url" in *\?*) url="$url&theme=$OHC_DISPLAY_THEME" ;; *) url="$url?theme=$OHC_DISPLAY_THEME" ;; esac ;;
-	esac
 	mkdir -p "$RUN" && chmod 0700 "$RUN"
 	echo "ohc-display: starting the on-screen web view -> $url"
-	# WebKit wants a HOME for its caches, wpebackend-fdo an XDG_RUNTIME_DIR for
-	# its private Wayland socket.
-	start-stop-daemon -S -q -b -m -p "$PIDF" -x /bin/sh -- -c "
-		export HOME=$RUN XDG_RUNTIME_DIR=$RUN
-		while :; do
-			/usr/bin/cog --platform=drm '$url' 2>&1 | logger -t ohc-display
-			sleep 3
-		done"
+	start-stop-daemon -S -q -b -m -p "$PIDF" -x /bin/sh -- "$0" run
+	start-stop-daemon -S -q -b -m -p "$CTLPIDF" -x /bin/sh -- "$0" ctl
 }
 
 stop() {
+	[ -f "$CTLPIDF" ] && start-stop-daemon -K -q -p "$CTLPIDF"
 	[ -f "$PIDF" ] && start-stop-daemon -K -q -p "$PIDF"
-	rm -f "$PIDF"
+	rm -f "$PIDF" "$CTLPIDF"
 	for n in cog WPEWebProcess WPENetworkProcess; do
 		killall -q "$n" 2>/dev/null || true
 	done
@@ -57,9 +66,59 @@ stop() {
 	[ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash start >/dev/null 2>&1
 }
 
+# Apply the config without tearing the view down when it can be helped.
+reload() {
+	if [ "$OHC_DISPLAY_ENABLE" != 1 ]; then
+		stop
+	elif running; then
+		# A full restart only if cog's remote control does not answer. (Should
+		# cog die later, run re-reads the config, so it comes back on this URL.)
+		if cogctl --system open "$url" >/dev/null 2>&1; then
+			echo "ohc-display: view -> $url"
+		else
+			stop; sleep 1; start
+		fi
+	else
+		start
+	fi
+}
+
+# The supervisor: cog, restarted if it exits, each time on the current config.
+# WebKit wants a HOME for its caches, wpebackend-fdo an XDG_RUNTIME_DIR for its
+# private Wayland socket.
+run() {
+	export HOME="$RUN" XDG_RUNTIME_DIR="$RUN"
+	while :; do
+		load
+		/usr/bin/cog --platform=drm "$url" 2>&1 | logger -t ohc-display
+		sleep 3
+	done
+}
+
+# The control FIFO the EA's webview reads (iod's cmd/display/* writes lines to
+# it): url and reload map onto cogctl. key/text need input injection cog does
+# not offer, so they are logged and dropped. Opened read-write so the FIFO always
+# has a reader (iod's non-blocking open never sees ENXIO) and never hits EOF.
+ctl() {
+	rm -f "$CTL"; mkfifo -m 0600 "$CTL" || exit 1
+	exec 3<>"$CTL"
+	while read -r cmd arg <&3; do
+		case "$cmd" in
+			url)    [ -n "$arg" ] && cogctl --system open "$arg" ;;
+			reload) cogctl --system reload ;;
+			key|text) logger -t ohc-display "'$cmd' is not supported by cog; ignored" ;;
+			'') ;;
+			*)      logger -t ohc-display "unknown control command '$cmd'" ;;
+		esac >/dev/null 2>&1
+	done
+}
+
 case "$1" in
-	start)          start ;;
-	stop)           stop ;;
-	restart|reload) stop; sleep 1; start ;;
-	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	reload)  reload ;;
+	run)     run ;;
+	ctl)     ctl ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
 esac
