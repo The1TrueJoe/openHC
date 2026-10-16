@@ -118,13 +118,27 @@
  * rear port (EA1 not yet measured). The vendor name is unknown, so
  * "usb_rear_power" is ours.
  *
- * Not a hog: as the controller's VBUS switch (patch 0016) it follows root-hub
- * port power, so usbcore's port control cuts the port's 5 V --
+ * Not a hog: a fixed regulator that is the controller's vbus-supply (patch
+ * 0016), so it follows root-hub port power and usbcore's port control cuts the
+ * port's 5 V --
  *   echo 1 > /sys/bus/usb/devices/<roothub>-0:1.0/<roothub>-port1/disable
- * or uhubctl.
+ * or uhubctl. Needs the regulator core, which only the fat kernel carries
+ * (linux/real-kernel.fragment); the size-limited bootstrap kernel has none,
+ * so on it the rear port stays unpowered -- it only has to reach p1 and kexec.
  */
+/ {
+	usb_rear_vbus: regulator-usb-rear-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb_rear_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpios = <&gpio 44 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+};
+
 &usb_rear {
-	vbus-gpios = <&gpio 44 GPIO_ACTIVE_HIGH>;
+	vbus-supply = <&usb_rear_vbus>;
 };
 
 /* Heatsink sensor; ohc-fand drives the fan from its hwmon. */
