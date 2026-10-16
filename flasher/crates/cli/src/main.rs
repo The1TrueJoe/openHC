@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         "push" => push(rest),
         "log" => log(rest),
         "reset" => reset(rest),
+        "kexec" => kexec(rest),
         "uninstall" => uninstall(rest),
         "restore" | "factory-restore" => restore(rest),
         "wrap" => wrap(rest),
@@ -75,9 +76,9 @@ fn help() {
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            netboot --serial <dev> --mac <aa:bb:..> [--images <dir|zip>]\n\
                    [--server-ip <ip>] [--box-ip <ip>] [--cmdline <str>] [--no-wait]\n\
-                                    EA bring-up: netboot openHC into RAM from CEFDK's\n\
                    [--broadcast <ip>]  BOOTP reply address (default: server's /24\n\
                                     broadcast; 255.255.255.255 for a link-local link)\n\
+                                    EA bring-up: netboot openHC into RAM from CEFDK's\n\
                                     manufacturing shell — answers BOOTP with the C4 cookie,\n\
                                     serves the images over TFTP, and drives the serial\n\
                                     console. Writes NOTHING to the box. Needs sudo (binds\n\
@@ -88,6 +89,11 @@ fn help() {
                                     that passes --netconsole; the boot log cannot be\n\
                                     recovered afterwards)\n\
            reset [HOST]             sysrq-reboot, through the kernel rather than init\n\
+           kexec [HOST] --images <dir> [--cmdline <str>]\n\
+                                    boot a kernel (+ rootfs.cpio.gz, if present) in RAM\n\
+                                    from a running openHC, no ID button. Writes nothing\n\
+                                    to flash; the next reboot is back to the installed\n\
+                                    openHC. The kexec'd kernel inherits hardware state.\n\
            boot [HOST]              re-enter an INSTALLED openHC (HC-800: after any reset;\n\
                                     IO Extender: after a fallback to stock)\n\
            uninstall [HOST] [--yes]  boot stock again. HC-800: restore the stock menu.lst;\n\
@@ -530,6 +536,54 @@ fn reset(rest: &[String]) -> bool {
     true
 }
 
+/// `kexec [HOST] --images <dir> [--cmdline <str>]` -- RAM-boot a kernel from a
+/// running openHC.
+///
+/// The EA test loop: the installed openHC self-boots from eMMC, this swaps in a
+/// test kernel without the ID button, and a reboot (the test kernel's own, or a
+/// power cycle) lands back on the installed openHC. Nothing is written to flash.
+/// Unlike a CEFDK netboot this is not a cold start: the new kernel inherits
+/// whatever state the running one left in the hardware.
+fn kexec(rest: &[String]) -> bool {
+    let images = images_arg(rest);
+    let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
+    let Some(kernel) = rel.get("bzImage") else {
+        eprintln!("  {} has no bzImage", rel.source);
+        return false;
+    };
+    let cmdline = rest.windows(2).find(|w| w[0] == "--cmdline").map(|w| w[1].clone())
+        .unwrap_or_else(|| cefdk::RAMBOOT_CMDLINE.to_string());
+    // The host is the first bare word that is not a flag's value.
+    let flagged: Vec<&String> = rest.windows(2).filter(|w| w[0].starts_with("--")).map(|w| &w[1]).collect();
+    let host_rest: Vec<String> = rest.iter().filter(|a| !flagged.contains(a)).cloned().collect();
+    let Some((host, ssh)) = connect(&host_rest) else { return false };
+
+    let put = |data: &[u8], path: &str| match ssh.put_stream(data, &format!("cat > {path}")) {
+        Ok(_) => { println!("  {path}  {} B", data.len()); true }
+        Err(e) => { eprintln!("  {e}"); false }
+    };
+    if !put(kernel, "/tmp/ohc-kexec-bzImage") {
+        return false;
+    }
+    let initrd = match rel.get("rootfs.cpio.gz") {
+        Some(rd) if put(rd, "/tmp/ohc-kexec-initrd") => " --initrd=/tmp/ohc-kexec-initrd",
+        Some(_) => return false,
+        None => "",
+    };
+    let quoted = cmdline.replace('\'', "'\\''");
+    let load = format!("kexec -l /tmp/ohc-kexec-bzImage{initrd} --command-line='{quoted}'");
+    if let Err(e) = ssh.run(&load, true) {
+        eprintln!("  kexec -l failed: {e}");
+        return false;
+    }
+    println!("  loaded; command line: {cmdline}");
+    // Detached, so this session returns before the kernel it is talking to goes
+    // away. The connection dropping afterwards is the expected outcome.
+    let _ = ssh.run("sync; (sleep 1; kexec -e) </dev/null >/dev/null 2>&1 &", false);
+    println!("  kexec -e sent to {host} -- the new kernel is starting (watch the serial console)");
+    true
+}
+
 /// `uninstall [HOST]` — boot stock again (HC-800, IO Extender).
 fn uninstall(rest: &[String]) -> bool {
     use ohc_flash_core::board::Family;
@@ -729,6 +783,9 @@ fn netboot_cmd(rest: &[String]) -> bool {
     };
     let box_ip = flag("--box-ip").unwrap_or_else(|| "10.0.0.200".into());
     let cmdline = flag("--cmdline").unwrap_or_else(|| cefdk::RAMBOOT_CMDLINE.to_string());
+    // BOOTP replies go to the server's /24 broadcast unless told otherwise;
+    // a link-local /16 point-to-point link needs --broadcast 255.255.255.255.
+    let broadcast = flag("--broadcast");
     let wait = !rest.iter().any(|a| a == "--no-wait");
 
     let images = images_arg(rest);
@@ -783,9 +840,6 @@ fn netboot_dhcp(rest: &[String]) -> bool {
     };
     let Some(mac) = tp::netboot::parse_mac(&mac_s) else {
         eprintln!("  '{mac_s}' is not a MAC address");
-    // BOOTP replies go to the server's /24 broadcast unless told otherwise;
-    // a link-local /16 point-to-point link needs --broadcast 255.255.255.255.
-    let broadcast = flag("--broadcast");
         return false;
     };
     let refuse = rest.iter().any(|a| a == "--refuse");
