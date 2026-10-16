@@ -4,7 +4,7 @@
 resolver = "2"
 # `portal` is no longer its own member — the captive-portal binary now lives in
 # the `wifi` crate (which also holds the shared Wi-Fi lib webd uses).
-members = ["wifi", "iod", "webd", "sysmond", "zigbee", "restore", "ohcmqtt", "audiod", "storage"]
+members = ["wifi", "iod", "webd", "sysmond", "zigbee", "restore", "ohcmqtt", "audiod", "storage", "switchd"]
 
 [workspace.package]
 version = "0.1.0"

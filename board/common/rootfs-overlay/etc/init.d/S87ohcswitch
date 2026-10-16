@@ -1,0 +1,36 @@
+#!/bin/sh
+# switchd — the openHC managed-switch daemon. SHARED (board/common).
+#
+# It owns the DSA switch ports and serves their config over REST + live state
+# over MQTT. webd (S90) reverse-proxies it under /switch, so this starts first.
+#
+# Board-gated the same way "a service with nothing behind it does not appear"
+# gates every panel: a board with no managed switch has OHC_DSA_PORTS empty and
+# no switchd binary (the `switch` feature owns the crate — see packages/build.sh
+# and board/ea/common/features/switch/packages), so both guards below make this
+# a clean no-op there.
+#
+# The BOOT-TIME topology (default: both ports bridged into br-lan) is applied
+# earlier by `switchd apply` in S39ea-switch, BEFORE S40net leases, so the
+# bridge exists first. This daemon re-applies on start too (idempotent), which
+# covers a restart or a board whose S39 hook did not run.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+export OHC_DSA_PORTS
+
+BIN=/opt/ohc/bin/switchd
+PIDFILE=/var/run/switchd.pid
+
+case "$1" in
+    start)
+        [ -n "$OHC_DSA_PORTS" ] || exit 0          # no managed switch on this board
+        [ -x "$BIN" ] || { echo "switchd: not built into this image"; exit 0; }
+        printf "switchd: "
+        start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec "$BIN" \
+            && echo "managing $OHC_DSA_PORTS on :7074" || echo "failed"
+        ;;
+    stop)
+        start-stop-daemon -K -q -p "$PIDFILE"
+        ;;
+    restart) "$0" stop; sleep 1; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
