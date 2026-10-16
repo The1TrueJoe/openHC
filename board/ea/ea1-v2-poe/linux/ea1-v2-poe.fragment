@@ -4,5 +4,5 @@
 # on ttyS1 — see board/ea/common/linux/common.fragment.
 CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
 
-# Board device tree: board/ea/ea1-v2-poe/kernel/arch/x86/boot/dts/ea1-v2-poe.dts (see common.fragment).
+# Board device tree: board/ea/ea1-v2-poe/ea1-v2-poe.dts (see common.fragment).
 CONFIG_BUILTIN_DTB_NAME="ea1-v2-poe"

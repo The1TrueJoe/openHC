@@ -6,7 +6,7 @@ There are three kinds of EA kernel source, and each has one home:
 
 | Where | What belongs there |
 |---|---|
-| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<board>/kernel/arch/x86/boot/dts/` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
+| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<board>/<board>.dts` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
 | `board/ea/common/kernel/drivers/`, `sound/` | new drivers for the SoC's own PCI functions (a copy) |
 | `board/ea/common/patches/linux/` | edits to existing upstream files (a diff) |
 
@@ -70,7 +70,7 @@ They are gone. Each board's tree is now linked into the kernel:
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
 | `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3, the card node, `codec_reset`/`dsp_reset` |
 | `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
-| `board/ea/<board>/kernel/arch/x86/boot/dts/<board>.dts` | the board: includes matching its `ohc.features` |
+| `board/ea/<board>/<board>.dts` | the board: includes matching its `ohc.features` |
 
 A GPIO line is hogged by the file for the hardware it serves, so a board without
 that hardware never drives it; an unhogged line keeps whatever CEFDK left it at.

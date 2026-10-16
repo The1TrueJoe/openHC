@@ -77,12 +77,6 @@ OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
 endif
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/kernel
-# The board's own mirror, after the family one: today just its device tree
-# (board/ea/<board>/kernel/arch/x86/boot/dts/<board>.dts). BR2_OHC_EA_BOARD is
-# written by build/build.sh.
-ifneq ($(call qstrip,$(BR2_OHC_EA_BOARD)),)
-OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/$(call qstrip,$(BR2_OHC_EA_BOARD))/kernel
-endif
 endif
 ifeq ($(BR2_OHC_HC800_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/hc800/kernel
@@ -117,3 +111,18 @@ define OHC_KERNEL_MIRROR_HOOK
 	done
 endef
 LINUX_POST_PATCH_HOOKS += OHC_KERNEL_MIRROR_HOOK
+
+# The EA board's own device tree sits at the root of its board folder
+# (board/ea/<board>/<board>.dts), beside the ohc.features its includes follow,
+# not in a kernel mirror. Copy it next to the shared .dtsi files the family
+# mirror just installed; the board fragment names it in CONFIG_BUILTIN_DTB_NAME.
+# BR2_OHC_EA_BOARD is written by build/build.sh.
+OHC_EA_BOARD = $(call qstrip,$(BR2_OHC_EA_BOARD))
+ifneq ($(OHC_EA_BOARD),)
+define OHC_EA_BOARD_DTS_HOOK
+	install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/ea/$(OHC_EA_BOARD)/$(OHC_EA_BOARD).dts \
+		$(LINUX_DIR)/arch/x86/boot/dts/$(OHC_EA_BOARD).dts
+	echo "openHC: installed arch/x86/boot/dts/$(OHC_EA_BOARD).dts (ea/$(OHC_EA_BOARD))"
+endef
+LINUX_POST_PATCH_HOOKS += OHC_EA_BOARD_DTS_HOOK
+endif
