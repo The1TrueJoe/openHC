@@ -20,11 +20,16 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | # | Patch | Why it must stay a patch |
 |---|---|---|
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
-| 0002 | x86 CE5300 serial | UART clock is 14.7456 MHz, not 1.8432 -- and ISA IRQ 4/3 are not routed (use 38) |
+| 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
+
+Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
+`compatible = "intel,xscale-uart"`), **0011** (keep 8250_pci off the 0x2e66 UART
+— now `status = "disabled"` on that PCI node), and the IRQ half of **0002** (the
+tree gives the UARTs no interrupt, so they run polled).
 
 New-file drivers in `board/ea/common/kernel/drivers/`:
 
@@ -88,6 +93,11 @@ What the move changed, beyond deleting C:
 * **The switch gate moved.** `ohc.switch=1` was read by the C file that
   registered the switch. The device now always exists, and `S39ea-switch`
   decides whether `b53_spi` loads — same flag, same default (off).
+* **The SoC UARTs are device-tree ports.** 8250_of probes 0x3f8/0x2f8/0x2e8
+  as XScale at 14.7456 MHz with no IRQ (polled), each taking over the legacy
+  slot at its address so ttyS numbers stay put; the 0x2e66 PCI face of UART1 is
+  disabled so it cannot steal the IO-MCU's 0x2f8 decode. 0010 (TX from the LSR)
+  and 0012 (GEN3 FCR/FIFO) are still driver changes.
 * **The switch is described the supported way.** DSA's platform_data path is
   legacy and silently needs `dsa_chip_data.netdev[cpu_port]`; the OF path
   resolves the conduit from `ethernet = <&gbe>`. The CPU port carries no

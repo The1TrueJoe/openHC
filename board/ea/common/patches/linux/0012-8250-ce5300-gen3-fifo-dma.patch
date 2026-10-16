@@ -1,8 +1,9 @@
 8250: CE5300 GEN3 UART needs DMA_SELECT + a 64-byte FIFO in the port config
 
 The last piece of the IO-MCU bring-up. Everything else is in place — the ports
-run polled (0002), forced to PORT_XSCALE with UUE (0006), TX driven from the LSR
-(0010), and the shadowing PCI UART is gone (0011) — yet ttyS1 still transmitted
+run polled as PORT_XSCALE with UUE (the device tree's GEN3 UART nodes), TX
+driven from the LSR (0010), and the shadowing PCI UART is disabled in the tree
+— yet ttyS1 still transmitted
 into silence: the FIFO loaded, LSR read empty, but nothing reached the tm4c
 (proven with a known-good emitter->GC-IRL rig that captures 35/35 from stock and
 0 from openHC).
@@ -18,7 +19,8 @@ ttyS1 is configured by Linux from the mainline table, so it never got DMA_SELECT
 Bring the PORT_XSCALE config in line with stock's GEN3 values. Applies to every
 port forced to XScale here, which is what stock does too.
 
-Scope: EA family only (board/ea/common/patches). Pairs with 0002/0006/0010/0011.
+Scope: EA family only (board/ea/common/patches). Pairs with 0010 and the GEN3
+UART nodes in ce5300.dtsi.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---

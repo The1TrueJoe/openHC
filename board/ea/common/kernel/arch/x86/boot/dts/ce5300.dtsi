@@ -31,12 +31,58 @@
 		i2c1 = &i2c1;
 		i2c2 = &i2c2;
 		i2c3 = &i2c3;
+		/* Line numbers the console and board.env (OHC_IO_MCU_TTY=ttyS1)
+		 * rely on; they also match the legacy slots these ports take over. */
+		serial0 = &uart0;
+		serial1 = &uart1;
+		serial3 = &uart3;
 	};
 
 	chosen {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
+	};
+
+	/*
+	 * The SoC's three GEN3 UARTs, on legacy I/O ports. They are an XScale/PXA
+	 * block ("GEN3_serial" in Control4's kernel), clocked at 14.7456 MHz, and
+	 * they run TIMER-POLLED: stock's routed IRQ (GSI 38) registers but never
+	 * fires under openHC (measured), so there is deliberately no `interrupts`
+	 * -- 8250_of then gives the port irq 0 and serial8250 services it from a
+	 * timer (TX via patch 0010). The fixed XScale type replaces patch 0006's
+	 * probe override; the clock replaces the legacy table's 1.8432 MHz for
+	 * these ports. 8250 matches each node to the legacy slot at the same
+	 * address, so ttyS numbers do not move. 0x3E8 is the 8051 power PIC, a
+	 * real 8250, and stays a plain legacy port.
+	 *
+	 * The node is named "isa" because that is what OF address translation keys
+	 * on for I/O space (of_bus_isa_match); simple-bus so the default populate
+	 * creates the ports. ttyS1 carries the IO microcontroller.
+	 */
+	isa {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges = <1 0 0 0x10000>;
+
+		uart0: serial@1,3f8 {
+			compatible = "intel,xscale-uart";
+			reg = <1 0x3f8 8>;
+			clock-frequency = <14745600>;
+		};
+
+		uart1: serial@1,2f8 {
+			compatible = "intel,xscale-uart";
+			reg = <1 0x2f8 8>;
+			clock-frequency = <14745600>;
+		};
+
+		uart3: serial@1,2e8 {
+			compatible = "intel,xscale-uart";
+			reg = <1 0x2e8 8>;
+			clock-frequency = <14745600>;
+		};
 	};
 
 	pci@80000000 {
@@ -61,6 +107,17 @@
 			/* ce5300-i2s (8086:2e60) */
 			audio: multimedia@6,2 {
 				reg = <0x13200 0 0 0 0>;
+			};
+
+			/* UART1's PCI face (8086:2e66, MMIO). The same block is the
+			 * legacy 0x2F8 port the IO microcontroller is wired to, and
+			 * binding this function (8250_pci's CE4100 entry) switches it to
+			 * PCI decode, killing 0x2F8: tx counts, the MCU never hears it.
+			 * Disabled, pci_bus_add_device() never lets a driver bind it --
+			 * this replaces patch 0011. */
+			serial@b,0 {
+				reg = <0x15800 0 0 0 0>;
+				status = "disabled";
 			};
 
 			/* gpio-intelce (8086:2e67): 4 banks x 32, base 0 */

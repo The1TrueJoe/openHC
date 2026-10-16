@@ -4,8 +4,9 @@ The Intel CE5300 (EA family) declares IRQ 38 for its SoC UARTs, and on Control4'
 stock 3.12 kernel that interrupt fires (/proc/interrupts "38: ... serial" climbs,
 ttyS1's IO-MCU has non-zero tx AND rx). Under openHC the identical declaration
 registers but never fires — measured: IRQ 38 sits at 0 across a full transmit —
-so the ports are run timer-polled instead (patch 0002 declares irq 0, which makes
-serial8250 arm serial8250_timeout() and call handle_irq from a timer).
+so the ports are run timer-polled instead (the board device tree gives them no
+interrupts, so 8250_of sets irq 0, which makes serial8250 arm
+serial8250_timeout() and call handle_irq from a timer).
 
 Polled RX already works: when the IO-MCU answers, the received-data condition is
 reflected in the IIR, so serial8250_handle_irq() proceeds and rx_chars() runs.
@@ -20,11 +21,11 @@ rx=0, gpio-ohc-iomcu never registers a gpiochip/lirc/rc).
 serial8250_handle_irq_locked() already drives both RX and TX straight from the
 LSR (it checks UART_LSR_DR and UART_LSR_THRE, not the IIR). The only thing in the
 way is the IIR early return. For a polled XScale port (irq == 0, type set by
-patch 0006) fall through to it instead, so every timer tick services TX as well
+the device tree's "intel,xscale-uart") fall through to it instead, so every timer tick services TX as well
 as RX. Interrupt-driven ports are untouched: the guard requires irq == 0.
 
-Scope: EA family only (board/ea/common/patches). Pairs with 0002 (irq 0) and
-0006 (PORT_XSCALE).
+Scope: EA family only (board/ea/common/patches). Pairs with the GEN3 UART nodes
+in ce5300.dtsi (polled, PORT_XSCALE).
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
@@ -36,9 +37,9 @@ Author: Joseph Telaak <joseph@telaak.dev>
  {
 -	if (iir & UART_IIR_NO_INT)
 +	/*
-+	 * Intel CE5300 (EA family) runs its SoC UARTs timer-polled — see patch
-+	 * 0002. IRQ 38 is declared but never fires under openHC, so the ports are
-+	 * given irq 0 and serviced by serial8250_timeout(). The GEN3/XScale block
++	 * Intel CE5300 (EA family) runs its SoC UARTs timer-polled: IRQ 38 never
++	 * fires under openHC, so its device tree gives the ports no interrupt
++	 * (irq 0) and serial8250_timeout() services them. The GEN3/XScale block
 +	 * also does not reflect the THRE (TX-empty) condition in the IIR, so this
 +	 * UART_IIR_NO_INT early return would leave the TX FIFO unfilled and
 +	 * transmission would hang (tx counts up, nothing reaches the IO-MCU, rx

@@ -3,22 +3,26 @@
 # --- serial console + IO-MCU port (CE5300 GEN3 UARTs) ---
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
-# Keep ONLY the four LEGACY ISA ports (0x3f8/0x2f8/0x3e8/0x2e8) and let the
-# CE5300's PCI serial function (8086:2e66) fail to register, as stock does.
-# DO NOT raise NR_UARTS (measured on a live EA1): with 2e66 bound, the IO-MCU's
-# legacy 0x2f8 is shadowed (tx counts, rx=0 forever) and the tm4c looks dead.
-# 4 slots makes 2e66 fail ENOSPC and leaves 0x2f8 — the path that reaches the
-# Tiva — intact.
+# The three SoC UARTs (0x3f8/0x2f8/0x2e8, ttyS1 = the IO microcontroller) are
+# described in the board device tree (ce5300.dtsi) and probed by 8250_of: type
+# XScale, 14.7456 MHz, no interrupt. Each takes over the legacy-table slot at its
+# address, so ttyS numbers do not move; 0x3e8 (the power PIC) stays legacy.
 #
 # IRQ: stock's ACPI link LUAR=GSI 38 fires; here the same declaration registers
-# but never fires (measured irq 38 = 0 across a full transmit), so the ports are
-# run TIMER-POLLED instead (patch 0002 declares irq 0; patch 0010 drives TX off
-# the LSR because the GEN3 block does not reflect THRE in the IIR).
+# but never fires (measured irq 38 = 0 across a full transmit), so the ports run
+# TIMER-POLLED (no interrupts in the tree; patch 0010 drives TX off the LSR
+# because the GEN3 block does not reflect THRE in the IIR).
+#
+# The tree also DISABLES the CE5300's PCI serial function (8086:2e66): bound, it
+# switches UART1 to PCI decode and the IO-MCU's legacy 0x2f8 goes dead (tx
+# counts, rx=0 forever — measured on a live EA1). 4 slots are enough: the
+# device-tree ports reuse the legacy ones.
 CONFIG_SERIAL_8250_NR_UARTS=4
 CONFIG_SERIAL_8250_RUNTIME_UARTS=4
+CONFIG_SERIAL_OF_PLATFORM=y
 # DETECT_IRQ (set by the i386 defconfig) adds UPF_AUTO_IRQ, running the legacy
-# ISA IRQ auto-probe. The ports are declared irq 0 (patch 0002, polled); this
-# probe must NOT run and reassign a line, so turn it off.
+# ISA IRQ auto-probe on the legacy table's ports. Nothing here wants an IRQ
+# reassigned behind its back, so keep it off.
 # CONFIG_SERIAL_8250_DETECT_IRQ is not set
 CONFIG_CMDLINE_BOOL=y
 CONFIG_CMDLINE_EXTEND=y
