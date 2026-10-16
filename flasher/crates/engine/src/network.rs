@@ -699,10 +699,18 @@ fn write_mtd_block(ssh: &Ssh, off: u64, data: &[u8]) -> Result<()> {
         bail!("mtd0 block write needs exactly 0x10000 bytes, got {}", data.len());
     }
     let blk = off / 0x10000;
+    // Erase the whole 64 KiB, however many erase blocks that is: this EA-3 v2's
+    // mtd0 erases in 4 KiB, and erasing one block then writing 64 KiB leaves the
+    // other 60 KiB AND-ed with their old contents.
+    let esz = mtd_erasesize(ssh)?;
+    if esz == 0 || 0x10000 % esz != 0 {
+        bail!("mtd0 erase size {esz} does not divide a 64 KiB block");
+    }
+    let n = 0x10000 / esz;
     ssh.put_stream(
         data,
         &format!(
-            "flash_erase {MTD} {off:#x} 1 >/dev/null 2>&1; \
+            "flash_erase {MTD} {off:#x} {n} >/dev/null 2>&1; \
              dd of={MTD} bs=65536 seek={blk} count=1 conv=notrunc 2>/dev/null; sync"
         ),
     )
