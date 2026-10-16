@@ -1,0 +1,128 @@
+From: openHC <noreply@openhc>
+Subject: [PATCH] WPE: per-view dark mode API for the libwpe (legacy) backend
+
+WebKit 2.50 feeds a page's dark mode (prefers-color-scheme, the color-scheme
+CSS property, native controls) from PageClientImpl::effectiveAppearanceIsDark(),
+which reads WebCore::SystemSettings. On the WPE Platform API that is filled from
+WPESettings (WPE_SETTING_DARK_MODE), but a libwpe-backend view -- cog's DRM
+platform, the EAs' wpebackend-pvr webview -- has no settings source, so every
+page is light and nothing can change it.
+
+Add webkit_web_view_set_prefers_dark_mode() / _unset_prefers_dark_mode(): a
+per-view override that effectiveAppearanceIsDark() checks first, applied through
+WebPageProxy::effectiveAppearanceDidChange(), the same path a system dark-mode
+change takes -- so it is live on loaded pages, and new web processes get it in
+their creation parameters. Unset falls back to the system setting, so the view
+behaves exactly as before until an application asks.
+
+diff -ruN a/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp b/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp
+--- a/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp	2026-10-16 00:35:18
++++ b/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp	2026-10-16 00:35:18
+@@ -3201,6 +3201,38 @@
+     return webView->priv->backend.get();
+ }
+ 
++/**
++ * webkit_web_view_set_prefers_dark_mode:
++ * @web_view: a #WebKitWebView
++ * @dark_mode: whether @web_view prefers a dark color scheme
++ *
++ * Sets the color scheme @web_view presents to web content, overriding the
++ * system dark mode setting: `prefers-color-scheme`, the `color-scheme` CSS
++ * property and native controls all follow it. Takes effect on already
++ * loaded pages. Use webkit_web_view_unset_prefers_dark_mode() to follow the
++ * system setting again.
++ */
++void webkit_web_view_set_prefers_dark_mode(WebKitWebView* webView, gboolean darkMode)
++{
++    g_return_if_fail(WEBKIT_IS_WEB_VIEW(webView));
++
++    webView->priv->view->setDarkModeOverride(!!darkMode);
++}
++
++/**
++ * webkit_web_view_unset_prefers_dark_mode:
++ * @web_view: a #WebKitWebView
++ *
++ * Removes the override set with webkit_web_view_set_prefers_dark_mode(), so
++ * @web_view follows the system dark mode setting again.
++ */
++void webkit_web_view_unset_prefers_dark_mode(WebKitWebView* webView)
++{
++    g_return_if_fail(WEBKIT_IS_WEB_VIEW(webView));
++
++    webView->priv->view->setDarkModeOverride(std::nullopt);
++}
++
+ #if ENABLE(WPE_PLATFORM)
+ /**
+  * webkit_web_view_get_display:
+diff -ruN a/Source/WebKit/UIProcess/API/glib/WebKitWebView.h.in b/Source/WebKit/UIProcess/API/glib/WebKitWebView.h.in
+--- a/Source/WebKit/UIProcess/API/glib/WebKitWebView.h.in	2026-10-16 00:35:18
++++ b/Source/WebKit/UIProcess/API/glib/WebKitWebView.h.in	2026-10-16 00:35:18
+@@ -475,6 +475,13 @@
+ WEBKIT_API WebKitWebViewBackend *
+ webkit_web_view_get_backend                          (WebKitWebView             *web_view);
+ 
++WEBKIT_API void
++webkit_web_view_set_prefers_dark_mode                (WebKitWebView             *web_view,
++                                                      gboolean                   dark_mode);
++
++WEBKIT_API void
++webkit_web_view_unset_prefers_dark_mode              (WebKitWebView             *web_view);
++
+ #if ENABLE(WPE_PLATFORM)
+ WEBKIT_API WPEDisplay *
+ webkit_web_view_get_display                          (WebKitWebView             *web_view);
+diff -ruN a/Source/WebKit/UIProcess/API/wpe/PageClientImpl.cpp b/Source/WebKit/UIProcess/API/wpe/PageClientImpl.cpp
+--- a/Source/WebKit/UIProcess/API/wpe/PageClientImpl.cpp	2026-10-16 00:35:18
++++ b/Source/WebKit/UIProcess/API/wpe/PageClientImpl.cpp	2026-10-16 00:35:18
+@@ -531,6 +531,8 @@
+ 
+ bool PageClientImpl::effectiveAppearanceIsDark() const
+ {
++    if (auto darkMode = m_view.darkModeOverride())
++        return *darkMode;
+     return WebCore::SystemSettings::singleton().darkMode().value_or(false);
+ }
+ 
+diff -ruN a/Source/WebKit/UIProcess/API/wpe/WPEWebView.cpp b/Source/WebKit/UIProcess/API/wpe/WPEWebView.cpp
+--- a/Source/WebKit/UIProcess/API/wpe/WPEWebView.cpp	2026-10-16 00:35:18
++++ b/Source/WebKit/UIProcess/API/wpe/WPEWebView.cpp	2026-10-16 00:35:18
+@@ -124,6 +124,15 @@
+     m_client->themeColorDidChange();
+ }
+ 
++void View::setDarkModeOverride(std::optional<bool> darkMode)
++{
++    if (m_darkModeOverride == darkMode)
++        return;
++    m_darkModeOverride = darkMode;
++    if (m_pageProxy)
++        m_pageProxy->effectiveAppearanceDidChange();
++}
++
+ void View::setSize(const WebCore::IntSize& size)
+ {
+     m_size = size;
+diff -ruN a/Source/WebKit/UIProcess/API/wpe/WPEWebView.h b/Source/WebKit/UIProcess/API/wpe/WPEWebView.h
+--- a/Source/WebKit/UIProcess/API/wpe/WPEWebView.h	2026-10-16 00:35:18
++++ b/Source/WebKit/UIProcess/API/wpe/WPEWebView.h	2026-10-16 00:35:18
+@@ -75,6 +75,9 @@
+ 
+     void themeColorDidChange();
+ 
++    std::optional<bool> darkModeOverride() const { return m_darkModeOverride; }
++    void setDarkModeOverride(std::optional<bool>);
++
+ #if ENABLE(FULLSCREEN_API)
+     bool isFullScreen() const;
+     void willEnterFullScreen(CompletionHandler<void(bool)>&&);
+@@ -118,6 +121,7 @@
+ #endif
+     WebKit::InputMethodFilter m_inputMethodFilter;
+     WebKit::KeyAutoRepeatHandler m_keyAutoRepeatHandler;
++    std::optional<bool> m_darkModeOverride;
+ };
+ 
+ } // namespace WKWPE

@@ -74,6 +74,7 @@ static gboolean reload_cb(gpointer view)
  *   text <string>  type a run of characters
  *   url <uri>      load a page
  *   reload         reload the current page
+ *   theme <scheme> auto|light|dark: the color scheme pages see (live)
  *
  * A bridge (e.g. an MQTT subscriber on <base>/cmd/display/key) just echoes a line
  * into the FIFO; no transport lives here. Keys become real WPE keyboard events
@@ -112,6 +113,22 @@ static void dispatch_key(struct wpe_view_backend *b, uint32_t keysym)
 	wpe_view_backend_dispatch_keyboard_event(b, &ev);
 }
 
+/*
+ * Day/night: the color scheme pages see (prefers-color-scheme, the color-scheme
+ * CSS property, native controls), through WebKit's per-view dark mode API
+ * (board/common/patches/wpewebkit/0001). "auto" (or unset) follows the system
+ * setting, which on this panel has no source and so stays light.
+ */
+static void set_color_scheme(WebKitWebView *view, const char *scheme)
+{
+	if (!scheme || !*scheme || g_strcmp0(scheme, "auto") == 0)
+		webkit_web_view_unset_prefers_dark_mode(view);
+	else if (g_strcmp0(scheme, "light") == 0 || g_strcmp0(scheme, "dark") == 0)
+		webkit_web_view_set_prefers_dark_mode(view, g_strcmp0(scheme, "dark") == 0);
+	else
+		g_printerr("webview: unknown theme '%s' (auto|light|dark)\n", scheme);
+}
+
 static gboolean on_ctl(GIOChannel *src, GIOCondition cond, gpointer data)
 {
 	struct ctl *c = data;
@@ -129,6 +146,8 @@ static gboolean on_ctl(GIOChannel *src, GIOCondition cond, gpointer data)
 			webkit_web_view_load_uri(c->view, line + 4);
 		else if (g_strcmp0(line, "reload") == 0)
 			webkit_web_view_reload(c->view);
+		else if (g_str_has_prefix(line, "theme "))
+			set_color_scheme(c->view, line + 6);
 		else if (*line)
 			g_printerr("webview: unknown control line: %s\n", line);
 		g_free(line);
@@ -164,7 +183,7 @@ static void control_open(struct wpe_view_backend *backend, WebKitWebView *view)
 	g_io_channel_set_close_on_unref(ch, TRUE);
 	g_io_add_watch(ch, G_IO_IN, on_ctl, c);
 	g_io_channel_unref(ch);
-	g_printerr("webview: control channel on %s (key/text/url/reload)\n", path);
+	g_printerr("webview: control channel on %s (key/text/url/reload/theme)\n", path);
 }
 
 int main(int argc, char **argv)
@@ -241,6 +260,10 @@ int main(int argc, char **argv)
 		if (webkit_color_parse(&opaque, "#000000"))
 			webkit_web_view_set_background_color(view, &opaque);
 	}
+
+	/* The starting day/night setting from the display service (S95ohc-display);
+	 * the control channel's "theme" changes it live. */
+	set_color_scheme(view, g_getenv("OHC_DISPLAY_THEME"));
 
 	g_signal_connect(view, "load-failed", G_CALLBACK(on_load_failed), NULL);
 	webkit_web_view_load_uri(view, url);

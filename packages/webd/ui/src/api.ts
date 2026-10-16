@@ -397,7 +397,8 @@ export interface FanStatus {
 export interface DisplayCfg {
   enabled: boolean;
   url: string;
-  /** Day/night for the on-panel view: follow the page ('auto'), or force it. */
+  /** Day/night for the on-panel view: the browser's own dark mode, so any page
+   *  follows it. 'auto' leaves pages at their default. */
   theme: 'auto' | 'light' | 'dark';
   /** Read-only: the board has an on-screen display program (its Display tab). */
   available?: boolean;

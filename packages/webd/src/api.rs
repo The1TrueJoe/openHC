@@ -150,9 +150,10 @@ struct Display {
     enabled: bool,
     /// Page the view loads; defaults to this controller's own dashboard.
     url: String,
-    /// Day/night for the on-panel view: "auto" (follow the page's own preference),
-    /// "light" or "dark". The panel has no OS light/dark signal, so this forces it;
-    /// passed to the dashboard as ?theme= (the UI keys off it).
+    /// Day/night for the on-panel view: "auto" (pages keep their default, light),
+    /// "light" or "dark". The screen's own dark mode — WebKit's per-view setting,
+    /// changed live — so any page sees it as prefers-color-scheme, like an OS
+    /// setting.
     #[serde(default = "default_theme")]
     theme: String,
     /// Read-only: this board has an on-screen display program (S95ohc-display).

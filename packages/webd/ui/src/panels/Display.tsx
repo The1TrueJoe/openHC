@@ -61,7 +61,7 @@ export function DisplayPanel() {
                 onChange={(v) => setCfg({ ...cfg, url: v })}
               />
             </Field>
-            <Field label="Day / night" hint="The screen has no light/dark sensor. Auto follows the page's own preference; Light and Dark force it.">
+            <Field label="Day / night" hint="The screen's own dark mode: every page sees it like an OS setting, and a change applies at once. Auto leaves pages at their default.">
               <div className="flex gap-1.5">
                 {(['auto', 'light', 'dark'] as const).map((t) => (
                   <button

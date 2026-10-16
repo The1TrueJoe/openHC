@@ -12,9 +12,12 @@
 # its DRM platform, through Mesa's i915 driver on the GMA 3150, straight to KMS.
 # Restarted if it exits.
 #
-# reload is live: a running view is pointed at the new URL over cog's system-bus
-# remote control (cogctl), so a URL or theme change never drops to the splash —
-# only enabling/disabling starts or stops cog.
+# reload is live: a running view is pointed at the new URL and color scheme over
+# cog's system-bus remote control (cogctl), so a URL or theme change never drops
+# to the splash — only enabling/disabling starts or stops cog. The theme is
+# WebKit's own dark mode (board/common/patches/wpewebkit/0001, driven by cog's
+# --color-scheme / `cogctl color-scheme`), so any page sees it as
+# prefers-color-scheme, like an OS setting.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 CONF="${OHC_DISPLAY_CONF:-/opt/ohc/display.conf}"
 CTL="${OHC_DISPLAY_CTL:-/run/ohc-display.ctl}"
@@ -22,19 +25,14 @@ RUN=/run/ohc/display
 PIDF=/run/ohc-display.pid
 CTLPIDF=/run/ohc-display-ctl.pid
 
-# Read the config into $OHC_DISPLAY_* and the URL cog loads into $url. cog has
-# no native light/dark switch (the EA's webview has); the openHC dashboard reads
-# ?theme= instead, so pass it there.
+# Read the config into $url and $theme.
 load() {
 	OHC_DISPLAY_ENABLE=0
 	OHC_DISPLAY_URL=http://localhost/
 	OHC_DISPLAY_THEME=auto
 	[ -r "$CONF" ] && . "$CONF"
 	url="$OHC_DISPLAY_URL"
-	case "$OHC_DISPLAY_THEME:$url" in
-		light:http://localhost/*|dark:http://localhost/*)
-			case "$url" in *\?*) url="$url&theme=$OHC_DISPLAY_THEME" ;; *) url="$url?theme=$OHC_DISPLAY_THEME" ;; esac ;;
-	esac
+	case "$OHC_DISPLAY_THEME" in light|dark) theme="$OHC_DISPLAY_THEME" ;; *) theme=auto ;; esac
 }
 load
 
@@ -71,10 +69,15 @@ reload() {
 	if [ "$OHC_DISPLAY_ENABLE" != 1 ]; then
 		stop
 	elif running; then
-		# A full restart only if cog's remote control does not answer. (Should
-		# cog die later, run re-reads the config, so it comes back on this URL.)
-		if cogctl --system open "$url" >/dev/null 2>&1; then
-			echo "ohc-display: view -> $url"
+		# Only what changed: re-opening an unchanged URL would reload the page
+		# for a theme switch that WebKit applies live anyway. A full restart only
+		# if cog's remote control does not answer. (Should cog die later, run
+		# re-reads the config, so it comes back on these settings.)
+		if cogctl --system color-scheme "$theme" >/dev/null 2>&1 &&
+		   { [ "$(cat "$RUN/url" 2>/dev/null)" = "$url" ] ||
+		     cogctl --system open "$url" >/dev/null 2>&1; }; then
+			printf '%s\n' "$url" > "$RUN/url"
+			echo "ohc-display: view -> $url (theme=$theme)"
 		else
 			stop; sleep 1; start
 		fi
@@ -90,13 +93,14 @@ run() {
 	export HOME="$RUN" XDG_RUNTIME_DIR="$RUN"
 	while :; do
 		load
-		/usr/bin/cog --platform=drm "$url" 2>&1 | logger -t ohc-display
+		printf '%s\n' "$url" > "$RUN/url"
+		/usr/bin/cog --platform=drm --color-scheme="$theme" "$url" 2>&1 | logger -t ohc-display
 		sleep 3
 	done
 }
 
 # The control FIFO the EA's webview reads (iod's cmd/display/* writes lines to
-# it): url and reload map onto cogctl. key/text need input injection cog does
+# it): url, reload and theme map onto cogctl. key/text need input injection cog does
 # not offer, so they are logged and dropped. Opened read-write so the FIFO always
 # has a reader (iod's non-blocking open never sees ENXIO) and never hits EOF.
 ctl() {
@@ -104,8 +108,9 @@ ctl() {
 	exec 3<>"$CTL"
 	while read -r cmd arg <&3; do
 		case "$cmd" in
-			url)    [ -n "$arg" ] && cogctl --system open "$arg" ;;
+			url)    [ -n "$arg" ] && cogctl --system open "$arg" && printf '%s\n' "$arg" > "$RUN/url" ;;
 			reload) cogctl --system reload ;;
+			theme)  cogctl --system color-scheme "$arg" ;;
 			key|text) logger -t ohc-display "'$cmd' is not supported by cog; ignored" ;;
 			'') ;;
 			*)      logger -t ohc-display "unknown control command '$cmd'" ;;

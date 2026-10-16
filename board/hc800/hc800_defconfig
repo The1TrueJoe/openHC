@@ -32,7 +32,9 @@ BR2_LINUX_KERNEL_BZIMAGE=y
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/linux/hc800.fragment"
 # Kernel patches (patches/linux/): 0001 adds the hda-generic "indep_dig_outs"
 # hint so the HDMI and coax digital outputs are two PCMs, not one mirrored.
-BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/patches"
+# board/common/patches: what every WebKit board shares (wpewebkit's per-view dark
+# mode API, which cog's --color-scheme drives).
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/common/patches $(BR2_EXTERNAL_OPENHC_PATH)/hc800/patches"
 
 # --- rootfs: standalone gzipped cpio, GRUB loads it as an external initrd ---
 # A separate file rather than initramfs-in-the-bzImage (ioxv1/ca1 style) because

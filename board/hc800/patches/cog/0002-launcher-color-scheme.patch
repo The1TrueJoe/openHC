@@ -1,0 +1,147 @@
+From: openHC <noreply@openhc>
+Subject: [PATCH] launcher: --color-scheme option, color-scheme action and cogctl command
+
+Expose WebKit's per-view dark mode (webkit_web_view_set_prefers_dark_mode /
+_unset_prefers_dark_mode, board/common/patches/wpewebkit/0001) through cog's
+usual surfaces: a --color-scheme=auto|light|dark start option, and a
+"color-scheme" GAction (string parameter) on the remote-control interface, with
+a matching `cogctl color-scheme auto|light|dark`. The action is live: loaded
+pages switch prefers-color-scheme without a reload.
+
+diff -ruN a/launcher/cog-launcher.c b/launcher/cog-launcher.c
+--- a/launcher/cog-launcher.c	2026-10-16 00:38:48
++++ b/launcher/cog-launcher.c	2026-10-16 00:39:12
+@@ -52,6 +52,7 @@
+         enum webprocess_fail_action action_id;
+     } on_failure;
+     char    *web_extensions_dir;
++    char    *color_scheme;
+     gboolean ignore_tls_errors;
+ #if !COG_USE_WPE2
+     gboolean enable_sandbox;
+@@ -159,6 +160,39 @@
+ }
+ 
+ static gboolean
++color_scheme_is_valid(const char *scheme)
++{
++    return !scheme || g_str_equal(scheme, "auto") || g_str_equal(scheme, "light") || g_str_equal(scheme, "dark");
++}
++
++/* "auto" (or unset) follows the system dark mode setting; "light"/"dark" override it. */
++static void
++apply_color_scheme(WebKitWebView *web_view, const char *scheme)
++{
++    if (!web_view)
++        return;
++    if (!scheme || g_str_equal(scheme, "auto"))
++        webkit_web_view_unset_prefers_dark_mode(web_view);
++    else
++        webkit_web_view_set_prefers_dark_mode(web_view, g_str_equal(scheme, "dark"));
++}
++
++static void
++on_action_color_scheme(G_GNUC_UNUSED GAction *action, GVariant *param, CogLauncher *launcher)
++{
++    g_return_if_fail(g_variant_is_of_type(param, G_VARIANT_TYPE_STRING));
++    const char *scheme = g_variant_get_string(param, NULL);
++    if (!color_scheme_is_valid(scheme)) {
++        g_warning("Invalid color scheme '%s' (expected auto, light or dark)", scheme);
++        return;
++    }
++    /* Remembered, so a view created later starts with it too. */
++    g_free(s_options.color_scheme);
++    s_options.color_scheme = g_strdup(scheme);
++    apply_color_scheme(cog_shell_get_web_view(launcher->shell), scheme);
++}
++
++static gboolean
+ on_signal_quit(CogLauncher *launcher)
+ {
+     g_application_quit(G_APPLICATION(launcher));
+@@ -182,6 +216,8 @@
+     WebKitWebView *web_view = cog_shell_get_web_view(shell);
+ 
+     g_signal_connect(web_view, "permission-request", G_CALLBACK(on_permission_request), launcher);
++    if (s_options.color_scheme)
++        apply_color_scheme(web_view, s_options.color_scheme);
+ }
+ 
+ static void
+@@ -1202,6 +1238,8 @@
+      "Comma separated list of platform parameters.", "PARAMS"},
+     {"web-extensions-dir", '\0', 0, G_OPTION_ARG_STRING, &s_options.web_extensions_dir,
+      "Load Web Extensions from given directory.", "PATH"},
++    {"color-scheme", '\0', 0, G_OPTION_ARG_STRING, &s_options.color_scheme,
++     "Color scheme Web content sees: auto (default, follow the system), light or dark.", "SCHEME"},
+     {"ignore-tls-errors", '\0', 0, G_OPTION_ARG_NONE, &s_options.ignore_tls_errors,
+      "Ignore TLS errors (default: disabled).", NULL},
+     {"content-filter", 'F', 0, G_OPTION_ARG_FILENAME, &s_options.filter_path,
+@@ -1244,6 +1282,7 @@
+     cog_launcher_add_action(launcher, "next", on_action_next, NULL);
+     cog_launcher_add_action(launcher, "reload", on_action_reload, NULL);
+     cog_launcher_add_action(launcher, "open", on_action_open, G_VARIANT_TYPE_STRING);
++    cog_launcher_add_action(launcher, "color-scheme", on_action_color_scheme, G_VARIANT_TYPE_STRING);
+ 
+     g_application_add_main_option_entries(G_APPLICATION(object), s_cli_options);
+     cog_launcher_add_web_settings_option_entries(launcher);
+@@ -1342,6 +1381,11 @@
+         }
+         g_clear_pointer(&s_options.on_failure.action_name, g_free);
+         s_options.on_failure.action_id = action_id;
++    }
++
++    if (!color_scheme_is_valid(s_options.color_scheme)) {
++        g_printerr("Invalid color scheme: '%s' (expected auto, light or dark)\n", s_options.color_scheme);
++        return EXIT_FAILURE;
+     }
+ 
+     const char *uri = NULL;
+diff -ruN a/launcher/cogctl.c b/launcher/cogctl.c
+--- a/launcher/cogctl.c	2026-10-16 00:38:48
++++ b/launcher/cogctl.c	2026-10-16 00:39:27
+@@ -189,6 +189,32 @@
+ 
+ 
+ static int
++cmd_color_scheme (const char               *name,
++                  G_GNUC_UNUSED const void *data,
++                  int                       argc,
++                  char                    **argv)
++{
++    cmd_check_simple_help ("color-scheme auto|light|dark", 1, &argc, &argv);
++    if (argc < 2) {
++        g_printerr ("%s: expected auto, light or dark\n", name);
++        return EXIT_FAILURE;
++    }
++
++    g_autoptr(GError) error = NULL;
++    g_autoptr(GVariantBuilder) param =
++        g_variant_builder_new (G_VARIANT_TYPE ("av"));
++    g_variant_builder_add (param, "v", g_variant_new_string (argv[1]));
++    GVariant *params = g_variant_new ("(sava{sv})", "color-scheme", param, NULL);
++
++    if (!call_method (GTK_ACTIONS_ACTIVATE, params, &error)) {
++        g_printerr ("%s\n", error->message);
++        return EXIT_FAILURE;
++    }
++    return EXIT_SUCCESS;
++}
++
++
++static int
+ cmd_ping (const char               *name,
+           G_GNUC_UNUSED const void *data,
+           int                       argc,
+@@ -262,6 +288,11 @@
+             .name = "objpath",
+             .desc = "Display the D-Bus object path being used",
+             .handler = cmd_objpath,
++        },
++        {
++            .name = "color-scheme",
++            .desc = "Set the color scheme Web content sees: auto, light or dark",
++            .handler = cmd_color_scheme,
+         },
+         {
+             .name = "help",
