@@ -39,8 +39,17 @@ routed through that path therefore gets Quark's SCR with the DDS half silently
 dropped, so the clock is wrong and the SSP never leaves BSY:
     b53-switch spi92.1: Flush failed
     b53-switch spi92.1: SPI transfer failed: -5
-Control4's driver uses a plain SSCR0_SCR divisor, so CE5X00 falls through to
-ssp_get_clk_div() like every non-Quark part.
+Control4's driver uses a plain SSCR0_SCR divisor, so CE5X00 takes an ordinary
+ssp_get_clk_div() SCR like every non-Quark part — BUT the Quark SSCR0 layout it
+is aliased to still gates the bit clock through DDS_RATE, which must therefore
+be driven at unity. Confirmed on a live EA3 with devmem: with the clock divider
+left non-Quark but DDS untouched, DDS_RATE read 0x000000, SSSR had BSY set, and
+every transfer failed -EIO. So pxa2xx_ssp_get_clk_div() gets a CE5X00 case that
+takes the plain SCR AND sets chip->dds_rate = GENMASK(23,0) (unity), and the
+DDS_RATE write is widened from an exact is_quark_x1000_ssp() to include CE5X00
+(the SSP zeroes DDS on each SSE toggle, so it must be rewritten every transfer —
+a one-shot devmem poke does not survive the next bind). With those two, the
+bcm53125 answers over SPI.
 
 Getting that split wrong is what made this take so long. An earlier attempt set
 CE4100_SSP (right chip select, wrong FIFO layout — reads returned 0xff), and a
@@ -140,7 +149,45 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		mask |= QUARK_X1000_SSCR1_RFT;
  		break;
-@@ -1135,6 +1142,7 @@
+@@ -911,6 +918,12 @@
+ 	switch (drv_data->ssp_type) {
+ 	case QUARK_X1000_SSP:
+ 		clk_div = quark_x1000_get_clk_div(rate, &chip->dds_rate);
++		break;
++	case CE5X00_SSP:
++		/* CE5300: Quark SSCR0 layout but a plain SCR clock. Run DDS at
++		 * unity or DDS_RATE stays 0 and the bit clock is dead (-EIO). */
++		chip->dds_rate = GENMASK(23, 0);
++		clk_div = ssp_get_clk_div(drv_data, rate);
+ 		break;
+ 	default:
+ 		clk_div = ssp_get_clk_div(drv_data, rate);
+@@ -955,6 +968,15 @@
+ 	}
+ 
+ 	/* Setup the transfer state based on the type of transfer */
++	/* CE5300: its Quark-style SSCR0 gates the bit clock through DDS_RATE, which
++	 * powers up 0 -> dead clock -> the SSP never leaves BSY and the flush below
++	 * times out ("Flush failed", -EIO). Unlike Quark it needs no fractional
++	 * divisor, so drive DDS at unity here, BEFORE the flush, every transfer; the
++	 * is_quark DDS write later in this function is too late (the flush already
++	 * failed and returned). */
++	if (drv_data->ssp_type == CE5X00_SSP)
++		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), GENMASK(23, 0));
++
+ 	if (pxa2xx_spi_flush(drv_data) == 0) {
+ 		dev_err(&spi->dev, "Flush failed\n");
+ 		return -EIO;
+@@ -1036,7 +1058,7 @@
+ 		pxa2xx_spi_update(drv_data, SFIFOTT, mask, thresh);
+ 	}
+ 
+-	if (is_quark_x1000_ssp(drv_data))
++	if (is_quark_x1000_ssp(drv_data) || drv_data->ssp_type == CE5X00_SSP)
+ 		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), chip->dds_rate);
+ 
+ 	/* Stop the SSP */
+@@ -1135,6 +1157,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -148,7 +195,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1181,7 @@
+@@ -1173,7 +1196,7 @@
  		break;
  	}
  
@@ -157,7 +204,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1216,7 @@
+@@ -1208,6 +1231,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -165,7 +212,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1309,7 +1318,8 @@
+@@ -1309,7 +1333,8 @@
  
  	if (pxa25x_ssp_comp(drv_data)) {
  		switch (drv_data->ssp_type) {
@@ -175,7 +222,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
  		default:
-@@ -1372,6 +1382,7 @@
+@@ -1372,6 +1397,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
