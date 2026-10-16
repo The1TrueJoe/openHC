@@ -66,8 +66,16 @@ static const struct ea_gpio ea_common_gpios[] __initconst = {
  * different power set), so this is EA3's. Applying another board's block here
  * would drive lines that may not be wired the same way, which is why the stock
  * script branches rather than doing them all.
+ *
+ * gpio44 is NOT in the stock script: the stock kernel's closed ninjago_platform
+ * driver drives it high at boot, and nothing else does. It powers the rear USB
+ * port (EHCI 01:0d.1). Measured on an EA3: bootloader leaves it low and the port
+ * sees nothing (PORTSC line state SE0, no connect); driven high, a USB stick
+ * enumerates as high-speed; driven low again, it disconnects. The vendor name is
+ * unknown, so this one is ours.
  */
 static const struct ea_gpio ea3_gpios[] __initconst = {
+	{ 44,  "usb_rear_power",              true  },
 	{ 54,  "poe_type",                    false },
 	{ 75,  "n_twelve_volt_current_limit", true  },
 	{ 80,  "ac_pwr",                      false },

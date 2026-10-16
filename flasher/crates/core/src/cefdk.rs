@@ -93,6 +93,35 @@ pub const KERNEL_ADDR: u64 = 0x6000000;
 /// RAM address the initramfs is staged at (the `tftp get`/`emmc rd` destination
 /// for rootfs.cpio.gz). Well clear of the kernel at 0x6000000.
 pub const RAMDISK_ADDR: u64 = 0x4000000;
+/// Where the TFTP netboot stages the initramfs: ABOVE the kernel. The netboot
+/// serves the full rootfs.cpio.gz, which outgrew the 32 MB between RAMDISK_ADDR
+/// and KERNEL_ADDR (44 MB measured) and was overwriting the start of the kernel.
+/// The eMMC autoscripts keep RAMDISK_ADDR: their initrd is the small boot-init,
+/// and changing them would change what is already flashed on installed boxes.
+pub const NETBOOT_RAMDISK_ADDR: u64 = 0x7000000;
+/// Top of the RAM CEFDK leaves usable for staging (its `mmap`: 1-200 MB).
+pub const STAGING_RAM_END: u64 = 0xc800000;
+
+/// Can a netboot kernel + initrd be staged without overlapping each other or
+/// running past usable RAM? Checked before anything is typed at the shell, so an
+/// oversize image is a clear error rather than a box that silently never boots.
+pub fn netboot_fits(kernel_len: u64, initrd_len: u64) -> Result<(), String> {
+    if KERNEL_ADDR + kernel_len > NETBOOT_RAMDISK_ADDR {
+        return Err(format!(
+            "kernel {kernel_len} B at {KERNEL_ADDR:#x} would run into the initrd at \
+             {NETBOOT_RAMDISK_ADDR:#x} (max {} B)",
+            NETBOOT_RAMDISK_ADDR - KERNEL_ADDR
+        ));
+    }
+    if NETBOOT_RAMDISK_ADDR + initrd_len > STAGING_RAM_END {
+        return Err(format!(
+            "initrd {initrd_len} B at {NETBOOT_RAMDISK_ADDR:#x} would run past usable RAM \
+             at {STAGING_RAM_END:#x} (max {} B)",
+            STAGING_RAM_END - NETBOOT_RAMDISK_ADDR
+        ));
+    }
+    Ok(())
+}
 pub const G_KBASE: u64 = 0xc90a4; // ord4 <this> = KERNEL_ADDR
 pub const G_RD_FLAG: u64 = 0x837560; // ord4 <this> = 0 -> no ramdisk, 1 -> ramdisk present
 pub const G_RD_ADDR: u64 = 0x837564; // ord4 <this> = RAMDISK_ADDR (when G_RD_FLAG = 1)
@@ -149,14 +178,39 @@ pub fn ramboot_tftp_for(
     vec![
         format!("ip set {box_ip} 255.255.255.0 0.0.0.0"),
         format!("tftp get {server_ip} {KERNEL_ADDR:#x} {kernel_name}"),
-        format!("tftp get {server_ip} {RAMDISK_ADDR:#x} {initrd_name}"),
+        format!("tftp get {server_ip} {NETBOOT_RAMDISK_ADDR:#x} {initrd_name}"),
         "cache flush".into(),
         format!("ord4 {G_KBASE:#x} = {KERNEL_ADDR:#x}"),
         format!("ord4 {G_RD_FLAG:#x} = 0x1"),
-        format!("ord4 {G_RD_ADDR:#x} = {RAMDISK_ADDR:#x}"),
+        format!("ord4 {G_RD_ADDR:#x} = {NETBOOT_RAMDISK_ADDR:#x}"),
         format!("ord4 {G_RD_SIZE:#x} = {initrd_len:#x}"),
         format!("bootlinux \"{cmdline}\""),
     ]
+}
+
+#[cfg(test)]
+mod netboot_layout_tests {
+    use super::*;
+
+    #[test]
+    fn todays_ea3_release_fits_the_netboot_layout() {
+        // ea3-v2 build of 2026-10-15: 7 377 920 B kernel, 44 325 507 B rootfs.
+        assert!(netboot_fits(7_377_920, 44_325_507).is_ok());
+    }
+
+    #[test]
+    fn oversize_images_are_refused() {
+        assert!(netboot_fits(NETBOOT_RAMDISK_ADDR - KERNEL_ADDR + 1, 1).is_err());
+        assert!(netboot_fits(1, STAGING_RAM_END - NETBOOT_RAMDISK_ADDR + 1).is_err());
+    }
+
+    #[test]
+    fn initrd_is_staged_above_the_kernel() {
+        let cmds = ramboot_tftp_for("10.0.0.1", "10.0.0.200", "bzImage", "rootfs.cpio.gz", 5, "x");
+        assert!(cmds.contains(&format!("tftp get 10.0.0.1 {NETBOOT_RAMDISK_ADDR:#x} rootfs.cpio.gz")));
+        assert!(cmds.contains(&format!("ord4 {G_RD_ADDR:#x} = {NETBOOT_RAMDISK_ADDR:#x}")));
+        assert!(NETBOOT_RAMDISK_ADDR > KERNEL_ADDR);
+    }
 }
 
 /// Pack shell commands into the MFH `script` payload: NUL-terminated strings
