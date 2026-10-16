@@ -78,6 +78,8 @@ fn help() {
                    [--server-ip <ip>] [--box-ip <ip>] [--cmdline <str>] [--no-wait]\n\
                    [--broadcast <ip>]  BOOTP reply address (default: server's /24\n\
                                     broadcast; 255.255.255.255 for a link-local link)\n\
+                   [--shell-only]   stop at the CEFDK shell (no ramboot) and free\n\
+                                    the serial for hand-driven MFH/script work\n\
                                     EA bring-up: netboot openHC into RAM from CEFDK's\n\
                                     manufacturing shell — answers BOOTP with the C4 cookie,\n\
                                     serves the images over TFTP, and drives the serial\n\
@@ -795,14 +797,22 @@ fn netboot_cmd(rest: &[String]) -> bool {
     // a link-local /16 point-to-point link needs --broadcast 255.255.255.255.
     let broadcast = flag("--broadcast");
     let wait = !rest.iter().any(|a| a == "--no-wait");
+    // --shell-only: drop CEFDK to its shell and stop there, releasing the serial
+    // (no ramboot). For MFH/script work by hand at the shell.
+    let shell_only = rest.iter().any(|a| a == "--shell-only");
 
     let images = images_arg(rest);
     let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
 
-    println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
-    println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    if shell_only {
+        println!("  netboot {mac}: drop CEFDK to its shell (nothing booted or written)");
+    } else {
+        println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
+        println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    }
     let p = Progress::stdout();
-    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, broadcast.as_deref(), wait, &p) {
+    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, broadcast.as_deref(), wait, shell_only, &p) {
+        Ok(()) if shell_only => { println!("\n  done — the box is at the CEFDK shell; the serial port is free."); true }
         Ok(()) => { println!("\n  done — openHC was netbooted into RAM."); true }
         Err(e) => { eprintln!("  netboot failed: {e:#}"); false }
     }
