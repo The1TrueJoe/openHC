@@ -33,7 +33,7 @@ on:
       - board/ea/common/gpu-wpe-i386/**
       - board/ea/common/packages/sgx545-um/**
       - board/ea/common/packages/wpebackend-pvr/**
-      - board/ea/common/packages/webview/**
+      - packages/webview/**
       - build/buildroot-patches/**
       - build/build.sh
 

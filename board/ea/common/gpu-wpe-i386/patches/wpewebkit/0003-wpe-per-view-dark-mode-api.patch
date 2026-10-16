@@ -1,6 +1,10 @@
 From: openHC <noreply@openhc>
 Subject: [PATCH] WPE: per-view dark mode API for the libwpe (legacy) backend
 
+Used by the EA family only: the HC-800 runs WPE Platform, where dark mode is
+upstream (WPE_SETTING_DARK_MODE). The EAs stay on the libwpe path to keep
+zero-copy SGX545 rendering -- see openHC issue #55.
+
 WebKit 2.50 feeds a page's dark mode (prefers-color-scheme, the color-scheme
 CSS property, native controls) from PageClientImpl::effectiveAppearanceIsDark(),
 which reads WebCore::SystemSettings. On the WPE Platform API that is filled from

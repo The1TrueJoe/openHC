@@ -618,7 +618,7 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
 done
 
 # The same trap for Buildroot's OWN packages that a board patches through its
-# BR2_GLOBAL_PATCH_DIR (e.g. board/hc800/patches/cog): patches are applied only
+# BR2_GLOBAL_PATCH_DIR (e.g. board/ea/common/gpu-wpe-i386/patches/wpewebkit): patches are applied only
 # at extract time, so a cached build tree keeps building the unpatched source.
 # Re-extract a patched package when one of its patches is not in the build
 # dir's .applied_patches_list (Buildroot records each one it applies), or when

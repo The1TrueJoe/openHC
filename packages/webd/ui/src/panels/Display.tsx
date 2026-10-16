@@ -4,7 +4,7 @@ import { rest, type DisplayCfg } from '../api';
 import { Field, Text, Toggle } from './Settings';
 
 /** The controller's own screen: the opt-in full-screen web view (S95ohc-display
- *  on each board that has one — the EAs' webview, the HC-800's cog), so the tab
+ *  on each board that has one — openHC's webview on the EAs and the HC-800), so the tab
  *  only appears where the API reports it `available`. Off by default (the screen
  *  shows the openHC splash). Toggling applies at once, the URL has its own Apply;
  *  a URL or theme change on a running view is live, without a restart. */

@@ -9,9 +9,18 @@
 # hard-code, so an older or newer WebKit still builds.
 WPE_PC   ?= $(shell pkg-config --exists wpe-webkit-2.0 \
               && echo wpe-webkit-2.0 || echo wpe-webkit-1.1)
+# The display path (see src/webview.c): WPE Platform when WebKit was built with
+# it (wpe-platform-2.0.pc exists -- the HC-800, BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM),
+# else the libwpe backend API (the EAs).
+PLATFORM_PC ?= $(shell pkg-config --exists wpe-platform-2.0 && echo wpe-platform-2.0)
 PREFIX   ?= /usr
 CC       ?= cc
+ifneq ($(PLATFORM_PC),)
+PKGS      = $(WPE_PC) $(PLATFORM_PC) glib-2.0 gobject-2.0
+CPPFLAGS += -DOHC_WPE_PLATFORM
+else
 PKGS      = $(WPE_PC) wpe-1.0 glib-2.0 gobject-2.0
+endif
 CFLAGS   ?= -O2 -g -Wall -Wextra
 LDLIBS   += $(shell pkg-config --libs $(PKGS))
 CPPFLAGS += $(shell pkg-config --cflags $(PKGS))

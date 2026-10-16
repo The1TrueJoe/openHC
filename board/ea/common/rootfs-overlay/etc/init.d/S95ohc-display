@@ -113,18 +113,19 @@ stop() {
 }
 
 # Apply the config without tearing the view down when it can be helped: a
-# running webview takes the URL and theme on its control FIFO (it holds the FIFO
-# open read-write, so this write never blocks), and the theme switches live.
+# running webview takes the URL and theme on its control FIFO, and the theme
+# switches live. Opened read-write, so the write can never block even if the
+# view has just exited (a FIFO opened write-only waits for a reader).
 reload() {
 	if [ "$OHC_DISPLAY_ENABLE" != 1 ]; then
 		stop
 	elif [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null && [ -p "$CTL" ]; then
-		{
-			printf 'theme %s\n' "$OHC_DISPLAY_THEME"
-			# Only a changed URL: re-loading the same page is not needed for a theme.
-			[ "$(cat /run/ohc-display.url 2>/dev/null)" = "$OHC_DISPLAY_URL" ] ||
-				printf 'url %s\n' "$OHC_DISPLAY_URL"
-		} > "$CTL"
+		exec 3<>"$CTL"
+		printf 'theme %s\n' "$OHC_DISPLAY_THEME" >&3
+		# Only a changed URL: re-loading the same page is not needed for a theme.
+		[ "$(cat /run/ohc-display.url 2>/dev/null)" = "$OHC_DISPLAY_URL" ] ||
+			printf 'url %s\n' "$OHC_DISPLAY_URL" >&3
+		exec 3>&-
 		printf '%s\n' "$OHC_DISPLAY_URL" > /run/ohc-display.url
 		echo "ohc-display: view -> $OHC_DISPLAY_URL (theme=$OHC_DISPLAY_THEME)"
 	else
