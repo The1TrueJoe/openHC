@@ -530,16 +530,20 @@ Getting pixels onto the panel is not the expensive part; rasterising them is.
 Yes, and more easily than the EA family — with one large caveat.
 
 Mesa 24.0.9's **`i915` gallium driver explicitly claims `0xa001 "Intel(R)
-Pineview"`**, this exact chip. Because Mesa provides real EGL + GBM + Wayland,
+Pineview"`**, this exact chip. Because Mesa provides real EGL + GBM + dmabuf,
 this board needs **no custom libwpe backend**: the EA's `wpebackend-pvr` exists
-only because the PowerVR DDK 1.7 predates Wayland. Stock `wpebackend-fdo` plus
-**`cog` with `BR2_PACKAGE_COG_PLATFORM_DRM`** drives KMS directly through
-GBM/EGL with no compositor.
+only because the PowerVR DDK 1.7 predates all of that. It runs WebKit's own
+**WPE Platform API** instead: openHC's `webview` on WebKit's **DRM platform**,
+which renders on the GPU into GBM buffers and scans them out on KMS with no
+compositor and no copies. (The EAs stay on the libwpe path to keep their SGX545
+zero-copy; see openHC issue #55.)
 
 Two prerequisites are config, not code:
 
-- `BR2_PACKAGE_COG_PLATFORM_DRM` depends on `BR2_PACKAGE_HAS_UDEV` (libinput).
-  Every openHC board uses busybox mdev, so this means switching to eudev.
+- The DRM platform (`BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM`, an option openHC
+  adds to Buildroot in `build/buildroot-patches/0004`) depends on
+  `BR2_PACKAGE_HAS_UDEV` (libinput). Every openHC board uses busybox mdev, so
+  this means switching to eudev.
 - wpewebkit needs `BR2_TOOLCHAIN_BUILDROOT_CXX`, `BR2_INSTALL_LIBSTDCPP` and
   `BR2_USE_WCHAR`. Without them kconfig drops wpewebkit **silently** — the build
   succeeds and the engine is simply absent.

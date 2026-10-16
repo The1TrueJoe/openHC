@@ -209,7 +209,7 @@ pub enum Cmd {
     /// Drive the on-panel web view, when one is running. openHC only delivers
     /// the keystroke/URL; a control system on top (Home Assistant, a handheld
     /// remote) decides what the buttons mean. Each echoes one line into the
-    /// view's control FIFO (board/ea/common/packages/webview); on a board with
+    /// view's control FIFO (packages/webview); on a board with
     /// no view, or with the view switched off, the command reports that rather
     /// than doing anything — see [`display_write`].
     #[serde(rename = "display.key")]
@@ -308,7 +308,7 @@ async fn restore_stock(confirm: bool) -> Out {
 }
 
 /// The on-panel view's control FIFO. The default matches the webview's own
-/// (board/ea/common/packages/webview); `OHC_DISPLAY_CTL` overrides both, so set
+/// (packages/webview); `OHC_DISPLAY_CTL` overrides both, so set
 /// it in one place and iod and the view stay in lockstep.
 fn display_ctl_path() -> String {
     std::env::var("OHC_DISPLAY_CTL").unwrap_or_else(|_| "/run/ohc-display.ctl".into())

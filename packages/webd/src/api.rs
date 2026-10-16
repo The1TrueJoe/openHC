@@ -150,9 +150,10 @@ struct Display {
     enabled: bool,
     /// Page the view loads; defaults to this controller's own dashboard.
     url: String,
-    /// Day/night for the on-panel view: "auto" (follow the page's own preference),
-    /// "light" or "dark". The panel has no OS light/dark signal, so this forces it;
-    /// passed to the dashboard as ?theme= (the UI keys off it).
+    /// Day/night for the on-panel view: "auto" (pages keep their default, light),
+    /// "light" or "dark". The screen's own dark mode — WebKit's per-view setting,
+    /// changed live — so any page sees it as prefers-color-scheme, like an OS
+    /// setting.
     #[serde(default = "default_theme")]
     theme: String,
     /// Read-only: this board has an on-screen display program (S95ohc-display).
@@ -167,7 +168,7 @@ impl Default for Display {
     }
 }
 
-/// The per-board display service: the EAs' webview, the HC-800's cog.
+/// The per-board display service; both run openHC's webview (packages/webview).
 const DISPLAY_SVC: &str = "/etc/init.d/S95ohc-display";
 
 /// display.conf sits next to board.env (that path is overridable for tests) —
@@ -243,9 +244,9 @@ async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Re
             &format!("cannot write {}: {e}", path.display()));
     }
     // Apply now by reloading the display service — fire-and-forget (it backgrounds
-    // the view). reload, not restart: where the board can (the HC-800's cog) it
-    // points the running view at the new URL instead of dropping to the splash;
-    // it starts or stops the view when `enabled` changed. Absent on boards with
+    // the view). reload, not restart: a running view takes the new URL and theme
+    // on its control FIFO instead of dropping to the splash; it starts or stops
+    // the view only when `enabled` changed. Absent on boards with
     // no display; the persisted config still takes effect on the next boot, so a
     // missing service is not an error.
     let applied = std::path::Path::new(DISPLAY_SVC).exists()
