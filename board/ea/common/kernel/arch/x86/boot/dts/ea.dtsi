@@ -101,6 +101,21 @@
 		output-high;
 		line-name = "ldo_enable";
 	};
+	/*
+	 * Rear USB port power (EHCI 01:0d.1). NOT in the stock script: the stock
+	 * kernel's closed ninjago_platform driver drives it high at boot, and
+	 * nothing else does. Measured on an EA3 (PR #51): the bootloader leaves it
+	 * low and the port sees nothing (PORTSC SE0, no connect); driven high, a
+	 * USB stick enumerates as high-speed; low again, it disconnects. Every EA
+	 * has the rear port, so it is released on all of them (EA1 not yet
+	 * measured). The vendor name is unknown, so "usb_rear_power" is ours.
+	 */
+	usb-rear-power-hog {
+		gpio-hog;
+		gpios = <44 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb_rear_power";
+	};
 	n-fpga-reload-hog {
 		gpio-hog;
 		gpios = <57 GPIO_ACTIVE_HIGH>;

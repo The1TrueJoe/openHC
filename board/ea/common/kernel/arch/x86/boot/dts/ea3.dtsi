@@ -4,17 +4,9 @@
  * EA1 and EA5 blocks differ, which is why stock branches on the board and why
  * these lines live here and not in ea.dtsi. 54/80/122 are status inputs:
  * named, not hogged.
- *
- * gpio44 is NOT in the stock script: the stock kernel's closed ninjago_platform
- * driver drives it high at boot, and nothing else does. It powers the rear USB
- * port (EHCI 01:0d.1). Measured on an EA3 (PR #51): the bootloader leaves it
- * low and the port sees nothing (PORTSC SE0, no connect); driven high, a USB
- * stick enumerates as high-speed; low again, it disconnects. The vendor name is
- * unknown, so "usb_rear_power" is ours.
  */
 #include "ea.dtsi"
 
-#define EA_LINE_44	"usb_rear_power"
 #define EA_LINE_54	"poe_type"
 #define EA_LINE_75	"n_twelve_volt_current_limit"
 #define EA_LINE_80	"ac_pwr"
@@ -22,12 +14,6 @@
 #define EA_LINE_122	"twelve_volt_ok"
 
 &gpio {
-	usb-rear-power-hog {
-		gpio-hog;
-		gpios = <44 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "usb_rear_power";
-	};
 	n-twelve-volt-current-limit-hog {
 		gpio-hog;
 		gpios = <75 GPIO_ACTIVE_HIGH>;
