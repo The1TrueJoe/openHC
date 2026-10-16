@@ -112,9 +112,65 @@ if [ -d "$TARGET" ] && [ -f "$BOOTINIT" ]; then
 		|| echo "post-image: WARNING boot-init build failed (tiny-init install unavailable)" >&2
 fi
 
+# ---- EA two-kernel: build the FAT real kernel and put it on p1 --------------
+# The bzImage wrapped above is the LEAN bootstrap (fits the CEFDK slot). The REAL
+# kernel — DRM/SGX/etc built IN, so it is free to exceed the 7 MB slot window — is
+# kexec'd from p1 by S00kexec (/boot/bzImage + /boot/ohc-kexec.enable). Both
+# install paths write rootfs.ext2 to p1 verbatim (flasher dd, boot-init gunzip|dd),
+# so the real kernel has to live INSIDE rootfs.ext2. Build it here (last step, so
+# mk-real-kernel's mrproper cannot disturb Buildroot's own kernel/image build) and
+# inject it into rootfs.ext2 with debugfs — no mount, no privilege, CI-friendly.
+#
+# NON-FATAL by the same contract as the netboot wrap above: if anything here
+# fails, the build still ships; a fresh install just lacks /boot/bzImage, so
+# S00kexec finds no target and the box runs the lean bootstrap kernel (boots, only
+# without the built-in subsystems). A failure must not cost the whole image.
+OUTTREE="$IMAGES/.."
+REALK="$IMAGES/bzImage-real"
+if [ -x "$EXT/../build/mk-real-kernel.sh" ] && [ -f "$IMAGES/rootfs.ext2" ]; then
+	if bash "$EXT/../build/mk-real-kernel.sh" "$OUTTREE" "$EXT/.." "$REALK"; then
+		# Find a debugfs (host e2fsprogs first, then PATH) to edit the ext2 offline.
+		DEBUGFS=""
+		for d in "$OUTTREE"/host/sbin/debugfs "$OUTTREE"/host/bin/debugfs; do
+			[ -x "$d" ] && { DEBUGFS="$d"; break; }
+		done
+		[ -n "$DEBUGFS" ] || DEBUGFS=$(command -v debugfs 2>/dev/null || true)
+		if [ -n "$DEBUGFS" ]; then
+			# mkdir /boot (ignore "File exists"), write the fat kernel, drop the
+			# kexec-enable flag. One debugfs session; -w = read/write the image.
+			# NOTE: debugfs exits 0 even when a sub-command (write) fails — no space,
+			# bad path — so its exit status is NOT a success signal. VERIFY the
+			# kernel landed with a `stat` afterward and gate the result on THAT.
+			: > "$IMAGES/.ohc-kexec.enable"
+			"$DEBUGFS" -w "$IMAGES/rootfs.ext2" >/dev/null 2>&1 <<-EOF || true
+				mkdir /boot
+				rm /boot/bzImage
+				write $REALK /boot/bzImage
+				rm /boot/ohc-kexec.enable
+				write $IMAGES/.ohc-kexec.enable /boot/ohc-kexec.enable
+				EOF
+			rm -f "$IMAGES/.ohc-kexec.enable"
+			# Verify: stat /boot/bzImage and check its size matches the fat kernel.
+			realsz=$(wc -c < "$REALK")
+			got=$("$DEBUGFS" -R "stat /boot/bzImage" "$IMAGES/rootfs.ext2" 2>/dev/null \
+			      | sed -n 's/.*[Ss]ize: *\([0-9][0-9]*\).*/\1/p' | head -1)
+			if [ "$got" = "$realsz" ]; then
+				echo "post-image: real kernel -> rootfs.ext2:/boot/bzImage ($realsz B) + ohc-kexec.enable"
+			else
+				echo "post-image: WARNING real-kernel inject unverified (stat size '${got:-none}' != $realsz); p1 will run the lean kernel" >&2
+			fi
+		else
+			echo "post-image: WARNING no debugfs; cannot inject the real kernel into rootfs.ext2" >&2
+		fi
+	else
+		echo "post-image: WARNING mk-real-kernel failed; shipping the lean kernel only" >&2
+	fi
+fi
+
 # Stage image: a gzipped copy of the ext2 rootfs, which the tiny /init streams
 # from the eMMC gap straight to p1 (gunzip | dd) — the 512 MB image never lands
-# in RAM. rootfs.ext2 is mostly zeros, so this is small.
+# in RAM. rootfs.ext2 is mostly zeros, so this is small. Done AFTER the real-kernel
+# injection so the staged copy carries /boot/bzImage too.
 if [ -f "$IMAGES/rootfs.ext2" ]; then
 	gzip -9 -c "$IMAGES/rootfs.ext2" > "$IMAGES/rootfs.ext2.gz"
 	echo "post-image: staged rootfs -> rootfs.ext2.gz ($(wc -c < "$IMAGES/rootfs.ext2.gz") bytes)"

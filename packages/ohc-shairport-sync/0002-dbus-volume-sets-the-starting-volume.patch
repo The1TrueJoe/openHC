@@ -1,0 +1,42 @@
+From c2c3dab7e56157a6017776e78b550cc422c6d128 Mon Sep 17 00:00:00 2001
+From: openHC <openhc@localhost>
+Date: Wed, 14 Oct 2026 21:42:26 -0400
+Subject: [PATCH] D-Bus: setting Volume sets the volume a session starts at
+
+---
+ dbus/dbus-service.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/dbus/dbus-service.c b/dbus/dbus-service.c
+index 0486744..d55bb52 100644
+--- a/dbus/dbus-service.c
++++ b/dbus/dbus-service.c
+@@ -946,6 +946,16 @@ static gboolean on_handle_set_frame_position_update_interval(
+   return TRUE;
+ }
+ 
++// openHC: a host setting the Volume property sets config.airplay_volume — the
++// volume the next session starts at and reports to its sender — when it is a
++// valid AirPlay volume (-30 .. 0, or -144 for mute).
++static void ohc_notify_volume(ShairportSync *skeleton, __attribute__((unused)) GParamSpec *pspec,
++                              __attribute__((unused)) gpointer user_data) {
++  gdouble iv = shairport_sync_get_volume(skeleton);
++  if (((iv >= -30.0) && (iv <= 0.0)) || (iv == -144.0))
++    config.airplay_volume = iv;
++}
++
+ static void on_dbus_name_acquired(GDBusConnection *connection, const gchar *name,
+                                   __attribute__((unused)) gpointer user_data) {
+   debug(1, "Shairport Sync native D-Bus interface \"%s\" acquired on the %s bus.", name,
+@@ -1133,8 +1143,9 @@ static void on_dbus_name_acquired(GDBusConnection *connection, const gchar *name
+   //                  G_CALLBACK(notify_loudness_threshold_callback), NULL);
+   // g_signal_connect(shairportSyncSkeleton, "notify::drift-tolerance",
+   //                  G_CALLBACK(notify_drift_tolerance_callback), NULL);
+-  // g_signal_connect(shairportSyncSkeleton, "notify::volume", G_CALLBACK(notify_volume_callback),
+-  //                  NULL);
++  // Setting Volume sets the AirPlay volume a session starts at (and reports to
++  // the sender as initialVolume), so a host can keep it at its own level.
++  g_signal_connect(shairportSyncSkeleton, "notify::volume", G_CALLBACK(ohc_notify_volume), NULL);
+ 
+   g_signal_connect(shairportSyncSkeleton, "handle-quit", G_CALLBACK(on_handle_quit), NULL);
+ 

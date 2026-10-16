@@ -108,6 +108,14 @@ pub fn parse_cmd(tail: &str, body: &str) -> Option<Cmd> {
         }),
         // Return to stock is one-way, so the payload must literally say so.
         ["system", "restore"] if b == "confirm" => Some(Cmd::RestoreStock { confirm: true }),
+        // The on-panel web view (EA with a display). openHC just delivers the
+        // input; what a key does is up to whatever page is loaded, so these are
+        // the same four verbs the view's FIFO takes. `text` keeps the raw body
+        // (spaces are content); the others take the trimmed token.
+        ["display", "key"] => (!b.is_empty()).then(|| Cmd::DisplayKey { key: b.to_string() }),
+        ["display", "text"] => Some(Cmd::DisplayText { text: body.to_string() }),
+        ["display", "url"] => (!b.is_empty()).then(|| Cmd::DisplayUrl { url: b.to_string() }),
+        ["display", "reload"] => Some(Cmd::DisplayReload),
         _ => None,
     }
 }
@@ -173,6 +181,22 @@ mod tests {
         // Audio and health belong to their own daemons now.
         assert!(parse_cmd("audio/volume", "60").is_none());
         assert!(parse_cmd("health/fan", "auto").is_none());
+    }
+
+    #[test]
+    fn display_commands_reach_the_view() {
+        // The named keys and a single char both go through verbatim; the view
+        // maps the name to a keysym, so iod does not second-guess it.
+        assert!(matches!(parse_cmd("display/key", "Up"),
+                         Some(Cmd::DisplayKey { key }) if key == "Up"));
+        assert!(matches!(parse_cmd("display/reload", ""), Some(Cmd::DisplayReload)));
+        assert!(matches!(parse_cmd("display/url", "http://localhost/"),
+                         Some(Cmd::DisplayUrl { url }) if url == "http://localhost/"));
+        // text keeps internal spaces — the body IS the characters to type.
+        assert!(matches!(parse_cmd("display/text", "hello world"),
+                         Some(Cmd::DisplayText { text }) if text == "hello world"));
+        // An empty keypress is a client bug, not a request.
+        assert!(parse_cmd("display/key", "   ").is_none());
     }
 
     #[test]
