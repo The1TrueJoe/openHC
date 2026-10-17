@@ -1,0 +1,29 @@
+From: openHC
+Subject: [PATCH] drm: retry an alpha-format framebuffer as its opaque twin
+
+Gen3 Intel display planes (GMA 3150) refuse ARGB8888; the same buffer
+scans out as XRGB8888.
+
+Upstream-Status: Pending
+---
+--- a/platform/drm/cog-drm-modeset-renderer.c
++++ b/platform/drm/cog-drm-modeset-renderer.c
+@@ -205,6 +205,18 @@
+         in_offsets[0] = in_offsets[1] = in_offsets[2] = in_offsets[3] = 0;
+ 
+         ret = drmModeAddFB2(get_drm_fd(self), width, height, format, in_handles, in_strides, in_offsets, &fb_id, 0);
++    }
++
++    /*
++     * Older display planes scan out only the opaque formats -- gen3 Intel (the
++     * GMA 3150 "Pineview") takes XRGB8888 but refuses ARGB8888 with EINVAL, so
++     * no frame ever reached the screen. The memory layout is the same and a
++     * full-screen surface has nothing behind it to blend with, so retry the
++     * same buffer as its opaque twin.
++     */
++    if (ret && (format == GBM_FORMAT_ARGB8888 || format == GBM_FORMAT_ABGR8888)) {
++        uint32_t opaque = format == GBM_FORMAT_ARGB8888 ? GBM_FORMAT_XRGB8888 : GBM_FORMAT_XBGR8888;
++        ret = drmModeAddFB2(get_drm_fd(self), width, height, opaque, in_handles, in_strides, in_offsets, &fb_id, 0);
+     }
+ 
+     if (ret) {

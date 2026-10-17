@@ -1,5 +1,5 @@
 # Capabilities every EA-series controller has. A board adds only what makes it
-# different (a radio, a switch, the DSP) in its own ohc.features.
+# different (Wi-Fi, a switch, the DSP) in its own ohc.features.
 iomcu       # relays/contacts/IR behind the IO microcontroller
 splash      # boot splash on the display
 display     # the CEFDK framebuffer handed to Linux as simplefb (/dev/fb0)
