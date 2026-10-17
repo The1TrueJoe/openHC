@@ -107,16 +107,39 @@
 		output-high;
 		line-name = "n_fpga_reload";
 	};
+	/*
+	 * Power block shared by the EA1 and EA3: stock setup_gpio_ea1() and
+	 * setup_gpio_ea3() both drive these two high (setup_gpio_ea3() adds
+	 * only ac_pwr, in ea3.dtsi), and c4_board_name() is "ea1" for the PoE
+	 * board too. poe_type (54) and twelve_volt_ok (122) are the inputs of
+	 * the same block: named, not hogged.
+	 */
+	n-twelve-volt-current-limit-hog {
+		gpio-hog;
+		gpios = <75 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_twelve_volt_current_limit";
+	};
+	n-usb-current-limit-hog {
+		gpio-hog;
+		gpios = <121 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_usb_current_limit";
+	};
 };
 
 /*
  * Rear USB port power: a load switch on gpio44 (EHCI 01:0d.1). NOT in the stock
- * script: the stock kernel's closed ninjago_platform driver drove it high at
- * boot, and nothing else does. Measured on an EA3 (PR #51): the bootloader
- * leaves it low and the port sees nothing (PORTSC SE0, no connect); high, a USB
- * stick enumerates as high-speed; low again, it disconnects. Every EA has the
- * rear port (EA1 not yet measured). The vendor name is unknown, so
- * "usb_rear_power" is ours.
+ * script: the stock kernel's closed c4overcurrent driver drives it, registered
+ * by ninjago_board_init() on every board type with platform data
+ * { gpio_oc = 97, gpio_pwr = 44 }. Its probe drives 44 low, waits, then high;
+ * on a falling edge of 97 (the load switch's active-low fault flag) it cuts 44
+ * for 2500 jiffies and powers it back up. Measured on an EA3 (PR #51):
+ * the bootloader leaves 44 low and the port sees nothing (PORTSC SE0, no
+ * connect); high, a USB stick enumerates as high-speed; low again, it
+ * disconnects. "usb_rear_power" and "usb_rear_oc" are ours; the vendor names
+ * are only the driver's gpio_pwr/gpio_oc. Nothing in openHC acts on the fault
+ * line yet: it is named so it can be watched.
  *
  * Not a hog: a fixed regulator that is the controller's vbus-supply (patch
  * 0016), so it follows root-hub port power and usbcore's port control cuts the

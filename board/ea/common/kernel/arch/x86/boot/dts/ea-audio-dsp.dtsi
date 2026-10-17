@@ -9,8 +9,18 @@
  *
  * The DSP and codec resets are released here, not in ea.dtsi, so a board
  * without the DSP never drives them.
+ *
+ * Stock registers its audio devices per board type and revision
+ * (ninjago_board_init()): an EA3 from revision 2 on gets the adau1451 plus one
+ * "audio-sense" device, platform data { id 0, gpio 10, active_state 0 }.
+ * c4audiosense.ko turns that into sig_det0, an IRQ-driven signal-present flag
+ * on the analog input, active low. Named here, never driven. gpio61's name is
+ * ours: stock only sets it (high = muted) in shutdown_gpio_ea3() and in the
+ * adau1451 driver.
  */
+#define EA_LINE_10	"audio_sense0"
 #define EA_LINE_24	"codec_reset"
+#define EA_LINE_61	"dac_mute"
 #define EA_LINE_101	"dsp_reset"
 
 &gpio {
