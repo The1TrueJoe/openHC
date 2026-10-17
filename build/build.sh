@@ -519,6 +519,13 @@ if [ -d "$OUT/host/bin" ] && grep -q '^BR2_INSTALL_LIBSTDCPP=y$' "$EFFECTIVE" 2>
     fi
 fi
 
+# Every package symbol the tree was last configured with — for the options
+# check further down (empty on a fresh or wiped tree, which needs none).
+_pkg_syms() {
+    sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=(.*)$/\1=\2/p; s/^# (BR2_PACKAGE_[A-Z0-9_]+) is not set$/\1=n/p' "$1" 2>/dev/null | sort
+}
+_pkg_was=$(_pkg_syms "$OUT/.config" || true)   # no .config: not a failure (set -e)
+
 "${M[@]}" defconfig BR2_DEFCONFIG="$EFFECTIVE"
 # Record the toolchain this tree now carries, for the next run's comparison.
 mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
@@ -609,6 +616,66 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     echo ">> $_pkg: forcing rebuild (we maintain it; its stamps mean nothing)"
     "${M[@]}" "$_pkg-rebuild"
 done
+
+# The same trap for Buildroot's OWN packages that a board patches through its
+# BR2_GLOBAL_PATCH_DIR (e.g. board/hc800/patches/cog): patches are applied only
+# at extract time, so a cached build tree keeps building the unpatched source.
+# Re-extract a patched package when one of its patches is not in the build
+# dir's .applied_patches_list (Buildroot records each one it applies), or when
+# the patch set changed since we last saw it. Seen for the first time with every
+# patch already applied, it is only recorded — so a toolchain package with a
+# long-standing patch is not rebuilt for nothing. linux is dircleaned above.
+_gpd=$(sed -n 's/^BR2_GLOBAL_PATCH_DIR="\(.*\)"$/\1/p' "$OUT/.config" | sed "s#\$(BR2_EXTERNAL_OPENHC_PATH)#$REPO/board#g")
+for _root in $_gpd; do
+    for _pd in "$_root"/*/; do
+        [ -d "$_pd" ] || continue
+        _pkg=$(basename "$_pd")
+        [ "$_pkg" = linux ] && continue
+        _bd=$(ls -d "$OUT"/build/"$_pkg"-[0-9]* 2>/dev/null | head -1 || true)
+        [ -n "$_bd" ] || continue        # not built yet: it gets patched when it is
+        _sum=$(find "$_pd" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
+        _sumf="$OUT/build/.ohc-gpatch-$_pkg.sum"
+        _stale=""
+        if [ -f "$_sumf" ]; then
+            [ "$(cat "$_sumf")" = "$_sum" ] || _stale=1
+        else
+            for _p in "$_pd"*.patch; do
+                [ -e "$_p" ] || continue
+                grep -q "$(basename "$_p")" "$_bd/.applied_patches_list" 2>/dev/null || _stale=1
+            done
+        fi
+        if [ -n "$_stale" ]; then
+            echo ">> $_pkg: board patches changed — re-extracting"
+            "${M[@]}" "$_pkg-dirclean"
+        fi
+        printf '%s\n' "$_sum" > "$_sumf"
+    done
+done
+
+# And once more for a package's OPTIONS: Buildroot configures a package once,
+# so flipping one of its sub-options (e.g. BR2_PACKAGE_COG_USE_SYSTEM_DBUS, a
+# meson -D flag) in a defconfig leaves a cached tree building it the old way.
+# Compare every package symbol with the tree's .config from before defconfig,
+# and for each that changed, dirclean the package that owns it: the longest
+# enabled BR2_PACKAGE_<PKG> prefix that is not the symbol itself. A package that
+# was only turned on or off needs nothing — Buildroot handles that.
+if [ -n "$_pkg_was" ]; then
+    _cleaned=" "
+    for _s in $(printf '%s\n' "$_pkg_was" "$(_pkg_syms "$OUT/.config")" | sort | uniq -u | sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=.*/\1/p' | sort -u); do
+        _c=${_s#BR2_PACKAGE_}
+        while [ "${_c%_*}" != "$_c" ]; do
+            _c=${_c%_*}
+            grep -q "^BR2_PACKAGE_$_c=y\$" "$OUT/.config" || continue
+            _pkg=$(echo "$_c" | tr 'A-Z_' 'a-z-')
+            case "$_cleaned" in *" $_pkg "*) ;; *)
+                echo ">> $_pkg: option $_s changed — re-extracting"
+                "${M[@]}" "$_pkg-dirclean"
+                _cleaned="$_cleaned$_pkg " ;;
+            esac
+            break
+        done
+    done
+fi
 
 "${M[@]}" "${@:-all}"
 

@@ -1647,12 +1647,13 @@ fn run_install(
         _ => {}
     }
 
+    let mut sizes = None;
     if !finish_only {
         if self_install {
             network::install_self(ssh, rel, secure_boot, p).map_err(|e| format!("{e:#}"))?;
             return Ok(());
         }
-        network::stage1_ram_installer(ssh, rel, secure_boot, p).map_err(|e| format!("{e:#}"))?;
+        sizes = network::stage1(ssh, rel, secure_boot, p).map_err(|e| format!("{e:#}"))?;
         s.lock().unwrap().stage1_done = true;
     }
 
@@ -1675,7 +1676,7 @@ fn run_install(
         g.phase = Some(Phase::Finishing);
         g.wait = None;
     }
-    network::stage2_write_rootfs(&ssh2, rel, p).map_err(|e| format!("{e:#}"))
+    network::stage2_write_rootfs(&ssh2, rel, sizes, p).map_err(|e| format!("{e:#}"))
 }
 
 // ------------------------------------------------------------------- helpers
