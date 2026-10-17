@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         "push" => push(rest),
         "log" => log(rest),
         "reset" => reset(rest),
+        "kexec" => kexec(rest),
         "uninstall" => uninstall(rest),
         "restore" | "factory-restore" => restore(rest),
         "wrap" => wrap(rest),
@@ -75,6 +76,10 @@ fn help() {
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            netboot --serial <dev> --mac <aa:bb:..> [--images <dir|zip>]\n\
                    [--server-ip <ip>] [--box-ip <ip>] [--cmdline <str>] [--no-wait]\n\
+                   [--broadcast <ip>]  BOOTP reply address (default: server's /24\n\
+                                    broadcast; 255.255.255.255 for a link-local link)\n\
+                   [--shell-only]   stop at the CEFDK shell (no ramboot) and free\n\
+                                    the serial for hand-driven MFH/script work\n\
                                     EA bring-up: netboot openHC into RAM from CEFDK's\n\
                                     manufacturing shell — answers BOOTP with the C4 cookie,\n\
                                     serves the images over TFTP, and drives the serial\n\
@@ -86,6 +91,11 @@ fn help() {
                                     that passes --netconsole; the boot log cannot be\n\
                                     recovered afterwards)\n\
            reset [HOST]             sysrq-reboot, through the kernel rather than init\n\
+           kexec [HOST] --images <dir> [--cmdline <str>]\n\
+                                    boot a kernel (+ rootfs.cpio.gz, if present) in RAM\n\
+                                    from a running openHC, no ID button. Writes nothing\n\
+                                    to flash; the next reboot is back to the installed\n\
+                                    openHC. The kexec'd kernel inherits hardware state.\n\
            boot [HOST]              re-enter an INSTALLED openHC (HC-800: after any reset;\n\
                                     IO Extender: after a fallback to stock)\n\
            uninstall [HOST] [--yes]  boot stock again. HC-800: restore the stock menu.lst;\n\
@@ -528,6 +538,54 @@ fn reset(rest: &[String]) -> bool {
     true
 }
 
+/// `kexec [HOST] --images <dir> [--cmdline <str>]` -- RAM-boot a kernel from a
+/// running openHC.
+///
+/// The EA test loop: the installed openHC self-boots from eMMC, this swaps in a
+/// test kernel without the ID button, and a reboot (the test kernel's own, or a
+/// power cycle) lands back on the installed openHC. Nothing is written to flash.
+/// Unlike a CEFDK netboot this is not a cold start: the new kernel inherits
+/// whatever state the running one left in the hardware.
+fn kexec(rest: &[String]) -> bool {
+    let images = images_arg(rest);
+    let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
+    let Some(kernel) = rel.get("bzImage") else {
+        eprintln!("  {} has no bzImage", rel.source);
+        return false;
+    };
+    let cmdline = rest.windows(2).find(|w| w[0] == "--cmdline").map(|w| w[1].clone())
+        .unwrap_or_else(|| cefdk::RAMBOOT_CMDLINE.to_string());
+    // The host is the first bare word that is not a flag's value.
+    let flagged: Vec<&String> = rest.windows(2).filter(|w| w[0].starts_with("--")).map(|w| &w[1]).collect();
+    let host_rest: Vec<String> = rest.iter().filter(|a| !flagged.contains(a)).cloned().collect();
+    let Some((host, ssh)) = connect(&host_rest) else { return false };
+
+    let put = |data: &[u8], path: &str| match ssh.put_stream(data, &format!("cat > {path}")) {
+        Ok(_) => { println!("  {path}  {} B", data.len()); true }
+        Err(e) => { eprintln!("  {e}"); false }
+    };
+    if !put(kernel, "/tmp/ohc-kexec-bzImage") {
+        return false;
+    }
+    let initrd = match rel.get("rootfs.cpio.gz") {
+        Some(rd) if put(rd, "/tmp/ohc-kexec-initrd") => " --initrd=/tmp/ohc-kexec-initrd",
+        Some(_) => return false,
+        None => "",
+    };
+    let quoted = cmdline.replace('\'', "'\\''");
+    let load = format!("kexec -l /tmp/ohc-kexec-bzImage{initrd} --command-line='{quoted}'");
+    if let Err(e) = ssh.run(&load, true) {
+        eprintln!("  kexec -l failed: {e}");
+        return false;
+    }
+    println!("  loaded; command line: {cmdline}");
+    // Detached, so this session returns before the kernel it is talking to goes
+    // away. The connection dropping afterwards is the expected outcome.
+    let _ = ssh.run("sync; (sleep 1; kexec -e) </dev/null >/dev/null 2>&1 &", false);
+    println!("  kexec -e sent to {host} -- the new kernel is starting (watch the serial console)");
+    true
+}
+
 /// `uninstall [HOST]` — boot stock again (HC-800, IO Extender).
 fn uninstall(rest: &[String]) -> bool {
     use ohc_flash_core::board::Family;
@@ -580,10 +638,19 @@ fn install(rest: &[String]) -> bool {
     let yes = rest.iter().any(|a| a == "--yes");
     let Some((host, ssh)) = connect(rest) else { return false };
     let forced = rest.windows(2).find(|w| w[0] == "--board").map(|w| w[1].clone());
-    let id = tp::identify(&ssh);
+    let mut id = tp::identify(&ssh);
     let board = if let Some(name) = forced {
         match board::by_name(&name) {
-            Some(b) => { println!("  target: {} ({}) [forced]", b.name, b.desc); b }
+            Some(b) => {
+                println!("  target: {} ({}) [forced]", b.name, b.desc);
+                // A forced board is also the identity the method selection uses.
+                // EA3 v1/v2 are indistinguishable over SSH, so identify() leaves
+                // id.board None; without this, method::choose rejects every
+                // method as "board not identified" even though the operator just
+                // named one — which is exactly the install that cannot proceed.
+                id.board = Some(b);
+                b
+            }
             None => { eprintln!("  unknown board '{name}'"); return false; }
         }
     } else {
@@ -670,22 +737,21 @@ fn install(rest: &[String]) -> bool {
         println!("\n  done — the box is rebooting; first boot self-installs p1 and pivots.");
         return true;
     }
-    // The proven no-serial conversion: kernel+initrd into the eMMC user-partition
-    // gap, a CEFDK `script` autoscript created over SSH with the correct SHA-256
-    // table hash (see engine::network::install_ramboot / core::mfh), enable it,
-    // reboot. The stock kernel at eMMC 0x400 is left as a clean fallback.
-    if let Err(e) = network::install_ramboot(&ssh, &rel, &p) {
-        eprintln!("  install failed: {e:#}");
-        return false;
-    }
+    // Stage 1: kernel + the tiny networked boot-init into raw eMMC slots and a
+    // RAM-boot autoscript, then reboot into boot-init (see network::stage1 for
+    // which autoscript scheme a given box gets).
+    let sizes = match network::stage1(&ssh, &rel, board.secure_boot, &p) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("  install failed: {e:#}"); return false; }
+    };
     if rest.iter().any(|a| a == "--ram-only") || rest.iter().any(|a| a == "--no-wait") {
         println!("\n  done — the box is rebooting into openHC (RAM). Give it ~90s.");
         return true;
     }
-    // Stage 2: once openHC is RAM-booted, write the real rootfs to p1. The same
+    // Stage 2: once boot-init is up, stream the real rootfs to p1. The same
     // RAM-boot autoscript then pivots to p1 on the next reboot (/init checks for
     // /etc/openhc-release), so persistence needs no autoscript rewrite.
-    println!("  waiting up to 300s for openHC (RAM) to come up...");
+    println!("  waiting up to 300s for boot-init (RAM) to come up...");
     let ssh2 = match tp::wait_for_login(&host, 300) {
         Some(s) => { println!("  — up; writing the persistent rootfs to p1"); s }
         None => {
@@ -693,7 +759,7 @@ fn install(rest: &[String]) -> bool {
             return false;
         }
     };
-    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, &p) {
+    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, sizes, &p) {
         eprintln!("  stage 2 (p1) failed: {e:#}");
         eprintln!("  openHC still auto-boots from RAM; p1 persistence is not set up.");
         return false;
@@ -727,15 +793,26 @@ fn netboot_cmd(rest: &[String]) -> bool {
     };
     let box_ip = flag("--box-ip").unwrap_or_else(|| "10.0.0.200".into());
     let cmdline = flag("--cmdline").unwrap_or_else(|| cefdk::RAMBOOT_CMDLINE.to_string());
+    // BOOTP replies go to the server's /24 broadcast unless told otherwise;
+    // a link-local /16 point-to-point link needs --broadcast 255.255.255.255.
+    let broadcast = flag("--broadcast");
     let wait = !rest.iter().any(|a| a == "--no-wait");
+    // --shell-only: drop CEFDK to its shell and stop there, releasing the serial
+    // (no ramboot). For MFH/script work by hand at the shell.
+    let shell_only = rest.iter().any(|a| a == "--shell-only");
 
     let images = images_arg(rest);
     let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
 
-    println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
-    println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    if shell_only {
+        println!("  netboot {mac}: drop CEFDK to its shell (nothing booted or written)");
+    } else {
+        println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
+        println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    }
     let p = Progress::stdout();
-    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, wait, &p) {
+    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, broadcast.as_deref(), wait, shell_only, &p) {
+        Ok(()) if shell_only => { println!("\n  done — the box is at the CEFDK shell; the serial port is free."); true }
         Ok(()) => { println!("\n  done — openHC was netbooted into RAM."); true }
         Err(e) => { eprintln!("  netboot failed: {e:#}"); false }
     }
@@ -755,7 +832,7 @@ fn rootfs(rest: &[String]) -> bool {
         if !matches!(line.trim(), "y" | "yes") { return false; }
     }
     let p = Progress::stdout();
-    match network::stage2_write_rootfs(&ssh, &rel, &p) {
+    match network::stage2_write_rootfs(&ssh, &rel, None, &p) {
         Ok(()) => { println!("\n  done — the box is rebooting into openHC on p1."); true }
         Err(e) => { eprintln!("  stage 2 failed: {e:#}"); false }
     }

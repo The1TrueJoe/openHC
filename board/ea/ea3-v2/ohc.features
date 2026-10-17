@@ -1,2 +1,2 @@
-# EA3 v2: no radio (wired-only), BCM53125 switch, ADAU1451 DSP analog audio.
+# EA3 v2: no Wi-Fi (wired-only), BCM53125 switch, ADAU1451 DSP analog audio.
 switch audio-dsp

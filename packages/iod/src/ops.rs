@@ -206,6 +206,20 @@ pub enum Cmd {
         #[serde(default)]
         b64: bool,
     },
+    /// Drive the on-panel web view, when one is running. openHC only delivers
+    /// the keystroke/URL; a control system on top (Home Assistant, a handheld
+    /// remote) decides what the buttons mean. Each echoes one line into the
+    /// view's control FIFO (board/ea/common/packages/webview); on a board with
+    /// no view, or with the view switched off, the command reports that rather
+    /// than doing anything — see [`display_write`].
+    #[serde(rename = "display.key")]
+    DisplayKey { key: String },
+    #[serde(rename = "display.text")]
+    DisplayText { text: String },
+    #[serde(rename = "display.url")]
+    DisplayUrl { url: String },
+    #[serde(rename = "display.reload")]
+    DisplayReload,
 }
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -236,6 +250,10 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
         Cmd::SerialBaud { index, baud } => serial_baud(c, index, baud),
         Cmd::SerialWrite { index, data, hex, b64 } => serial_write(c, index, &data, hex, b64),
         Cmd::SerialLine { index, line, on } => serial_line(c, index, line, on),
+        Cmd::DisplayKey { key } => display_write(&format!("key {}", one_line(&key))).await,
+        Cmd::DisplayText { text } => display_write(&format!("text {}", one_line(&text))).await,
+        Cmd::DisplayUrl { url } => display_write(&format!("url {}", one_line(&url))).await,
+        Cmd::DisplayReload => display_write("reload").await,
     }
 }
 
@@ -287,6 +305,47 @@ async fn restore_stock(confirm: bool) -> Out {
         .spawn()
         .map_err(|e| Fault::Io(format!("ohc-restore stock: {e}")))?;
     Ok(json!({ "started": true, "note": "returning to stock; the controller will reboot" }))
+}
+
+/// The on-panel view's control FIFO. The default matches the webview's own
+/// (board/ea/common/packages/webview); `OHC_DISPLAY_CTL` overrides both, so set
+/// it in one place and iod and the view stay in lockstep.
+fn display_ctl_path() -> String {
+    std::env::var("OHC_DISPLAY_CTL").unwrap_or_else(|_| "/run/ohc-display.ctl".into())
+}
+
+/// Collapse a payload to a single FIFO line. The control protocol is one command
+/// per line, so a stray newline in an MQTT payload must not smuggle in a second.
+fn one_line(s: &str) -> String {
+    s.trim().replace(['\n', '\r'], " ")
+}
+
+/// Echo one line into the on-panel view's control FIFO.
+///
+/// Opened NON-BLOCKING on purpose: a FIFO open for write blocks until a reader
+/// appears, so if no view is running that open would park iod forever. O_NONBLOCK
+/// makes it fail immediately with ENXIO instead, which we turn into a plain "not
+/// running" — the command simply did not land, and iod stays responsive. A
+/// missing FIFO (ENOENT) means this board has no on-panel view at all.
+async fn display_write(line: &str) -> Out {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = display_ctl_path();
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::ENXIO) => {
+                Fault::Todo("on-panel view is not running — enable it from the web UI".into())
+            }
+            Some(libc::ENOENT) => Fault::NoSuch("this board has no on-panel view".into()),
+            _ => Fault::Io(format!("open {path}: {e}")),
+        })?;
+    f.write_all(line.as_bytes())
+        .and_then(|_| f.write_all(b"\n"))
+        .map_err(|e| Fault::Io(format!("write {path}: {e}")))?;
+    Ok(json!({ "sent": line }))
 }
 
 /// Everything a client needs to draw the UI, and nothing it does not.

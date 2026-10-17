@@ -3,12 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <!-- No webfont: the UI uses the viewer's system fonts (see --font-sans in
+         index.css). A render-blocking Google Fonts <link> here stalled the
+         on-panel WebKit surface's first paint by ~20 s when the controller had
+         no internet to reach the CDN. -->
     <title>openHC control</title>
   </head>
   <body>

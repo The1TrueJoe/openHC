@@ -23,7 +23,6 @@ use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 /// BOOTP op codes.
 const BOOTREQUEST: u8 = 1;
@@ -59,7 +58,8 @@ pub struct BootpResponder {
 impl BootpResponder {
     /// Bind `0.0.0.0:67` and answer the one `target_mac` with a cookie reply
     /// offering `offer_ip` and naming `server_ip` as the boot server (the box
-    /// then talks TFTP to `server_ip`).
+    /// then talks TFTP to `server_ip`). Replies go to `broadcast`, or when None
+    /// to the /24 subnet broadcast of `server_ip` (see serve_loop).
     ///
     /// `announce` is called from the thread when the target's request is seen
     /// and answered, so the front end can show the handshake.
@@ -67,18 +67,23 @@ impl BootpResponder {
         target_mac: [u8; 6],
         offer_ip: Ipv4Addr,
         server_ip: Ipv4Addr,
+        broadcast: Option<Ipv4Addr>,
         announce: impl Fn(String) + Send + 'static,
     ) -> std::io::Result<BootpResponder> {
-        let sock = UdpSocket::bind(("0.0.0.0", 67))?;
-        // The reply goes to the limited broadcast address: the box has no IP yet
-        // and cannot be unicast to. A short read timeout lets the loop see stop.
-        sock.set_broadcast(true)?;
-        sock.set_read_timeout(Some(Duration::from_millis(300)))?;
+        // Same socket as the DHCP netboot: bound to 0.0.0.0:67, broadcast-capable,
+        // and pinned to the interface holding `server_ip`, so a limited
+        // broadcast in serve_loop leaves by the wire facing the box. Its read
+        // timeout lets the loop see stop.
+        let (sock, iface) = crate::netboot::bind_dhcp(server_ip)?;
+        announce(match iface {
+            Some(i) => format!("bootp: replies pinned to {i}"),
+            None => format!("bootp: no interface holds {server_ip}; replies follow the routing table"),
+        });
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
         let handle = std::thread::spawn(move || {
-            serve_loop(sock, target_mac, offer_ip, server_ip, &stop_thread, &announce)
+            serve_loop(sock, target_mac, offer_ip, server_ip, broadcast, &stop_thread, &announce)
         });
         Ok(BootpResponder { stop, handle: Some(handle) })
     }
@@ -106,6 +111,7 @@ fn serve_loop(
     target_mac: [u8; 6],
     offer_ip: Ipv4Addr,
     server_ip: Ipv4Addr,
+    broadcast: Option<Ipv4Addr>,
     stop: &AtomicBool,
     announce: &(dyn Fn(String) + Send),
 ) {
@@ -138,14 +144,22 @@ fn serve_loop(
         // server's own subnet broadcast forces the packet out the right
         // interface. (This is the documented macOS wrinkle in ea/bootloader-access.)
         //
+        // That x.y.z.255 assumes a /24, so on any other subnet -- a link-local
+        // 169.254/16 on a point-to-point cable -- it is a plain unicast address
+        // nobody owns. For those the caller names the broadcast (`broadcast`,
+        // e.g. 255.255.255.255, which is safe because the socket is pinned to the
+        // box's interface -- see `start`).
+        //
         // On a live LAN the real DHCP server is also answering; CEFDK does 12
         // BOOTP rounds and we cannot know which reply it latches, so send a few
         // times per request to dominate the window rather than send once.
-        let dst = subnet_broadcast(server_ip);
+        let dst = broadcast.unwrap_or_else(|| subnet_broadcast(server_ip));
         let mut sent = false;
+        let mut last_err = None;
         for _ in 0..4 {
-            if sock.send_to(&reply, (dst, 68)).is_ok() {
-                sent = true;
+            match sock.send_to(&reply, (dst, 68)) {
+                Ok(_) => sent = true,
+                Err(e) => last_err = Some(e),
             }
         }
         if sent {
@@ -154,7 +168,8 @@ fn serve_loop(
                 mac_str(&req.mac)
             ));
         } else {
-            announce("bootp: reply send failed on every attempt".to_string());
+            let why = last_err.map(|e| e.to_string()).unwrap_or_default();
+            announce(format!("bootp: reply send to {dst} failed on every attempt: {why}"));
         }
     }
 }
