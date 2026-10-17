@@ -25,6 +25,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
+| 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
