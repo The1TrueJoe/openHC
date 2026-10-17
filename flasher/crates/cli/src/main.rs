@@ -78,6 +78,8 @@ fn help() {
                    [--server-ip <ip>] [--box-ip <ip>] [--cmdline <str>] [--no-wait]\n\
                    [--broadcast <ip>]  BOOTP reply address (default: server's /24\n\
                                     broadcast; 255.255.255.255 for a link-local link)\n\
+                   [--shell-only]   stop at the CEFDK shell (no ramboot) and free\n\
+                                    the serial for hand-driven MFH/script work\n\
                                     EA bring-up: netboot openHC into RAM from CEFDK's\n\
                                     manufacturing shell — answers BOOTP with the C4 cookie,\n\
                                     serves the images over TFTP, and drives the serial\n\
@@ -735,22 +737,21 @@ fn install(rest: &[String]) -> bool {
         println!("\n  done — the box is rebooting; first boot self-installs p1 and pivots.");
         return true;
     }
-    // The proven no-serial conversion: kernel+initrd into the eMMC user-partition
-    // gap, a CEFDK `script` autoscript created over SSH with the correct SHA-256
-    // table hash (see engine::network::install_ramboot / core::mfh), enable it,
-    // reboot. The stock kernel at eMMC 0x400 is left as a clean fallback.
-    if let Err(e) = network::install_ramboot(&ssh, &rel, &p) {
-        eprintln!("  install failed: {e:#}");
-        return false;
-    }
+    // Stage 1: kernel + the tiny networked boot-init into raw eMMC slots and a
+    // RAM-boot autoscript, then reboot into boot-init (see network::stage1 for
+    // which autoscript scheme a given box gets).
+    let sizes = match network::stage1(&ssh, &rel, board.secure_boot, &p) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("  install failed: {e:#}"); return false; }
+    };
     if rest.iter().any(|a| a == "--ram-only") || rest.iter().any(|a| a == "--no-wait") {
         println!("\n  done — the box is rebooting into openHC (RAM). Give it ~90s.");
         return true;
     }
-    // Stage 2: once openHC is RAM-booted, write the real rootfs to p1. The same
+    // Stage 2: once boot-init is up, stream the real rootfs to p1. The same
     // RAM-boot autoscript then pivots to p1 on the next reboot (/init checks for
     // /etc/openhc-release), so persistence needs no autoscript rewrite.
-    println!("  waiting up to 300s for openHC (RAM) to come up...");
+    println!("  waiting up to 300s for boot-init (RAM) to come up...");
     let ssh2 = match tp::wait_for_login(&host, 300) {
         Some(s) => { println!("  — up; writing the persistent rootfs to p1"); s }
         None => {
@@ -758,7 +759,7 @@ fn install(rest: &[String]) -> bool {
             return false;
         }
     };
-    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, &p) {
+    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, sizes, &p) {
         eprintln!("  stage 2 (p1) failed: {e:#}");
         eprintln!("  openHC still auto-boots from RAM; p1 persistence is not set up.");
         return false;
@@ -796,14 +797,22 @@ fn netboot_cmd(rest: &[String]) -> bool {
     // a link-local /16 point-to-point link needs --broadcast 255.255.255.255.
     let broadcast = flag("--broadcast");
     let wait = !rest.iter().any(|a| a == "--no-wait");
+    // --shell-only: drop CEFDK to its shell and stop there, releasing the serial
+    // (no ramboot). For MFH/script work by hand at the shell.
+    let shell_only = rest.iter().any(|a| a == "--shell-only");
 
     let images = images_arg(rest);
     let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
 
-    println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
-    println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    if shell_only {
+        println!("  netboot {mac}: drop CEFDK to its shell (nothing booted or written)");
+    } else {
+        println!("  netboot {mac}: kernel+initramfs into RAM (server {server_ip}, box {box_ip})");
+        println!("  serving {} over TFTP; nothing is written to the box", rel.source);
+    }
     let p = Progress::stdout();
-    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, broadcast.as_deref(), wait, &p) {
+    match netboot(&serial, &rel, &server_ip, &box_ip, &mac, &cmdline, broadcast.as_deref(), wait, shell_only, &p) {
+        Ok(()) if shell_only => { println!("\n  done — the box is at the CEFDK shell; the serial port is free."); true }
         Ok(()) => { println!("\n  done — openHC was netbooted into RAM."); true }
         Err(e) => { eprintln!("  netboot failed: {e:#}"); false }
     }
@@ -823,7 +832,7 @@ fn rootfs(rest: &[String]) -> bool {
         if !matches!(line.trim(), "y" | "yes") { return false; }
     }
     let p = Progress::stdout();
-    match network::stage2_write_rootfs(&ssh, &rel, &p) {
+    match network::stage2_write_rootfs(&ssh, &rel, None, &p) {
         Ok(()) => { println!("\n  done — the box is rebooting into openHC on p1."); true }
         Err(e) => { eprintln!("  stage 2 failed: {e:#}"); false }
     }
