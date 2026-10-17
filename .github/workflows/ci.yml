@@ -475,7 +475,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex git rsync unzip wget cpio file figlet \
-            python3 libncurses-dev libssl-dev libelf-dev ca-certificates perl patch xz-utils
+            python3 libncurses-dev libssl-dev libelf-dev pkg-config ca-certificates perl patch xz-utils
 
       # The one genuinely shared artefact. Keyed on the board files that pin
       # versions, NOT on the board, so all eight matrix jobs hit the same entry.

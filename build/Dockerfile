@@ -34,7 +34,7 @@ ARG BUILDROOT_REF=2026.02.3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential bc bison flex git rsync unzip wget cpio file figlet \
-        python3 libncurses-dev libssl-dev ca-certificates perl patch xz-utils \
+        python3 libncurses-dev libssl-dev libelf-dev pkg-config ca-certificates perl patch xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --branch "$BUILDROOT_REF" \
