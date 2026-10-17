@@ -14,6 +14,7 @@ mod api;
 mod auth;
 mod proxy;
 mod board;
+mod daynight;
 mod system;
 
 use std::sync::Arc;
@@ -47,6 +48,8 @@ fn parse_args() -> Config {
 async fn main() {
     let cfg = Arc::new(parse_args());
     let app = api::router(cfg.clone());
+    // The display's Auto day/night: re-resolved every minute (src/daynight.rs).
+    daynight::spawn(cfg.clone());
     let listener = tokio::net::TcpListener::bind(&cfg.bind)
         .await
         .unwrap_or_else(|e| {

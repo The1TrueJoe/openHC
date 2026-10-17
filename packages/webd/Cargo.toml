@@ -25,6 +25,10 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
+# Sunrise/sunset for the display's Auto day/night (src/daynight.rs). Brings
+# chrono, whose dates its API speaks.
+sunrise = "3"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [build-dependencies]
 flate2 = "1"
