@@ -45,6 +45,20 @@ The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
 rather than by the SSP function's own id, which it shares with the CE4100, so
 genuine CE4100 hardware is unaffected.
 
+Finally, CE5X00 skips the flush at the top of pxa2xx_spi_transfer_one(). That
+flush polls the SSP for BSY to clear, but the CE5300's bit clock comes up only
+when CEFDK configured it and the port is otherwise stopped at this point, so the
+poll times out ("b53-switch: Flush failed / SPI transfer failed: -5 / probe
+-22") before any transfer runs. It is intermittent on a cold boot (it depends on
+whether the clock happens to be live) and reliable after a kexec (the SSP is
+inherited stopped), which matters because an installed EA boots its real kernel
+via kexec. Control4's vendor driver never flushes a stopped SSP; it stops,
+reloads SSCR1/SSCR0 and restarts the port, and the SSE off->on there empties the
+FIFOs (mainline's own MMP2 comment confirms flipping SSE drains the FIFO on
+non-MMP2 parts). So for CE5X00 the pre-flush is skipped and that restart, a few
+lines down in transfer_one(), does the clearing — with the clock live by the
+time data is shifted.
+
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
 --- a/include/linux/pxa2xx_ssp.h
@@ -143,7 +157,27 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		return (DIV_ROUND_UP(ssp_clk, 2 * rate) - 1) & 0xff;
  	else
  		return (DIV_ROUND_UP(ssp_clk, rate) - 1)  & 0xfff;
-@@ -1135,6 +1143,7 @@
+@@ -955,7 +963,18 @@
+ 	}
+ 
+ 	/* Setup the transfer state based on the type of transfer */
+-	if (pxa2xx_spi_flush(drv_data) == 0) {
++	/*
++	 * CE5X00: do NOT flush-first. The flush polls the SSP for BSY to clear,
++	 * but on the CE5300 the SSP's bit clock is set up by CEFDK and is not
++	 * running yet at this point (the port is stopped, or left stale by a prior
++	 * kernel across kexec), so the poll times out — "Flush failed", -EIO —
++	 * before the transfer ever starts. Control4's vendor driver never flushes
++	 * a stopped SSP; it stops/reloads/restarts the port in the config block
++	 * below, and the SSE off->on there empties the FIFOs (as the MMP2 note
++	 * confirms for non-MMP2 parts). So skip the pre-flush for CE5X00 and let
++	 * that restart do the clearing — the clock is live by the time we transfer.
++	 */
++	if (drv_data->ssp_type != CE5X00_SSP && pxa2xx_spi_flush(drv_data) == 0) {
+ 		dev_err(&spi->dev, "Flush failed\n");
+ 		return -EIO;
+ 	}
+@@ -1135,6 +1154,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -151,7 +185,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1182,7 @@
+@@ -1173,7 +1193,7 @@
  		break;
  	}
  
@@ -160,7 +194,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1217,7 @@
+@@ -1208,6 +1228,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -168,7 +202,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1309,7 +1319,8 @@
+@@ -1309,7 +1330,8 @@
  
  	if (pxa25x_ssp_comp(drv_data)) {
  		switch (drv_data->ssp_type) {
@@ -178,7 +212,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
  		default:
-@@ -1372,6 +1383,7 @@
+@@ -1372,6 +1394,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
