@@ -29,12 +29,17 @@ endef
 define WPEBACKEND_PVR_INSTALL_TARGET_CMDS
 	$(MAKE) -C $(@D) install DESTDIR=$(TARGET_DIR) PREFIX=/usr
 
-	# Absent WPE_BACKEND in the environment libwpe loads
-	# libWPEBackend-default.so.1. This is the only backend on the system,
-	# so make it the default rather than requiring every caller to export
-	# a variable to get a display at all.
+	# Absent WPE_BACKEND in the environment libwpe loads its default
+	# backend. This is the only backend on the system, so make it the
+	# default rather than requiring every caller to export a variable to
+	# get a display at all. BOTH names: the libwpe this WebKit (2.50)
+	# builds dlopens the unversioned libWPEBackend-default.so -- with only
+	# the .so.1 link, webview dies with "could not load the impl library"
+	# (seen on an EA1; the box that worked had the bare link added by hand).
 	ln -sf libWPEBackend-pvr.so.1 \
 		$(TARGET_DIR)/usr/lib/libWPEBackend-default.so.1
+	ln -sf libWPEBackend-pvr.so.1 \
+		$(TARGET_DIR)/usr/lib/libWPEBackend-default.so
 endef
 
 $(eval $(generic-package))
