@@ -182,6 +182,26 @@ mod script_item_tests {
         t[o + 8..o + 12].copy_from_slice(&0xfau32.to_le_bytes());
         assert!(script_item_present(&t));
     }
+
+    #[test]
+    fn bzimage_offset_finds_raw_and_containered() {
+        // Minimal bzImage setup header: 0x55,0xaa at 0x1fe, "HdrS" at 0x202.
+        let mut bz = vec![0u8; 0x300];
+        bz[0x1fe] = 0x55;
+        bz[0x1ff] = 0xaa;
+        bz[0x202..0x206].copy_from_slice(b"HdrS");
+        // EA1: the file is the bzImage itself.
+        assert_eq!(bzimage_offset(&bz), Some(0));
+        // EA3: the bzImage sits behind a 0x580-byte CEFDK container header.
+        let mut cont = vec![0u8; 0x580];
+        cont.extend_from_slice(&bz);
+        assert_eq!(bzimage_offset(&cont), Some(0x580));
+        // "HdrS" without the 0x55,0xaa boot sig before it is not a kernel.
+        let mut noise = vec![0u8; 0x300];
+        noise[0x202..0x206].copy_from_slice(b"HdrS");
+        assert_eq!(bzimage_offset(&noise), None);
+        assert_eq!(bzimage_offset(&vec![0u8; 0x400]), None);
+    }
 }
 
 fn table_slice(block: &mut [u8]) -> &mut [u8] {
@@ -299,8 +319,9 @@ fn cmd_stock() -> io::Result<()> {
 /// kernel rather than in place.
 ///
 /// The recovery kernel ships in p2 as recovery_kernel.deb (an ar archive whose
-/// data.tar.gz holds the kernel). We extract it with the box's own ar + busybox
-/// tar (`-xa`, autodetect), find the bzImage inside, and kexec it.
+/// data.tar.gz holds the kernel). We extract it with the box's own ar, gunzip and
+/// tar, find the bzImage inside (unwrapping the EA3's CEFDK container), and kexec
+/// it.
 fn recovery_reimage_p1() -> io::Result<()> {
     let p2 = "/mnt/ohc-recovery";
     std::fs::create_dir_all(p2)?;
@@ -310,7 +331,6 @@ fn recovery_reimage_p1() -> io::Result<()> {
     if !std::path::Path::new(&deb).exists() {
         return Err(io::Error::other(format!("{deb} missing — cannot recover p1")));
     }
-    // ar p <deb> data.tar.gz | tar -x -a -f - -C /tmp/ohc-rk
     let work = "/tmp/ohc-rk";
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work)?;
@@ -320,11 +340,28 @@ fn recovery_reimage_p1() -> io::Result<()> {
         return Err(io::Error::other("ar: could not read data.tar.gz from recovery_kernel.deb"));
     }
     std::fs::write(&tgz, &data.stdout)?;
-    run("tar", &["-x", "-a", "-f", &tgz, "-C", work])?;
+    // The box's busybox `tar -xa`/`-xz` autodetect does not reliably decompress
+    // this member (on the EA3 it silently extracts nothing), so gunzip explicitly
+    // first, then untar the plain tarball.
+    run("gunzip", &["-f", &tgz])?; // data.tar.gz -> data.tar
+    let tar = format!("{work}/data.tar");
+    run("tar", &["-xf", &tar, "-C", work])?;
 
-    // Find the kernel: a file whose 0x202 magic is "HdrS" (the bzImage setup sig).
-    let kern = find_bzimage(std::path::Path::new(work))
+    // Find the kernel. On the EA1 the extracted file is a raw bzImage; on the EA3
+    // it is a Control4/CEFDK container (a header — 0x580 bytes on the units seen —
+    // then the raw bzImage). find_bzimage locates the setup header and returns
+    // where the real bzImage begins; carve it out so kexec gets a clean bzImage.
+    let (kern_file, off) = find_bzimage(std::path::Path::new(work))
         .ok_or_else(|| io::Error::other("no bzImage (HdrS magic) found in recovery_kernel.deb"))?;
+    let kern = if off == 0 {
+        kern_file
+    } else {
+        eprintln!("stock: unwrapping CEFDK container (bzImage at +0x{off:x})");
+        let raw = std::fs::read(&kern_file)?;
+        let out = format!("{work}/kernel.bzImage");
+        std::fs::write(&out, &raw[off as usize..])?;
+        std::path::PathBuf::from(out)
+    };
     eprintln!("stock: recovery kernel = {}", kern.display());
 
     let cmdline = "console=ttyS0,115200 pci=realloc,nocrs,routeirq recovery";
@@ -335,10 +372,14 @@ fn recovery_reimage_p1() -> io::Result<()> {
     Ok(())
 }
 
-/// Walk `dir` and return the first file that is a Linux bzImage (the "HdrS" setup
-/// magic at offset 0x202), so we kexec the kernel regardless of how the .deb lays
-/// its payload out.
-fn find_bzimage(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+/// Walk `dir` and find the Linux bzImage in the recovery payload, returning the
+/// file and the byte offset where the real bzImage begins. The setup header's
+/// "HdrS" magic is at bzImage+0x202, with the 0x55,0xaa boot signature four bytes
+/// before it (bzImage+0x1fe). On the EA1 the extracted file IS a bzImage (offset
+/// 0); on the EA3 it is a Control4/CEFDK container and the bzImage starts after a
+/// header (0x580 on the units seen). Matching the 0x55,0xaa + "HdrS" pair finds it
+/// without assuming either layout.
+fn find_bzimage(dir: &std::path::Path) -> Option<(std::path::PathBuf, u64)> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).ok()?.flatten() {
@@ -347,14 +388,28 @@ fn find_bzimage(dir: &std::path::Path) -> Option<std::path::PathBuf> {
                 stack.push(p);
                 continue;
             }
-            if let Ok(mut f) = std::fs::File::open(&p) {
-                let mut sig = [0u8; 4];
-                use std::io::{Read, Seek, SeekFrom};
-                if f.seek(SeekFrom::Start(0x202)).is_ok() && f.read_exact(&mut sig).is_ok() && &sig == b"HdrS" {
-                    return Some(p);
-                }
+            let Ok(buf) = std::fs::read(&p) else { continue };
+            if let Some(off) = bzimage_offset(&buf) {
+                return Some((p.clone(), off));
             }
         }
+    }
+    None
+}
+
+/// Byte offset of the raw bzImage inside `buf`, or None. The setup header "HdrS"
+/// sits at bzImage+0x202 with the 0x55,0xaa boot signature at bzImage+0x1fe (four
+/// bytes before HdrS); matching that pair locates the kernel whether `buf` is a
+/// bare bzImage (offset 0) or a CEFDK container (header, then the kernel). The
+/// container header is ~0x580 bytes, so a 64 KiB head bounds the scan.
+fn bzimage_offset(buf: &[u8]) -> Option<u64> {
+    let limit = buf.len().min(0x10000);
+    let mut i = 0x202usize;
+    while i + 4 <= limit {
+        if &buf[i..i + 4] == b"HdrS" && buf[i - 4] == 0x55 && buf[i - 3] == 0xaa {
+            return Some((i - 0x202) as u64);
+        }
+        i += 1;
     }
     None
 }
