@@ -235,27 +235,29 @@ jobs:
           # resolved from ohc.features with no build, so it is cheap to ask here.
           pkgchanged=$(echo "$changed" | grep -E '^packages/' || true)
           if [ -n "$pkgchanged" ]; then
-            # Workspace-wide inputs rebuild every board: the lockfile, the
-            # workspace manifest, the shared cargo/toolchain config, and the
-            # staging driver itself all change what every board compiles.
-            if echo "$pkgchanged" | grep -qE '^packages/(Cargo\.(toml|lock)|\.cargo/|rust-toolchain|build\.sh|README)'; then
+            # Workspace-wide inputs rebuild every board: the workspace manifest,
+            # the shared cargo/toolchain config, and the staging driver itself
+            # all change what every board compiles. Cargo.lock is NOT here: a
+            # lockfile change is resolved to the crates it touches (below).
+            if echo "$pkgchanged" | grep -qE '^packages/(Cargo\.toml|\.cargo/|rust-toolchain|build\.sh|README)'; then
               echo ">> packages/: workspace-wide file changed — building all"
               echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
             fi
+            lockchanged=""
+            echo "$pkgchanged" | grep -qx 'packages/Cargo\.lock' && lockchanged=1
             # The crate each changed file lives in (first path component). A file
             # sitting directly under packages/ is not attributable to one crate,
             # so treat it as workspace-wide and build everything.
             crates=""
             while IFS= read -r f; do
               [ -n "$f" ] || continue
+              [ "$f" = "packages/Cargo.lock" ] && continue
               c=$(printf '%s\n' "$f" | sed -n 's#^packages/\([^/]*\)/.*#\1#p')
               [ -z "$c" ] && { echo ">> packages/: unattributable file '$f' — building all"; echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0; }
               crates="$crates $c"
             done <<EOF
           $pkgchanged
           EOF
-            crates=$(printf '%s\n' $crates | awk 'NF' | sort -u | tr '\n' ' ')
-            echo ">> changed package crates: $crates"
             # Each board's shipped crates, asked once, as padded lines
             # "<board>  <crate> <crate> " so a whole-word " <crate> " grep cannot
             # match a board name or a crate substring. No associative arrays —
@@ -263,6 +265,26 @@ jobs:
             ships_table=$(for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
               printf '%s  %s \n' "$b" "$(bash packages/build.sh "$b" --crates 2>/dev/null)"
             done)
+            # A dependency bump touches only Cargo.lock. Rather than rebuild every
+            # board, diff the lockfile base..head and keep the shipped crates whose
+            # TRANSITIVE resolved dependency set changed (a core-crate dep bump hits
+            # iod/webd/sysmond, so every board; a storage-only dep hits only
+            # storage boards). It is a lockfile parse, not `cargo metadata`, so the
+            # select job needs no Rust toolchain; see the script header. Any
+            # failure to read either lockfile falls back to building all.
+            if [ -n "$lockchanged" ]; then
+              shipped=$(printf '%s\n' "$ships_table" | awk '{for(i=2;i<=NF;i++)print $i}' | sort -u | tr '\n' ' ')
+              git show "$base:packages/Cargo.lock" > "$RUNNER_TEMP/Cargo.lock.base" 2>/dev/null || true
+              if [ ! -s "$RUNNER_TEMP/Cargo.lock.base" ] \
+                 || ! lockcrates=$(python3 .github/scripts/lock-impacted-crates.py "$RUNNER_TEMP/Cargo.lock.base" packages/Cargo.lock $shipped); then
+                echo ">> packages/Cargo.lock: could not resolve the change — building all"
+                echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+              echo ">> Cargo.lock change impacts crates: ${lockcrates:-none}"
+              crates="$crates $lockcrates"
+            fi
+            crates=$(printf '%s\n' $crates | awk 'NF' | sort -u | tr '\n' ' ')
+            echo ">> changed package crates: $crates"
             for c in $crates; do
               # || true: a no-match grep under `set -o pipefail` would otherwise
               # abort the whole step before the shared-dependency fallback below
