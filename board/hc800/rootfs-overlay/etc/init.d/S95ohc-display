@@ -32,6 +32,11 @@ load() {
 	[ -r "$CONF" ] && . "$CONF"
 	url="$OHC_DISPLAY_URL"
 	case "$OHC_DISPLAY_THEME" in light|dark) theme="$OHC_DISPLAY_THEME" ;; *) theme=auto ;; esac
+	# "auto" is dark from sunset to sunrise at the box's location: webd resolves
+	# it every minute into this file (and tells a running view when it flips).
+	[ "$theme" = auto ] && case "$(cat /run/ohc-display.scheme 2>/dev/null)" in
+		light) theme=light ;; dark) theme=dark ;;
+	esac
 }
 load
 

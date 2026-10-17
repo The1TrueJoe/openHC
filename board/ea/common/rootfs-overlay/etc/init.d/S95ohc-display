@@ -27,6 +27,11 @@ OHC_DISPLAY_ENABLE=0
 OHC_DISPLAY_URL=http://localhost/
 OHC_DISPLAY_THEME=auto
 [ -r "$CONF" ] && . "$CONF"
+# "auto" is dark from sunset to sunrise at the box's location: webd resolves it
+# every minute into this file (and tells a running view when it flips).
+[ "$OHC_DISPLAY_THEME" = auto ] && case "$(cat /run/ohc-display.scheme 2>/dev/null)" in
+	light) OHC_DISPLAY_THEME=light ;; dark) OHC_DISPLAY_THEME=dark ;;
+esac
 
 start() {
 	[ "$OHC_DISPLAY_ENABLE" = 1 ] || {

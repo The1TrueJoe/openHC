@@ -145,26 +145,48 @@ async fn wifi_connect(State(c): State<Arc<Config>>, Json(b): Json<WifiBody>) -> 
 // on and points it somewhere. State lives in /opt/ohc/display.conf, which the
 // S95ohc-display init script sources — see that script for the launch itself.
 #[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
-struct Display {
+pub(crate) struct Display {
     /// Show the on-panel web view. Off by default: a fresh box shows the splash.
-    enabled: bool,
+    pub(crate) enabled: bool,
     /// Page the view loads; defaults to this controller's own dashboard.
-    url: String,
-    /// Day/night for the on-panel view: "auto" (pages keep their default, light),
-    /// "light" or "dark". The screen's own dark mode — WebKit's per-view setting,
-    /// changed live — so any page sees it as prefers-color-scheme, like an OS
-    /// setting.
+    pub(crate) url: String,
+    /// Day/night for the on-panel view: "light", "dark", or "auto" — dark from
+    /// sunset to sunrise at the box's location (`timezone`, or `latitude` and
+    /// `longitude`). The screen's own dark mode, changed live, so any page sees it
+    /// as prefers-color-scheme, like an OS setting.
     #[serde(default = "default_theme")]
-    theme: String,
+    pub(crate) theme: String,
+    /// IANA time zone (e.g. "America/New_York") placing the box for "auto": its
+    /// principal city's sunrise and sunset. Empty: unknown, so "auto" stays light.
+    #[serde(default)]
+    pub(crate) timezone: String,
+    /// Exact location for "auto", in degrees; both or neither. Overrides the
+    /// time zone's city.
+    #[serde(default)]
+    pub(crate) latitude: Option<f64>,
+    #[serde(default)]
+    pub(crate) longitude: Option<f64>,
     /// Read-only: this board has an on-screen display program (S95ohc-display).
     /// The UI shows its Display tab only where it does; ignored on POST.
     #[serde(default)]
-    available: bool,
+    pub(crate) available: bool,
+    /// Read-only: the scheme in force now, "light" or "dark" (what "auto"
+    /// resolves to at this moment). Ignored on POST.
+    #[serde(default)]
+    pub(crate) scheme: String,
+    /// Read-only: for "auto" with a known location, when the scheme next flips
+    /// (sunrise or sunset), seconds since the Unix epoch. Ignored on POST.
+    #[serde(default)]
+    pub(crate) next_change: Option<i64>,
 }
 fn default_theme() -> String { "auto".into() }
 impl Default for Display {
     fn default() -> Self {
-        Self { enabled: false, url: "http://localhost/".into(), theme: default_theme(), available: false }
+        Self {
+            enabled: false, url: "http://localhost/".into(), theme: default_theme(),
+            timezone: String::new(), latitude: None, longitude: None,
+            available: false, scheme: String::new(), next_change: None,
+        }
     }
 }
 
@@ -194,7 +216,7 @@ fn display_conf(cfg: &Config) -> std::path::PathBuf {
         .join("display.conf")
 }
 
-fn read_display(cfg: &Config) -> Display {
+pub(crate) fn read_display(cfg: &Config) -> Display {
     let mut d = Display::default();
     if let Ok(s) = std::fs::read_to_string(display_conf(cfg)) {
         for line in s.lines() {
@@ -204,6 +226,9 @@ fn read_display(cfg: &Config) -> Display {
                 "OHC_DISPLAY_ENABLE" => d.enabled = v == "1",
                 "OHC_DISPLAY_URL" if !v.is_empty() => d.url = v.to_string(),
                 "OHC_DISPLAY_THEME" if !v.is_empty() => d.theme = v.to_string(),
+                "OHC_DISPLAY_TZ" => d.timezone = v.to_string(),
+                "OHC_DISPLAY_LAT" => d.latitude = v.parse().ok(),
+                "OHC_DISPLAY_LON" => d.longitude = v.parse().ok(),
                 _ => {}
             }
         }
@@ -216,7 +241,16 @@ fn read_display(cfg: &Config) -> Display {
     description = "Reads /opt/ohc/display.conf. Off by default — a fresh box shows the splash.",
     responses((status = 200, description = "display config")))]
 async fn display_get(State(c): State<Arc<Config>>) -> Json<Display> {
-    Json(Display { available: std::path::Path::new(DISPLAY_SVC).exists(), ..read_display(&c) })
+    let d = read_display(&c);
+    let now = chrono::Utc::now();
+    let scheme = crate::daynight::scheme(&d, now).to_string();
+    let next_change = (d.theme == "auto")
+        .then(|| crate::daynight::location(&d))
+        .flatten()
+        .and_then(|(lat, lon)| crate::daynight::sun(lat, lon, now))
+        .and_then(|s| s.next)
+        .map(|t| t.timestamp());
+    Json(Display { available: std::path::Path::new(DISPLAY_SVC).exists(), scheme, next_change, ..d })
 }
 
 #[utoipa::path(post, path = "/api/display", tag = "Display",
@@ -234,15 +268,32 @@ async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Re
     let theme = match d.theme.trim() {
         "light" => "light", "dark" => "dark", _ => "auto",
     };
+    // The file is sourced by a shell: a zone name is letters, digits and / _ - +.
+    let tz = d.timezone.trim();
+    if !tz.chars().all(|c| c.is_ascii_alphanumeric() || "/_-+".contains(c)) {
+        return err(StatusCode::BAD_REQUEST, "timezone must be an IANA zone name, e.g. America/New_York");
+    }
+    let (lat, lon) = match (d.latitude, d.longitude) {
+        (Some(lat), Some(lon)) if (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) => {
+            (lat.to_string(), lon.to_string())
+        }
+        (None, None) => (String::new(), String::new()),
+        _ => return err(StatusCode::BAD_REQUEST,
+            "latitude (-90..90) and longitude (-180..180) go together: set both or neither"),
+    };
     let body = format!(
         "# written by webd POST /api/display — the on-panel web view\n\
-         OHC_DISPLAY_ENABLE={}\nOHC_DISPLAY_URL={}\nOHC_DISPLAY_THEME={}\n",
-        if d.enabled { 1 } else { 0 }, url, theme);
+         OHC_DISPLAY_ENABLE={}\nOHC_DISPLAY_URL={}\nOHC_DISPLAY_THEME={}\n\
+         OHC_DISPLAY_TZ={}\nOHC_DISPLAY_LAT={}\nOHC_DISPLAY_LON={}\n",
+        if d.enabled { 1 } else { 0 }, url, theme, tz, lat, lon);
     let path = display_conf(&c);
     if let Err(e) = std::fs::write(&path, body) {
         return err(StatusCode::INTERNAL_SERVER_ERROR,
             &format!("cannot write {}: {e}", path.display()));
     }
+    // Resolve day/night for the new config first: the service reads the result
+    // (/run/ohc-display.scheme) for "auto" when it reloads the view.
+    crate::daynight::apply(&c);
     // Apply now by reloading the display service — fire-and-forget (it backgrounds
     // the view). reload, not restart: a running view takes the new URL and theme
     // on its control FIFO instead of dropping to the splash; it starts or stops
@@ -251,8 +302,11 @@ async fn display_set(State(c): State<Arc<Config>>, Json(d): Json<Display>) -> Re
     // missing service is not an error.
     let applied = std::path::Path::new(DISPLAY_SVC).exists()
         && std::process::Command::new(DISPLAY_SVC).arg("reload").spawn().is_ok();
-    Json(serde_json::json!({ "enabled": d.enabled, "url": url, "theme": theme, "applied": applied }))
-        .into_response()
+    Json(serde_json::json!({
+        "enabled": d.enabled, "url": url, "theme": theme, "timezone": tz,
+        "latitude": d.latitude, "longitude": d.longitude, "applied": applied,
+    }))
+    .into_response()
 }
 
 // ── Framebuffer screenshot ───────────────────────────────────────────────────
