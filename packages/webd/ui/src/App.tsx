@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, Network, HardDrive } from 'lucide-react';
+import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, Network, HardDrive, Monitor } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
@@ -9,6 +9,7 @@ import { SystemPanel } from './panels/System';
 import { AudioPanel } from './panels/Audio';
 import { SwitchPanel } from './panels/Switch';
 import { StoragePanel } from './panels/Storage';
+import { DisplayPanel } from './panels/Display';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -57,6 +58,11 @@ function destinations(c: Capabilities): Dest[] {
   if (c.switch) {
     d.push({ id: 'switch', label: 'Switch', icon: Network, render: (c) => <SwitchPanel caps={c} /> });
   }
+  // Display appears on boards with an on-screen web view (S95ohc-display: the
+  // EAs and the HC-800).
+  if (c.display) {
+    d.push({ id: 'display', label: 'Display', icon: Monitor, render: () => <DisplayPanel /> });
+  }
   // Always present: this is where you point the controller at a house broker,
   // and it must be reachable even when the IO side is not working.
   // The controller itself: sensors, fan, front panel. Distinct from IO, which
@@ -87,8 +93,9 @@ export default function App() {
       rest.audio().catch(() => null),
       rest.storage().catch(() => null),
       rest.switch().catch(() => null),
+      rest.display().catch(() => null),
     ])
-      .then(([caps, cfg, audio, storage, sw]) => {
+      .then(([caps, cfg, audio, storage, sw, display]) => {
         const hasAudio = !!audio && (!!audio.map || audio.outputs.length > 0 || audio.receivers.some((r) => r.installed));
         // switchd present and reporting ports → a Switch panel. A board without
         // the managed switch has no switchd, so this rejected and sw is null.
@@ -97,6 +104,7 @@ export default function App() {
           ...(hasAudio ? { audio: audio! } : {}),
           ...(storage ? { storage } : {}),
           ...(sw && sw.ports.length > 0 ? { switch: sw } : {}),
+          ...(display?.available ? { display } : {}),
         });
         io.connect(cfg.topics.base);
       })

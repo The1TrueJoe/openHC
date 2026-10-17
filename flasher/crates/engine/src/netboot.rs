@@ -65,6 +65,7 @@ pub fn netboot(
     cmdline: &str,
     broadcast: Option<&str>,
     wait: bool,
+    shell_only: bool,
     p: &Progress,
 ) -> Result<()> {
     let server_ip: Ipv4Addr = server_ip.parse().with_context(|| format!("bad --server-ip {server_ip}"))?;
@@ -122,6 +123,15 @@ pub fn netboot(
              button was held through the power cycle",
             SHELL_DEADLINE.as_secs()
         );
+    }
+
+    if shell_only {
+        // Park the box at `shell>` and release the servers and the serial, so
+        // another tool (or a person) can drive the shell. Types nothing.
+        bootp.stop();
+        tftp.stop();
+        p.emit(Event::resolved("CEFDK shell reached — box parked at shell> (nothing booted or written)".into()));
+        return Ok(());
     }
 
     // 3. At the shell: type the ramboot sequence. core owns the exact commands.
