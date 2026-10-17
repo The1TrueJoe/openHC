@@ -147,6 +147,7 @@ jobs:
           # the PowerVR libwpe backend + the default-backend symlink libwpe loads
           need_file usr/lib/libWPEBackend-pvr.so.1
           need_file usr/lib/libWPEBackend-default.so.1
+          need_file usr/lib/libWPEBackend-default.so
           # WPE WebKit + libwpe
           need_glob 'usr/lib/libWPEWebKit*.so*'
           need_glob 'usr/lib/libwpe-1.0.so*'
