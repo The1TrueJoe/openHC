@@ -153,11 +153,16 @@ pub fn plan(board: &Board, method: Method) -> Plan {
     use crate::cefdk::*;
     match method {
         Method::Network => {
-            let mut steps = vec![format!(
-                "write kernel container -> eMMC {EMMC_CONTAINER_OFF:#x} (+ length at {EMMC_SIZE_OFF:#x})"
+            let mut steps = vec![
+                format!(
+                    "write kernel container -> eMMC {EMMC_CONTAINER_OFF:#x} (+ length at {EMMC_SIZE_OFF:#x})"
+                ),
+                "write the tiny networked boot-init -> eMMC 0x800000".into(),
+            ];
+            let mut writes = vec![format!(
+                "eMMC {EMMC_SIZE_OFF:#x}, {EMMC_CONTAINER_OFF:#x}, 0x800000-0x1000000 and one \
+                 sector at 0x1000000 (raw, ahead of p1)"
             )];
-            let mut writes =
-                vec![format!("eMMC {EMMC_SIZE_OFF:#x} and {EMMC_CONTAINER_OFF:#x} (raw, ahead of p1)")];
             if board.needs_autoscript() {
                 steps.push(format!(
                     "write CEFDK autoscript -> /dev/mtd0 {MFH_SCRIPT_OFF:#x} \
@@ -167,7 +172,7 @@ pub fn plan(board: &Board, method: Method) -> Plan {
             } else {
                 steps.push("no autoscript needed — fuse is clear, bootkernel takes the container".into());
             }
-            steps.push("reboot to the RAM installer, then write rootfs to p1".into());
+            steps.push("reboot into boot-init, then stream rootfs.ext2 to p1 over SSH".into());
             Plan {
                 method,
                 steps,

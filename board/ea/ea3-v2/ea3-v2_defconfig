@@ -1,4 +1,4 @@
-# openHC — Control4 EA3 (rev 2). No radio (wired-only, e1000), a BCM53125 switch
+# openHC — Control4 EA3 (rev 2). No Wi-Fi (wired-only, e1000), a BCM53125 switch
 # on SPI via DSA, and the ADAU1451 DSP analog audio (ohc.features: switch
 # audio-dsp). The ext4 eMMC rootfs comes from the shared 'emmc' feature.
 #

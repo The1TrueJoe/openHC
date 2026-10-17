@@ -40,7 +40,7 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
-use ohc_flash_core::mfh;
+use ohc_flash_core::{cefdk, mfh};
 mod hc800;
 
 const MTD: &str = "/dev/mtd0";
@@ -132,21 +132,62 @@ fn set_script_enabled(on: bool) -> io::Result<bool> {
     Ok(true)
 }
 
-/// True when a valid MFH item points at the autoscript CONTENT region
-/// ([`mfh::EA_CONTENT_OFF`] = 0x91200) — covering BOTH openHC's append_script
-/// item (type 0, last) and a CEFDK `mfh add script` item (any slot, type != 0).
-/// Keyed on the exact content offset, NOT the whole 0x9xxxx window, so it does
-/// not false-match the neighbouring ip_params item at 0x91000. Lets
-/// `status`/`install` recognise a CEFDK-created autoscript, not just openHC's.
+/// True when a valid MFH item is an autoscript. Two layouts exist on real boxes:
+///   * an item at [`mfh::EA_CONTENT_OFF`] (0x91200): openHC's append_script item
+///     (type 0, last) or a CEFDK `mfh add script` item on a full-table EA3;
+///   * CEFDK's own `script on` slot at `cefdk::MFH_SCRIPT_OFF` (0x91000) of
+///     exactly `cefdk::MFH_SCRIPT_LEN` (0x800) bytes, type 0x12, which pushes
+///     ip_params to 0x91800 (the EA-3 v2, read 2026-10-16).
+/// The size is what tells that slot apart from a virgin EA1's ip_params item,
+/// which also sits at 0x91000 but is 0x10 bytes. Lets `status`/`install`
+/// recognise every autoscript, so `install` never appends a duplicate.
 fn script_item_present(tbl: &[u8]) -> bool {
     let rd = |o: usize| u32::from_le_bytes([tbl[o], tbl[o + 1], tbl[o + 2], tbl[o + 3]]);
-    let count = rd(mfh::COUNT_OFF) as usize;
+    let count = (rd(mfh::COUNT_OFF) as usize).min((mfh::HASH_OFF - mfh::HDR_LEN) / mfh::ITEM_LEN);
     (0..count).any(|i| {
         let o = mfh::HDR_LEN + i * mfh::ITEM_LEN;
+        let (off, len) = (rd(o + 4), rd(o + 8));
         rd(o) == mfh::FLAG_VALID
-            && rd(o + 4) == mfh::EA_CONTENT_OFF
             && rd(o + 0x18) != 0xffff_ffff
+            && (off == mfh::EA_CONTENT_OFF
+                || (off as u64 == cefdk::MFH_SCRIPT_OFF && len as usize == cefdk::MFH_SCRIPT_LEN))
     })
+}
+
+#[cfg(test)]
+mod script_item_tests {
+    use super::*;
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap()).collect()
+    }
+
+    /// The EA-3 v2's MFH table (00:0f:ff:94:ee:02, read 2026-10-16): CEFDK's
+    /// `script on` item [7] at 0x91000/0x800, ip_params at 0x91800.
+    const EA3_SCRIPT_ON_TABLE: &str = "0100000000000000000208000d0000000100000000000000000000000000000000000080000000000000010000000000000000000000000001000000000000000000008000f00700000800000000000000000000000000000900000000000000000000800008090008070000000000000000000000000000ffffffff00000000000000800000e000000000000000000000000000000000000200000000000000000000800000010000f0060000000000000000000000000003000000000000000000008000f8070000080000000000000000000000000000100000000000000000000080000808000000010000000000000000000000000015000000000000000000008000100900000800000000000000000000000000001200000000000000000000800018090010000000000000000000000000000000040000000000000000000080080f0a00f0050000000000000000000000000000080000000000000000000080f8140a0038d20f0000000000000000000000000005000000000000000000008000e819000000010000000000000000000000000007000000000000000000008000e81a004056680000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a6090e3258f8b46ea2d96b94692c01a985357e3002149bfdd9a22a0289c737aa";
+
+    #[test]
+    fn sees_cefdk_script_on_slot_so_install_reenables_instead_of_appending() {
+        assert!(script_item_present(&hex(EA3_SCRIPT_ON_TABLE)));
+    }
+
+    #[test]
+    fn ignores_ip_params_at_0x91000_on_a_virgin_table() {
+        // Same table with item [7] shrunk to ip_params' 0x10 bytes.
+        let mut t = hex(EA3_SCRIPT_ON_TABLE);
+        let o = mfh::HDR_LEN + 7 * mfh::ITEM_LEN + 8;
+        t[o..o + 4].copy_from_slice(&0x10u32.to_le_bytes());
+        assert!(!script_item_present(&t));
+    }
+
+    #[test]
+    fn sees_an_item_at_the_content_offset() {
+        let mut t = hex(EA3_SCRIPT_ON_TABLE);
+        let o = mfh::HDR_LEN + 7 * mfh::ITEM_LEN;
+        t[o + 4..o + 8].copy_from_slice(&mfh::EA_CONTENT_OFF.to_le_bytes());
+        t[o + 8..o + 12].copy_from_slice(&0xfau32.to_le_bytes());
+        assert!(script_item_present(&t));
+    }
 }
 
 fn table_slice(block: &mut [u8]) -> &mut [u8] {

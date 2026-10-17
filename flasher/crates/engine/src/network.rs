@@ -8,15 +8,19 @@
 //!       one raw region where Linux `dd` and CEFDK `emmc` agree, AND it is a
 //!       region factory-restore reverts — so an openHC install here is undone
 //!       by the recessed button, unlike the old gap-based takeover.
-//!     - write the initrd (rootfs.cpio.gz) to a raw region just past the kernel.
-//!     - store a RAM-boot autoscript: load kernel + initrd, boot the initramfs
-//!       (NO root=p1), so the box comes up entirely in RAM.
-//!     - reboot.
+//!     - write the tiny networked boot-init (boot-init.cpio.gz, ~2 MB) to a raw
+//!       region just past the kernel. NOT the full rootfs: at ~45 MB gzipped it
+//!       fits no raw region ahead of p1, and it never has to — only the kernel
+//!       and boot-init live in raw slots, so the rootfs can grow freely.
+//!     - store a RAM-boot autoscript: load kernel + boot-init, boot the
+//!       initramfs (NO root=p1).
+//!     - reboot. boot-init finds no openHC on p1 and comes up on the network
+//!       with dropbear (board/ea/common/boot-init/init, net_serve).
 //!
-//!   STAGE 2 (from the RAM-booted openHC):
-//!     - p1 is now just a block device: write rootfs.ext2 to it.
-//!     - replace the autoscript with the normal one (load kernel, root=p1).
-//!     - reboot into openHC on p1.
+//!   STAGE 2 (from boot-init, or any RAM-booted openHC):
+//!     - p1 is now just a block device: stream rootfs.ext2 to it over SSH.
+//!     - reboot. The SAME autoscript boots boot-init, which now finds openHC on
+//!       p1 and switch_roots into it; the autoscript never changes again.
 //!
 //! On a secure-boot part the autoscript is mandatory (bootlinux bypasses the
 //! blown fuse); on a clear-fuse part it is harmless and keeps one code path.
@@ -74,17 +78,33 @@ const AUTOSCRIPT_ENV: &str = "/opt/ohc/autoscript.env";
 /// exactly the "emmc rd returns zeros" failure.
 const CEFDK_EMMC_DELTA: u64 = 0x800000;
 
-/// Stage 1: install kernel + initrd + a RAM-boot autoscript, then reboot into
-/// RAM. Returns once the reboot command has been sent; the caller waits for the
-/// box to come back and then runs [`stage2_write_rootfs`].
+/// Stage 1 for whichever autoscript scheme this box has: the armed CEFDK
+/// `script on` slot gets [`stage1_ram_installer`]; a box with MTD but no armed
+/// slot gets [`install_ramboot`]'s appended MFH item. Without MTD (an older
+/// openHC) the installed autoscript is reused. Returns the autoscript read
+/// sizes when they are the slot sizes [`stage2_write_rootfs`] should record.
+pub fn stage1(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -> Result<Option<(u64, u64)>> {
+    if has_mtd(ssh) && !script_slot_armed(ssh)? {
+        install_ramboot(ssh, rel, p)?;
+        return Ok(None);
+    }
+    stage1_ram_installer(ssh, rel, secure_boot, p).map(Some)
+}
+
+/// Stage 1: install kernel + boot-init + a RAM-boot autoscript, then reboot into
+/// boot-init. Returns the read sizes the box's autoscript uses (for
+/// [`AUTOSCRIPT_ENV`]) once the reboot command has been sent; the caller waits
+/// for the box to come back and then runs [`stage2_write_rootfs`].
 pub fn stage1_ram_installer(
     ssh: &Ssh,
     rel: &Release,
     secure_boot: bool,
     p: &Progress,
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     let kernel = rel.get("bzImage").context("release has no bzImage")?;
-    let initrd = rel.get("rootfs.cpio.gz").context("release has no rootfs.cpio.gz")?;
+    let initrd = rel
+        .get("boot-init.cpio.gz")
+        .context("release has no boot-init.cpio.gz (build it: see post-image)")?;
 
     // Refuse an oversize kernel here, not on the box.
     let probs = image::ea_problems(Some(kernel), kernel.len() as u64, true, false);
@@ -93,6 +113,12 @@ pub fn stage1_ram_installer(
     }
 
     guard_partitions(ssh, p)?;
+    let mtd = has_mtd(ssh);
+    if mtd {
+        // The autoscript write is the LAST step; find out now whether it can
+        // happen, so a box without the slot is refused with nothing written.
+        check_script_slot(ssh)?;
+    }
 
     // Validate BOTH images fit their eMMC slots BEFORE writing anything. Writing
     // first and checking after (as this did) leaves a box with a half-written
@@ -106,42 +132,13 @@ pub fn stage1_ram_installer(
     }
     if initrd.len() as u64 > INITRD_SLOT {
         bail!(
-            "initrd {} B exceeds its eMMC slot ({INITRD_SLOT} B) — nothing written; \
-             the RAM-installer initramfs is too large for this layout",
+            "boot-init {} B exceeds its eMMC slot ({INITRD_SLOT} B) — nothing written",
             initrd.len()
         );
     }
-
-    // 1. kernel container -> slot 0x400, then the length word.
-    p.emit(Event::step(format!(
-        "kernel container {} B -> eMMC {:#x} (factory-restore-revertible slot)",
-        blob.len(),
-        cefdk::EMMC_CONTAINER_OFF
-    )));
-    dd_to_emmc(ssh, &blob, cefdk::EMMC_CONTAINER_OFF)?;
-    dd_to_emmc(ssh, &image::size_word(blob.len()), cefdk::EMMC_SIZE_OFF)?;
-    verify_size_word(ssh, blob.len())?;
-
-    // 2. initrd -> raw region past the kernel.
-    p.emit(Event::step(format!(
-        "initrd {} B -> eMMC {INITRD_EMMC_OFF:#x}",
-        initrd.len()
-    )));
-    dd_to_emmc(ssh, initrd, INITRD_EMMC_OFF)?;
-
-    // 3. RAM-boot autoscript (no root=p1; the initramfs is the root).
     let script = ram_autoscript(blob.len() as u64, initrd.len() as u64);
-    for l in &script {
-        p.emit(Event::detail(format!("script: {l}")));
-    }
-    if has_mtd(ssh) {
-        if !secure_boot {
-            p.emit(Event::detail(
-                "fuse clear: writing the autoscript anyway (harmless, keeps one path)".into(),
-            ));
-        }
-        write_mtd(ssh, &cefdk::build_autoscript(&script).map_err(anyhow::Error::msg)?)?;
-        record_autoscript_sizes(ssh, KERNEL_SLOT, INITRD_SLOT);
+    let sizes = if mtd {
+        (KERNEL_SLOT, INITRD_SLOT)
     } else {
         // Re-flashing a box already running openHC: openHC has no MTD, so the
         // autoscript cannot be rewritten -- but it does not need to be. It reads
@@ -171,11 +168,53 @@ pub fn stage1_ram_installer(
         p.emit(Event::detail(format!(
             "reusing the installed autoscript (reads {have_k}/{have_r} B; images {need_k}/{need_r} B fit)"
         )));
+        (have_k, have_r)
+    };
+
+    // 1. kernel container -> slot 0x400, then the length word.
+    p.emit(Event::step(format!(
+        "kernel container {} B -> eMMC {:#x} (factory-restore-revertible slot)",
+        blob.len(),
+        cefdk::EMMC_CONTAINER_OFF
+    )));
+    dd_to_emmc(ssh, &blob, cefdk::EMMC_CONTAINER_OFF)?;
+    dd_to_emmc(ssh, &image::size_word(blob.len()), cefdk::EMMC_SIZE_OFF)?;
+    verify_size_word(ssh, blob.len())?;
+
+    // 2. boot-init -> raw region past the kernel, zero-padded to the whole slot.
+    //    The autoscript reads (and hands the kernel) the full slot; zeros after
+    //    the gzip member are skipped by the initramfs unpacker, whereas a stale
+    //    older initrd's tail there would be "junk in compressed archive".
+    p.emit(Event::step(format!(
+        "boot-init {} B -> eMMC {INITRD_EMMC_OFF:#x} (zero-padded to {INITRD_SLOT} B)",
+        initrd.len()
+    )));
+    let mut padded = initrd.to_vec();
+    padded.resize(INITRD_SLOT as usize, 0);
+    dd_to_emmc(ssh, &padded, INITRD_EMMC_OFF)?;
+
+    // 3. Kill any staged rootfs.ext2.gz left by an earlier --self-install:
+    //    boot-init would otherwise lay that OLD image on p1 and pivot into it
+    //    instead of coming up on the network for stage 2. One zeroed sector
+    //    breaks the gzip magic; the region is ours (between boot-init and p1).
+    dd_to_emmc(ssh, &[0u8; cefdk::SECTOR as usize], ROOTFS_STAGE_OFF)?;
+
+    // 4. RAM-boot autoscript (no root=p1; the initramfs is the root).
+    for l in &script {
+        p.emit(Event::detail(format!("script: {l}")));
+    }
+    if mtd {
+        if !secure_boot {
+            p.emit(Event::detail(
+                "fuse clear: writing the autoscript anyway (harmless, keeps one path)".into(),
+            ));
+        }
+        write_mtd(ssh, &cefdk::build_autoscript(&script).map_err(anyhow::Error::msg)?)?;
     }
 
-    p.emit(Event::step("rebooting into the RAM installer".into()));
+    p.emit(Event::step("rebooting into boot-init (the RAM installer)".into()));
     let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
-    Ok(())
+    Ok(sizes)
 }
 
 
@@ -215,7 +254,26 @@ pub fn install_self(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -
     }
     guard_partitions(ssh, p)?;
 
+    // Every size is checked before the first write. guard_partitions() proved p1
+    // does not START inside our write region; this proves the staged write does
+    // not RUN INTO p1, which is the one that bites on a large rootfs (today's is
+    // ~45 MB gzipped against a 16 MiB gap, so this path is for small images only;
+    // the default two-stage install streams the rootfs to p1 instead).
     let blob = image::container(kernel, None).map_err(anyhow::Error::msg)?;
+    if blob.len() as u64 > KERNEL_SLOT || bootinit.len() as u64 > INITRD_SLOT {
+        bail!("kernel container or boot-init exceeds its eMMC slot — nothing written");
+    }
+    if staged.len() as u64 > ROOTFS_STAGE_MAX {
+        bail!(
+            "staged rootfs is {} B but only {ROOTFS_STAGE_MAX} B are free between \
+             {ROOTFS_STAGE_OFF:#x} and p1 at {:#x} — nothing written. Use the default \
+             install, which streams the rootfs to p1 over SSH.",
+            staged.len(),
+            cefdk::P1_START
+        );
+    }
+    check_script_slot(ssh)?;
+
     p.emit(Event::step(format!(
         "kernel container {} B -> eMMC {:#x}", blob.len(), cefdk::EMMC_CONTAINER_OFF
     )));
@@ -227,19 +285,6 @@ pub fn install_self(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -
     )));
     dd_to_emmc(ssh, bootinit, BOOTINIT_EMMC_OFF)?;
 
-    // guard_partitions() proved p1 does not START inside our write region; this
-    // proves the write does not RUN INTO p1, which is a different question and
-    // the one that actually bites on a large rootfs. A Python-carrying image
-    // compresses well past 16 MiB.
-    if staged.len() as u64 > ROOTFS_STAGE_MAX {
-        bail!(
-            "staged rootfs is {} B but only {ROOTFS_STAGE_MAX} B are free between \
-             {ROOTFS_STAGE_OFF:#x} and p1 at {:#x} -- writing it would overwrite the \
-             start of p1. Install the rootfs directly with stage2_write_rootfs instead.",
-            staged.len(),
-            cefdk::P1_START
-        );
-    }
     p.emit(Event::step(format!(
         "staged rootfs {} B (gz) -> eMMC {ROOTFS_STAGE_OFF:#x} ({} B of {ROOTFS_STAGE_MAX} B gap used)",
         staged.len(), staged.len()
@@ -255,11 +300,8 @@ pub fn install_self(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -
         p.emit(Event::detail("fuse clear: autoscript still written (harmless, one path)".into()));
     }
     write_mtd(ssh, &cefdk::build_autoscript(&script).map_err(anyhow::Error::msg)?)?;
-    record_autoscript_sizes(
-        ssh,
-        cefdk::round_to_sector(blob.len() as u64),
-        cefdk::round_to_sector(bootinit.len() as u64),
-    );
+    // ram_autoscript reads the whole slots, so those are the sizes to record.
+    record_autoscript_sizes(ssh, "", KERNEL_SLOT, INITRD_SLOT);
 
     p.emit(Event::step(
         "rebooting — first boot self-installs p1 from the staged image, then pivots".into(),
@@ -268,9 +310,17 @@ pub fn install_self(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -
     Ok(())
 }
 
-/// Stage 2: with the box RAM-booted (p1 free), write the real rootfs and swap
-/// the autoscript to the persistent one.
-pub fn stage2_write_rootfs(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
+/// Stage 2: with the box RAM-booted (p1 free), stream the real rootfs to p1.
+///
+/// `sizes` are the read sizes of the autoscript stage 1 left (its return
+/// value); they are recorded in [`AUTOSCRIPT_ENV`] ON P1, the only root that
+/// outlives this boot. `None` (stage 2 run on its own) records nothing.
+pub fn stage2_write_rootfs(
+    ssh: &Ssh,
+    rel: &Release,
+    sizes: Option<(u64, u64)>,
+    p: &Progress,
+) -> Result<()> {
     if is_root_on_p1(ssh) {
         bail!("p1 is still the running root — the box did not come up in RAM; \
                not overwriting a mounted root");
@@ -286,9 +336,31 @@ pub fn stage2_write_rootfs(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()>
     // rootfs on the next reboot. This is why openHC needs no MTD tools of its
     // own, and why a fixed autoscript stays factory-restore-friendly.
     ensure_p1_marker(ssh, p)?;
+    if let Some((k, r)) = sizes {
+        let out = ssh.run(
+            &format!(
+                "mount /dev/mmcblk0p1 /mnt/ohcp1 2>/dev/null && {{ {} && echo RECORDED; }}; \
+                 sync; umount /mnt/ohcp1 2>/dev/null",
+                record_sizes_cmd("/mnt/ohcp1", k, r)
+            ),
+            false,
+        )?;
+        if out.contains("RECORDED") {
+            p.emit(Event::detail(format!("p1:{AUTOSCRIPT_ENV} = KSZ={k} RSZ={r}")));
+        } else {
+            p.emit(Event::warn(format!(
+                "could not record the autoscript sizes in p1:{AUTOSCRIPT_ENV} — later \
+                 in-place updates from a no-MTD system will refuse"
+            )));
+        }
+    }
 
     p.emit(Event::step("rebooting — the box will boot openHC from p1".into()));
-    let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
+    // `reboot -f`, not `reboot`: stage 2 normally runs in boot-init, which has
+    // no `reboot` applet and whose PID 1 is the /init shell script, which
+    // ignores the signal a plain reboot sends. The EA-3 sat in boot-init with
+    // p1 written until this was fixed (2026-10-16). p1 is synced first.
+    let _ = ssh.run("sync; (sleep 1; busybox reboot -f) >/dev/null 2>&1 &", false);
     Ok(())
 }
 
@@ -315,10 +387,62 @@ fn ram_autoscript(kernel_container_len: u64, initrd_len: u64) -> Vec<String> {
         format!("ord4 {:#x} = 0x1", cefdk::G_RD_FLAG),
         format!("ord4 {G_RD_ADDR:#x} = {RAM_INITRD:#x}"),
         format!("ord4 {G_RD_SIZE:#x} = {rsz:#x}"),
-        "bootlinux \"console=ttyS0,115200 pci=realloc,nocrs rw\"".into(),
+        // The same command line the TFTP netboot boots this kernel with.
+        format!("bootlinux \"{}\"", cefdk::RAMBOOT_CMDLINE),
     ]
 }
 
+
+/// Is the CEFDK `script on` slot that [`write_mtd`] writes into present AND
+/// armed: an MFH item at `MFH_SCRIPT_OFF` of `MFH_SCRIPT_LEN` bytes, with the
+/// enable byte at `SCRIPT_ENABLE_OFF` = 0? Both hold on the EA-3 v2 (item [7],
+/// read 2026-10-15), which runs whatever that slot holds at every power-on. A
+/// box where either fails gets [`install_ramboot`]'s appended item instead.
+pub fn script_slot_armed(ssh: &Ssh) -> Result<bool> {
+    let tbl = read_mtd(ssh, mfh::TABLE_OFF as u64, 0x200)?;
+    let enable = read_mtd(ssh, cefdk::SCRIPT_ENABLE_OFF, 1)?;
+    Ok(mfh::has_item(&tbl, cefdk::MFH_SCRIPT_OFF as u32, cefdk::MFH_SCRIPT_LEN as u32)
+        && enable == [0])
+}
+
+/// `len` bytes of mtd0 at `off`, via base64 (stock Control4 has no `od`).
+fn read_mtd(ssh: &Ssh, off: u64, len: usize) -> Result<Vec<u8>> {
+    let b64 = ssh
+        .run(&format!("dd if={MTD} bs=1 skip={off} count={len} 2>/dev/null | base64"), true)
+        .with_context(|| format!("reading mtd0 {off:#x}"))?;
+    let raw = b64_decode(&b64).ok_or_else(|| anyhow!("bad base64 reading mtd0 {off:#x}"))?;
+    if raw.len() != len {
+        bail!("mtd0 {off:#x} read back {} bytes, expected {len}", raw.len());
+    }
+    Ok(raw)
+}
+
+/// Everything [`write_mtd`] needs, checked before any eMMC write.
+fn check_script_slot(ssh: &Ssh) -> Result<()> {
+    if !script_slot_armed(ssh)? {
+        bail!(
+            "no armed CEFDK script slot at {:#x} in the MFH — nothing written (this box \
+             needs the appended-item install, install_ramboot)",
+            cefdk::MFH_SCRIPT_OFF
+        );
+    }
+    let esz = mtd_erasesize(ssh)?;
+    if cefdk::MFH_SCRIPT_OFF % esz != 0 || cefdk::MFH_SCRIPT_LEN as u64 > esz {
+        bail!(
+            "the {:#x} script slot is not alone in an erase block on this flash \
+             ({esz}-byte erase) — nothing written",
+            cefdk::MFH_SCRIPT_OFF
+        );
+    }
+    Ok(())
+}
+
+fn mtd_erasesize(ssh: &Ssh) -> Result<u64> {
+    ssh.run("cat /sys/class/mtd/mtd0/erasesize", false)?
+        .trim()
+        .parse()
+        .context("reading mtd0's erase size")
+}
 
 fn has_mtd(ssh: &Ssh) -> bool {
     ssh.run(&format!("ls {MTD} 2>/dev/null"), false)
@@ -329,13 +453,13 @@ fn has_mtd(ssh: &Ssh) -> bool {
 /// Remember the byte counts the freshly-written autoscript reads, so a later
 /// in-place update from a RAM-booted openHC (no MTD) can check that new images
 /// still fit instead of silently truncating them.
-fn record_autoscript_sizes(ssh: &Ssh, ksz: u64, rsz: u64) {
-    let _ = ssh.run(
-        &format!(
-            "mkdir -p /opt/ohc && printf 'KSZ=%s\\nRSZ=%s\\n' {ksz} {rsz} > {AUTOSCRIPT_ENV}; sync"
-        ),
-        false,
-    );
+fn record_autoscript_sizes(ssh: &Ssh, root: &str, ksz: u64, rsz: u64) {
+    let _ = ssh.run(&format!("{}; sync", record_sizes_cmd(root, ksz, rsz)), false);
+}
+
+/// Shell that writes [`AUTOSCRIPT_ENV`] under `root` ("" = the running root).
+fn record_sizes_cmd(root: &str, ksz: u64, rsz: u64) -> String {
+    format!("mkdir -p {root}/opt/ohc && printf 'KSZ=%s\\nRSZ=%s\\n' {ksz} {rsz} > {root}{AUTOSCRIPT_ENV}")
 }
 
 fn recorded_autoscript_sizes(ssh: &Ssh) -> Option<(u64, u64)> {
@@ -437,15 +561,18 @@ fn write_mtd(ssh: &Ssh, script: &[u8]) -> Result<()> {
     );
     ssh.put_stream(script, &cmd).context("writing MFH script to SPI-NOR")?;
 
-    // verify: the block now starts with our script's first token. The raw bytes
-    // are ASCII ("emmc rd ..."), so read them straight — no `od` (absent on
-    // stock Control4). `head -c` is universal on busybox.
-    let back = ssh.run(
-        &format!("dd if={MTD} bs=1 skip={off} count=4 2>/dev/null"),
+    // verify the WHOLE slot byte for byte (base64: no `od` on stock Control4).
+    // A wrong autoscript costs a serial recovery, so a prefix check is not enough.
+    let b64 = ssh.run(
+        &format!("dd if={MTD} bs={esz} skip={blk} count=1 2>/dev/null | base64"),
         false,
     )?;
-    if !back.starts_with("emmc") {
-        bail!("MFH script read-back is {back:?}, expected to start with \"emmc\" — write did not take");
+    let back = b64_decode(&b64).unwrap_or_default();
+    if back.get(..script.len()) != Some(script) {
+        bail!(
+            "MFH script read-back does not match what was written — the autoscript slot \
+             at {off:#x} may be damaged; do NOT power-cycle before checking it"
+        );
     }
     Ok(())
 }
@@ -466,9 +593,18 @@ fn guard_partitions(ssh: &Ssh, p: &Progress) -> Result<()> {
 }
 
 fn is_root_on_p1(ssh: &Ssh) -> bool {
-    ssh.run("mount | grep ' / ' 2>/dev/null", false)
-        .map(|o| o.contains("mmcblk0p1"))
-        .unwrap_or(true) // if we cannot tell, assume yes and refuse to write
+    // /proc/mounts, parsed here: boot-init has no grep, and a missing grep
+    // must not read as "root is not p1".
+    match ssh.run("cat /proc/mounts", false) {
+        Ok(m) if m.contains(" / ") => root_is_p1(&m),
+        _ => true, // if we cannot tell, assume yes and refuse to write
+    }
+}
+
+fn root_is_p1(mounts: &str) -> bool {
+    mounts
+        .lines()
+        .any(|l| l.split_whitespace().nth(1) == Some("/") && l.contains("mmcblk0p1"))
 }
 
 #[cfg(test)]
@@ -512,6 +648,25 @@ mod tests {
         // The image that would have re-bricked the box now fits.
         assert!(6_482_404 < INITRD_SLOT, "the oversize initrd fits the padded slot");
     }
+
+    /// boot-init has no grep; this is what keeps stage 2 off a mounted p1.
+    #[test]
+    fn root_on_p1_is_read_from_proc_mounts() {
+        assert!(!root_is_p1("rootfs / rootfs rw 0 0\nproc /proc proc rw 0 0\n"));
+        assert!(root_is_p1("/dev/root / ext4 rw 0 0\n/dev/mmcblk0p1 / ext4 rw 0 0\n"));
+        assert!(!root_is_p1("rootfs / rootfs rw 0 0\n/dev/mmcblk0p1 /mnt/ohcp1 ext2 rw 0 0\n"));
+    }
+
+    /// Today's EA-3 release (2026-10-15): only kernel + boot-init need raw slots.
+    #[test]
+    fn todays_release_fits_the_raw_slots() {
+        let container = 7_377_920 + cefdk::EMMC_HEADER_LEN as u64;
+        assert!(container <= KERNEL_SLOT && 1_739_893 <= INITRD_SLOT);
+        // The slots, and the staged-image sector we zero, all end before p1.
+        assert!(INITRD_EMMC_OFF + INITRD_SLOT <= ROOTFS_STAGE_OFF);
+        assert!(ROOTFS_STAGE_OFF + cefdk::SECTOR <= cefdk::P1_START);
+        assert!(RAM_INITRD + INITRD_SLOT <= RAM_KERNEL, "padded initrd stays below the kernel in RAM");
+    }
 }
 
 // ===========================================================================
@@ -548,10 +703,18 @@ fn write_mtd_block(ssh: &Ssh, off: u64, data: &[u8]) -> Result<()> {
         bail!("mtd0 block write needs exactly 0x10000 bytes, got {}", data.len());
     }
     let blk = off / 0x10000;
+    // Erase the whole 64 KiB, however many erase blocks that is: this EA-3 v2's
+    // mtd0 erases in 4 KiB, and erasing one block then writing 64 KiB leaves the
+    // other 60 KiB AND-ed with their old contents.
+    let esz = mtd_erasesize(ssh)?;
+    if esz == 0 || 0x10000 % esz != 0 {
+        bail!("mtd0 erase size {esz} does not divide a 64 KiB block");
+    }
+    let n = 0x10000 / esz;
     ssh.put_stream(
         data,
         &format!(
-            "flash_erase {MTD} {off:#x} 1 >/dev/null 2>&1; \
+            "flash_erase {MTD} {off:#x} {n} >/dev/null 2>&1; \
              dd of={MTD} bs=65536 seek={blk} count=1 conv=notrunc 2>/dev/null; sync"
         ),
     )
@@ -567,7 +730,13 @@ fn write_mtd_block(ssh: &Ssh, off: u64, data: &[u8]) -> Result<()> {
 /// with mtd0 access.
 pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     let kernel = rel.get("bzImage").context("release has no bzImage")?;
-    let initrd = rel.get("rootfs.cpio.gz").context("release has no rootfs.cpio.gz")?;
+    // The RAM installer is the TINY networked boot-init (~2 MB), NOT the full
+    // rootfs. openHC's EA rootfs (~47 MB gz / 512 MB raw) does not fit the ~24 MB
+    // gap ahead of p1, and it does not need to: boot-init comes up on the network
+    // (dropbear) and the caller's stage2_write_rootfs streams the real rootfs
+    // straight to p1 over SSH, then reboots; boot-init then finds a valid p1 and
+    // pivots. See board/ea/common/boot-init/init (net_serve) and mk-boot-init.sh.
+    let initrd = rel.get("boot-init.cpio.gz").context("release has no boot-init.cpio.gz")?;
     let klen = kernel.len() as u64;
     let ilen = initrd.len() as u64;
 

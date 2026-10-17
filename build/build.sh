@@ -39,6 +39,10 @@ DL="${BR2_DL_DIR:-$REPO/dl}"
 # — is what everything below has to use to find a board's files. BOARD stays the
 # bare name (ea3-v2); only where it lives on disk changed.
 case "$BOARD" in
+  # EA display build input: a standalone i386 WPE/SGX tree (not a bootable
+  # board). Bare name (not ea*) so it does NOT inherit the x86_64 EA family
+  # base; COMMON_CFG="" builds it from the fleet base + its own defconfig.
+  gpu-wpe-i386) COMMON_CFG=""; BOARD_DIR="$REPO/board/ea/common/gpu-wpe-i386" ;;
   ea*)  COMMON_CFG="$REPO/board/ea/common/common_defconfig"; BOARD_DIR="$REPO/board/ea/$BOARD" ;;
   *)    COMMON_CFG=""; BOARD_DIR="$REPO/board/$BOARD" ;;
 esac
@@ -244,6 +248,26 @@ fi
     if [ -n "$COMMON_CFG" ]; then
         cat "$COMMON_CFG"
         echo
+        # EA EXTERNAL toolchain. When OHC_EA_SDK names a pre-built EA toolchain
+        # (CI builds one ONCE in its `toolchain` job and hands every EA image job
+        # the same output/host), switch the family off its internal glibc
+        # toolchain and onto that one. Emitted right after the family base so it
+        # wins the BR2_TOOLCHAIN choice — kconfig takes the last assignment, and
+        # the internal glibc selection above simply drops out. The job that
+        # BUILDS the SDK sets OHC_TOOLCHAIN_ONLY and must keep the internal
+        # toolchain, so it is excluded here.
+        if [ -n "${OHC_EA_SDK:-}" ] && [ -z "${OHC_TOOLCHAIN_ONLY:-}" ]; then
+            _ext="$(dirname "$COMMON_CFG")/external-toolchain.defconfig"
+            [ -f "$_ext" ] || {
+                echo "build.sh: $_ext missing but OHC_EA_SDK is set" >&2; exit 1; }
+            [ -d "$OHC_EA_SDK/bin" ] || {
+                echo "build.sh: OHC_EA_SDK=$OHC_EA_SDK has no bin/ — not a toolchain host dir" >&2
+                exit 1; }
+            echo "# --- EA external toolchain (OHC_EA_SDK) ---"
+            cat "$_ext"
+            echo "BR2_TOOLCHAIN_EXTERNAL_PATH=\"$OHC_EA_SDK\""
+            echo
+        fi
     fi
     for f in $FEATURES; do
         dirs=$(feature_dirs "$f") || {
@@ -316,6 +340,8 @@ fi
     fi
 } > "$EFFECTIVE"
 [ -n "$FEATURES" ] && echo ">> features: $FEATURES"
+[ -n "${OHC_EA_SDK:-}" ] && [ -z "${OHC_TOOLCHAIN_ONLY:-}" ] && [ -n "$COMMON_CFG" ] && \
+    echo ">> EA external toolchain: $OHC_EA_SDK"
 echo ">> defconfig: $EFFECTIVE"
 
 # ---- preflight: every path the defconfig NAMES has to exist -----------------
@@ -382,6 +408,14 @@ BR2_EXT="$REPO/board${OHC_EXTRA_EXTERNAL:+ $OHC_EXTRA_EXTERNAL}"
 M=(make -C "$BUILDROOT_DIR" O="$OUT" BR2_EXTERNAL="$BR2_EXT"
    BR2_DL_DIR="$DL" BR2_JLEVEL="$JOBS")
 
+# ccache lives OUTSIDE the per-board output tree so the whole family (and every
+# CI run) shares one, cached on its own key — see board/ea/common/common_defconfig
+# and .github/workflows/images.yml. Only override when BR2_CCACHE_DIR is set in
+# the environment: passing an empty value would blank Buildroot's own default
+# and scatter a fresh cache into $OUT, defeating the point. A board whose
+# defconfig does not enable BR2_CCACHE ignores this.
+[ -n "${BR2_CCACHE_DIR:-}" ] && M+=(BR2_CCACHE_DIR="$BR2_CCACHE_DIR")
+
 # Wipe the output tree, keeping the generated defconfig.
 #
 # $EFFECTIVE is written INSIDE $OUT, so a plain `rm -rf "$OUT"` deletes the
@@ -413,7 +447,14 @@ _wipe_out() {
 #
 # So compare every toolchain-defining symbol against the tree's existing
 # .config, before defconfig overwrites the evidence, and wipe on any change.
-_TC_SYMS='BR2_TOOLCHAIN_BUILDROOT_GLIBC|BR2_TOOLCHAIN_BUILDROOT_MUSL|BR2_TOOLCHAIN_BUILDROOT_UCLIBC|BR2_INSTALL_LIBSTDCPP|BR2_TOOLCHAIN_BUILDROOT_CXX|BR2_USE_WCHAR|BR2_TOOLCHAIN_BUILDROOT_FORTRAN'
+# BR2_TOOLCHAIN_EXTERNAL is in the set because switching the EA family between
+# its internal glibc toolchain and the shared external SDK (OHC_EA_SDK, above) is
+# exactly a toolchain change Buildroot cannot do in an existing output tree: the
+# compiler on disk was built one way, .config now asks for the other, and the
+# failure lands much later in some unrelated package. Including it here flips the
+# stamp on that transition and forces the wipe. (The alternation is anchored by
+# `=y$`, so it matches only `BR2_TOOLCHAIN_EXTERNAL=y`, never _CXX/_PATH/etc.)
+_TC_SYMS='BR2_TOOLCHAIN_BUILDROOT_GLIBC|BR2_TOOLCHAIN_BUILDROOT_MUSL|BR2_TOOLCHAIN_BUILDROOT_UCLIBC|BR2_INSTALL_LIBSTDCPP|BR2_TOOLCHAIN_BUILDROOT_CXX|BR2_USE_WCHAR|BR2_TOOLCHAIN_BUILDROOT_FORTRAN|BR2_TOOLCHAIN_EXTERNAL'
 # LAST assignment wins, per symbol -- the same rule kconfig applies. The
 # effective defconfig is a concatenation in which common sets musl and the
 # family overrides it to glibc, so a naive grep sees BOTH and would compare
@@ -478,9 +519,29 @@ if [ -d "$OUT/host/bin" ] && grep -q '^BR2_INSTALL_LIBSTDCPP=y$' "$EFFECTIVE" 2>
     fi
 fi
 
+# Every package symbol the tree was last configured with — for the options
+# check further down (empty on a fresh or wiped tree, which needs none).
+_pkg_syms() {
+    sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=(.*)$/\1=\2/p; s/^# (BR2_PACKAGE_[A-Z0-9_]+) is not set$/\1=n/p' "$1" 2>/dev/null | sort
+}
+_pkg_was=$(_pkg_syms "$OUT/.config" || true)   # no .config: not a failure (set -e)
+
 "${M[@]}" defconfig BR2_DEFCONFIG="$EFFECTIVE"
 # Record the toolchain this tree now carries, for the next run's comparison.
 mkdir -p "$OUT" && printf '%s\n' "$_want" > "$_TC_STAMP"
+
+# Toolchain-only build. CI's shared-SDK `toolchain` job (see images.yml) builds
+# the EA cross toolchain ONCE and packages $OUT/host for the five EA image jobs
+# to consume as an external toolchain. Everything below this point — the kernel
+# re-extract, the per-package rebuilds, the final image target — is about a full
+# image and has nothing to do here, so stop after `make toolchain`.
+if [ -n "${OHC_TOOLCHAIN_ONLY:-}" ]; then
+    echo ">> OHC_TOOLCHAIN_ONLY: building the cross toolchain only"
+    "${M[@]}" "${@:-toolchain}"
+    echo ">> toolchain host dir: $OUT/host"
+    exit 0
+fi
+
 # Kernel bring-up iterates on both the config fragment AND the patch set
 # (board/ea/common/patches/linux/). Buildroot applies patches only at EXTRACT time and
 # won't re-extract a cached source, so a plain reconfigure silently ignores new
@@ -531,10 +592,90 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     _pkg=$(basename "$(dirname "$_mk")")
     # only if this build selects it, else make has no such target
     _sym="BR2_PACKAGE_$(echo "$_pkg" | tr 'a-z-' 'A-Z_')"
+    # Both of these must not fail under `set -e` (a failing command substitution
+    # in an assignment aborts the script): grep finding nothing, cat meeting a
+    # subdirectory.
+    if grep -q '\$(eval \$(host-' "$_mk"; then _host=1; else _host=""; fi
+    _want_sum=$(find "$(dirname "$_mk")" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
+    _sumf="$OUT/build/.ohc-pkg-$_pkg.sum"
+    # A changed recipe or patch set needs the source RE-EXTRACTED and
+    # re-patched, which -rebuild never does (it keeps the patched tree): a
+    # fixed patch for ohc-shairport-sync was ignored that way and the build kept
+    # failing on the old one. So when the package's directory changed since this
+    # tree last built it, dirclean it (and its host- variant) first.
+    if [ "$(cat "$_sumf" 2>/dev/null)" != "$_want_sum" ]; then
+        if grep -q "^$_sym=y\$" "$OUT/.config" 2>/dev/null; then
+            echo ">> $_pkg: recipe or patches changed — re-extracting"
+            "${M[@]}" "$_pkg-dirclean"
+        fi
+        [ -n "$_host" ] && [ -d "$OUT/build" ] && \
+            for _d in "$OUT"/build/host-"$_pkg"-*; do [ -d "$_d" ] && "${M[@]}" "host-$_pkg-dirclean" && break; done
+        mkdir -p "$OUT/build" && printf '%s\n' "$_want_sum" > "$_sumf"
+    fi
     grep -q "^$_sym=y\$" "$OUT/.config" 2>/dev/null || continue
     echo ">> $_pkg: forcing rebuild (we maintain it; its stamps mean nothing)"
     "${M[@]}" "$_pkg-rebuild"
 done
+
+# The same trap for Buildroot's OWN packages that a board patches through its
+# BR2_GLOBAL_PATCH_DIR (e.g. board/hc800/patches/cog): patches are applied only
+# at extract time, so a cached build tree keeps building the unpatched source.
+# Re-extract a patched package when one of its patches is not in the build
+# dir's .applied_patches_list (Buildroot records each one it applies), or when
+# the patch set changed since we last saw it. Seen for the first time with every
+# patch already applied, it is only recorded — so a toolchain package with a
+# long-standing patch is not rebuilt for nothing. linux is dircleaned above.
+_gpd=$(sed -n 's/^BR2_GLOBAL_PATCH_DIR="\(.*\)"$/\1/p' "$OUT/.config" | sed "s#\$(BR2_EXTERNAL_OPENHC_PATH)#$REPO/board#g")
+for _root in $_gpd; do
+    for _pd in "$_root"/*/; do
+        [ -d "$_pd" ] || continue
+        _pkg=$(basename "$_pd")
+        [ "$_pkg" = linux ] && continue
+        _bd=$(ls -d "$OUT"/build/"$_pkg"-[0-9]* 2>/dev/null | head -1 || true)
+        [ -n "$_bd" ] || continue        # not built yet: it gets patched when it is
+        _sum=$(find "$_pd" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
+        _sumf="$OUT/build/.ohc-gpatch-$_pkg.sum"
+        _stale=""
+        if [ -f "$_sumf" ]; then
+            [ "$(cat "$_sumf")" = "$_sum" ] || _stale=1
+        else
+            for _p in "$_pd"*.patch; do
+                [ -e "$_p" ] || continue
+                grep -q "$(basename "$_p")" "$_bd/.applied_patches_list" 2>/dev/null || _stale=1
+            done
+        fi
+        if [ -n "$_stale" ]; then
+            echo ">> $_pkg: board patches changed — re-extracting"
+            "${M[@]}" "$_pkg-dirclean"
+        fi
+        printf '%s\n' "$_sum" > "$_sumf"
+    done
+done
+
+# And once more for a package's OPTIONS: Buildroot configures a package once,
+# so flipping one of its sub-options (e.g. BR2_PACKAGE_COG_USE_SYSTEM_DBUS, a
+# meson -D flag) in a defconfig leaves a cached tree building it the old way.
+# Compare every package symbol with the tree's .config from before defconfig,
+# and for each that changed, dirclean the package that owns it: the longest
+# enabled BR2_PACKAGE_<PKG> prefix that is not the symbol itself. A package that
+# was only turned on or off needs nothing — Buildroot handles that.
+if [ -n "$_pkg_was" ]; then
+    _cleaned=" "
+    for _s in $(printf '%s\n' "$_pkg_was" "$(_pkg_syms "$OUT/.config")" | sort | uniq -u | sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=.*/\1/p' | sort -u); do
+        _c=${_s#BR2_PACKAGE_}
+        while [ "${_c%_*}" != "$_c" ]; do
+            _c=${_c%_*}
+            grep -q "^BR2_PACKAGE_$_c=y\$" "$OUT/.config" || continue
+            _pkg=$(echo "$_c" | tr 'A-Z_' 'a-z-')
+            case "$_cleaned" in *" $_pkg "*) ;; *)
+                echo ">> $_pkg: option $_s changed — re-extracting"
+                "${M[@]}" "$_pkg-dirclean"
+                _cleaned="$_cleaned$_pkg " ;;
+            esac
+            break
+        done
+    done
+fi
 
 "${M[@]}" "${@:-all}"
 

@@ -226,12 +226,27 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
         .trim()
         .parse()
         .unwrap_or(0);
+    // The files are written with `cat >`, which truncates first: the space our
+    // previous kernel and initramfs hold is free again by the time the new data
+    // lands, so it counts. (Control4's own kernel on this partition is never
+    // touched.) Without this a reinstall whose initramfs outgrew the free space
+    // was refused although it fit — the wpe feature's ~130 MB initramfs did.
+    let replaced: u64 = ssh
+        .run(&format!("cat {km}{} {km}{} 2>/dev/null | wc -c", hc::KERNEL_FILE, hc::INITRD_FILE), true)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0)
+        / 1024;
     let need = ((kernel.len() + initrd.len()) / 1024) as u64;
-    if free < need + 4096 {
+    if free + replaced < need + 4096 {
         let _ = ssh.run(&format!("umount {km}"), false);
-        bail!("{} has {free} KB free, need {need} KB plus headroom", hc::KERNEL_PART);
+        bail!(
+            "{} has {free} KB free (+{replaced} KB of the openHC files it replaces), need {need} KB plus headroom",
+            hc::KERNEL_PART
+        );
     }
-    p.emit(Event::detail(format!("{free} KB free, writing {need} KB")));
+    p.emit(Event::detail(format!("{free} KB free (+{replaced} KB replaced), writing {need} KB")));
 
     ssh.put_stream(kernel, &format!("cat > {km}{}", hc::KERNEL_FILE))
         .map_err(|e| anyhow::anyhow!("{e}"))?;

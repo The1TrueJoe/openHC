@@ -154,6 +154,7 @@ export function SettingsPanel() {
         </Field>
       </section>
 
+
       <div className="flex items-center gap-3">
         <button
           onClick={save}
@@ -173,7 +174,7 @@ export function SettingsPanel() {
   );
 }
 
-function Field({ label, hint, children }: { label: React.ReactNode; hint?: string; children: React.ReactNode }) {
+export function Field({ label, hint, children }: { label: React.ReactNode; hint?: string; children: React.ReactNode }) {
   return (
     <label className="mt-3 block">
       <div className="mb-1 flex items-center text-xs font-medium">{label}</div>
@@ -183,7 +184,7 @@ function Field({ label, hint, children }: { label: React.ReactNode; hint?: strin
   );
 }
 
-function Text({
+export function Text({
   value, onChange, disabled, placeholder, type = 'text',
 }: {
   value: string; onChange: (v: string) => void; disabled?: boolean; placeholder?: string; type?: string;
@@ -201,7 +202,7 @@ function Text({
   );
 }
 
-function Toggle({
+export function Toggle({
   label, hint, checked, onChange, disabled,
 }: {
   label: React.ReactNode; hint?: string; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean;
