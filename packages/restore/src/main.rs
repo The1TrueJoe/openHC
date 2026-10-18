@@ -306,30 +306,56 @@ fn cmd_install() -> io::Result<()> {
 }
 
 fn cmd_stock() -> io::Result<()> {
-    cmd_revert()?;
-    // Two ways to put the stock rootfs back on p1:
+    // Restoring stock means two things: p1 must hold the factory rootfs again, and
+    // the MFH autoscript (which boots openHC) must be cleared. The catch is that p1
+    // cannot be reformatted while it is the running root, and clearing the autoscript
+    // first would stop boot-init from ever running again — so the order depends on
+    // where we are:
     //
-    //   * direct  — reformat p1 and unpack p2's recfs.tar.xz onto it, in place. This
-    //     is simple and reliable, but it cannot touch p1 while p1 is the running
-    //     root, so it only works from a context where p1 is NOT mounted as / (a
-    //     ramboot, or the boot-init bootstrap before it pivots to p1).
+    //   * p1 is NOT root (a ramboot, or boot-init before it pivots) — do it now:
+    //     reimage p1 directly from p2, then clear the autoscript. See
+    //     `cmd_reimage_finalize`.
     //
-    //   * kexec   — boot p2's stock recovery kernel, whose initramfs reimages p1.
-    //     This is the only option when p1 IS our root, but on the EA3 it is defeated
-    //     by the fat kernel's RAM-reclaim memmap (kexec can't place its segments:
-    //     "locate_hole failed"), so it is a last resort, not the default.
-    //
-    // Prefer the direct path whenever p1 is free; fall back to kexec only when we are
-    // running on p1 itself.
+    //   * p1 IS root (a normal durable openHC boot) — we can neither reformat p1 nor
+    //     kexec the recovery kernel (the EA3 fat kernel's RAM-reclaim memmap starves
+    //     kexec's segment placement: "locate_hole failed"). Instead drop a one-shot
+    //     flag on p1 and reboot with the autoscript still enabled; boot-init finds
+    //     the flag before it pivots — where p1 is free — and runs the finalize there.
     if p1_is_root() {
-        println!("stock: p1 is the running root — handing it to CEFDK's recovery kernel via kexec...");
-        recovery_reimage_p1()?;
+        stage_stock_flag()?;
+        println!(
+            "stock: staged a one-shot restore on p1. Reboot: boot-init will reimage p1 to \
+             Control4 and clear the autoscript, then boot stock."
+        );
+        Ok(())
     } else {
-        println!("stock: p1 is not mounted as root — reimaging it directly from p2...");
-        reimage_p1_direct()?;
+        println!("stock: p1 is free — reimaging it directly from p2 and clearing the autoscript...");
+        cmd_reimage_finalize()
     }
+}
+
+/// Reimage p1 to stock and clear the autoscript, in place. Only valid where p1 is
+/// not the running root (a ramboot, or boot-init pre-pivot). boot-init calls this as
+/// `ohc-restore reimage-finalize` after it sees the one-shot flag; `cmd_stock` calls
+/// it directly when it is already running with p1 free.
+fn cmd_reimage_finalize() -> io::Result<()> {
+    reimage_p1_direct()?; // p1 -> factory rootfs (asserts p1 is not root)
+    cmd_revert()?; // clear the MFH autoscript enable byte so CEFDK boots stock
     Ok(())
 }
+
+/// Drop the one-shot flag boot-init looks for before it pivots to p1. On durable,
+/// p1 is `/`, so this writes it onto p1 itself; boot-init reads it from p1 and then
+/// reformats p1 (destroying the flag — no restore loop). The autoscript is left
+/// enabled so boot-init still runs on the next boot.
+fn stage_stock_flag() -> io::Result<()> {
+    std::fs::write(STOCK_FLAG, b"stock\n")?;
+    run("sync", &[])?;
+    Ok(())
+}
+
+/// Path of the boot-init one-shot restore flag, relative to the p1 root.
+const STOCK_FLAG: &str = "/.ohc-stock-pending";
 
 /// True when /dev/mmcblk0p1 is the filesystem mounted at `/`. We compare the st_dev
 /// of `/` (the device number of the mounted root fs) against the rdev of the p1
@@ -612,6 +638,13 @@ fn main() {
         "revert" => cmd_revert(),
         "install" => cmd_install(),
         "stock" => cmd_stock(),
+        // Reimage p1 + clear the autoscript, in place. boot-init runs this pre-pivot
+        // (p1 free) after seeing the one-shot flag; refuses if p1 is the running root.
+        "reimage-finalize" => cmd_reimage_finalize(),
+        // Reimage p1 by kexec-ing p2's stock recovery kernel. Works where kexec can
+        // place its segments (EA1); defeated on the EA3 by the fat kernel's reclaim
+        // memmap — there, use `stock` (flag + boot-init finalize) instead.
+        "recovery-kexec" => recovery_reimage_p1(),
         "restore-mfh" => {
             let file = args.get(2).map(String::as_str).unwrap_or("");
             let comp = args.iter().any(|a| a == "--compensate");
@@ -622,7 +655,7 @@ fn main() {
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: ohc-restore {{status|revert|install|stock|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: ohc-restore {{status|revert|install|stock|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };
