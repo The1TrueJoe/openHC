@@ -339,6 +339,17 @@ fn cmd_stock() -> io::Result<()> {
 /// `ohc-restore reimage-finalize` after it sees the one-shot flag; `cmd_stock` calls
 /// it directly when it is already running with p1 free.
 fn cmd_reimage_finalize() -> io::Result<()> {
+    // Refuse BEFORE touching p1 if we could not finish: the reimage succeeds without
+    // the MFH, but the following revert needs /dev/mtd0, and reimaging p1 then
+    // failing to clear the autoscript would leave the box with openHC destroyed, the
+    // autoscript still enabled, and no staged image to reinstall from — stranded in
+    // boot-init. Checking here means a transient missing mtd0 costs nothing: p1 is
+    // left intact and the restore can simply be retried.
+    if !std::path::Path::new(MTD).exists() {
+        return Err(io::Error::other(format!(
+            "{MTD} absent — refusing to reimage p1 because the autoscript (revert) could not be cleared afterwards"
+        )));
+    }
     reimage_p1_direct()?; // p1 -> factory rootfs (asserts p1 is not root)
     cmd_revert()?; // clear the MFH autoscript enable byte so CEFDK boots stock
     Ok(())

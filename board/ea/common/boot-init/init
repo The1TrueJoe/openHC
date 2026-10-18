@@ -122,30 +122,42 @@ fi
 # (valid_p1 re-checks p1, which is untouched unless the extract already began).
 if [ -f "$NEW/.ohc-stock-pending" ]; then
     echo "openHC: stock restore requested — reimaging p1 to Control4"
+    # Consume the flag now, while p1 is still mounted: this boot owns the request, so
+    # a later unrelated reboot can never re-trigger a wipe. (If we skip below, the
+    # user simply re-runs `ohc-restore stock`.)
     /bin/rm -f "$NEW/.ohc-stock-pending"
     /bin/sync
-    /bin/umount "$NEW" 2>/dev/null
-    # ohc-restore's finalize clears the autoscript enable byte over /dev/mtd0. The
-    # SPI-NOR probes asynchronously (like the eMMC wait above), so wait for the node
-    # before handing off, re-triggering devtmpfs each spin.
+    # finalize clears the autoscript enable byte over /dev/mtd0, so the restore is
+    # only safe if mtd0 is reachable: reimaging p1 and THEN failing to clear the
+    # autoscript would destroy openHC with no way to boot stock. The SPI-NOR probes
+    # asynchronously (like the eMMC wait above), so wait for the node BEFORE we
+    # unmount and wipe. If it never appears, SKIP the restore and boot openHC — p1 is
+    # untouched (still mounted at $NEW), so the pivot below just works.
     j=0
     while [ ! -c /dev/mtd0 ] && [ $j -lt 50 ]; do
         /bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
         /bin/sleep 0.1 2>/dev/null || /bin/usleep 100000 2>/dev/null || :
         j=$((j + 1))
     done
-    [ -c /dev/mtd0 ] || echo "openHC: WARNING /dev/mtd0 absent — autoscript may not clear"
-    if /usr/sbin/ohc-restore reimage-finalize; then
-        echo "openHC: restored to stock — rebooting"
-        /bin/sync
-        /sbin/reboot -f
+    if [ -c /dev/mtd0 ]; then
+        /bin/umount "$NEW" 2>/dev/null
+        if /usr/sbin/ohc-restore reimage-finalize; then
+            echo "openHC: restored to stock — rebooting"
+            /bin/sync
+            /sbin/reboot -f
+        fi
+        # finalize failed after unmounting; p1 may be partially stock, so do not
+        # pivot into it — re-check and fall back to network recovery.
+        echo "openHC: stock restore did not complete — recovering"
+        valid_p1 || {
+            echo "openHC: p1 no longer valid after a partial restore — network recovery"
+            net_serve
+            exec /bin/sh
+        }
+    else
+        echo "openHC: /dev/mtd0 never appeared — skipping stock restore, booting openHC (p1 intact)"
+        # p1 is still mounted at $NEW; fall through to the normal pivot below.
     fi
-    echo "openHC: stock restore did not complete — continuing to openHC"
-    valid_p1 || {
-        echo "openHC: p1 no longer valid after a partial restore — network recovery"
-        net_serve
-        exec /bin/sh
-    }
 fi
 
 echo "openHC: booting the persistent rootfs on $ROOT"
