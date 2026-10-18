@@ -63,7 +63,10 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
 #                     that explicit and greppable.
 #                     BR2_OHC_EA_KERNEL_DRIVERS is set by ea/common/common_defconfig
 #                     and by nothing else.
-OHC_KERNEL_SUBTREES = drivers sound
+#
+# arch/ carries the EA board device trees (arch/x86/boot/dts/, linked in by
+# patches/linux/0015's BUILTIN_DTB), so .dts/.dtsi are mirrored too.
+OHC_KERNEL_SUBTREES = arch drivers sound
 # NOT unconditional, despite living under common/. The only thing in that mirror
 # is the IO-MCU gpiochip driver, and two boards have no IO microcontroller —
 # mirroring it there cost them a vmlinux link failure on rc-core. See
@@ -88,7 +91,7 @@ define OHC_KERNEL_MIRROR_HOOK
 		for t in $(OHC_KERNEL_SUBTREES); do \
 			[ -d "$$m/$$t" ] || continue; \
 			( cd "$$m/$$t" && \
-			  find . \( -name '*.c' -o -name '*.h' -o -name 'Makefile' -o -name 'Kbuild' -o -name 'Kconfig' \) | sed 's|^\./||' ) | while read -r f; do \
+			  find . \( -name '*.c' -o -name '*.h' -o -name '*.dts' -o -name '*.dtsi' -o -name 'Makefile' -o -name 'Kbuild' -o -name 'Kconfig' \) | sed 's|^\./||' ) | while read -r f; do \
 				install -D -m644 "$$m/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
 				echo "openHC: installed $$t/$$f ($$who)"; \
 			done; \
@@ -108,3 +111,18 @@ define OHC_KERNEL_MIRROR_HOOK
 	done
 endef
 LINUX_POST_PATCH_HOOKS += OHC_KERNEL_MIRROR_HOOK
+
+# The EA board's own device tree sits at the root of its board folder
+# (board/ea/<board>/<board>.dts), beside the ohc.features its includes follow,
+# not in a kernel mirror. Copy it next to the shared .dtsi files the family
+# mirror just installed; the board fragment names it in CONFIG_BUILTIN_DTB_NAME.
+# BR2_OHC_EA_BOARD is written by build/build.sh.
+OHC_EA_BOARD = $(call qstrip,$(BR2_OHC_EA_BOARD))
+ifneq ($(OHC_EA_BOARD),)
+define OHC_EA_BOARD_DTS_HOOK
+	install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/ea/$(OHC_EA_BOARD)/$(OHC_EA_BOARD).dts \
+		$(LINUX_DIR)/arch/x86/boot/dts/$(OHC_EA_BOARD).dts
+	echo "openHC: installed arch/x86/boot/dts/$(OHC_EA_BOARD).dts (ea/$(OHC_EA_BOARD))"
+endef
+LINUX_POST_PATCH_HOOKS += OHC_EA_BOARD_DTS_HOOK
+endif

@@ -45,7 +45,8 @@
 #                    0x78000000 stop line, far below the framebuffer at 0x7fc00000
 #
 # Do NOT widen past 0x78000000: the framebuffer must not become System RAM or
-# ce5300-fb refuses to probe (display gone), and the region just under it holds
+# simplefb scans out of memory the kernel hands out (the DTB framebuffer has no
+# System-RAM guard, unlike the old ce5300-fb), and the region just under it holds
 # CEFDK structures the box needs to reboot. This crosses the 32-bit lowmem
 # boundary (~934 MB highmem; userspace unaffected).
 #
@@ -57,3 +58,6 @@ CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc
 
 # eMMC storage (sdhci-pci + ext4) comes from ea/common/features/emmc/linux.fragment
 # via the 'emmc' entry in board/ea/ea3-v2/ohc.features.
+
+# Board device tree: board/ea/ea3-v2/ea3-v2.dts (see common.fragment).
+CONFIG_BUILTIN_DTB_NAME="ea3-v2"

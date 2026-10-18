@@ -1,0 +1,130 @@
+usb: ehci-pci: switch a board VBUS supply from root-hub port power
+
+The Control4 EA's rear USB port (Intel CE5300, TDI EHCI 01:0d.1) has its 5 V
+behind a load switch on SoC GPIO 44. Nothing in the controller knows about it:
+the stock kernel's closed board driver simply drove the line high at boot.
+Measured on an EA3: low, the port sees nothing (PORTSC SE0, no connect);
+high, a USB stick enumerates as high-speed; low again, it disconnects.
+
+Hogging the line high would work but takes the port out of Linux's hands.
+Instead, take an optional vbus-supply from the controller's device-tree node
+(the board DTB, patch 0015; a regulator-fixed on gpio44) and switch it from
+the ehci .port_power hook -- the same hook chipidea uses for its VBUS
+regulator. Root-hub port power then switches real VBUS, so the port's
+"disable" attribute, uhubctl and port power-off work as on any hub with
+per-port power switching.
+
+Advertising that needs HCS_PPC in the root hub descriptor; without it
+usbcore never sends PORT_POWER at all. The board switches power even if the
+controller cannot, so set the bit in the cached hcs_params when a supply is
+present (writes to a read-only PORTSC.PP are ignored). Single-port
+controllers only, as in chipidea.
+
+Without CONFIG_REGULATOR the consumer stubs return -ENODEV and nothing
+changes, which is what the size-limited EA bootstrap kernel gets; the fat
+kernel (linux/real-kernel.fragment) carries the regulator core.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/usb/host/ehci-pci.c
++++ b/drivers/usb/host/ehci-pci.c
+@@ -8,6 +8,7 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/pci.h>
++#include <linux/regulator/consumer.h>
+ #include <linux/usb.h>
+ #include <linux/usb/hcd.h>
+ 
+@@ -86,6 +87,70 @@
+ }
+ 
+ /* called during probe() after chip reset completes */
++/*
++ * Board-switched VBUS. Some boards put a port's 5 V behind a load switch the
++ * controller knows nothing about (Control4 EA: the rear USB port on an Intel
++ * CE5300, whose stock kernel just drove the switch's GPIO high at boot). Given
++ * a vbus-supply on the controller's device-tree node, root-hub port power
++ * switches that supply -- as chipidea does with its VBUS regulator -- so
++ * usbcore's port power control (the port's "disable" attribute, uhubctl, port
++ * power-off) really cuts VBUS.
++ */
++struct ehci_pci_priv {
++	struct regulator	*vbus;		/* board VBUS switch, or NULL */
++	bool			vbus_on;
++};
++
++static int ehci_pci_port_power(struct usb_hcd *hcd, int portnum, bool enable)
++{
++	struct ehci_pci_priv *priv = (struct ehci_pci_priv *)hcd_to_ehci(hcd)->priv;
++	int ret;
++
++	if (!priv->vbus || enable == priv->vbus_on)
++		return 0;
++
++	ret = enable ? regulator_enable(priv->vbus) :
++		       regulator_disable(priv->vbus);
++	if (ret) {
++		dev_err(hcd->self.controller, "cannot switch VBUS %s: %d\n",
++			enable ? "on" : "off", ret);
++		return ret;
++	}
++	priv->vbus_on = enable;
++	return 0;
++}
++
++static int ehci_pci_vbus_setup(struct ehci_hcd *ehci, struct pci_dev *pdev)
++{
++	struct ehci_pci_priv *priv = (struct ehci_pci_priv *)ehci->priv;
++	struct regulator *vbus;
++
++	vbus = devm_regulator_get_optional(&pdev->dev, "vbus");
++	if (IS_ERR(vbus)) {
++		if (PTR_ERR(vbus) == -ENODEV)
++			return 0;
++		return dev_err_probe(&pdev->dev, PTR_ERR(vbus),
++				     "cannot get VBUS supply\n");
++	}
++
++	/* One supply cannot follow several ports' power, as in chipidea. */
++	if (HCS_N_PORTS(ehci->hcs_params) != 1) {
++		ehci_warn(ehci, "vbus-supply on a %d-port controller is not supported\n",
++			  HCS_N_PORTS(ehci->hcs_params));
++		return 0;
++	}
++
++	/*
++	 * The board switches port power even where the controller cannot, so
++	 * advertise per-port power switching (HCS_PPC) in the root hub. Without
++	 * it usbcore never sends SET/CLEAR_FEATURE(PORT_POWER) and VBUS would
++	 * never come on. Writes to a read-only PORTSC.PP are ignored.
++	 */
++	priv->vbus = vbus;
++	ehci->hcs_params |= 1 << 4;
++	return 0;
++}
++
+ static int ehci_pci_setup(struct usb_hcd *hcd)
+ {
+ 	struct ehci_hcd		*ehci = hcd_to_ehci(hcd);
+@@ -272,6 +337,10 @@
+ 	}
+ 
+ 	retval = ehci_setup(hcd);
++	if (retval)
++		return retval;
++
++	retval = ehci_pci_vbus_setup(ehci, pdev);
+ 	if (retval)
+ 		return retval;
+ 
+@@ -388,7 +457,9 @@
+ static struct hc_driver __read_mostly ehci_pci_hc_driver;
+ 
+ static const struct ehci_driver_overrides pci_overrides __initconst = {
++	.extra_priv_size =	sizeof(struct ehci_pci_priv),
+ 	.reset =		ehci_pci_setup,
++	.port_power =		ehci_pci_port_power,
+ };
+ 
+ /*-------------------------------------------------------------------------*/

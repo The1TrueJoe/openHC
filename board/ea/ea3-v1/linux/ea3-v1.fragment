@@ -10,3 +10,6 @@
 # PROVEN on v1 hardware: a v1 EA3 has run the ea3-v2 image, with exactly this
 # line, durably (1.7 GB).
 CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
+
+# Board device tree: board/ea/ea3-v1/ea3-v1.dts (see common.fragment).
+CONFIG_BUILTIN_DTB_NAME="ea3-v1"

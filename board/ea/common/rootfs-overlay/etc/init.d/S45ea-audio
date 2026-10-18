@@ -12,16 +12,15 @@
 #
 # WHY before S95librespot: librespot (and shairport) open /dev/snd/*, which only
 # exists once the card is registered. Each modprobe pulls snd / snd-pcm /
-# snd-soc-core by modules.dep; the four openHC drivers bind by name/alias, not by
+# snd-soc-core by modules.dep; the three openHC drivers bind by name/alias, not by
 # symbol dep, so they are loaded explicitly and in order:
 #   ce5300-i2s   — CPU DAI + PCM component (binds its PCI device)
-#   adau1451-c4  — codec component
-#   ce5300-ea-board — registers the ce5300-ea-audio platform device (+ codec i2c
-#                     client); its initcall runs as module_init on load
-#   ce5300-ea3   — machine driver, binds ce5300-ea-audio and registers the card
+#   adau1451-c4  — codec component (binds the i2c-3 0x38 node in the board DTB)
+#   ce5300-ea3   — machine driver, binds the "control4,ea-audio" DTB node and
+#                  registers the card
 # Deferred probe makes the order forgiving, but this is the natural bring-up order.
 
-MODS="ce5300-i2s adau1451-c4 ce5300-ea-board ce5300-ea3"
+MODS="ce5300-i2s adau1451-c4 ce5300-ea3"
 
 start() {
     loaded=0
@@ -44,7 +43,7 @@ start() {
 }
 
 stop() {
-    for m in ce5300-ea3 ce5300-ea-board adau1451-c4 ce5300-i2s; do
+    for m in ce5300-ea3 adau1451-c4 ce5300-i2s; do
         modprobe -r "$m" >/dev/null 2>&1 || true
     done
 }

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * gpio-line-names for the CE5300's 128 lines. Include LAST from every board
+ * .dts.
+ *
+ * It is one property, so it cannot be split across files the way the hogs
+ * are. Lines every board has are named here; a line that belongs to a feature
+ * or a board is EA_LINE_<n>, which that feature's/board's .dtsi defines
+ * alongside its hog. A board without the feature leaves the line unnamed --
+ * the name says the hardware is there. Names are the stock c4_gpio_config's
+ * where it has one; the few that are ours say so where they are defined.
+ *
+ * Inputs (board-id straps, the ID button, status and fault flags) are named
+ * but never hogged, so gpioget/gpiofind can read them; 32 (id_button) must stay
+ * free for ohc-restore-button. 17-23 are the seven straps the stock kernel's
+ * id_straps() reads (revision = bits 0-3, board type = bits 4-6), so 23 is
+ * board_id6; the script's src_reset on 23 is commented out in stock.
+ */
+#ifndef EA_LINE_5
+#define EA_LINE_5 ""
+#endif
+#ifndef EA_LINE_8
+#define EA_LINE_8 ""
+#endif
+#ifndef EA_LINE_10
+#define EA_LINE_10 ""
+#endif
+#ifndef EA_LINE_24
+#define EA_LINE_24 ""
+#endif
+#ifndef EA_LINE_27
+#define EA_LINE_27 ""
+#endif
+#ifndef EA_LINE_61
+#define EA_LINE_61 ""
+#endif
+#ifndef EA_LINE_80
+#define EA_LINE_80 ""
+#endif
+#ifndef EA_LINE_101
+#define EA_LINE_101 ""
+#endif
+
+&gpio {
+	gpio-line-names =
+		/*   0 */ "", "", "", "", "", EA_LINE_5, "", "io_reset",
+		/*   8 */ EA_LINE_8, "", EA_LINE_10, "", "", "", "", "",
+		/*  16 */ "", "board_id0", "board_id1", "board_id2", "board_id3", "board_id4", "board_id5", "board_id6",
+		/*  24 */ EA_LINE_24, "", "usb_2_serial_reset", EA_LINE_27, "", "zigbee_reset", "", "",
+		/*  32 */ "id_button", "", "", "", "", "", "", "",
+		/*  40 */ "", "", "", "ldo_enable", "usb_rear_power", "", "", "",
+		/*  48 */ "", "", "", "", "", "", "poe_type", "",
+		/*  56 */ "", "n_fpga_reload", "", "", "", EA_LINE_61, "", "",
+		/*  64 */ "", "", "", "", "", "", "", "",
+		/*  72 */ "", "", "", "n_twelve_volt_current_limit", "", "", "", "",
+		/*  80 */ EA_LINE_80, "", "", "", "", "", "", "",
+		/*  88 */ "", "", "", "", "", "", "", "",
+		/*  96 */ "", "usb_rear_oc", "", "", "", EA_LINE_101, "", "",
+		/* 104 */ "", "", "", "", "", "", "", "",
+		/* 112 */ "", "", "", "", "", "", "", "",
+		/* 120 */ "", "n_usb_current_limit", "twelve_volt_ok", "", "", "", "", "";
+};

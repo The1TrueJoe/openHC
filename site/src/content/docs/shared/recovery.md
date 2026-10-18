@@ -119,7 +119,7 @@ here ever claims success without the flash reading back exactly what was intende
    when `status.available`.
 3. **The front ID button.** Holding it runs `ohc-restore stock`. The button is a
    bare SoC GPIO (`gpiochip0` line 32, active-low — released reads `1`, pressed
-   `0`, confirmed on an EA1) that `gpio-ea-board` deliberately leaves unclaimed. A
+   `0`, confirmed on an EA1) that the board device tree names `id_button` but deliberately leaves unclaimed. A
    watcher (`/opt/ohc/bin/ohc-restore-button`, polling with libgpiod, launched by
    init `S96ohc-restore-button`) fires after `OHC_RESTORE_BUTTON_HOLD` seconds
    (default 10). It is **fail-safe**: it arms only after one clean "released"

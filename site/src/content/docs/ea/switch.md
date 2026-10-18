@@ -112,12 +112,13 @@ The vendor `spi-bcm53125` driver is out-of-tree. Mainline's equivalent is the
 **DSA `b53` driver**, which does support the BCM53125 and does have an SPI
 binding, so this is a *portable* subsystem — unlike the graphics stack.
 
-It needs a device-tree or board description, which is the same de-DT problem
-already solved for `i2c-pxa`. The board glue lives at
-`board/ea/common/kernel/drivers/spi/spi-ea-b53-board.c` and **now builds**: its old
-failure was an include, not a design problem — `dsa_chip_data` moved to
-`<linux/platform_data/dsa.h>`, and only the `dsa_platform_data` wrapper was
-actually removed.
+It needs a board description. That is now a node in the board device tree,
+`board/ea/common/kernel/arch/x86/boot/dts/ea-switch.dtsi`: the switch at SSP
+chip-select 1 in SPI mode 3, ports 1 and 2 as `lan1`/`lan2`, and port 5 as the
+CPU port with `ethernet = <&gbe>` pointing at the e1000. (It used to be C
+platform data, which DSA treats as legacy and which silently needed the CPU
+port's conduit filled in by hand.) b53 only binds when `S39ea-switch` loads it,
+which it does with `ohc.switch=1` on the kernel command line.
 
 **DSA's bring-up of the isolated second jack is still unproven on hardware.** If
 DSA doesn't attach, the network init script falls back to DHCP on the master
