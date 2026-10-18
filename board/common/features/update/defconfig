@@ -1,0 +1,9 @@
+# openHC feature: update — software updates from the web UI (ohc-updated).
+#
+# A channel (stable: published GitHub releases; dev: the rolling pre-release of
+# main) is checked against /etc/openhc-release; installing downloads the board's
+# image bundle and hands it to that board's on-box installer
+# (packages/update/src/install.rs), then reboots. A board joins this feature when
+# its installer lands — the HC-800 first (its kernel and initramfs are two files
+# on sda3). Nothing to select here: ohc-updated is a static binary with its own
+# TLS and the roots compiled in.
