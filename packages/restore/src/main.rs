@@ -307,8 +307,86 @@ fn cmd_install() -> io::Result<()> {
 
 fn cmd_stock() -> io::Result<()> {
     cmd_revert()?;
-    println!("stock: MFH reverted. Handing p1 to CEFDK's recovery kernel...");
-    recovery_reimage_p1()?;
+    // Two ways to put the stock rootfs back on p1:
+    //
+    //   * direct  — reformat p1 and unpack p2's recfs.tar.xz onto it, in place. This
+    //     is simple and reliable, but it cannot touch p1 while p1 is the running
+    //     root, so it only works from a context where p1 is NOT mounted as / (a
+    //     ramboot, or the boot-init bootstrap before it pivots to p1).
+    //
+    //   * kexec   — boot p2's stock recovery kernel, whose initramfs reimages p1.
+    //     This is the only option when p1 IS our root, but on the EA3 it is defeated
+    //     by the fat kernel's RAM-reclaim memmap (kexec can't place its segments:
+    //     "locate_hole failed"), so it is a last resort, not the default.
+    //
+    // Prefer the direct path whenever p1 is free; fall back to kexec only when we are
+    // running on p1 itself.
+    if p1_is_root() {
+        println!("stock: p1 is the running root — handing it to CEFDK's recovery kernel via kexec...");
+        recovery_reimage_p1()?;
+    } else {
+        println!("stock: p1 is not mounted as root — reimaging it directly from p2...");
+        reimage_p1_direct()?;
+    }
+    Ok(())
+}
+
+/// True when /dev/mmcblk0p1 is the filesystem mounted at `/`. We compare the st_dev
+/// of `/` (the device number of the mounted root fs) against the rdev of the p1
+/// device node (p1's own device number); they are equal exactly when p1 is root.
+/// On a durable openHC boot p1 is root (this returns true); in a ramboot or inside
+/// the boot-init bootstrap it is not (false), which is where the direct reimage is
+/// allowed to run.
+fn p1_is_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let root_dev = match std::fs::metadata("/") {
+        Ok(m) => m.dev(),
+        Err(_) => return false,
+    };
+    match std::fs::metadata("/dev/mmcblk0p1") {
+        Ok(m) => m.rdev() == root_dev,
+        Err(_) => false,
+    }
+}
+
+/// Reimage p1 to stock in place, without kexec. Mount p2 read-only, reformat p1,
+/// and stream p2's recfs.tar.xz (the factory rootfs CEFDK's own recovery kernel
+/// unpacks) straight onto it. The caller must have established that p1 is not the
+/// running root (see `p1_is_root`); writing the mounted root would corrupt it.
+fn reimage_p1_direct() -> io::Result<()> {
+    if p1_is_root() {
+        return Err(io::Error::other(
+            "refusing to reimage p1: it is mounted as / (run this from a ramboot, not durable p1)",
+        ));
+    }
+    let p2 = "/mnt/ohc-recovery";
+    std::fs::create_dir_all(p2)?;
+    run("mount", &["-o", "ro", "/dev/mmcblk0p2", p2])
+        .or_else(|_| run("mount", &["-o", "ro,remount", "/dev/mmcblk0p2", p2]))?;
+    let recfs = format!("{p2}/recfs.tar.xz");
+    if !std::path::Path::new(&recfs).exists() {
+        return Err(io::Error::other(format!("{recfs} missing — cannot reimage p1")));
+    }
+
+    // Make sure p1 is not mounted anywhere (a stale mount would make mke2fs refuse).
+    let _ = run("umount", &["/dev/mmcblk0p1"]);
+    eprintln!("stock: reformatting p1 (ext2) and unpacking the stock rootfs...");
+    // CEFDK formats p1 as ext2; mke2fs with no -t gives ext2 by default. Busybox
+    // lacks mkfs.ext*, but mke2fs is present on the box.
+    run("mke2fs", &["-F", "-q", "/dev/mmcblk0p1"])?;
+
+    let p1 = "/mnt/ohc-p1";
+    std::fs::create_dir_all(p1)?;
+    run("mount", &["/dev/mmcblk0p1", p1])?;
+    // Decompress and untar in one pipe; busybox tar's own xz autodetect is
+    // unreliable on the box (same reason recovery_reimage_p1 gunzips explicitly), so
+    // drive xz -dc into tar.
+    let pipe = format!("xz -dc '{recfs}' | tar -x -C '{p1}'");
+    run("sh", &["-c", &pipe])?;
+    run("sync", &[])?;
+    let _ = run("umount", &[p1]);
+    let _ = run("umount", &[p2]);
+    eprintln!("stock: p1 reimaged to stock. Power-cycle to boot Control4.");
     Ok(())
 }
 
