@@ -562,8 +562,16 @@ fi
 # meson -D flag) in a defconfig leaves a cached tree building it the old way.
 # Compare every package symbol with the tree's .config from before defconfig,
 # and for each that changed, dirclean the package that owns it: the longest
-# enabled BR2_PACKAGE_<PKG> prefix that is not the symbol itself. A package that
-# was only turned on or off needs nothing — Buildroot handles that.
+# enabled BR2_PACKAGE_<PKG> prefix that is not the symbol itself AND is a real
+# package (has a <pkg>.mk). Not every enabled BR2_PACKAGE_* symbol is one —
+# BR2_PACKAGE_KODI_PLATFORM_SUPPORTS is a capability flag, and asking make for
+# kodi-platform-supports-dirclean stopped a build — so a prefix with no recipe
+# is skipped and the next shorter one tried. A package that was only turned on
+# or off needs nothing — Buildroot handles that.
+_is_pkg() {   # $1 = package name; true if Buildroot or this tree has its recipe
+    [ -n "$(find "$BUILDROOT_DIR/package" "$REPO/packages" "$REPO/board" -maxdepth 4 \
+        -name "$1.mk" -print -quit 2>/dev/null)" ]
+}
 if [ -n "$_pkg_was" ]; then
     _cleaned=" "
     for _s in $(printf '%s\n' "$_pkg_was" "$(_pkg_syms "$OUT/.config")" | sort | uniq -u | sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=.*/\1/p' | sort -u); do
@@ -572,6 +580,7 @@ if [ -n "$_pkg_was" ]; then
             _c=${_c%_*}
             grep -q "^BR2_PACKAGE_$_c=y\$" "$OUT/.config" || continue
             _pkg=$(echo "$_c" | tr 'A-Z_' 'a-z-')
+            _is_pkg "$_pkg" || continue
             case "$_cleaned" in *" $_pkg "*) ;; *)
                 echo ">> $_pkg: option $_s changed — re-extracting"
                 "${M[@]}" "$_pkg-dirclean"
