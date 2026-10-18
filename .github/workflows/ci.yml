@@ -773,15 +773,21 @@ jobs:
       # that restored one). A FAILED build is still saved — its broken package
       # has no stamp, so Buildroot redoes it — and keeps everything before it.
       - name: Trim the output tree before caching
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           O=output/build/${{ matrix.board }}
           [ -d "$O" ] || exit 0
           rm -rf "$O"/build/linux-* "$O"/images
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
+      # main only. A PR run RESTOREs (from main's newest tree, via restore-keys)
+      # but never saves: every PR would otherwise park its own 1-2 GB tree per
+      # board, and with the 10 GB repo cap that evicts the main trees every
+      # later run depends on. PR-scoped caches are not readable by other
+      # branches anyway. Release runs build from a tag ref, whose cache is
+      # likewise invisible to everyone else, so they do not save either.
       - name: Save Buildroot output tree
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}
