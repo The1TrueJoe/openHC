@@ -33,8 +33,9 @@ start() {
     # IR of its own. Skip and say why rather than looking broken.
     lines=$(( ${OHC_RELAYS:-0} + ${OHC_CONTACTS:-0} ))
     ir=$(( ${OHC_IR_OUT:-0} + ${OHC_IR_BLASTER:-0} + ${OHC_IR_IN:-0} ))
-    [ "$lines" -gt 0 ] || [ "$ir" -gt 0 ] || {
-        echo "iomcu: no relays, contacts or IR on this board — nothing to attach"
+    uarts=${OHC_IO_UARTS:-0}
+    [ "$lines" -gt 0 ] || [ "$ir" -gt 0 ] || [ "$uarts" -gt 0 ] || {
+        echo "iomcu: no relays, contacts, IR or serial on this board — nothing to attach"
         return 0
     }
 
@@ -47,6 +48,9 @@ start() {
     [ -n "$OHC_IR_OUT" ]     && echo "$OHC_IR_OUT"     > "$PARAMS/ir_out"
     [ -n "$OHC_IR_BLASTER" ] && echo "$OHC_IR_BLASTER" > "$PARAMS/ir_blaster"
     [ -n "$OHC_IR_IN" ]      && echo "$OHC_IR_IN"      > "$PARAMS/ir_in"
+    # MCU-routed user serial ports: each becomes a /dev/ttyOHC<n> tty the driver
+    # mux-es over this same port. The combo jacks stay IR until a tty is opened.
+    [ -n "$OHC_IO_UARTS" ]   && echo "$OHC_IO_UARTS"   > "$PARAMS/uarts"
 
     start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec /usr/bin/iomcu-attach -- \
         "$OHC_IO_MCU_TTY" "${OHC_IO_MCU_BAUD:-115200}" "$LDISC" \
