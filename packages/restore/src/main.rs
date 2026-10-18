@@ -375,10 +375,11 @@ fn p1_is_root() -> bool {
     }
 }
 
-/// Reimage p1 to stock in place, without kexec. Mount p2 read-only, reformat p1,
-/// and stream p2's recfs.tar.xz (the factory rootfs CEFDK's own recovery kernel
-/// unpacks) straight onto it. The caller must have established that p1 is not the
-/// running root (see `p1_is_root`); writing the mounted root would corrupt it.
+/// Reimage p1 to stock in place, without kexec. Mount p2 read-only, empty p1's
+/// existing ext4 (keeping its filesystem/LABEL/UUID, so no mke2fs and no e2fsprogs
+/// in the initramfs), and stream p2's recfs.tar.xz (the factory rootfs) onto it.
+/// The caller must have established that p1 is not the running root (see
+/// `p1_is_root`); writing the mounted root would corrupt it.
 fn reimage_p1_direct() -> io::Result<()> {
     if p1_is_root() {
         return Err(io::Error::other(
@@ -394,21 +395,24 @@ fn reimage_p1_direct() -> io::Result<()> {
         return Err(io::Error::other(format!("{recfs} missing — cannot reimage p1")));
     }
 
-    // Make sure p1 is not mounted anywhere (a stale mount would make mke2fs refuse).
-    let _ = run("umount", &["/dev/mmcblk0p1"]);
-    eprintln!("stock: reformatting p1 (ext2) and unpacking the stock rootfs...");
-    // CEFDK formats p1 as ext2; mke2fs with no -t gives ext2 by default. Busybox
-    // lacks mkfs.ext*, but mke2fs is present on the box.
-    run("mke2fs", &["-F", "-q", "/dev/mmcblk0p1"])?;
-
+    // Reuse p1's existing ext4 rather than reformatting it: factory p1 is ext4
+    // LABEL=rootfs, and emptying-then-unpacking keeps that filesystem (its type,
+    // LABEL and UUID) intact — exactly what the stock kernel item expects. It also
+    // avoids mke2fs, so the finalize needs no e2fsprogs in the boot-init initramfs
+    // (only busybox's tar + unxz). Mount with autodetect so either ext4 or ext2 p1
+    // is handled.
     let p1 = "/mnt/ohc-p1";
     std::fs::create_dir_all(p1)?;
+    let _ = run("umount", &["/dev/mmcblk0p1"]); // drop any stale mount
     run("mount", &["/dev/mmcblk0p1", p1])?;
-    // Decompress and untar in one pipe; busybox tar's own xz autodetect is
-    // unreliable on the box (same reason recovery_reimage_p1 gunzips explicitly), so
-    // drive xz -dc into tar.
-    let pipe = format!("xz -dc '{recfs}' | tar -x -C '{p1}'");
-    run("sh", &["-c", &pipe])?;
+    eprintln!("stock: emptying p1 and unpacking the stock rootfs (recfs.tar.xz)...");
+    // Empty p1 in place, preserving the filesystem. The glob set covers normal
+    // names, dotfiles, and ..names while never matching `.`/`..`; unmatched globs
+    // pass harmlessly to rm (stderr suppressed).
+    run("sh", &["-c", &format!("cd '{p1}' && rm -rf -- ..?* .[!.]* * 2>/dev/null; true")])?;
+    // Decompress + untar in one pipe (busybox tar's own xz autodetect is unreliable
+    // on the box, so drive unxz into tar explicitly).
+    run("sh", &["-c", &format!("unxz -c '{recfs}' | tar -x -C '{p1}'")])?;
     run("sync", &[])?;
     let _ = run("umount", &[p1]);
     let _ = run("umount", &[p2]);
