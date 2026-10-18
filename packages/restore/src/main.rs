@@ -380,18 +380,35 @@ fn recovery_reimage_p1() -> io::Result<()> {
 /// header (0x580 on the units seen). Matching the 0x55,0xaa + "HdrS" pair finds it
 /// without assuming either layout.
 fn find_bzimage(dir: &std::path::Path) -> Option<(std::path::PathBuf, u64)> {
+    // Collect every file, then try kernel-named files FIRST. The 0x55,0xaa+"HdrS"
+    // pair can occur by chance in an unrelated binary in the payload (the EA3's
+    // recovery tar ships ./tmp/kernel_size_writer, which has such a coincidental
+    // match), so a file actually named like a kernel must win over an incidental
+    // hit in some tool.
+    let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).ok()?.flatten() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-                continue;
+            } else {
+                files.push(p);
             }
-            let Ok(buf) = std::fs::read(&p) else { continue };
-            if let Some(off) = bzimage_offset(&buf) {
-                return Some((p.clone(), off));
-            }
+        }
+    }
+    let rank = |p: &std::path::Path| -> u8 {
+        match p.file_name().and_then(|n| n.to_str()) {
+            Some("bzImage") => 0,
+            Some(n) if n.contains("bzImage") || n.contains("vmlinuz") || n.contains("vmlinux") => 1,
+            _ => 2,
+        }
+    };
+    files.sort_by_key(|p| rank(p));
+    for p in files {
+        let Ok(buf) = std::fs::read(&p) else { continue };
+        if let Some(off) = bzimage_offset(&buf) {
+            return Some((p, off));
         }
     }
     None
