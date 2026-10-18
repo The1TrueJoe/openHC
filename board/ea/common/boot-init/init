@@ -116,10 +116,11 @@ fi
 # its own root (p1), so it drops this flag on p1 and reboots with the autoscript
 # still enabled. Here, pre-pivot, p1 is only a mount — so ohc-restore can reimage it
 # from p2's recfs.tar.xz and then clear the autoscript, exactly the context the
-# durable run lacked. Remove the flag FIRST so a finalize that fails before it
-# rewrites p1 cannot loop; unmount p1; then finalize. On success the box reboots
-# straight to stock Control4; on failure fall through to a normal openHC boot
-# (valid_p1 re-checks p1, which is untouched unless the extract already began).
+# durable run lacked. Consume the flag FIRST (while p1 is still mounted) so no
+# future reboot can re-trigger a wipe; then only reimage once /dev/mtd0 is reachable
+# (finalize must clear the autoscript afterwards). mtd0 absent -> skip, p1 untouched,
+# boot openHC. On success the box reboots straight to stock Control4; a finalize that
+# fails after unmounting falls back to network recovery rather than pivoting a partial p1.
 if [ -f "$NEW/.ohc-stock-pending" ]; then
     echo "openHC: stock restore requested — reimaging p1 to Control4"
     # Consume the flag now, while p1 is still mounted: this boot owns the request, so
