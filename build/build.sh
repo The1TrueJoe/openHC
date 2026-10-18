@@ -550,6 +550,73 @@ fi
 # once the kernel + patches stabilize (it forces a full kernel rebuild each run).
 "${M[@]}" linux-dirclean
 
+# Stale Buildroot packages first, then ours: the per-package `-rebuild` of our
+# packages below builds whatever they depend on right there, so a Buildroot
+# package that needs re-extracting must be cleaned BEFORE it, or ours compile
+# against its stale build. (Seen for real: webview rebuilt against a cached
+# WebKit built without WPE Platform, before the option check below dircleaned it,
+# and took the wrong code path.)
+#
+# A package's OPTIONS: Buildroot configures a package once,
+# so flipping one of its sub-options (e.g. BR2_PACKAGE_COG_USE_SYSTEM_DBUS, a
+# meson -D flag) in a defconfig leaves a cached tree building it the old way.
+# Compare every package symbol with the tree's .config from before defconfig,
+# and for each that changed, dirclean the package that owns it: the longest
+# enabled BR2_PACKAGE_<PKG> prefix that is not the symbol itself. A package that
+# was only turned on or off needs nothing — Buildroot handles that.
+if [ -n "$_pkg_was" ]; then
+    _cleaned=" "
+    for _s in $(printf '%s\n' "$_pkg_was" "$(_pkg_syms "$OUT/.config")" | sort | uniq -u | sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=.*/\1/p' | sort -u); do
+        _c=${_s#BR2_PACKAGE_}
+        while [ "${_c%_*}" != "$_c" ]; do
+            _c=${_c%_*}
+            grep -q "^BR2_PACKAGE_$_c=y\$" "$OUT/.config" || continue
+            _pkg=$(echo "$_c" | tr 'A-Z_' 'a-z-')
+            case "$_cleaned" in *" $_pkg "*) ;; *)
+                echo ">> $_pkg: option $_s changed — re-extracting"
+                "${M[@]}" "$_pkg-dirclean"
+                _cleaned="$_cleaned$_pkg " ;;
+            esac
+            break
+        done
+    done
+fi
+
+# Buildroot's OWN packages that a board patches through its
+# BR2_GLOBAL_PATCH_DIR (e.g. board/ea/common/gpu-wpe-i386/patches/wpewebkit): patches are applied only
+# at extract time, so a cached build tree keeps building the unpatched source.
+# Re-extract a patched package when one of its patches is not in the build
+# dir's .applied_patches_list (Buildroot records each one it applies), or when
+# the patch set changed since we last saw it. Seen for the first time with every
+# patch already applied, it is only recorded — so a toolchain package with a
+# long-standing patch is not rebuilt for nothing. linux is dircleaned above.
+_gpd=$(sed -n 's/^BR2_GLOBAL_PATCH_DIR="\(.*\)"$/\1/p' "$OUT/.config" | sed "s#\$(BR2_EXTERNAL_OPENHC_PATH)#$REPO/board#g")
+for _root in $_gpd; do
+    for _pd in "$_root"/*/; do
+        [ -d "$_pd" ] || continue
+        _pkg=$(basename "$_pd")
+        [ "$_pkg" = linux ] && continue
+        _bd=$(ls -d "$OUT"/build/"$_pkg"-[0-9]* 2>/dev/null | head -1 || true)
+        [ -n "$_bd" ] || continue        # not built yet: it gets patched when it is
+        _sum=$(find "$_pd" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
+        _sumf="$OUT/build/.ohc-gpatch-$_pkg.sum"
+        _stale=""
+        if [ -f "$_sumf" ]; then
+            [ "$(cat "$_sumf")" = "$_sum" ] || _stale=1
+        else
+            for _p in "$_pd"*.patch; do
+                [ -e "$_p" ] || continue
+                grep -q "$(basename "$_p")" "$_bd/.applied_patches_list" 2>/dev/null || _stale=1
+            done
+        fi
+        if [ -n "$_stale" ]; then
+            echo ">> $_pkg: board patches changed — re-extracting"
+            "${M[@]}" "$_pkg-dirclean"
+        fi
+        printf '%s\n' "$_sum" > "$_sumf"
+    done
+done
+
 # Force a rebuild of every package THIS REPO maintains, before the main build.
 #
 # Buildroot stamps each step and will not redo it, which is right for upstream
@@ -616,66 +683,6 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     echo ">> $_pkg: forcing rebuild (we maintain it; its stamps mean nothing)"
     "${M[@]}" "$_pkg-rebuild"
 done
-
-# The same trap for Buildroot's OWN packages that a board patches through its
-# BR2_GLOBAL_PATCH_DIR (e.g. board/ea/common/gpu-wpe-i386/patches/wpewebkit): patches are applied only
-# at extract time, so a cached build tree keeps building the unpatched source.
-# Re-extract a patched package when one of its patches is not in the build
-# dir's .applied_patches_list (Buildroot records each one it applies), or when
-# the patch set changed since we last saw it. Seen for the first time with every
-# patch already applied, it is only recorded — so a toolchain package with a
-# long-standing patch is not rebuilt for nothing. linux is dircleaned above.
-_gpd=$(sed -n 's/^BR2_GLOBAL_PATCH_DIR="\(.*\)"$/\1/p' "$OUT/.config" | sed "s#\$(BR2_EXTERNAL_OPENHC_PATH)#$REPO/board#g")
-for _root in $_gpd; do
-    for _pd in "$_root"/*/; do
-        [ -d "$_pd" ] || continue
-        _pkg=$(basename "$_pd")
-        [ "$_pkg" = linux ] && continue
-        _bd=$(ls -d "$OUT"/build/"$_pkg"-[0-9]* 2>/dev/null | head -1 || true)
-        [ -n "$_bd" ] || continue        # not built yet: it gets patched when it is
-        _sum=$(find "$_pd" -maxdepth 1 -type f -exec cat {} + | cksum | cut -d' ' -f1)
-        _sumf="$OUT/build/.ohc-gpatch-$_pkg.sum"
-        _stale=""
-        if [ -f "$_sumf" ]; then
-            [ "$(cat "$_sumf")" = "$_sum" ] || _stale=1
-        else
-            for _p in "$_pd"*.patch; do
-                [ -e "$_p" ] || continue
-                grep -q "$(basename "$_p")" "$_bd/.applied_patches_list" 2>/dev/null || _stale=1
-            done
-        fi
-        if [ -n "$_stale" ]; then
-            echo ">> $_pkg: board patches changed — re-extracting"
-            "${M[@]}" "$_pkg-dirclean"
-        fi
-        printf '%s\n' "$_sum" > "$_sumf"
-    done
-done
-
-# And once more for a package's OPTIONS: Buildroot configures a package once,
-# so flipping one of its sub-options (e.g. BR2_PACKAGE_COG_USE_SYSTEM_DBUS, a
-# meson -D flag) in a defconfig leaves a cached tree building it the old way.
-# Compare every package symbol with the tree's .config from before defconfig,
-# and for each that changed, dirclean the package that owns it: the longest
-# enabled BR2_PACKAGE_<PKG> prefix that is not the symbol itself. A package that
-# was only turned on or off needs nothing — Buildroot handles that.
-if [ -n "$_pkg_was" ]; then
-    _cleaned=" "
-    for _s in $(printf '%s\n' "$_pkg_was" "$(_pkg_syms "$OUT/.config")" | sort | uniq -u | sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=.*/\1/p' | sort -u); do
-        _c=${_s#BR2_PACKAGE_}
-        while [ "${_c%_*}" != "$_c" ]; do
-            _c=${_c%_*}
-            grep -q "^BR2_PACKAGE_$_c=y\$" "$OUT/.config" || continue
-            _pkg=$(echo "$_c" | tr 'A-Z_' 'a-z-')
-            case "$_cleaned" in *" $_pkg "*) ;; *)
-                echo ">> $_pkg: option $_s changed — re-extracting"
-                "${M[@]}" "$_pkg-dirclean"
-                _cleaned="$_cleaned$_pkg " ;;
-            esac
-            break
-        done
-    done
-fi
 
 "${M[@]}" "${@:-all}"
 
