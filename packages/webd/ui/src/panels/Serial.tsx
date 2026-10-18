@@ -86,7 +86,11 @@ function TerminalWindow({
   const host = useRef<HTMLDivElement>(null);
   const [conn, setConn] = useState<'connecting' | 'open' | 'closed'>('connecting');
   const [note, setNote] = useState<string | null>(null);
-  const routed = port.transport === 'mcu';
+  // A port is bridgeable whenever it has a device node — a host UART, or an
+  // MCU-routed port the kernel now exposes as a tty. `transport` stays honest
+  // about the path (and still drives the "via MCU" hint) but no longer decides
+  // whether a terminal opens; only the absence of a node does.
+  const routed = !port.dev;
 
   useEffect(() => {
     // Escape closes, as any window should.
@@ -183,14 +187,13 @@ function TerminalWindow({
         </div>
 
         {routed ? (
-          // Not a failure — a different transport. This port has no device
-          // node; its bytes travel over the IO protocol's UART opcodes, which
-          // iod does not bridge yet. Saying so beats a terminal that silently
-          // never receives anything.
+          // No device node behind this port, so there is nothing to attach a
+          // terminal to. Saying so beats a console that silently never
+          // receives a byte.
           <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-green-500/60">
             <div>
-              <p className="mb-2 text-green-400">{port.label} is routed through the IO microcontroller.</p>
-              <p>There is no /dev/tty behind it, and iod does not bridge that path yet.</p>
+              <p className="mb-2 text-green-400">{port.label} has no device node.</p>
+              <p>There is no /dev/tty behind it for a terminal to open.</p>
             </div>
           </div>
         ) : (

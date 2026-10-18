@@ -27,14 +27,18 @@ pub enum Backend {
 
 #[derive(Serialize, Clone)]
 pub struct SerialPort {
-    /// Device node for a host UART, or `None` when the port is MCU-routed and
-    /// only reachable through the IO protocol.
+    /// The device node to open. `Some` for every port that is bridgeable —
+    /// both a host UART (`/dev/ttyS1`) and an MCU-routed port, which the kernel
+    /// line discipline now exposes as a tty (`/dev/ttyOHC0`). `None` only when
+    /// a port genuinely has no node yet, which is what the terminal refuses.
     pub dev: Option<String>,
     pub label: String,
     pub baud: u32,
-    /// `host` — a real /dev/tty the kernel owns.
-    /// `mcu`  — bytes travel over the IO protocol's UART opcodes; there is no
-    ///          device node, which is exactly why this distinction exists.
+    /// `host` — a real /dev/tty on a 16550A the SoC owns directly.
+    /// `mcu`  — a tty whose bytes travel over the IO protocol's UART opcodes,
+    ///          mux'd by the ohc-iomcu line discipline. Still a real node now;
+    ///          the distinction drives the UI's "via MCU" hint, not whether the
+    ///          port can be opened.
     pub transport: &'static str,
     /// What this PORT will actually run at.
     ///
@@ -183,12 +187,18 @@ impl Board {
             })
             .unwrap_or_default();
 
-        // MCU-routed user UARTs have no device node at all. They are appended
-        // after the host ports so indices stay stable as boards gain host ports.
+        // MCU-routed user UARTs. The ohc-iomcu line discipline mux-es each one
+        // onto a /dev/ttyOHC<n> tty (its own 0-based index, independent of any
+        // host ports), so the bytes travel over the IO protocol's UART opcodes
+        // while the port is, to everything above, an ordinary tty. They are
+        // appended after the host ports so indices stay stable as boards gain
+        // host ports. `transport` stays "mcu" — it is honest about the path and
+        // drives the UI's "via MCU" hint — but `dev` is now Some, which is what
+        // makes the terminal bridge open it like any other port.
         let mcu_uarts: u8 = num(&e, "OHC_IO_UARTS");
         for i in 0..mcu_uarts {
             serials.push(SerialPort {
-                dev: None,
+                dev: Some(format!("/dev/ttyOHC{i}")),
                 label: format!("Serial {}", i + 1),
                 baud: 115200,
                 transport: "mcu",
