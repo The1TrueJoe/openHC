@@ -43,6 +43,16 @@ tty)
         n=$((n + 1))
         [ "${e%%:*}" = "$dev" ] && { echo "serial/$n"; exit 0; }
     done
+    # MCU-routed user serial ports: the ohc-iomcu line discipline exposes each
+    # as /dev/ttyOHC<k> (k 0-based). iod appends them AFTER the host ports, so
+    # they continue the same numbering: ttyOHC0 is serial/(host count + 1).
+    case "$dev" in
+    ttyOHC[0-9]*)
+        k=${dev#ttyOHC}
+        echo "serial/$((n + k + 1))"
+        exit 0
+        ;;
+    esac
     # OHC_RADIOS is kind:dev — the SAME shape, deliberately. Here the kind is
     # the name, because a board has at most one of each.
     for e in $OHC_RADIOS; do

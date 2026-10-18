@@ -1,0 +1,26 @@
+[package]
+name = "update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "openHC updates on the box: a channel (stable releases or the rolling dev pre-release) checked on GitHub, downloaded and installed by the board's own installer."
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "signal", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rumqttc = { version = "0.25", default-features = false }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+ohcmqtt = { path = "../ohcmqtt" }
+# HTTPS to GitHub, in-process: the images ship no curl, and busybox wget has no
+# TLS. rustls + Mozilla's roots compiled in — no OpenSSL, no ca-certificates.
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Where the HC-800's kernel and initrd live — the flasher's own constants.
+ohc-flash-core = { path = "../../flasher/crates/core" }
+
+[[bin]]
+name = "ohc-updated"
+path = "src/main.rs"

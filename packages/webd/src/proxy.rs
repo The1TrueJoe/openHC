@@ -49,10 +49,15 @@ pub fn storaged_addr() -> String {
     std::env::var("WEBD_STORAGED_ADDR").unwrap_or_else(|_| "127.0.0.1:7073".into())
 }
 
+/// Where ohc-updated listens — software updates.
+pub fn updated_addr() -> String {
+    std::env::var("WEBD_UPDATED_ADDR").unwrap_or_else(|_| "127.0.0.1:7074".into())
+}
+
 /// Where switchd listens — managed-switch configuration (switch boards only).
-/// 7074, not 7073: ohc-storaged took 7073 (merged from main).
+/// 7075: ohc-storaged took 7073 and ohc-updated took 7074 (both merged from main).
 pub fn switchd_addr() -> String {
-    std::env::var("WEBD_SWITCHD_ADDR").unwrap_or_else(|_| "127.0.0.1:7074".into())
+    std::env::var("WEBD_SWITCHD_ADDR").unwrap_or_else(|_| "127.0.0.1:7075".into())
 }
 
 /// The box's mosquitto WebSocket listener (loopback; see
@@ -73,6 +78,8 @@ pub async fn handler(mut req: Request) -> Response {
         (storaged_addr(), "/storage", "ohc-storaged")
     } else if path.starts_with("/switch/") {
         (switchd_addr(), "/switch", "switchd")
+    } else if path.starts_with("/update/") {
+        (updated_addr(), "/update", "ohc-updated")
     } else if path == "/mqtt" {
         (mqtt_ws_addr(), "", "mosquitto")
     } else {

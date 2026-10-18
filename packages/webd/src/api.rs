@@ -78,6 +78,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
         // Managed-switch config: switchd, present only on switch boards. Absent
         // elsewhere, the proxy just returns a tidy 502 and the UI shows no panel.
         .route("/switch/{*rest}", any(crate::proxy::handler))
+        .route("/update/{*rest}", any(crate::proxy::handler))
         // IO control is MQTT, and the browser speaks it here. Same origin as
         // the page, so one open port is enough for the whole GUI.
         .route("/mqtt", any(crate::proxy::handler))
@@ -419,6 +420,7 @@ async fn openapi() -> Response {
         (crate::proxy::audiod_addr(), "/audio", "ohc-audiod"),
         (crate::proxy::storaged_addr(), "/storage", "ohc-storaged"),
         (crate::proxy::switchd_addr(), "/switch", "switchd"),
+        (crate::proxy::updated_addr(), "/update", "ohc-updated"),
     ] {
         if let Some(sub) = fetch_spec(&addr).await {
             merge_spec(&mut doc, sub, mount, group);

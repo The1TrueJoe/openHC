@@ -3,13 +3,13 @@
   "info": {
     "title": "openHC IO over MQTT",
     "version": "0.1.0",
-    "description": "The live state and control surface of an openHC controller: IO (relays, contacts, IR, serial, front-panel LEDs — iod), audio (ohc-audiod), external drives (ohc-storaged), health (sysmond) and return-to-stock (iod), all on the controller's own mosquitto.\n\nThe rule: anything a control system (Home Assistant, Control4) acts on or watches change is here; configuration and things that rarely change are REST (see the OpenAPI document) — the audio endpoint map, the MQTT settings, full-resolution telemetry history.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
+    "description": "The live state and control surface of an openHC controller: IO (relays, contacts, IR, serial, front-panel LEDs — iod), audio (ohc-audiod), external drives (ohc-storaged), software updates (ohc-updated), health (sysmond) and return-to-stock (iod), all on the controller's own mosquitto.\n\nThe rule: anything a control system (Home Assistant, Control4) acts on or watches change is here; configuration and things that rarely change are REST (see the OpenAPI document) — the audio endpoint map, the MQTT settings, full-resolution telemetry history.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
   },
   "servers": {
     "onboard": {
       "host": "{host}:1883",
       "protocol": "mqtt",
-      "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio), ohc-storaged (drives) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
+      "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio), ohc-storaged (drives), ohc-updated (updates) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
       "variables": {
         "host": {
           "default": "<openhc800|openea1|openea3|openca1|openioxv1>-<mac>.local"
@@ -542,6 +542,46 @@
       },
       "summary": "Rescan for drives",
       "description": "Look for drives now instead of on the next poke or poll."
+    },
+    "updateState": {
+      "address": "openhc/{box}/state/system/update",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Json"
+        }
+      },
+      "summary": "Software update status (retained, ohc-updated)",
+      "description": "`channel` (stable = published GitHub releases, dev = the rolling pre-release of main), `board`, `current` (this box's version), `latest` (the channel's version for this board, once checked), `available`, `installable` (this board has an on-box installer; others update with ohc-flash), `state` (idle | checking | downloading | installing | rebooting | error), `progress` (0-100 while downloading), `error`, `checked_at` (unix seconds). Checked a minute after start and every 12 hours."
+    },
+    "updateCheck": {
+      "address": "openhc/{box}/cmd/system/update/check",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Empty"
+        }
+      },
+      "summary": "Check for an update",
+      "description": "Ask GitHub what the channel offers this board now."
+    },
+    "updateInstall": {
+      "address": "openhc/{box}/cmd/system/update/install",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Empty"
+        }
+      },
+      "summary": "Install the update",
+      "description": "Download the checked version, install it with the board's on-box installer and reboot. Ignored when nothing newer was found, while busy, or on a board without an installer."
+    },
+    "updateChannel": {
+      "address": "openhc/{box}/cmd/system/update/channel",
+      "messages": {
+        "m": {
+          "$ref": "#/components/messages/Text"
+        }
+      },
+      "summary": "Choose the update channel",
+      "description": "`stable` or `dev`. Saved, then checked at once."
     }
   },
   "operations": {
@@ -901,6 +941,34 @@
         "$ref": "#/channels/storageRescan"
       },
       "summary": "Rescan for drives"
+    },
+    "updateState": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/updateState"
+      },
+      "summary": "Software update status (retained, ohc-updated)"
+    },
+    "updateCheck": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/updateCheck"
+      },
+      "summary": "Check for an update"
+    },
+    "updateInstall": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/updateInstall"
+      },
+      "summary": "Install the update"
+    },
+    "updateChannel": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/updateChannel"
+      },
+      "summary": "Choose the update channel"
     }
   },
   "components": {

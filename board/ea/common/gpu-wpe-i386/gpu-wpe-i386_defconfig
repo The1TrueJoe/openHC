@@ -103,3 +103,11 @@ BR2_PACKAGE_WEBVIEW=y
 # nothing reaches /dev/fb0. (This is source patching; the build/buildroot-patches
 # set patches Buildroot ITSELF and is separate.)
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/gpu-wpe-i386/patches"
+
+# --- ccache: make WebKit recompiles cheap ---
+# wpewebkit is ~2h40m of cold compile. CI points BR2_CCACHE_DIR at a cached
+# directory (.github/workflows/sgx-wpe.yml) so a patch-triggered re-extract, or
+# an evicted output tree, is mostly cache hits. Capped to stay well inside the
+# 10 GB repo-cache budget.
+BR2_CCACHE=y
+BR2_CCACHE_INITIAL_SETUP="--max-size=2G"
