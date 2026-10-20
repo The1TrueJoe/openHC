@@ -102,6 +102,9 @@ BR2_PACKAGE_WEBVIEW=y
 # the WSEGL only accepts 0 -- without this the compositor renders offscreen and
 # nothing reaches /dev/fb0. (This is source patching; the build/buildroot-patches
 # set patches Buildroot ITSELF and is separate.)
+# 0003 adds a per-view dark mode API (webkit_web_view_set_prefers_dark_mode) that
+# webview drives from the display's day/night setting: the libwpe path this board
+# stays on has no other dark-mode source (openHC issue #55).
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/gpu-wpe-i386/patches"
 
 # --- ccache: make WebKit recompiles cheap ---

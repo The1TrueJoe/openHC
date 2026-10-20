@@ -4,8 +4,9 @@
 # DISABLED BY DEFAULT: out of the box the panel shows the openHC splash (drawn by
 # S01splash, and on the bootstrap kernel by S00kexec before the handoff). This
 # service only takes over the panel when the web UI turns it on — webd writes
-# /opt/ohc/display.conf (OHC_DISPLAY_ENABLE=1 + OHC_DISPLAY_URL=...) and restarts
-# this script. So a fresh box is calm (splash), and the on-screen browser is a
+# /opt/ohc/display.conf (OHC_DISPLAY_ENABLE=1 + OHC_DISPLAY_URL=...) and reloads
+# this script — live on a running view (the control FIFO's url/theme), a start
+# or stop only when the view is turned on or off. So a fresh box is calm (splash), and the on-screen browser is a
 # deliberate choice made from the dashboard, not the default.
 #
 # Runs AFTER webd (S90) so the default localhost dashboard is already being served
@@ -19,6 +20,7 @@
 CONF=/opt/ohc/display.conf
 R=/opt/sgx-i386-wpe
 PIDF=/run/ohc-display.pid
+CTL="${OHC_DISPLAY_CTL:-/run/ohc-display.ctl}"
 
 # Defaults, overridden by the config the web UI writes.
 OHC_DISPLAY_ENABLE=0
@@ -76,8 +78,9 @@ start() {
 	# answers instead of sitting on a failed load. FONTCONFIG_PATH points at the
 	# sysroot fonts; the UI uses system fonts so there is no webfont to fetch.
 	# OHC_DISPLAY_THEME (auto|light|dark): webview applies it NATIVELY as the
-	# browser's prefers-color-scheme, so ANY page responds — like OS dark mode —
-	# not just one that reads a query param.
+	# browser's prefers-color-scheme (WebKit's per-view dark mode,
+	# board/common/patches/wpewebkit/0001), so ANY page responds — like OS dark
+	# mode — not just one that reads a query param.
 	LD_PRELOAD="$R/usr/lib/sgx-busidshim.so" \
 	WEBKIT_EXEC_PATH="$R/usr/libexec/wpe-webkit-2.0" \
 	LD_LIBRARY_PATH="$R/usr/lib:$R/lib" \
@@ -87,6 +90,7 @@ start() {
 	setsid "$R/lib/ld-linux.so.2" --library-path "$R/usr/lib:$R/lib" \
 		"$R/usr/bin/webview" </dev/null >/var/log/ohc-display.log 2>&1 &
 	echo $! > "$PIDF"
+	printf '%s\n' "$OHC_DISPLAY_URL" > /run/ohc-display.url
 }
 
 stop() {
@@ -108,9 +112,31 @@ stop() {
 	# /etc/init.d/S01splash start.
 }
 
+# Apply the config without tearing the view down when it can be helped: a
+# running webview takes the URL and theme on its control FIFO, and the theme
+# switches live. Opened read-write, so the write can never block even if the
+# view has just exited (a FIFO opened write-only waits for a reader).
+reload() {
+	if [ "$OHC_DISPLAY_ENABLE" != 1 ]; then
+		stop
+	elif [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null && [ -p "$CTL" ]; then
+		exec 3<>"$CTL"
+		printf 'theme %s\n' "$OHC_DISPLAY_THEME" >&3
+		# Only a changed URL: re-loading the same page is not needed for a theme.
+		[ "$(cat /run/ohc-display.url 2>/dev/null)" = "$OHC_DISPLAY_URL" ] ||
+			printf 'url %s\n' "$OHC_DISPLAY_URL" >&3
+		exec 3>&-
+		printf '%s\n' "$OHC_DISPLAY_URL" > /run/ohc-display.url
+		echo "ohc-display: view -> $OHC_DISPLAY_URL (theme=$OHC_DISPLAY_THEME)"
+	else
+		stop; sleep 1; start
+	fi
+}
+
 case "$1" in
-	start)          start ;;
-	stop)           stop ;;
-	restart|reload) stop; sleep 1; start ;;
-	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	reload)  reload ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
 esac

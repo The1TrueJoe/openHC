@@ -8,38 +8,35 @@
 # Here the config lives on /data (board.env OHC_DISPLAY_CONF): /opt is the
 # initramfs on this board, so it would not survive a reboot.
 #
-# What differs from the EA is only the display stack (the wpe feature): cog on
-# its DRM platform, through Mesa's i915 driver on the GMA 3150, straight to KMS.
-# Restarted if it exits.
+# The view is the same program as the EAs' (packages/webview), built here on
+# WebKit's WPE Platform API: its DRM platform renders on the GMA 3150 through
+# Mesa i915 and scans out straight to KMS (the wpe feature). Restarted if it
+# exits.
 #
-# reload is live: a running view is pointed at the new URL over cog's system-bus
-# remote control (cogctl), so a URL or theme change never drops to the splash —
-# only enabling/disabling starts or stops cog.
+# reload is live: a running view takes the URL and theme on its control FIFO, so
+# a URL or theme change never drops to the splash — only enabling/disabling
+# starts or stops it. The theme is WebKit's own dark mode
+# (WPE_SETTING_DARK_MODE), so any page sees it as prefers-color-scheme, like an
+# OS setting.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 CONF="${OHC_DISPLAY_CONF:-/opt/ohc/display.conf}"
 CTL="${OHC_DISPLAY_CTL:-/run/ohc-display.ctl}"
 RUN=/run/ohc/display
 PIDF=/run/ohc-display.pid
-CTLPIDF=/run/ohc-display-ctl.pid
 
-# Read the config into $OHC_DISPLAY_* and the URL cog loads into $url. cog has
-# no native light/dark switch (the EA's webview has); the openHC dashboard reads
-# ?theme= instead, so pass it there.
+# Read the config into $url and $theme.
 load() {
 	OHC_DISPLAY_ENABLE=0
 	OHC_DISPLAY_URL=http://localhost/
 	OHC_DISPLAY_THEME=auto
 	[ -r "$CONF" ] && . "$CONF"
 	url="$OHC_DISPLAY_URL"
-	case "$OHC_DISPLAY_THEME:$url" in
-		light:http://localhost/*|dark:http://localhost/*)
-			case "$url" in *\?*) url="$url&theme=$OHC_DISPLAY_THEME" ;; *) url="$url?theme=$OHC_DISPLAY_THEME" ;; esac ;;
-	esac
+	case "$OHC_DISPLAY_THEME" in light|dark) theme="$OHC_DISPLAY_THEME" ;; *) theme=auto ;; esac
 }
 load
 
 running() {
-	[ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null && pidof cog >/dev/null
+	[ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null && pidof webview >/dev/null && [ -p "$CTL" ]
 }
 
 start() {
@@ -47,69 +44,56 @@ start() {
 		echo "ohc-display: disabled — the screen shows the splash (enable it from the web UI)"
 		exit 0
 	}
-	[ -x /usr/bin/cog ] || { echo "ohc-display: no cog — the wpe feature is not in this image" >&2; exit 0; }
+	[ -x /usr/bin/webview ] || { echo "ohc-display: no webview — the wpe feature is not in this image" >&2; exit 0; }
 	[ -e /dev/dri/card0 ] || { echo "ohc-display: no /dev/dri/card0" >&2; exit 0; }
 	mkdir -p "$RUN" && chmod 0700 "$RUN"
-	echo "ohc-display: starting the on-screen web view -> $url"
+	echo "ohc-display: starting the on-screen web view -> $url (theme=$theme)"
 	start-stop-daemon -S -q -b -m -p "$PIDF" -x /bin/sh -- "$0" run
-	start-stop-daemon -S -q -b -m -p "$CTLPIDF" -x /bin/sh -- "$0" ctl
 }
 
 stop() {
-	[ -f "$CTLPIDF" ] && start-stop-daemon -K -q -p "$CTLPIDF"
 	[ -f "$PIDF" ] && start-stop-daemon -K -q -p "$PIDF"
-	rm -f "$PIDF" "$CTLPIDF"
-	for n in cog WPEWebProcess WPENetworkProcess; do
+	rm -f "$PIDF"
+	for n in webview WPEWebProcess WPENetworkProcess; do
 		killall -q "$n" 2>/dev/null || true
 	done
 	# Give the screen back to the splash.
 	[ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash start >/dev/null 2>&1
 }
 
-# Apply the config without tearing the view down when it can be helped.
+# Apply the config without tearing the view down: the running view takes the
+# theme (live) and, only if it changed, the URL on its control FIFO. Opened
+# read-write, so the write can never block even if the view has just exited.
 reload() {
 	if [ "$OHC_DISPLAY_ENABLE" != 1 ]; then
 		stop
 	elif running; then
-		# A full restart only if cog's remote control does not answer. (Should
-		# cog die later, run re-reads the config, so it comes back on this URL.)
-		if cogctl --system open "$url" >/dev/null 2>&1; then
-			echo "ohc-display: view -> $url"
-		else
-			stop; sleep 1; start
-		fi
+		exec 3<>"$CTL"
+		printf 'theme %s\n' "$theme" >&3
+		[ "$(cat "$RUN/url" 2>/dev/null)" = "$url" ] || printf 'url %s\n' "$url" >&3
+		exec 3>&-
+		printf '%s\n' "$url" > "$RUN/url"
+		echo "ohc-display: view -> $url (theme=$theme)"
 	else
-		start
+		stop; sleep 1; start
 	fi
 }
 
-# The supervisor: cog, restarted if it exits, each time on the current config.
-# WebKit wants a HOME for its caches, wpebackend-fdo an XDG_RUNTIME_DIR for its
-# private Wayland socket.
+# The supervisor: webview, restarted if it exits, each time on the current
+# config. WebKit wants a HOME for its caches and an XDG_RUNTIME_DIR. WPE_DISPLAY
+# names the DRM platform outright, so a failure to drive KMS is an error in the
+# log rather than a silent fall back to the headless platform. WEBVIEW_RETRY:
+# webd may still be starting; a failed load is retried after that many seconds.
+# The log is the current run's (no syslog on this image), like the EAs'.
 run() {
 	export HOME="$RUN" XDG_RUNTIME_DIR="$RUN"
 	while :; do
 		load
-		/usr/bin/cog --platform=drm "$url" 2>&1 | logger -t ohc-display
+		printf '%s\n' "$url" > "$RUN/url"
+		WPE_DISPLAY=wpe-display-drm OHC_DISPLAY_CTL="$CTL" OHC_DISPLAY_THEME="$theme" \
+		WEBVIEW_URL="$url" WEBVIEW_RETRY=5 \
+			/usr/bin/webview >/var/log/ohc-display.log 2>&1
 		sleep 3
-	done
-}
-
-# The control FIFO the EA's webview reads (iod's cmd/display/* writes lines to
-# it): url and reload map onto cogctl. key/text need input injection cog does
-# not offer, so they are logged and dropped. Opened read-write so the FIFO always
-# has a reader (iod's non-blocking open never sees ENXIO) and never hits EOF.
-ctl() {
-	rm -f "$CTL"; mkfifo -m 0600 "$CTL" || exit 1
-	exec 3<>"$CTL"
-	while read -r cmd arg <&3; do
-		case "$cmd" in
-			url)    [ -n "$arg" ] && cogctl --system open "$arg" ;;
-			reload) cogctl --system reload ;;
-			key|text) logger -t ohc-display "'$cmd' is not supported by cog; ignored" ;;
-			'') ;;
-			*)      logger -t ohc-display "unknown control command '$cmd'" ;;
-		esac >/dev/null 2>&1
 	done
 }
 
@@ -119,6 +103,5 @@ case "$1" in
 	restart) stop; sleep 1; start ;;
 	reload)  reload ;;
 	run)     run ;;
-	ctl)     ctl ;;
 	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
 esac

@@ -552,27 +552,32 @@ jobs:
           restore-keys: |
             out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-
 
-      # The EA family shares ONE ccache, keyed on the family rather than the
-      # board, so a translation unit compiled for ea1-v2 (WebKit, ICU, the
-      # toolchain's own host-gcc) is a hit for every other EA board and every
-      # later run. The key carries run_id AND run_attempt, because a cache key is
-      # write-once and re-attempts of one run share run_id — so a run_id-only key
-      # would let attempt 3 restore only attempt 1's objects, never attempt 2's.
-      # With run_attempt the restore-keys walk back: THIS run's previous attempt
-      # first (the run_id- prefix), then this board's newest from older runs, then
-      # any EA board's. restore/save split (not plain actions/cache) so a FAILED
-      # build still saves what it compiled — the save runs on always() — and the
-      # next attempt resumes from it.
-      - name: Restore the EA family ccache
-        if: startsWith(matrix.board, 'ea')
+      # ccache, for the boards that build WebKit: the EA family shares ONE,
+      # keyed on the family rather than the board, so a translation unit
+      # compiled for ea1-v2 (WebKit, ICU, the toolchain's own host-gcc) is a hit
+      # for every other EA board and every later run; the HC-800 has its own
+      # (x86_64 musl, nothing to share). The key carries run_id AND run_attempt,
+      # because a cache key is write-once and re-attempts of one run share
+      # run_id — so a run_id-only key would let attempt 3 restore only attempt
+      # 1's objects, never attempt 2's. The restore-keys walk back: THIS run's
+      # previous attempt first (the run_id- prefix), then this board's newest
+      # from older runs, then any of its family's. restore/save split (not plain
+      # actions/cache) so a FAILED build still saves what it compiled — the save
+      # runs on always() — and the next attempt resumes from it.
+      #
+      # This is what lets a PR finish a cold WebKit at all: PRs do not save the
+      # output tree (below), so a build that runs out of time keeps nothing but
+      # this ccache.
+      - name: Restore ccache
+        if: startsWith(matrix.board, 'ea') || matrix.board == 'hc800'
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-
-            ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
-            ccache-ea-${{ env.BUILDROOT_REF }}-
+            ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-
+            ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
+            ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-
 
       - name: Fetch Buildroot
         run: |
@@ -653,9 +658,10 @@ jobs:
           # Consumed by board/common/post-build.sh (empty on non-EA / when absent).
           OHC_SGX_WPE_SYSROOT: ${{ steps.sgxsr.outputs.wpe }}
           OHC_SGX_I386_SYSROOT: ${{ steps.sgxsr.outputs.i386 }}
-          # Shared ccache dir for the EA family (see the restore/save steps and
-          # board/ea/common/common_defconfig). build.sh forwards it to make only
-          # when set; a board whose defconfig has no BR2_CCACHE ignores it.
+          # The ccache dir (see the restore/save steps; BR2_CCACHE in
+          # board/ea/common/common_defconfig and board/hc800/hc800_defconfig).
+          # build.sh forwards it to make only when set; a board whose defconfig
+          # has no BR2_CCACHE ignores it.
           BR2_CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -e
@@ -798,16 +804,16 @@ jobs:
           path: output/build/${{ matrix.board }}
           key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
 
-      # Save the shared EA ccache on always(): even a failed build compiled
-      # objects worth keeping for the next run, and a typo deep in WebKit should
-      # not cost that work. ccache caps itself (--max-size in the defconfig), so
-      # this never grows without bound.
-      - name: Save the EA family ccache
-        if: always() && startsWith(matrix.board, 'ea')
+      # Save the ccache on always(), PRs included: even a failed build compiled
+      # objects worth keeping for the next run or attempt, and a typo deep in
+      # WebKit should not cost that work. ccache caps itself (--max-size in the
+      # board's defconfig), so this never grows without bound.
+      - name: Save ccache
+        if: always() && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.

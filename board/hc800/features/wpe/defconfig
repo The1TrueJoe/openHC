@@ -3,9 +3,11 @@
 # Same job as board/ea/common/features/wpe (one full-screen WPE WebKit page on
 # the TV, opt-in from the web UI; S95ohc-display), on very
 # different graphics: the HC-800's GMA 3150 ("Pineview", 8086:a001) is driven by
-# Mesa's open i915 gallium driver, which gives real EGL + GBM. So the EA's custom
-# PowerVR backend is not needed here: stock wpebackend-fdo, and cog on its DRM
-# platform presents straight to KMS — no compositor, no X.
+# Mesa's open i915 gallium driver, which gives real EGL + GBM + dmabuf. So this
+# board runs WebKit's own WPE Platform API: openHC's webview on WebKit's DRM
+# platform, which scans the GPU-rendered buffers straight out on KMS — no
+# compositor, no X, no copies, and no launcher patches. (The EAs stay on the
+# libwpe backend API for their SGX545; openHC issue #55.)
 #
 # The GPU is Shader Model 2.0 class (GLSL 1.20, 64 ALU / 32 TEX instructions)
 # with NO vertex shader hardware: Mesa runs vertex shaders on the CPU through
@@ -24,25 +26,19 @@ BR2_PACKAGE_MESA3D_OPENGL_EGL=y
 BR2_PACKAGE_MESA3D_OPENGL_ES=y
 BR2_PACKAGE_MESA3D_GBM=y
 
-# WPE WebKit. build/buildroot-patches/0001 (for the EA's PowerVR backend) stops
-# wpewebkit selecting wpebackend-fdo; cog needs it, so it is named here. No
-# multimedia: video in a page is not this surface's job, and GStreamer is a
-# large build.
+# WPE WebKit with the WPE Platform API and its DRM platform (an option added by
+# build/buildroot-patches/0004; 2.50 builds it only in developer mode otherwise).
+# The DRM platform reads input through libinput on the eudev the board already
+# runs. No multimedia: video in a page is not this surface's job, and GStreamer
+# is a large build.
 BR2_PACKAGE_WPEWEBKIT=y
 # BR2_PACKAGE_WPEWEBKIT_MULTIMEDIA is not set
-BR2_PACKAGE_WPEBACKEND_FDO=y
+BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
+BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y
 
-# cog: the launcher, on its DRM/KMS platform (libinput needs the eudev the
-# board already runs). The URL is S95ohc-display's, never a built-in home page.
-BR2_PACKAGE_COG=y
-BR2_PACKAGE_COG_PLATFORM_DRM=y
-# Its Wayland platform (on by default) is for running under a compositor, which
-# this box has none of — and it wants cairo.
-# BR2_PACKAGE_COG_PLATFORM_FDO is not set
-BR2_PACKAGE_COG_PROGRAMS_HOME_URI=""
-# Its remote control (open/reload) on the SYSTEM bus, so S95ohc-display can
-# point the running view at a new URL with cogctl instead of restarting it.
-BR2_PACKAGE_COG_USE_SYSTEM_DBUS=y
+# webview: the full-screen view S95ohc-display runs (packages/webview, the same
+# program as the EAs'; it builds against WPE Platform here).
+BR2_PACKAGE_WEBVIEW=y
 
 # Fonts for pages that do not bring their own, and the CA roots for https://.
 BR2_PACKAGE_FONTCONFIG=y
