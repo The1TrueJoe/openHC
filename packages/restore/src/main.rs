@@ -182,6 +182,26 @@ mod script_item_tests {
         t[o + 8..o + 12].copy_from_slice(&0xfau32.to_le_bytes());
         assert!(script_item_present(&t));
     }
+
+    #[test]
+    fn bzimage_offset_finds_raw_and_containered() {
+        // Minimal bzImage setup header: 0x55,0xaa at 0x1fe, "HdrS" at 0x202.
+        let mut bz = vec![0u8; 0x300];
+        bz[0x1fe] = 0x55;
+        bz[0x1ff] = 0xaa;
+        bz[0x202..0x206].copy_from_slice(b"HdrS");
+        // EA1: the file is the bzImage itself.
+        assert_eq!(bzimage_offset(&bz), Some(0));
+        // EA3: the bzImage sits behind a 0x580-byte CEFDK container header.
+        let mut cont = vec![0u8; 0x580];
+        cont.extend_from_slice(&bz);
+        assert_eq!(bzimage_offset(&cont), Some(0x580));
+        // "HdrS" without the 0x55,0xaa boot sig before it is not a kernel.
+        let mut noise = vec![0u8; 0x300];
+        noise[0x202..0x206].copy_from_slice(b"HdrS");
+        assert_eq!(bzimage_offset(&noise), None);
+        assert_eq!(bzimage_offset(&vec![0u8; 0x400]), None);
+    }
 }
 
 fn table_slice(block: &mut [u8]) -> &mut [u8] {
@@ -286,9 +306,128 @@ fn cmd_install() -> io::Result<()> {
 }
 
 fn cmd_stock() -> io::Result<()> {
-    cmd_revert()?;
-    println!("stock: MFH reverted. Handing p1 to CEFDK's recovery kernel...");
-    recovery_reimage_p1()?;
+    // Restoring stock means two things: p1 must hold the factory rootfs again, and
+    // the MFH autoscript (which boots openHC) must be cleared. The catch is that p1
+    // cannot be reformatted while it is the running root, and clearing the autoscript
+    // first would stop boot-init from ever running again — so the order depends on
+    // where we are:
+    //
+    //   * p1 is NOT root (a ramboot, or boot-init before it pivots) — do it now:
+    //     reimage p1 directly from p2, then clear the autoscript. See
+    //     `cmd_reimage_finalize`.
+    //
+    //   * p1 IS root (a normal durable openHC boot) — we can neither reformat p1 nor
+    //     kexec the recovery kernel (the EA3 fat kernel's RAM-reclaim memmap starves
+    //     kexec's segment placement: "locate_hole failed"). Instead drop a one-shot
+    //     flag on p1 and reboot with the autoscript still enabled; boot-init finds
+    //     the flag before it pivots — where p1 is free — and runs the finalize there.
+    if p1_is_root() {
+        stage_stock_flag()?;
+        println!(
+            "stock: staged a one-shot restore on p1. Reboot: boot-init will reimage p1 to \
+             Control4 and clear the autoscript, then boot stock."
+        );
+        Ok(())
+    } else {
+        println!("stock: p1 is free — reimaging it directly from p2 and clearing the autoscript...");
+        cmd_reimage_finalize()
+    }
+}
+
+/// Reimage p1 to stock and clear the autoscript, in place. Only valid where p1 is
+/// not the running root (a ramboot, or boot-init pre-pivot). boot-init calls this as
+/// `ohc-restore reimage-finalize` after it sees the one-shot flag; `cmd_stock` calls
+/// it directly when it is already running with p1 free.
+fn cmd_reimage_finalize() -> io::Result<()> {
+    // Refuse BEFORE touching p1 if we could not finish: the reimage succeeds without
+    // the MFH, but the following revert needs /dev/mtd0, and reimaging p1 then
+    // failing to clear the autoscript would leave the box with openHC destroyed, the
+    // autoscript still enabled, and no staged image to reinstall from — stranded in
+    // boot-init. Checking here means a transient missing mtd0 costs nothing: p1 is
+    // left intact and the restore can simply be retried.
+    if !std::path::Path::new(MTD).exists() {
+        return Err(io::Error::other(format!(
+            "{MTD} absent — refusing to reimage p1 because the autoscript (revert) could not be cleared afterwards"
+        )));
+    }
+    reimage_p1_direct()?; // p1 -> factory rootfs (asserts p1 is not root)
+    cmd_revert()?; // clear the MFH autoscript enable byte so CEFDK boots stock
+    Ok(())
+}
+
+/// Drop the one-shot flag boot-init looks for before it pivots to p1. On durable,
+/// p1 is `/`, so this writes it onto p1 itself; boot-init reads it from p1 and then
+/// reformats p1 (destroying the flag — no restore loop). The autoscript is left
+/// enabled so boot-init still runs on the next boot.
+fn stage_stock_flag() -> io::Result<()> {
+    std::fs::write(STOCK_FLAG, b"stock\n")?;
+    run("sync", &[])?;
+    Ok(())
+}
+
+/// Path of the boot-init one-shot restore flag, relative to the p1 root.
+const STOCK_FLAG: &str = "/.ohc-stock-pending";
+
+/// True when /dev/mmcblk0p1 is the filesystem mounted at `/`. We compare the st_dev
+/// of `/` (the device number of the mounted root fs) against the rdev of the p1
+/// device node (p1's own device number); they are equal exactly when p1 is root.
+/// On a durable openHC boot p1 is root (this returns true); in a ramboot or inside
+/// the boot-init bootstrap it is not (false), which is where the direct reimage is
+/// allowed to run.
+fn p1_is_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let root_dev = match std::fs::metadata("/") {
+        Ok(m) => m.dev(),
+        Err(_) => return false,
+    };
+    match std::fs::metadata("/dev/mmcblk0p1") {
+        Ok(m) => m.rdev() == root_dev,
+        Err(_) => false,
+    }
+}
+
+/// Reimage p1 to stock in place, without kexec. Mount p2 read-only, empty p1's
+/// existing ext4 (keeping its filesystem/LABEL/UUID, so no mke2fs and no e2fsprogs
+/// in the initramfs), and stream p2's recfs.tar.xz (the factory rootfs) onto it.
+/// The caller must have established that p1 is not the running root (see
+/// `p1_is_root`); writing the mounted root would corrupt it.
+fn reimage_p1_direct() -> io::Result<()> {
+    if p1_is_root() {
+        return Err(io::Error::other(
+            "refusing to reimage p1: it is mounted as / (run this from a ramboot, not durable p1)",
+        ));
+    }
+    let p2 = "/mnt/ohc-recovery";
+    std::fs::create_dir_all(p2)?;
+    run("mount", &["-o", "ro", "/dev/mmcblk0p2", p2])
+        .or_else(|_| run("mount", &["-o", "ro,remount", "/dev/mmcblk0p2", p2]))?;
+    let recfs = format!("{p2}/recfs.tar.xz");
+    if !std::path::Path::new(&recfs).exists() {
+        return Err(io::Error::other(format!("{recfs} missing — cannot reimage p1")));
+    }
+
+    // Reuse p1's existing ext4 rather than reformatting it: factory p1 is ext4
+    // LABEL=rootfs, and emptying-then-unpacking keeps that filesystem (its type,
+    // LABEL and UUID) intact — exactly what the stock kernel item expects. It also
+    // avoids mke2fs, so the finalize needs no e2fsprogs in the boot-init initramfs
+    // (only busybox's tar + unxz). Mount with autodetect so either ext4 or ext2 p1
+    // is handled.
+    let p1 = "/mnt/ohc-p1";
+    std::fs::create_dir_all(p1)?;
+    let _ = run("umount", &["/dev/mmcblk0p1"]); // drop any stale mount
+    run("mount", &["/dev/mmcblk0p1", p1])?;
+    eprintln!("stock: emptying p1 and unpacking the stock rootfs (recfs.tar.xz)...");
+    // Empty p1 in place, preserving the filesystem. The glob set covers normal
+    // names, dotfiles, and ..names while never matching `.`/`..`; unmatched globs
+    // pass harmlessly to rm (stderr suppressed).
+    run("sh", &["-c", &format!("cd '{p1}' && rm -rf -- ..?* .[!.]* * 2>/dev/null; true")])?;
+    // Decompress + untar in one pipe (busybox tar's own xz autodetect is unreliable
+    // on the box, so drive unxz into tar explicitly).
+    run("sh", &["-c", &format!("unxz -c '{recfs}' | tar -x -C '{p1}'")])?;
+    run("sync", &[])?;
+    let _ = run("umount", &[p1]);
+    let _ = run("umount", &[p2]);
+    eprintln!("stock: p1 reimaged to stock. Power-cycle to boot Control4.");
     Ok(())
 }
 
@@ -299,8 +438,9 @@ fn cmd_stock() -> io::Result<()> {
 /// kernel rather than in place.
 ///
 /// The recovery kernel ships in p2 as recovery_kernel.deb (an ar archive whose
-/// data.tar.gz holds the kernel). We extract it with the box's own ar + busybox
-/// tar (`-xa`, autodetect), find the bzImage inside, and kexec it.
+/// data.tar.gz holds the kernel). We extract it with the box's own ar, gunzip and
+/// tar, find the bzImage inside (unwrapping the EA3's CEFDK container), and kexec
+/// it.
 fn recovery_reimage_p1() -> io::Result<()> {
     let p2 = "/mnt/ohc-recovery";
     std::fs::create_dir_all(p2)?;
@@ -310,7 +450,6 @@ fn recovery_reimage_p1() -> io::Result<()> {
     if !std::path::Path::new(&deb).exists() {
         return Err(io::Error::other(format!("{deb} missing — cannot recover p1")));
     }
-    // ar p <deb> data.tar.gz | tar -x -a -f - -C /tmp/ohc-rk
     let work = "/tmp/ohc-rk";
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work)?;
@@ -320,11 +459,28 @@ fn recovery_reimage_p1() -> io::Result<()> {
         return Err(io::Error::other("ar: could not read data.tar.gz from recovery_kernel.deb"));
     }
     std::fs::write(&tgz, &data.stdout)?;
-    run("tar", &["-x", "-a", "-f", &tgz, "-C", work])?;
+    // The box's busybox `tar -xa`/`-xz` autodetect does not reliably decompress
+    // this member (on the EA3 it silently extracts nothing), so gunzip explicitly
+    // first, then untar the plain tarball.
+    run("gunzip", &["-f", &tgz])?; // data.tar.gz -> data.tar
+    let tar = format!("{work}/data.tar");
+    run("tar", &["-xf", &tar, "-C", work])?;
 
-    // Find the kernel: a file whose 0x202 magic is "HdrS" (the bzImage setup sig).
-    let kern = find_bzimage(std::path::Path::new(work))
+    // Find the kernel. On the EA1 the extracted file is a raw bzImage; on the EA3
+    // it is a Control4/CEFDK container (a header — 0x580 bytes on the units seen —
+    // then the raw bzImage). find_bzimage locates the setup header and returns
+    // where the real bzImage begins; carve it out so kexec gets a clean bzImage.
+    let (kern_file, off) = find_bzimage(std::path::Path::new(work))
         .ok_or_else(|| io::Error::other("no bzImage (HdrS magic) found in recovery_kernel.deb"))?;
+    let kern = if off == 0 {
+        kern_file
+    } else {
+        eprintln!("stock: unwrapping CEFDK container (bzImage at +0x{off:x})");
+        let raw = std::fs::read(&kern_file)?;
+        let out = format!("{work}/kernel.bzImage");
+        std::fs::write(&out, &raw[off as usize..])?;
+        std::path::PathBuf::from(out)
+    };
     eprintln!("stock: recovery kernel = {}", kern.display());
 
     let cmdline = "console=ttyS0,115200 pci=realloc,nocrs,routeirq recovery";
@@ -335,26 +491,61 @@ fn recovery_reimage_p1() -> io::Result<()> {
     Ok(())
 }
 
-/// Walk `dir` and return the first file that is a Linux bzImage (the "HdrS" setup
-/// magic at offset 0x202), so we kexec the kernel regardless of how the .deb lays
-/// its payload out.
-fn find_bzimage(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+/// Walk `dir` and find the Linux bzImage in the recovery payload, returning the
+/// file and the byte offset where the real bzImage begins. The setup header's
+/// "HdrS" magic is at bzImage+0x202, with the 0x55,0xaa boot signature four bytes
+/// before it (bzImage+0x1fe). On the EA1 the extracted file IS a bzImage (offset
+/// 0); on the EA3 it is a Control4/CEFDK container and the bzImage starts after a
+/// header (0x580 on the units seen). Matching the 0x55,0xaa + "HdrS" pair finds it
+/// without assuming either layout.
+fn find_bzimage(dir: &std::path::Path) -> Option<(std::path::PathBuf, u64)> {
+    // Collect every file, then try kernel-named files FIRST. The 0x55,0xaa+"HdrS"
+    // pair can occur by chance in an unrelated binary in the payload (the EA3's
+    // recovery tar ships ./tmp/kernel_size_writer, which has such a coincidental
+    // match), so a file actually named like a kernel must win over an incidental
+    // hit in some tool.
+    let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).ok()?.flatten() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-                continue;
-            }
-            if let Ok(mut f) = std::fs::File::open(&p) {
-                let mut sig = [0u8; 4];
-                use std::io::{Read, Seek, SeekFrom};
-                if f.seek(SeekFrom::Start(0x202)).is_ok() && f.read_exact(&mut sig).is_ok() && &sig == b"HdrS" {
-                    return Some(p);
-                }
+            } else {
+                files.push(p);
             }
         }
+    }
+    let rank = |p: &std::path::Path| -> u8 {
+        match p.file_name().and_then(|n| n.to_str()) {
+            Some("bzImage") => 0,
+            Some(n) if n.contains("bzImage") || n.contains("vmlinuz") || n.contains("vmlinux") => 1,
+            _ => 2,
+        }
+    };
+    files.sort_by_key(|p| rank(p));
+    for p in files {
+        let Ok(buf) = std::fs::read(&p) else { continue };
+        if let Some(off) = bzimage_offset(&buf) {
+            return Some((p, off));
+        }
+    }
+    None
+}
+
+/// Byte offset of the raw bzImage inside `buf`, or None. The setup header "HdrS"
+/// sits at bzImage+0x202 with the 0x55,0xaa boot signature at bzImage+0x1fe (four
+/// bytes before HdrS); matching that pair locates the kernel whether `buf` is a
+/// bare bzImage (offset 0) or a CEFDK container (header, then the kernel). The
+/// container header is ~0x580 bytes, so a 64 KiB head bounds the scan.
+fn bzimage_offset(buf: &[u8]) -> Option<u64> {
+    let limit = buf.len().min(0x10000);
+    let mut i = 0x202usize;
+    while i + 4 <= limit {
+        if &buf[i..i + 4] == b"HdrS" && buf[i - 4] == 0x55 && buf[i - 3] == 0xaa {
+            return Some((i - 0x202) as u64);
+        }
+        i += 1;
     }
     None
 }
@@ -462,6 +653,13 @@ fn main() {
         "revert" => cmd_revert(),
         "install" => cmd_install(),
         "stock" => cmd_stock(),
+        // Reimage p1 + clear the autoscript, in place. boot-init runs this pre-pivot
+        // (p1 free) after seeing the one-shot flag; refuses if p1 is the running root.
+        "reimage-finalize" => cmd_reimage_finalize(),
+        // Reimage p1 by kexec-ing p2's stock recovery kernel. Works where kexec can
+        // place its segments (EA1); defeated on the EA3 by the fat kernel's reclaim
+        // memmap — there, use `stock` (flag + boot-init finalize) instead.
+        "recovery-kexec" => recovery_reimage_p1(),
         "restore-mfh" => {
             let file = args.get(2).map(String::as_str).unwrap_or("");
             let comp = args.iter().any(|a| a == "--compensate");
@@ -472,7 +670,7 @@ fn main() {
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: ohc-restore {{status|revert|install|stock|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: ohc-restore {{status|revert|install|stock|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };
