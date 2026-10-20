@@ -20,6 +20,6 @@ pub use discovery::{discover, discover_all, Found};
 pub use netboot::serve as netboot_serve;
 pub use probe::identify;
 pub use sddp::{search as sddp_search, SddpUnit};
-pub use serial::{Serial, SerialError, CEFDK_BAUD};
+pub use serial::{LineBuffer, Serial, SerialError, CEFDK_BAUD};
 pub use ssh::{first_working_login, first_working_login_with, ssh_port_open, wait_for_login, Ssh, SshError};
 pub use tftp::TftpServer;

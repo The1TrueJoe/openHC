@@ -2,9 +2,10 @@
 //!
 //! The EA netboot bring-up types commands at CEFDK's `shell>` and watches its
 //! output. That is line-oriented at 115200 8N1, so this wraps the raw port in a
-//! tiny type that gives the engine two operations: pull whatever COMPLETE lines
-//! have arrived (to feed the pure `MfgWatch` state machine) and write a command
-//! terminated the way the shell expects.
+//! tiny type that gives the engine three operations: pull whatever COMPLETE
+//! lines have arrived (to feed the pure `MfgWatch` state machine), look at the
+//! un-terminated tail (where the newline-less `shell>` prompt sits) and write a
+//! command terminated the way the shell expects.
 //!
 //! Like `ssh.rs`, the backend sits behind a small struct so a different serial
 //! library (or a mock, for a bench-free test) could replace `serialport` without
@@ -42,67 +43,78 @@ impl std::error::Error for SerialError {}
 
 /// An open CEFDK console.
 ///
-/// Reads are chunked off the wire and re-assembled into lines here, because a
-/// UART hands you bytes whenever they arrive — a single console line routinely
-/// straddles two reads, and a command echoed back can arrive a character at a
-/// time. Splitting on the terminator and buffering the tail is what turns that
-/// stream back into the lines `MfgWatch` was written against.
+/// Reads are chunked off the wire and re-assembled into lines by a
+/// [`LineBuffer`], because a UART hands you bytes whenever they arrive — a
+/// single console line routinely straddles two reads, and a command echoed back
+/// can arrive a character at a time.
 pub struct Serial {
     port: Box<dyn serialport::SerialPort>,
-    /// Bytes read but not yet terminated by a newline — the tail of a line
-    /// still coming in.
-    pending: Vec<u8>,
+    buf: LineBuffer,
     pub dev: String,
     pub baud: u32,
 }
 
 impl Serial {
     /// Open `dev` at `baud`, 8N1. The per-read timeout is set fresh on every
-    /// `read_lines` call, so the value passed here is only a placeholder.
+    /// `poll` call, so the value passed here is only a placeholder.
     pub fn open(dev: &str, baud: u32) -> Result<Serial, SerialError> {
         let port = serialport::new(dev, baud)
             .timeout(Duration::from_millis(200))
             .open()
             .map_err(|e| SerialError::Open { dev: dev.to_string(), msg: e.to_string() })?;
-        Ok(Serial { port, pending: Vec::new(), dev: dev.to_string(), baud })
+        Ok(Serial { port, buf: LineBuffer::default(), dev: dev.to_string(), baud })
     }
 
-    /// Read whatever bytes are available within `timeout` and return the
-    /// COMPLETE lines they finished (terminator stripped). A partial trailing
-    /// line stays buffered until its newline arrives, so a command split across
-    /// two reads is never fed as two half-lines. An empty result means the
-    /// window passed with no line completed — the caller treats that as silence.
-    pub fn read_lines(&mut self, timeout: Duration) -> Result<Vec<String>, SerialError> {
+    /// Read whatever bytes arrive within `timeout` into the buffer. Returns
+    /// whether ANY byte arrived: `false` is real silence, which is not the same
+    /// as "no line completed" — a read can deliver half a line, and on Windows
+    /// the COM driver routinely hands over a few bytes at a time.
+    pub fn poll(&mut self, timeout: Duration) -> Result<bool, SerialError> {
         self.port
             .set_timeout(timeout)
             .map_err(|e| SerialError::Io(e.to_string()))?;
-        let mut buf = [0u8; 512];
-        match self.port.read(&mut buf) {
-            Ok(n) => self.pending.extend_from_slice(&buf[..n]),
+        let mut chunk = [0u8; 512];
+        match self.port.read(&mut chunk) {
+            Ok(n) => {
+                self.buf.push(&chunk[..n]);
+                Ok(n > 0)
+            }
             // A timeout is the normal "nothing arrived this window" case, not an
             // error. Some platforms report an empty read the same way.
-            Err(e) if e.kind() == ErrorKind::TimedOut => {}
-            Err(e) => return Err(SerialError::Io(e.to_string())),
+            Err(e) if e.kind() == ErrorKind::TimedOut => Ok(false),
+            Err(e) => Err(SerialError::Io(e.to_string())),
         }
-        Ok(split_complete_lines(&mut self.pending))
     }
 
-    /// Take any buffered but un-terminated text, clearing it.
-    ///
-    /// The CEFDK prompt `shell>` is printed WITHOUT a trailing newline — it is
-    /// waiting for input — so it never completes a line and `read_lines` alone
-    /// would sit on it forever. On a silent read the caller pulls the tail with
-    /// this and feeds it once, which is how the prompt gets seen. Feeding a
-    /// genuine mid-line fragment this way at worst splits one `Observed` log
-    /// line; milestone detection is by substring and unaffected.
+    /// The COMPLETE lines buffered so far (terminators stripped), removed from
+    /// the buffer. A partial trailing line stays put until its newline arrives.
+    pub fn lines(&mut self) -> Vec<String> {
+        self.buf.lines()
+    }
+
+    /// `poll` then `lines`: the lines completed within `timeout`. Empty means
+    /// no line completed — NOT necessarily that the port was silent.
+    pub fn read_lines(&mut self, timeout: Duration) -> Result<Vec<String>, SerialError> {
+        self.poll(timeout)?;
+        Ok(self.lines())
+    }
+
+    /// The buffered but un-terminated tail, WITHOUT consuming it. This is where
+    /// CEFDK's `shell>` prompt sits, since it is printed with no newline.
+    pub fn tail(&self) -> String {
+        self.buf.tail()
+    }
+
+    /// Take the un-terminated tail, clearing it. Only for real silence (a
+    /// `poll` that returned `false`): taking it after a read that merely
+    /// completed no line throws away the front of a line still arriving.
     pub fn take_pending(&mut self) -> Option<String> {
-        if self.pending.is_empty() {
-            return None;
-        }
-        let s = String::from_utf8_lossy(&self.pending).into_owned();
-        self.pending.clear();
-        let s = s.trim();
-        (!s.is_empty()).then(|| s.to_string())
+        self.buf.take_tail()
+    }
+
+    /// Drop everything buffered, complete lines and tail alike.
+    pub fn clear(&mut self) {
+        self.buf.clear();
     }
 
     /// Write a command and the carriage return CEFDK's line editor submits on.
@@ -116,6 +128,49 @@ impl Serial {
             .and_then(|_| self.port.write_all(b"\r"))
             .and_then(|_| self.port.flush())
             .map_err(|e| SerialError::Io(e.to_string()))
+    }
+}
+
+/// Console bytes re-assembled into lines, plus the un-terminated tail.
+///
+/// Pure (no port), so the chunking cases — a line split across reads, a prompt
+/// that never gets a newline, a prompt that itself arrives in pieces — are
+/// unit-testable, here and by the engine's prompt waits.
+#[derive(Debug, Default)]
+pub struct LineBuffer {
+    pending: Vec<u8>,
+}
+
+impl LineBuffer {
+    /// Append bytes as they came off the wire.
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+    }
+
+    /// Drain every complete line, leaving the unterminated tail behind.
+    pub fn lines(&mut self) -> Vec<String> {
+        split_complete_lines(&mut self.pending)
+    }
+
+    /// The unterminated tail, left in place: a prompt can be looked for here on
+    /// every read without eating the front of a line still arriving.
+    pub fn tail(&self) -> String {
+        String::from_utf8_lossy(&self.pending).into_owned()
+    }
+
+    /// Take the unterminated tail (trimmed), clearing it. `None` if blank.
+    pub fn take_tail(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        let s = s.trim();
+        (!s.is_empty()).then(|| s.to_string())
+    }
+
+    pub fn clear(&mut self) {
+        self.pending.clear();
     }
 }
 
@@ -167,5 +222,20 @@ mod tests {
         let mut buf = b"banner line\r\nshell>".to_vec();
         assert_eq!(split_complete_lines(&mut buf), vec!["banner line"]);
         assert_eq!(&buf, b"shell>", "the bare prompt is left buffered");
+    }
+
+    #[test]
+    fn peeking_the_tail_keeps_a_prompt_that_arrives_in_pieces() {
+        // Windows' COM driver delivers a few bytes per read. Peeking (not
+        // taking) the tail lets `shell>` assemble across reads.
+        let mut b = LineBuffer::default();
+        b.push(b"File length is 7300096 bytes ( 0x6f6400 in hex )\r\n\r\nsh");
+        assert_eq!(b.lines(), vec!["File length is 7300096 bytes ( 0x6f6400 in hex )"]);
+        assert!(!b.tail().contains("shell>"));
+        b.push(b"ell> ");
+        assert!(b.lines().is_empty(), "the prompt never completes a line");
+        assert!(b.tail().contains("shell>"), "tail: {:?}", b.tail());
+        assert_eq!(b.take_tail().as_deref(), Some("shell>"));
+        assert!(b.tail().is_empty());
     }
 }

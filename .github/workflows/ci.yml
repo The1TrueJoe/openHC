@@ -556,18 +556,18 @@ jobs:
       # keyed on the family rather than the board, so a translation unit
       # compiled for ea1-v2 (WebKit, ICU, the toolchain's own host-gcc) is a hit
       # for every other EA board and every later run; the HC-800 has its own
-      # (x86_64 musl, nothing to share). The rolling key saves a fresh entry each
-      # run AND each attempt, and the restore-keys walk back: this board's newest
-      # ccache first, then any of its family's. restore/save split (not plain
-      # actions/cache) so a FAILED build still saves the objects it did compile —
-      # the save step runs on always().
+      # (x86_64 musl, nothing to share). The key carries run_id AND run_attempt,
+      # because a cache key is write-once and re-attempts of one run share
+      # run_id — so a run_id-only key would let attempt 3 restore only attempt
+      # 1's objects, never attempt 2's. The restore-keys walk back: THIS run's
+      # previous attempt first (the run_id- prefix), then this board's newest
+      # from older runs, then any of its family's. restore/save split (not plain
+      # actions/cache) so a FAILED build still saves what it compiled — the save
+      # runs on always() — and the next attempt resumes from it.
       #
       # This is what lets a PR finish a cold WebKit at all: PRs do not save the
       # output tree (below), so a build that runs out of time keeps nothing but
-      # this, and its re-run must pick up the WebKit objects the last ATTEMPT
-      # compiled. Hence run_attempt in the key — attempts share a run_id, and a
-      # cache key can be written once, so without it attempt 3 would only ever
-      # see attempt 1's objects.
+      # this ccache.
       - name: Restore ccache
         if: startsWith(matrix.board, 'ea') || matrix.board == 'hc800'
         uses: actions/cache/restore@v4
@@ -575,6 +575,7 @@ jobs:
           path: ${{ github.workspace }}/.ccache
           key: ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-
 
