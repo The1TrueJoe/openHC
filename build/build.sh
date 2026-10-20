@@ -526,6 +526,8 @@ _pkg_syms() {
     sed -nE 's/^(BR2_PACKAGE_[A-Z0-9_]+)=(.*)$/\1=\2/p; s/^# (BR2_PACKAGE_[A-Z0-9_]+) is not set$/\1=n/p' "$1" 2>/dev/null | sort
 }
 _pkg_was=$(_pkg_syms "$OUT/.config" || true)   # no .config: not a failure (set -e)
+# ...and whether that tree's compiler wrapper calls ccache (see below).
+_ccache_was=$(sed -n 's/^BR2_CCACHE=//p' "$OUT/.config" 2>/dev/null || true)
 
 "${M[@]}" defconfig BR2_DEFCONFIG="$EFFECTIVE"
 # Record the toolchain this tree now carries, for the next run's comparison.
@@ -550,6 +552,22 @@ fi
 # re-applies all patches, reconfigures from the fragment, and rebuilds. Drop this
 # once the kernel + patches stabilize (it forces a full kernel rebuild each run).
 "${M[@]}" linux-dirclean
+
+# BR2_CCACHE is compiled INTO the toolchain wrapper (toolchain-wrapper.mk adds
+# -DBR_CCACHE), which the internal toolchain builds once, in host-gcc-final's
+# post-build hook. Turning ccache on for a cached tree therefore changes nothing
+# until that wrapper is rebuilt: every package keeps compiling straight through
+# gcc and the ccache stays empty. Rebuild it when the setting flips (a one-off
+# host-gcc-final rebuild, ~15 min); a fresh tree builds it right the first time.
+_ccache_now=$(sed -n 's/^BR2_CCACHE=//p' "$OUT/.config" 2>/dev/null || true)
+if [ -n "$_pkg_was" ] && [ "$_ccache_was" != "$_ccache_now" ]; then
+    for _d in "$OUT"/build/host-gcc-final-*; do
+        [ -d "$_d" ] || continue
+        echo ">> BR2_CCACHE ${_ccache_was:-n} -> ${_ccache_now:-n}: rebuilding the toolchain wrapper (host-gcc-final)"
+        "${M[@]}" host-gcc-final-rebuild
+        break
+    done
+fi
 
 # Stale Buildroot packages first, then ours: the per-package `-rebuild` of our
 # packages below builds whatever they depend on right there, so a Buildroot
