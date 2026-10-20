@@ -168,32 +168,41 @@ pub fn netboot(
 /// Read the console, feeding `MfgWatch`, until it reports the shell — or the
 /// deadline passes. Returns whether the shell was reached.
 ///
-/// The read/tick rhythm mirrors what the pure state machine expects: complete
-/// lines are fed as they arrive, and on a silent window the un-terminated tail
-/// is fed too (that is how the newline-less `shell>` prompt is seen) before
-/// `tick` reports the silence.
+/// Complete lines are fed as they arrive. The newline-less `shell>` prompt is
+/// looked for in the un-terminated tail after EVERY read, without consuming it,
+/// since it can arrive split across reads (Windows hands over a few bytes at a
+/// time). Only on real silence is the tail taken and fed as proof of life,
+/// before `tick` reports the silence.
 fn drive_to_shell(serial: &mut Serial, p: &Progress) -> Result<bool> {
     let mut watch = MfgWatch::new();
     watch.prompt(p);
 
+    // The last tail fed as a prompt candidate, so a `shell>` that sits there
+    // (the autoscript echo, before the cookie) is not re-fed every read.
+    let mut fed_tail = String::new();
     let start = Instant::now();
     while start.elapsed() < SHELL_DEADLINE {
-        let lines = serial.read_lines(Duration::from_millis(500)).map_err(|e| anyhow!("{e}"))?;
-        if lines.is_empty() {
-            // Nothing completed a line this window. The prompt has no newline, so
-            // pull the tail and feed it once so `shell>` is not missed.
-            if let Some(tail) = serial.take_pending() {
-                if watch.feed(&tail, p) == Some(Stage::AtShell) {
-                    return Ok(true);
-                }
-            }
-            watch.tick(start.elapsed().as_secs(), p);
-            continue;
-        }
-        for line in lines {
+        let got = serial.poll(Duration::from_millis(500)).map_err(|e| anyhow!("{e}"))?;
+        for line in serial.lines() {
             if watch.feed(&line, p) == Some(Stage::AtShell) {
                 return Ok(true);
             }
+        }
+        let tail = serial.tail();
+        if tail.contains("shell>") && tail != fed_tail {
+            if watch.feed(&tail, p) == Some(Stage::AtShell) {
+                return Ok(true);
+            }
+            fed_tail = tail;
+        }
+        if !got {
+            if let Some(tail) = serial.take_pending() {
+                if !tail.contains("shell>") {
+                    watch.feed(&tail, p);
+                }
+            }
+            fed_tail.clear();
+            watch.tick(start.elapsed().as_secs(), p);
         }
     }
     Ok(false)
@@ -228,36 +237,57 @@ fn send_ramboot(serial: &mut Serial, cmds: &[String], p: &Progress) -> Result<()
 const TFTP_DEADLINE: Duration = Duration::from_secs(180);
 
 /// Read and discard whatever the console has buffered, until it goes quiet.
+/// Quiet means a read that delivered NO bytes: a read that merely completed no
+/// line is a line still arriving (CEFDK pauses mid-line while it programs NOR).
 fn drain(serial: &mut Serial) -> Result<()> {
-    while !serial.read_lines(Duration::from_millis(200)).map_err(|e| anyhow!("{e}"))?.is_empty() {}
-    serial.take_pending();
+    while serial.poll(Duration::from_millis(200)).map_err(|e| anyhow!("{e}"))? {}
+    serial.clear();
     Ok(())
 }
 
 /// Wait for the `tftp get` just typed to finish: its echo, then CEFDK's next
-/// `shell>` prompt (printed without a newline, so it is only visible in the
-/// pending tail). "tftp failed" is fatal -- booting a partial image is not.
+/// `shell>` prompt. "tftp failed" is fatal -- booting a partial image is not.
 fn wait_for_tftp(serial: &mut Serial, p: &Progress) -> Result<()> {
     let start = Instant::now();
-    let mut echoed = false;
+    let mut watch = TftpWatch::default();
     while start.elapsed() < TFTP_DEADLINE {
-        let lines = serial.read_lines(Duration::from_millis(500)).map_err(|e| anyhow!("{e}"))?;
+        serial.poll(Duration::from_millis(500)).map_err(|e| anyhow!("{e}"))?;
+        let lines = serial.lines();
         for line in &lines {
             p.emit(Event::observed((*line).clone()));
-            if line.contains("tftp failed") {
-                bail!("CEFDK: {line}");
-            }
-            echoed |= line.contains("tftp get");
         }
-        if lines.is_empty() && echoed {
-            if let Some(tail) = serial.take_pending() {
-                if tail.contains("shell>") {
-                    return Ok(());
-                }
-            }
+        if watch.feed(&lines, &serial.tail())? {
+            return Ok(());
         }
     }
     bail!("tftp get did not finish within {}s", TFTP_DEADLINE.as_secs())
+}
+
+/// Recognises one `tftp get` finishing, from what each read produced. Pure, so
+/// the chunking that broke the Windows build is unit-tested.
+///
+/// The prompt is printed WITHOUT a newline, so it is only ever in the
+/// un-terminated tail; that tail is peeked, never taken, so a prompt split
+/// across reads (`sh` then `ell> `) still assembles. A prompt only counts once
+/// the command's own echo has completed a line — the echo starts with an old
+/// `shell>` of its own.
+#[derive(Debug, Default)]
+struct TftpWatch {
+    echoed: bool,
+}
+
+impl TftpWatch {
+    /// Feed the complete lines and the current tail. `Ok(true)` once the prompt
+    /// is back; an error if CEFDK reported the transfer failed.
+    fn feed(&mut self, lines: &[String], tail: &str) -> Result<bool> {
+        for line in lines {
+            if line.contains("tftp failed") {
+                bail!("CEFDK: {line}");
+            }
+            self.echoed |= line.contains("tftp get");
+        }
+        Ok(self.echoed && tail.contains("shell>"))
+    }
 }
 
 /// How long to pause after a command before sending the next. A `tftp get` has
@@ -327,6 +357,60 @@ impl Drop for StageDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ohc_flash_transport::LineBuffer;
+
+    /// Push each chunk as one read and feed the watch, the way `wait_for_tftp`
+    /// does. Returns the index of the read that saw the prompt.
+    fn run_tftp(chunks: &[&[u8]]) -> Result<Option<usize>> {
+        let mut buf = LineBuffer::default();
+        let mut w = TftpWatch::default();
+        for (i, c) in chunks.iter().enumerate() {
+            buf.push(c);
+            if w.feed(&buf.lines(), &buf.tail())? {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The Windows hang (EA1 on COM3, 2026-10-17): the transfer finished but
+    /// the newline-less prompt came in pieces, and each piece was discarded.
+    #[test]
+    fn a_newline_less_prompt_split_across_reads_finishes_the_tftp() {
+        let chunks: &[&[u8]] = &[
+            b"shell> tftp get 10.0.0.107 0x6000000 bzImage\r\n",
+            b"Loading fi",
+            b"le :bzImage from server:10.0.0.107 ..... done!\r\n",
+            b"File length is 7300096 bytes ( 0x6f6400 in hex )\r\n",
+            b"\r\nsh",
+            b"ell",
+            b"> ",
+        ];
+        assert_eq!(run_tftp(chunks).unwrap(), Some(6), "seen on the read that completes `shell>`");
+    }
+
+    #[test]
+    fn a_whole_newline_less_prompt_in_one_read_finishes_the_tftp() {
+        let chunks: &[&[u8]] = &[
+            b"shell> tftp get 10.0.0.107 0x6000000 bzImage\r\n",
+            b"done!\r\nFile length is 7300096 bytes ( 0x6f6400 in hex )\r\nshell> ",
+        ];
+        assert_eq!(run_tftp(chunks).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn the_echo_s_own_prompt_does_not_count_as_finished() {
+        // The echo arrives a few characters at a time and begins `shell>`; until
+        // it completes a line, that is the OLD prompt.
+        let chunks: &[&[u8]] = &[b"shell> tf", b"tp get 10.0.0.107 0x6000000 bzImage"];
+        assert_eq!(run_tftp(chunks).unwrap(), None);
+    }
+
+    #[test]
+    fn a_failed_transfer_is_fatal() {
+        let chunks: &[&[u8]] = &[b"shell> tftp get 10.0.0.107 0x6000000 bzImage\r\n", b"tftp failed\r\nshell> "];
+        assert!(run_tftp(chunks).is_err());
+    }
 
     #[test]
     fn only_tftp_gets_the_long_gap() {
