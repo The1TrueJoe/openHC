@@ -16,14 +16,26 @@
 # — so loading here gives DSA the chance to attach first. modprobe b53_spi pulls
 # b53, dsa_core and the Broadcom tag module via modules.dep.
 #
-# The board glue (spi-ea-b53-board.c) is built in and already registered the
-# spi:bcm53125 device at subsys_initcall; loading the module now binds it by
-# deferred probe. We wait briefly for the bind so S40net sees the slave netdevs.
+# The switch is a node in the board DTB (ea-switch.dtsi), so spi:bcm53125
+# already exists by the time we run; loading the module binds it. We wait
+# briefly for the bind so S40net sees the slave netdevs.
+#
+# OPT-IN with ohc.switch=1 on the kernel command line, and deliberately so. A
+# half-attached switch does not fail politely: once b53 binds, the SoC MAC is
+# the switch's CPU port and expects tagged frames, so if the ports then fail to
+# come up the box drops off the network -- which also breaks the netboot RAM
+# installer used to repair a bad rootfs. The gate used to live in the C board
+# file that registered the switch; the device now always exists, so the gate is
+# whether b53 gets loaded at all. S40net's dsa_unbind fallback is the second net.
 
 MOD=b53_spi
 DRV=/sys/bus/spi/drivers/b53-switch
 
 start() {
+    case " $(cat /proc/cmdline 2>/dev/null) " in
+        *" ohc.switch=1 "*) ;;
+        *) echo "ea-switch: off (pass ohc.switch=1 to enable)"; return 0 ;;
+    esac
     # bridge + 8021q are modules now (built in they pushed the 2026.02 bzImage over
     # CEFDK's window — see features/switch/linux.fragment). DSA wants bridging
     # present, so load them first; harmless if absent.
@@ -49,12 +61,26 @@ start() {
     echo "ea-switch: $MOD loaded (not bound yet; S40net falls back if needed)"
 }
 
+# Build the configured switch topology (default: both DSA ports bridged into
+# br-lan, STP on) now that the driver has bound and lan1/lan2 exist — BEFORE
+# S40net (S40) leases, so the bridge is the interface that gets the address.
+# switchd apply is idempotent, best-effort, and writes the L3 handoff
+# (/run/ohc/net.conf) that S40net reads. A no-op where switchd is not shipped
+# (boards without the `switch` feature) or OHC_DSA_PORTS is empty.
+apply_topology() {
+    [ -x /opt/ohc/bin/switchd ] || return 0
+    [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+    export OHC_DSA_PORTS
+    [ -n "$OHC_DSA_PORTS" ] || return 0
+    /opt/ohc/bin/switchd apply
+}
+
 stop() {
     modprobe -r "$MOD" >/dev/null 2>&1 || true
 }
 
 case "$1" in
-    start) start ;;
+    start) start; apply_topology ;;
     stop) stop ;;
     restart) stop; start ;;
     *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;

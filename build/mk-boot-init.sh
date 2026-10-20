@@ -63,11 +63,29 @@ ln -sf lib "$WORK/lib64"
 # second group is the no-serial network-install path (see board/.../boot-init/init
 # net_serve): bring up eth0, DHCP, and a shell for the flasher's SSH session.
 for a in sh mount umount mkdir dd gunzip gzip sync switch_root cat ls \
-         ifconfig udhcpc ip route sleep hostname echo sed cut; do
+         ifconfig udhcpc ip route sleep hostname echo sed cut \
+         rm tar unxz xz; do
     ln -sf /bin/busybox "$WORK/bin/$a"
 done
 ln -sf /bin/busybox "$WORK/sbin/switch_root"
+ln -sf /bin/busybox "$WORK/sbin/reboot"
 for a in ifconfig udhcpc ip route; do ln -sf /bin/busybox "$WORK/sbin/$a"; done
+
+# ---- one-shot stock restore (ohc-restore stock on durable leaves a flag on p1;
+# board/.../boot-init/init runs the finalize here, pre-pivot, where p1 is free).
+# ohc-restore is a static(-pie) musl binary, so it needs no libraries of its own;
+# the reimage uses only the busybox tar/unxz applets added above (p1 keeps its
+# ext4, so no mke2fs/e2fsprogs). If it is absent the flag path simply no-ops and a
+# normal openHC boot proceeds. Copied from the assembled rootfs to share one ABI.
+for rb in "$TARGET/usr/sbin/ohc-restore" "$TARGET/opt/ohc/bin/ohc-restore" \
+          "$TARGET/usr/bin/ohc-restore" "$TARGET/sbin/ohc-restore"; do
+    [ -x "$rb" ] && { cp -aL "$rb" "$WORK/usr/sbin/ohc-restore"; break; }
+done
+if [ -x "$WORK/usr/sbin/ohc-restore" ]; then
+    echo "mk-boot-init: ohc-restore included (one-shot stock restore available)"
+else
+    echo "mk-boot-init: WARNING no ohc-restore in $TARGET — one-shot stock restore unavailable" >&2
+fi
 
 # ---- no-serial network install: dropbear + an account the flasher can log into
 # dropbear is the SSH server the flasher streams the rootfs to p1 over (reusing

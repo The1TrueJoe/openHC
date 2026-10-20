@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Control4 EA-1 v2 PoE: PoE, BCM53125 switch.
+ * Lives with the board; the .dtsi files are shared, in
+ * board/ea/common/kernel/arch/x86/boot/dts/. The includes mirror
+ * board/ea/ea1-v2-poe/ohc.features: keep them in step.
+ */
+/dts-v1/;
+
+#include "ea.dtsi"
+#include "ea-switch.dtsi"
+#include "ea-gpio-names.dtsi"
+
+/ {
+	model = "Control4 EA-1 v2 PoE";
+	compatible = "control4,ea1-v2-poe", "intel,ce5300";
+};

@@ -11,5 +11,5 @@ config BR2_PACKAGE_SPLASH
 	  than carrying a font or a bitmap. Change the word, get a new
 	  picture, at whatever size the panel is.
 
-	  Needs a 32bpp framebuffer. On the EA boards that is ce5300-fb,
+	  Needs a 32bpp framebuffer. On the EA boards that is simplefb,
 	  which hands over the scanout CEFDK leaves running.

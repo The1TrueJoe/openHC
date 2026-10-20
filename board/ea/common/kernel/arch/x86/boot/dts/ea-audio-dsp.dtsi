@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * ADAU1451 SigmaDSP analog audio -- the `audio-dsp` feature (EA3 only).
+ *
+ * The codec sits at 0x38 on the FOURTH I2C controller (vendor i2c-3); the DAC
+ * soft mute is vendor GPIO 61, active high = muted. The card node binds the
+ * ce5300-ea3 machine driver, which links ce5300-i2s to "adau1451.3-0038" --
+ * the i2c3 alias in ce5300.dtsi is what keeps that name stable.
+ *
+ * The DSP and codec resets are released here, not in ea.dtsi, so a board
+ * without the DSP never drives them.
+ *
+ * Stock registers its audio devices per board type and revision
+ * (ninjago_board_init()): an EA3 from revision 2 on gets the adau1451 plus one
+ * "audio-sense" device, platform data { id 0, gpio 10, active_state 0 }.
+ * c4audiosense.ko turns that into sig_det0, an IRQ-driven signal-present flag
+ * on the analog input, active low. Named here, never driven. gpio61's name is
+ * ours: stock only sets it (high = muted) in shutdown_gpio_ea3() and in the
+ * adau1451 driver.
+ */
+#define EA_LINE_10	"audio_sense0"
+#define EA_LINE_24	"codec_reset"
+#define EA_LINE_61	"dac_mute"
+#define EA_LINE_101	"dsp_reset"
+
+&gpio {
+	codec-reset-hog {
+		gpio-hog;
+		gpios = <24 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "codec_reset";
+	};
+	dsp-reset-hog {
+		gpio-hog;
+		gpios = <101 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "dsp_reset";
+	};
+};
+
+/ {
+	sound {
+		compatible = "control4,ea-audio";
+	};
+};
+
+&i2c3 {
+	audio-codec@38 {
+		compatible = "adi,adau1451";
+		reg = <0x38>;
+		mute-gpios = <&gpio 61 GPIO_ACTIVE_HIGH>;
+	};
+};

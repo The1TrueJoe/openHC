@@ -1,0 +1,138 @@
+i2c: pxa: CE5300 — four controllers, BAR-indexed DT nodes, optional clock
+
+The CE5310 exposes the CE4100's I2C PCI function (8086:2e68) with FOUR
+controllers, not three: BARs at 0xdffe0500/0600/0700 and a fourth at
+0xdffe0e00. The discontiguous address is why it was missed. Measured on an
+EA3: BAR3's registers read 0x03/0x12 at +0x14/+0x18, identical to the three
+working controllers. The ADAU1451 audio codec (0x38) lives on that fourth
+bus -- the vendor kernel's i2c-3 -- so with DEVS=3 audio cannot work at all.
+
+openHC now links a device tree into the kernel (0015), so each adapter gets
+its node and the i2c core instantiates the devices on it (LM75, codec). Two
+things in the upstream CE4100 DT path have rotted and are fixed here:
+
+ * i2c-pxa-pci matched child nodes by translated BAR address. With
+   pci=realloc a BAR may move; the index never does. Match reg = <bar>.
+   A BAR with no node still registers, bare, so a DT mistake never takes
+   the box's i2c (and the fan's temperature sensor) with it.
+ * i2c-pxa had no compatible for the CE4100 layout, so a DT-probed adapter
+   fell back to REGS_PXA2XX -- the wrong register offsets. Add
+   "intel,ce4100-i2c".
+
+And the clock: i2c-pxa called devm_clk_get() unconditionally. With
+CONFIG_COMMON_CLK=y (needed by spi-pxa2xx-pci for the switch) that is a
+real lookup, and this SoC has no clock provider, so every adapter failed:
+    pxa2xx-i2c ce4100-i2c.0: error -ENOENT: failed to get the clk
+The rate is only read under high_mode, so the clock is optional; use
+devm_clk_get_optional() instead of registering a placeholder per adapter.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/i2c/busses/i2c-pxa-pci.c
++++ b/drivers/i2c/busses/i2c-pxa-pci.c
+@@ -6,15 +6,20 @@
+  * The CE4100's I2C device is more or less the same one as found on PXA.
+  * It does not support target mode, the register slightly moved. This PCI
+  * device provides three bars, every contains a single I2C controller.
++ *
++ * openHC: the CE5300 (Control4 EA) has FOUR. Child nodes are matched by BAR
++ * index (reg = <bar>), not by BAR address, because pci=realloc may move the
++ * BARs; and an adapter with no node still registers, without children, so a
++ * device tree mistake never costs the box its i2c (and with it the fan's
++ * temperature sensor).
+  */
+ #include <linux/init.h>
+ #include <linux/pci.h>
+ #include <linux/platform_device.h>
+ #include <linux/platform_data/i2c-pxa.h>
+ #include <linux/of.h>
+-#include <linux/of_address.h>
+ 
+-#define CE4100_PCI_I2C_DEVS	3
++#define CE4100_PCI_I2C_DEVS	4
+ 
+ struct ce4100_devices {
+ 	struct platform_device *pdev[CE4100_PCI_I2C_DEVS];
+@@ -25,7 +30,7 @@
+ 	struct platform_device *pdev;
+ 	struct i2c_pxa_platform_data pdata;
+ 	struct resource res[2];
+-	struct device_node *child;
++	struct device_node *child = NULL, *np;
+ 	static int devnum;
+ 	int ret;
+ 
+@@ -40,34 +45,18 @@
+ 	res[1].start = dev->irq;
+ 	res[1].end = dev->irq;
+ 
+-	for_each_child_of_node(dev->dev.of_node, child) {
+-		const void *prop;
+-		struct resource r;
+-		int ret;
++	for_each_child_of_node(dev->dev.of_node, np) {
++		u32 reg;
+ 
+-		ret = of_address_to_resource(child, 0, &r);
+-		if (ret < 0)
+-			continue;
+-		if (r.start != res[0].start)
+-			continue;
+-		if (r.end != res[0].end)
+-			continue;
+-		if (r.flags != res[0].flags)
+-			continue;
+-
+-		prop = of_get_property(child, "fast-mode", NULL);
+-		if (prop)
+-			pdata.fast_mode = 1;
+-
+-		break;
++		if (!of_property_read_u32(np, "reg", &reg) && reg == bar) {
++			child = np;
++			break;
++		}
+ 	}
+ 
+-	if (!child) {
+-		dev_err(&dev->dev, "failed to match a DT node for bar %d.\n",
+-				bar);
+-		ret = -EINVAL;
+-		goto out;
+-	}
++	if (!child)
++		dev_warn(&dev->dev, "no DT node for bar %d, registering it bare\n",
++			 bar);
+ 
+ 	pdev = platform_device_alloc("ce4100-i2c", devnum);
+ 	if (!pdev) {
+@@ -108,10 +97,6 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	if (!dev->dev.of_node) {
+-		dev_err(&dev->dev, "Missing device tree node.\n");
+-		return -EINVAL;
+-	}
+ 	sds = kzalloc_obj(*sds);
+ 	if (!sds)
+ 		return -ENOMEM;
+--- a/drivers/i2c/busses/i2c-pxa.c
++++ b/drivers/i2c/busses/i2c-pxa.c
+@@ -209,6 +209,7 @@
+ 	{ .compatible = "mrvl,pwri2c", .data = (void *)REGS_PXA3XX },
+ 	{ .compatible = "mrvl,mmp-twsi", .data = (void *)REGS_PXA910 },
+ 	{ .compatible = "marvell,armada-3700-i2c", .data = (void *)REGS_A3700 },
++	{ .compatible = "intel,ce4100-i2c", .data = (void *)REGS_CE4100 },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, i2c_pxa_dt_ids);
+@@ -1469,7 +1470,7 @@
+ 
+ 	strscpy(i2c->adap.name, "pxa_i2c-i2c", sizeof(i2c->adap.name));
+ 
+-	i2c->clk = devm_clk_get(&dev->dev, NULL);
++	i2c->clk = devm_clk_get_optional(&dev->dev, NULL);
+ 	if (IS_ERR(i2c->clk))
+ 		return dev_err_probe(&dev->dev, PTR_ERR(i2c->clk),
+ 				     "failed to get the clk\n");

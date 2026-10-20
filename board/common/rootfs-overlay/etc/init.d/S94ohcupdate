@@ -1,0 +1,27 @@
+#!/bin/sh
+# ohc-updated — software updates (SHARED, board/common). Inert unless the
+# 'update' feature staged it.
+#
+# Checks the chosen channel (stable releases or the rolling dev pre-release) on
+# GitHub against /etc/openhc-release, and on request downloads, installs and
+# reboots. State and commands on the box's MQTT broker
+# (<base>/state/system/update, <base>/cmd/system/update/*); REST on loopback
+# :7074 (webd proxies it at /update/).
+DAEMON=/opt/ohc/bin/ohc-updated
+PIDFILE=/var/run/ohc-updated.pid
+
+case "$1" in
+    start)
+        [ -x "$DAEMON" ] || exit 0
+        start-stop-daemon -S -q -b -m -p "$PIDFILE" --exec /bin/sh -- -c \
+            "exec $DAEMON 2>&1 | logger -t ohc-updated" \
+            && echo "update: ohc-updated on :7074"
+        ;;
+    stop)
+        [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE"
+        killall ohc-updated 2>/dev/null
+        rm -f "$PIDFILE"
+        ;;
+    restart) "$0" stop; sleep 1; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

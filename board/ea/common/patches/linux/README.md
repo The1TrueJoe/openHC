@@ -2,114 +2,165 @@
 
 Applied to vanilla Linux 7.1.8 for every `ea*` board.
 
-**Only two patches remain, and both exist for the same reason: they CHANGE an
-existing upstream file.** Everything that was merely a *new* driver now lives as
-a plain `.c` in `board/ea/common/kernel/drivers/`, copied into the kernel tree and
-registered by `OHC_KERNEL_MIRROR_HOOK` (see `drivers/objs.mk`). That is
-strictly better — the source stays a normal file you can edit, grep and
-compile-check, with no diff context to go stale on a kernel bump.
+There are three kinds of EA kernel source, and each has one home:
 
 | Where | What belongs there |
 |---|---|
-| `board/ea/common/kernel/drivers/` | new drivers and board glue (a copy) |
+| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<board>/<board>.dts` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
+| `board/ea/common/kernel/drivers/`, `sound/` | new drivers for the SoC's own PCI functions (a copy) |
 | `board/ea/common/patches/linux/` | edits to existing upstream files (a diff) |
+
+The first two are copied into the kernel tree by `OHC_KERNEL_MIRROR_HOOK`
+(`board/external.mk`) and registered through `kernel/objs.mk`. Copies beat
+patches whenever a file is new: the source stays a normal file you can edit,
+grep and compile-check, with no diff context to go stale on a kernel bump.
 
 ## The short version
 
 | # | Patch | Why it must stay a patch |
 |---|---|---|
-| 0002 | x86 CE5300 serial | UART clock is 14.7456 MHz, not 1.8432 -- and ISA IRQ 4/3 are not routed (use 38) |
-| 0001 | i2c-pxa-pci without DT | deletes upstream DT-matching code; adds the clock; enumerates the 4th controller (the audio codec's bus) |
+| 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
+| 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
+| 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB` |
+| 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
+| 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
 
-Moved out of patches and into `board/ea/common/kernel/drivers/`:
+Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
+Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
+`compatible = "intel,xscale-uart"`), **0011** (keep 8250_pci off the 0x2e66 UART
+— now `status = "disabled"` on that PCI node), and the IRQ half of **0002** (the
+tree gives the UARTs no interrupt, so they run polled).
+
+New-file drivers in `board/ea/common/kernel/drivers/`:
 
 | Driver | Lands at | Registered as |
 |---|---|---|
 | `gpio/gpio-intelce.c` | `drivers/gpio/` | `obj-y` |
 | `pwm/pwm-ce5300.c` | `drivers/pwm/` | `obj-y` |
-| `leds/leds-ea-board.c` | `drivers/leds/` | `obj-y` |
-| `spi/spi-ea-b53-board.c` | `drivers/spi/` | `obj-y` |
-| `video/fbdev/ce5300-fb.c` | `drivers/video/fbdev/` | `obj-$(CONFIG_FB_SIMPLE)` |
+| `spi/spi-ea-ce5xx.c` | `drivers/spi/` | `obj-y` |
 
 ---
 
-## The device-tree question
+## The board device tree
 
-Most of what is here is board description written in C because CEFDK's
-`bootlinux` hands the kernel no DTB. That is a real constraint, but it is *not*
-the same as "x86 cannot do device tree". Checked against 7.1.8:
+CEFDK's `bootlinux` hands the kernel no DTB, so for a long time everything ACPI
+does not describe was board description written in C: `leds-ea-board.c`,
+`gpio-ea-board.c`, `spi-ea-b53-board.c`, `ce5300-ea-board.c` and `ce5300-fb.c`.
+They are gone. Each board's tree is now linked into the kernel:
 
-* `X86_INTEL_CE` still exists and does `select OF` + `select OF_EARLY_FLATTREE`.
-* `arch/x86/platform/ce4100/{ce4100.c,falconfalls.dts}` are still in-tree — a
-  working device tree for this exact SoC family.
-* `arch/x86/kernel/devicetree.c` still has `x86_flattree_get_config()` and
-  `of_platform_bus_probe()` with `intel,ce4100-cp`.
+* **0015** adds `CONFIG_BUILTIN_DTB` / `CONFIG_BUILTIN_DTB_NAME` to x86 (the
+  pair loongarch has, on top of `GENERIC_BUILTIN_DTB`), and
+  `x86_flattree_get_config()` uses it when no `SETUP_DTB` came from the boot
+  loader. `common.fragment` turns it on; each board's fragment names its tree.
+* **ACPI keeps the platform.** x86 only takes SMP/IRQ config from a tree when
+  `acpi_disabled`, so CPUs, interrupts and PCI routing stay ACPI's. The tree
+  only hangs board devices off PCI functions. A wrong tree loses those devices;
+  it does not lose the boot.
+* **Matching.** `pcibios_get_phb_of_node()` finds the root bus node by
+  `device_type = "pci"` + `bus-range`; `pci_set_of_node()` finds each device by
+  the devfn in `reg`. The layout follows `arch/x86/platform/ce4100/falconfalls.dts`.
+  A described PCI device gets an OF fwnode *instead of* its ACPI companion
+  (`pci_set_acpi_fwnode()` skips devices that already have one). None of the
+  drivers involved use ACPI.
+* **Iterating without a rebuild.** A DTB from the boot loader wins over the
+  built-in one, and kexec-tools passes one on x86:
+  `kexec -l bzImage --dtb=test.dtb --command-line="$(cat /proc/cmdline)"`.
+  `/sys/firmware/fdt` holds the tree the running kernel used.
 
-The obstacle is only *delivery*: `initial_dtb` is set by `add_dtb()`, which is
-called from the `SETUP_DTB` boot-protocol path — the bootloader chains it
-through `setup_data`, and CEFDK will not. But we build the bzImage, so embedding
-a blob and pointing `initial_dtb` at it is a small patch.
+| File | Describes |
+|---|---|
+| `ce5300.dtsi` | the PCI functions used (audio, GPIO, 4×I2C, SSP, GbE) + `i2cN` aliases |
+| `ea.dtsi` | every EA: LEDs, common reset/enable hogs (IO-MCU, Zigbee, USB-serial, LDO, FPGA), rear-USB VBUS (gpio44 regulator-fixed, PR #51) as the EHCI vbus-supply, LM75, CEFDK framebuffer |
+| `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) |
+| `ea-wifi.dtsi` | the `wifi` feature: `wlan_disable` |
+| `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
+| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3, the card node, `codec_reset`/`dsp_reset` |
+| `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
+| `board/ea/<board>/<board>.dts` | the board: includes matching its `ohc.features` |
 
-What a DTB would replace:
+A GPIO line is hogged by the file for the hardware it serves, so a board without
+that hardware never drives it; an unhogged line keeps whatever CEFDK left it at.
 
-* **`spi-ea-b53-board.c` and `leds-ea-board.c` entirely** — the switch port
-  map and the LED map become DT nodes.
-* The `fixed-clock` problem in **0001** (below) — a `fixed-clock` node
-  instead of `clk_register_fixed_rate()` in C.
-* DSA's `of_node` path is far better travelled than `platform_data`. The
-  platform_data path is legacy, and we hit one of its traps: it silently
-  requires `dsa_chip_data.netdev[cpu_port]`, and a NULL there makes the CPU port
-  permanently unresolvable.
+What the move changed, beyond deleting C:
 
-The catch, and it is real: our peripherals are **PCI-enumerated**, so DT nodes
-must be *matched* to PCI devices through the host-bridge/bus hierarchy the way
-`falconfalls.dts` does. Ours sit behind a PCIe bridge at `0000:01:xx`, which is
-fiddlier than falconfalls' flat layout, and a wrong DTB is a non-booting kernel
-— which on a secure-boot EA3 costs an ID-button recovery cycle.
-
-**Verdict: DT is the better architecture and is viable. It is a consolidation
-to do deliberately, against a known-good build, not while also debugging a
-driver.**
+* **GPIO lines have names now** (`gpio-line-names`), so `gpiofind dsp_reset`
+  works. The old file only set consumer labels, which no by-name tool sees.
+  Inputs (board-id straps, the ID button) are named but not claimed.
+* **Each line is driven only where its hardware is.** `gpio-ea-board.c` drove
+  every line on every board, including the EA3 block (75, 121) on EA1s. Now the
+  DSP/codec resets come with `audio-dsp`, the switch/GbE resets with `switch`,
+  `wlan_disable` with `wifi`.
+* **The switch gate moved.** `ohc.switch=1` was read by the C file that
+  registered the switch. The device now always exists, and `S39ea-switch`
+  decides whether `b53_spi` loads — same flag, same default (off).
+* **The SoC UARTs are device-tree ports.** 8250_of probes 0x3f8/0x2f8/0x2e8
+  as XScale at 14.7456 MHz with no IRQ (polled), each taking over the legacy
+  slot at its address so ttyS numbers stay put; the 0x2e66 PCI face of UART1 is
+  disabled so it cannot steal the IO-MCU's 0x2f8 decode. 0010 (TX from the LSR)
+  is still a driver change.
+* **0012 (GEN3 FCR with DMA_SELECT, 64-byte FIFO) is retired.** Tested live on an
+  EA3: with ttyS1's FCR rewritten to mainline XScale's 0x81 (and to 0x01) through
+  /dev/port, relay reads (10/10) and 99-pulse IR sends (10/10, frames of several
+  FIFO-loads) were all answered by the IO-MCU. DMA_SELECT made no difference;
+  mainline's 32-byte tx_loadsz is below the hardware FIFO, so it cannot hurt.
+* **The switch is described the supported way.** DSA's platform_data path is
+  legacy and silently needs `dsa_chip_data.netdev[cpu_port]`; the OF path
+  resolves the conduit from `ethernet = <&gbe>`. The CPU port carries no
+  `phy-mode`/`fixed-link` on purpose: b53 is on DSA's workaround list, so DSA
+  skips phylink for it and leaves firmware's forced 1G link alone, exactly as
+  before.
 
 ---
 
 ## Per-patch detail
 
-### 0001 — `i2c-pxa-pci`: enumerate without a device tree
+### 0001 — `i2c-pxa`: four controllers, DT nodes, optional clock
 
-**Necessary as a patch: yes.** It deletes DT-matching code from an existing
-upstream file (`drivers/i2c/busses/i2c-pxa-pci.c`). Upstream requires
-`dev->dev.of_node` and bails with "Missing device tree node"; we have none.
+**Necessary as a patch: yes.** It edits two upstream files.
 
-Also registers a **fixed-rate clock per adapter**. That is not cosmetic:
-`i2c-pxa` calls `devm_clk_get()` unconditionally. With `CONFIG_COMMON_CLK=y` —
-which the `switch` feature requires for `spi-pxa2xx-pci` — that becomes a real
-lookup, and this SoC registers no clock provider, so every adapter fails:
+* **`CE4100_PCI_I2C_DEVS` 3 → 4.** The CE5300 has FOUR I2C controllers, not the
+  CE4100's three. The fourth BAR sits at `0xdffe0e00`, discontiguous from the
+  other three (`0xdffe0500/0600/0700`), which is why it went unnoticed for so
+  long. Measured on a live EA3: BAR3's registers at `+0x14`/`+0x18` read
+  `0x03`/`0x12`, byte-identical to the three working controllers. That fourth bus
+  is where the **ADAU1451 audio codec (0x38)** lives — Control4's own ASoC device
+  name `"adau1451.3-0038"` says bus 3. **Audio cannot work without this line.**
+* **Child nodes are matched by BAR index** (`reg = <bar>`), not by translated BAR
+  address as upstream did: with `pci=realloc` a BAR can move, its index cannot.
+  A BAR with no node still registers, bare, so a device-tree mistake never takes
+  the box's i2c — and with it the LM75 the fan is driven from — away.
+  (`ohc-ea-hw` still instantiates the LM75 by hand if `0-0048` is missing.)
+* **`"intel,ce4100-i2c"` compatible in i2c-pxa.** Upstream's CE4100 DT path has
+  rotted: a DT-probed adapter matched no compatible and fell back to
+  `REGS_PXA2XX`, the wrong register offsets.
+* **`devm_clk_get_optional()`.** With `CONFIG_COMMON_CLK=y` (needed for
+  `spi-pxa2xx-pci`) a required clock is a real lookup, and this SoC has no clock
+  provider, so every adapter failed with
+  `pxa2xx-i2c ce4100-i2c.0: error -ENOENT: failed to get the clk`. The rate is
+  only read under `high_mode`, so the clock is optional; this replaces the
+  placeholder fixed-rate clock the old patch registered per adapter.
 
-```
-pxa2xx-i2c ce4100-i2c.0: error -ENOENT: failed to get the clk
-```
+### 0015 — x86: built-in device tree
 
-and the box comes up with **no i2c at all** (which would also silently block the
-ADAU1451 audio codec on i2c-3). The rate is a marked placeholder: `i2c-pxa` only
-reads it under `high_mode`, set from the DT property `mrvl,i2c-high-mode`.
+**Necessary as a patch: yes** — it adds Kconfig symbols and an early-boot hook
+to `arch/x86`. See "The board device tree" above.
 
-**Third job: `CE4100_PCI_I2C_DEVS` 3 → 4.** The CE5300 has FOUR I2C controllers,
-not the CE4100's three. The fourth BAR sits at `0xdffe0e00`, discontiguous from
-the other three (`0xdffe0500/0600/0700`), which is why it went unnoticed for so
-long. Measured on a live EA3: BAR3's registers at `+0x14`/`+0x18` read
-`0x03`/`0x12`, byte-identical to the three working controllers, and zero
-elsewhere because nothing had configured it.
 
-That fourth bus is where the **ADAU1451 audio codec (0x38)** lives — Control4's
-own ASoC device name `"adau1451.3-0038"` says bus 3, address 0x38. With DEVS=3
-the codec is not merely misconfigured, it is unreachable: `i2cdetect` finds
-nothing at 0x38 on any bus and i2c-1/i2c-2 come up entirely empty. **Audio cannot
-work without this line.** See `https://the1truejoe.github.io/openHC/ea/audio/`.
+### 0016 — ehci-pci: board VBUS supply follows root-hub port power
 
-*Replaceable by a DTB* — both halves (the node and a `fixed-clock`).
+**Necessary as a patch: yes** — it adds a `.port_power` hook to ehci-pci.
+The rear USB port's 5 V is a load switch on gpio44 that the controller knows
+nothing about (stock drove it high from a closed board driver; PR #51 found it).
+The board DTB makes it a `regulator-fixed` and the controller's `vbus-supply`;
+the hook switches it from root-hub port power, the way chipidea drives its VBUS
+regulator, so the port's `disable` attribute and uhubctl really cut VBUS. The
+root hub has to advertise per-port power switching for usbcore to send
+PORT_POWER at all, so the patch sets `HCS_PPC` in the cached `hcs_params` when a
+supply is present (single-port controllers only). The regulator core is only in
+the fat kernel (`linux/real-kernel.fragment`); the bootstrap kernel has none and
+leaves the rear port unpowered.
 
 ### 0003 — e1000 CE5300 fake PHY
 
@@ -171,12 +222,8 @@ companion controller. **Upstreamable** on its own; kept as a patch because it ed
 ## Per-driver notes — `board/ea/common/kernel/drivers/`
 
 These are plain `.c` files copied into the kernel tree by
-`OHC_KERNEL_MIRROR_HOOK` and registered through `drivers/objs.mk`. They were
-patches until they didn't need to be; nothing about the code changed in the
-move. They are built **in**, not as modules, which matters: `gpio-intelce` has
-to exist before `leds-ea-board` claims GPIOs, and `spi-ea-b53-board` registers
-its board info at `subsys_initcall` — *before* `spi-pxa2xx-pci` registers the
-controller. As loadable modules that ordering would have to be rebuilt by hand.
+`OHC_KERNEL_MIRROR_HOOK` and registered through `kernel/objs.mk`. Each binds one
+of the SoC's PCI functions by ID; none of them describes the board.
 
 ### `gpio/gpio-intelce.c`
 
@@ -202,72 +249,37 @@ No upstream driver exists.
 *Could be an out-of-tree module.* It is a patch mainly so `CONFIG_PWM_CE5300=y`
 works like any other kernel symbol.
 
-### `leds/leds-ea-board.c`
+### Switch bring-up traps (now `ea-switch.dtsi`)
 
-**Necessary as a patch: no.** New file, `leds-gpio` platform data, no upstream
-changes. Board description again.
-
-Map extracted from the stock kernel binary:
-
-| LED | GPIO | polarity |
-|---|---|---|
-| `c4::network` | 15 | active high |
-| `warn::red` | 99 | active high |
-| `warn::yellow` | 16 | active high |
-| `warn::blue` | 100 | active high |
-| `c4::4ball_red` | 102 | **active low** |
-| `c4::4ball_blue` | 34 | **active low** |
-
-Confirmed: `ea-leds: 6 front-panel LEDs registered`.
-
-*Replaceable by a DTB* — this is textbook `gpio-leds` DT.
-
-### `spi/spi-ea-b53-board.c`
-
-**Necessary as a patch: no — this is pure board description.** One new file,
-no upstream changes. It exists solely because there is no DTB.
-
-It is also the patch that has burned the most time, so the traps are recorded
-here:
+The switch burned the most time of anything here, so the traps stay recorded:
 
 1. **`CONFIG_SPI_PXA2XX_PCI` cannot be set directly.** It is
    `def_tristate SPI_PXA2XX && PCI && COMMON_CLK` — a *derived* symbol, so a
    fragment assignment is silently dropped. `COMMON_CLK` is the term that was
    missing; without it the PCI glue is never compiled and `01:0b.4` sits
    unbound with an empty `/sys/class/spi_master`.
-2. **The SPI bus number is not 0.** `ce4100_spi_setup()` does
-   `ssp->port_id = dev->devfn`, and `pxa2xx_spi_probe()` then does
-   `controller->bus_num = ssp->port_id`. At `01:0b.4` that is
-   `(0x0b << 3) | 4 = 92`, so the controller is **spi92** and a `board_info`
-   queued for bus 0 never matches. The file derives it from `devfn` rather than
-   hardcoding 92.
-3. **DSA's platform_data path needs `netdev[cpu_port]`.** `dsa_port_parse()`
-   resolves `"cpu"` with `dev_find_class(cd->netdev[port], "net")`; leaving it
-   NULL makes the port permanently unresolvable no matter how correct the rest
-   of the port map is. It is set to the e1000's `struct device`
-   (`8086:2e6e`, `01:0c.0`); `-EPROBE_DEFER` covers ordering.
-4. **The b53 config symbols are `CONFIG_B53` and `CONFIG_B53_SPI_DRIVER`** —
+2. **SPI mode 3, not 0.** Mode 0 transfers complete and the controller's IRQ
+   counts up, but the switch never answers and b53 probes `-EINVAL` — which
+   looks exactly like a wrong chip select. The vendor's `spiMasterConfig()` sets
+   SPH=1 + SPO=1.
+3. **The b53 config symbols are `CONFIG_B53` and `CONFIG_B53_SPI_DRIVER`** —
    *not* `CONFIG_NET_DSA_B53*`, which do not exist and which kconfig discards
    without a word.
+4. (Platform-data era, kept for history.) The SPI bus number is the SSP's devfn
+   (`spi92`), and DSA's platform_data needed `netdev[cpu_port]` set by hand.
+   Neither matters with a device tree: the switch is a child of the SSP node and
+   the conduit is `ethernet = <&gbe>`.
 
-Port map (measured, see the file's comments): CPU = port 5, jacks = ports 1 and
+Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.
-
-*This patch should be the first thing deleted if a DTB lands.*
-
-### `video/fbdev/ce5300-fb.c`
-
-Simple framebuffer glue. The only driver here gated by a real upstream symbol
-(`CONFIG_FB_SIMPLE`), which is why its `objs.mk` line uses `obj-$(CONFIG_...)`
-where the others use plain `obj-y`.
 
 ---
 
 ## Rules of thumb
 
 * **Changing an upstream file → patch.** You cannot express an edit as a copy.
-  That is 0001 and 0003, and nothing else currently qualifies.
-* **Adding a new file → `board/ea/common/kernel/drivers/` + a line in `objs.mk`.**
+* **Saying which device sits where → the device tree**, never a C board file.
+* **Adding a new driver → `board/ea/common/kernel/drivers/` + a line in `objs.mk`.**
   No diff context to rot, and the source stays greppable and editable.
 * **Do not invent a CONFIG symbol.** A copied-in driver has no Kconfig hunk, so
   `obj-$(CONFIG_MY_DRIVER)` expands to nothing and the driver silently is not

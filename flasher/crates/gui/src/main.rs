@@ -127,6 +127,11 @@ enum Lvl {
     /// Live console evidence while waiting on the user. Rendered dim and small:
     /// it exists to prove the tool is still watching, not to be read.
     Observed,
+    /// A command this tool typed at the box's shell (the `shell` channel).
+    Shell,
+    /// BOOTP/TFTP server activity (the `net` channel) — debug noise, gated
+    /// behind the details toggle like `Detail`.
+    Net,
     /// A physical step the user completed.
     Resolved,
 }
@@ -308,6 +313,8 @@ fn sink(shared: &Arc<Mutex<Shared>>) -> Progress {
             Event::Detail(t) => (Lvl::Detail, t),
             Event::Warn(t) => (Lvl::Warn, t),
             Event::Observed(t) => (Lvl::Observed, t),
+            Event::Shell(t) => (Lvl::Shell, t),
+            Event::Net(t) => (Lvl::Net, t),
             Event::Resolved(t) => (Lvl::Resolved, t),
             Event::Await { title, instruction } => {
                 (Lvl::Step, format!("{title}\n{instruction}"))
@@ -634,8 +641,8 @@ impl App {
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 for (lvl, text) in &sh.log {
-                    // Detail lines are the debug half — noise for the wizard.
-                    if *lvl == Lvl::Detail && !self.details {
+                    // Detail and net lines are the debug half — noise for the wizard.
+                    if matches!(lvl, Lvl::Detail | Lvl::Net) && !self.details {
                         continue;
                     }
                     let t = RichText::new(text).monospace().size(11.0);
@@ -647,6 +654,11 @@ impl App {
                         // can see lines arriving, small so it does not compete
                         // with the steps.
                         Lvl::Observed => t.weak().size(11.0),
+                        // Commands we send: monospace and plain, so they read
+                        // as "what the tool typed", distinct from the box's echo.
+                        Lvl::Shell => t,
+                        // Net server chatter: dim, like the other debug half.
+                        Lvl::Net => t.weak().size(11.0),
                         Lvl::Resolved => t.color(OK),
                     });
                 }

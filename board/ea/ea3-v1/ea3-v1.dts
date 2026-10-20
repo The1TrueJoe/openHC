@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Control4 EA-3 v1: Wi-Fi, BCM53125 switch, ADAU1451 DSP.
+ * Lives with the board; the .dtsi files are shared, in
+ * board/ea/common/kernel/arch/x86/boot/dts/. The includes mirror
+ * board/ea/ea3-v1/ohc.features: keep them in step.
+ */
+/dts-v1/;
+
+#include "ea3.dtsi"
+#include "ea-wifi.dtsi"
+#include "ea-switch.dtsi"
+#include "ea-audio-dsp.dtsi"
+#include "ea-gpio-names.dtsi"
+
+/ {
+	model = "Control4 EA-3 v1";
+	compatible = "control4,ea3-v1", "intel,ce5300";
+};

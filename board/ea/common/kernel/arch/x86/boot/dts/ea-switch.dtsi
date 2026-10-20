@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * BCM53125 managed switch on the SSP, chip-select 1 -- the `switch` feature
+ * (ea3-v1, ea3-v2, ea1-v2-poe). Everything here was measured on a live EA3:
+ *
+ *  - SPI mode 3 at 1843200 Hz, from Control4's own b53SpiInit()/spiMasterConfig()
+ *    (SPH=1, SPO=1, clock_div 1 = the SSP's 3686400/2). Mode 0 transfers
+ *    complete but the switch never answers; that cost the most time.
+ *  - Port 5 is the CPU port, NOT the IMP at 8: link summary 0x24 (ports 2+5),
+ *    their MIB counters mirror each other, and port 5's GMII override reads
+ *    0x4b (forced 1000/full) -- the vendor's "internal fake phy" link.
+ *  - Port 2 is the primary jack (4 MB out of the box moved through 5 -> 2).
+ *  - Port 1 is the second jack, isolated in the stock config; exposing it is
+ *    the point of DSA.
+ *
+ * The CPU port deliberately has no phy-mode/fixed-link. b53 is on DSA's
+ * dsa_switches_apply_workarounds list, so DSA logs that and skips phylink for
+ * the port, leaving firmware's forced link alone -- the same thing the old
+ * platform_data description did. Add a fixed-link only after proving b53's
+ * port-5 reconfiguration keeps the link.
+ *
+ * The node is always present; whether b53 binds is S39ea-switch's call (it
+ * loads b53_spi only with ohc.switch=1), because a half-attached switch takes
+ * the SoC MAC with it.
+ *
+ * The switch and GbE reset lines are released here, not in ea.dtsi, so a board
+ * without the switch never drives them.
+ */
+#define EA_LINE_5	"gb_eth_reset"
+#define EA_LINE_8	"gb_sw_reset"
+
+&gpio {
+	gb-eth-reset-hog {
+		gpio-hog;
+		gpios = <5 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "gb_eth_reset";
+	};
+	gb-sw-reset-hog {
+		gpio-hog;
+		gpios = <8 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "gb_sw_reset";
+	};
+};
+
+&ssp {
+	switch@1 {
+		compatible = "brcm,bcm53125";
+		reg = <1>;
+		spi-max-frequency = <1843200>;
+		spi-cpol;
+		spi-cpha;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@1 {
+				reg = <1>;
+				label = "lan1";
+			};
+
+			port@2 {
+				reg = <2>;
+				label = "lan2";
+			};
+
+			port@5 {
+				reg = <5>;
+				ethernet = <&gbe>;
+			};
+		};
+	};
+};

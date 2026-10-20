@@ -80,13 +80,14 @@ mode against a fixed link, with the switch behind it. See
 ea/common/common_defconfig       the EA half of the config
 features/                 composable feature sets: wifi, emmc, switch, audio, sgx
 linux/                    common.fragment + per-feature fragments
-patches/linux/            i2c-pxa, pwm-ce5300, e1000 fake-phy,
-                          gpio-intelce (CE5300 128-line GPIO),
-                          spi-ea-b53-board (BCM53125 port map)
+patches/linux/            edits to upstream: i2c-pxa, serial, e1000 fake-phy,
+                          ssp, ehci, x86 built-in device tree
 post-image.sh             wraps the bzImage in the CEFDK container
 firmware/io-mcu/          the clean-room TM4C firmware
-drivers/                  leds-ea-board, the B53 board glue, ce5300-fb
-sound/                    the CE5300 I2S + ADAU1451 drivers
+kernel/arch/x86/boot/dts/ the board device trees: switch, codec, LEDs,
+                          GPIO names + reset lines, LM75, framebuffer
+kernel/drivers/           gpio-intelce, pwm-ce5300, the boot SPI-NOR controller
+kernel/sound/             the CE5300 I2S + ADAU1451 drivers
 ```
 
 Two of those patches exist because mainline is *almost* right for this SoC and
