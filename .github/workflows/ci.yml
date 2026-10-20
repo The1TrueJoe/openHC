@@ -555,17 +555,22 @@ jobs:
       # The EA family shares ONE ccache, keyed on the family rather than the
       # board, so a translation unit compiled for ea1-v2 (WebKit, ICU, the
       # toolchain's own host-gcc) is a hit for every other EA board and every
-      # later run. The rolling run_id key saves a fresh entry each run and the
-      # restore-keys walk back: this board's newest ccache first, then any EA
-      # board's. restore/save split (not plain actions/cache) so a FAILED build
-      # still saves the objects it did compile — the save step runs on always().
+      # later run. The key carries run_id AND run_attempt, because a cache key is
+      # write-once and re-attempts of one run share run_id — so a run_id-only key
+      # would let attempt 3 restore only attempt 1's objects, never attempt 2's.
+      # With run_attempt the restore-keys walk back: THIS run's previous attempt
+      # first (the run_id- prefix), then this board's newest from older runs, then
+      # any EA board's. restore/save split (not plain actions/cache) so a FAILED
+      # build still saves what it compiled — the save runs on always() — and the
+      # next attempt resumes from it.
       - name: Restore the EA family ccache
         if: startsWith(matrix.board, 'ea')
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-
             ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
             ccache-ea-${{ env.BUILDROOT_REF }}-
 
@@ -802,7 +807,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.
