@@ -28,11 +28,20 @@
 CONFIG_DRM=y
 CONFIG_SGX545_CE=y
 
-# --- framebuffer display built IN (ce5300-fb via FB_SIMPLE) ---
-# ce5300-fb.o is obj-$(CONFIG_FB_SIMPLE); keep the panel/console path built in on
-# the real kernel exactly as on the bootstrap. (Harmless if already set.)
+# --- framebuffer display built IN (simplefb, from the board DTB) ---
+# The CEFDK scanout is a simple-framebuffer node in the board device tree; keep
+# FB_SIMPLE built in on the real kernel exactly as on the bootstrap. (Harmless if already set.)
 CONFIG_FB=y
 CONFIG_FB_SIMPLE=y
+
+# --- regulator core: rear-USB VBUS under port power control ---
+# The board DTB makes gpio44 (the rear USB port's 5 V switch) a regulator-fixed
+# and the EHCI's vbus-supply, and patch 0016 switches it from root-hub port power
+# so the port can be turned off from Linux. The regulator core does not fit the
+# bootstrap kernel's copy window, so it lives here; without it ehci-pci sees no
+# supply and the rear port is simply unpowered on the bootstrap.
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
 
 # Modules stay ON: this kernel can still carry loadable modules (the ASoC audio
 # stack is still obj-m in objs.mk and loads from p1). Nothing here forces them

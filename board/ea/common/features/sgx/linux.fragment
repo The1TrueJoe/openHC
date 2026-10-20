@@ -12,7 +12,7 @@
 
 # Userspace finds the GPU through libdrm's drmOpen(), so a DRM node must exist.
 # The driver registers no modesetting and owns no GEM objects; display stays on
-# ce5300-fb. Built as a module (CONFIG_MODULES in common.fragment) because the
+# simplefb (the board DTB framebuffer). Built as a module (CONFIG_MODULES in common.fragment) because the
 # DRM core + helpers it drags in cost ~1.25 MiB of bzImage; that weight lands in
 # the rootfs instead. (The helpers are not trimmable here — DRM_KMS_HELPER /
 # DRM_DISPLAY_HELPER have no prompt and disabling them in a fragment is ignored.)

@@ -99,11 +99,11 @@ pub fn netboot(
     // 1. Start the two servers. Bind failures here are almost always "not root".
     let bootp_p = p.clone();
     let bootp = BootpResponder::start(target_mac, box_ip, server_ip, broadcast, move |m| {
-        bootp_p.emit(Event::detail(m))
+        bootp_p.emit(Event::net(m))
     })
     .map_err(|e| bind_error("BOOTP", 67, e))?;
     let tftp_p = p.clone();
-    let tftp = TftpServer::start(stage.path().to_path_buf(), move |m| tftp_p.emit(Event::detail(m)))
+    let tftp = TftpServer::start(stage.path().to_path_buf(), move |m| tftp_p.emit(Event::net(m)))
         .map_err(|e| bind_error("TFTP", 69, e))?;
     p.emit(Event::step(format!(
         "serving {KERNEL_NAME}/{INITRD_NAME} over TFTP and answering BOOTP for {}",
@@ -220,7 +220,7 @@ fn send_ramboot(serial: &mut Serial, cmds: &[String], p: &Progress) -> Result<()
             // drop them so an old `shell>` cannot pass for this one finishing.
             drain(serial)?;
         }
-        p.emit(Event::detail(format!("shell> {cmd}")));
+        p.emit(Event::shell(cmd.clone()));
         serial.write_line(cmd).map_err(|e| anyhow!("{e}"))?;
         if is_tftp {
             // A fixed gap is not enough: a 7 MB kernel outlasts it, the next
@@ -254,7 +254,7 @@ fn wait_for_tftp(serial: &mut Serial, p: &Progress) -> Result<()> {
         serial.poll(Duration::from_millis(500)).map_err(|e| anyhow!("{e}"))?;
         let lines = serial.lines();
         for line in &lines {
-            p.emit(Event::detail(format!(". {line}")));
+            p.emit(Event::observed((*line).clone()));
         }
         if watch.feed(&lines, &serial.tail())? {
             return Ok(());

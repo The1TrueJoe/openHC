@@ -1,0 +1,37 @@
+x86: CE5300 serial — the real UART clock for the legacy COM table
+
+The CE5300's UARTs are clocked at 14.7456 MHz, not the 1.8432 MHz that
+arch/x86/include/asm/serial.h assumes for legacy COM ports, so BASE_BAUD is 8x
+too small: ask for console=ttyS0,115200 and the wire runs at 921600. Control4's
+GPL kernel drop makes the same change (intel_kernel_patches/00178086):
+
+    /* The Intel Media SOC Gen3 has a high freqency clock. */
+    #define BASE_BAUD ( 14745600 / 16 )
+
+The SoC UARTs themselves are now described in the board device tree (8250_of,
+clock-frequency = <14745600>), which also sets their type and leaves them
+polled. This line remains for one reason: the console. univ8250_console
+registers the legacy table's ttyS0 at console_initcall, long before 8250_of
+probes and takes the slot over, and without the right clock everything printed
+in between is garbage on the wire -- which made every failed boot look like a
+silent hang for the whole bring-up.
+
+The IRQ half of the old patch (irq 0 for all four ports) is gone with it: the
+device-tree ports have no interrupts and run polled, and nothing opens the
+legacy ports before they are replaced.
+
+Scope: EA family only (board/ea/common/patches).
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/arch/x86/include/asm/serial.h
++++ b/arch/x86/include/asm/serial.h
+@@ -9,7 +9,7 @@
+  * clock, since the 16550A is capable of handling a top speed of 1.5
+  * megabits/second; but this requires a faster clock.
+  */
+-#define BASE_BAUD (1843200/16)
++#define BASE_BAUD (14745600/16)
+ 
+ /* Standard COM flags (except for COM4, because of the 8514 problem) */
+ #ifdef CONFIG_SERIAL_8250_DETECT_IRQ

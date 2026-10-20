@@ -39,7 +39,10 @@ export interface SerialPort {
   dev: string | null;
   label: string;
   baud: number;
-  /** 'host' — a real tty. 'mcu' — routed through the IO protocol, no device node. */
+  /** 'host' — a real tty on a SoC UART. 'mcu' — a tty the ohc-iomcu line
+   *  discipline mux-es over the IO protocol's UART opcodes (shown with a "via
+   *  MCU" hint). Both are openable; `dev === null` is the only non-bridgeable
+   *  case. */
   transport: 'host' | 'mcu';
   /** What THIS port will actually run at. Per port, not one global list: a
    *  host 16550A and a UART reached over the IO microcontroller's protocol do
@@ -76,6 +79,21 @@ export interface Capabilities {
   storage?: StorageStatus;
   /** The on-screen web view, when this board has a display program. */
   display?: DisplayCfg;
+}
+
+/** Software updates (ohc-updated, retained `system/update`). `installable` is
+ *  false on boards with no on-box installer yet (they update with ohc-flash). */
+export interface UpdateStatus {
+  channel: 'stable' | 'dev';
+  board: string;
+  current: string;
+  latest: string | null;
+  available: boolean;
+  installable: boolean;
+  state: 'idle' | 'checking' | 'downloading' | 'installing' | 'rebooting' | 'error';
+  progress: number | null;
+  error: string | null;
+  checked_at: number | null;
 }
 
 /** One mounted filesystem on a plugged-in drive (ohc-storaged). */
@@ -328,7 +346,7 @@ export interface IoState {
   /** External drives (ohc-storaged), live. */
   storage?: { volumes?: StorageVolume[]; share?: StorageShare };
   /** Return-to-stock availability (boards with the ohc-restore helper). */
-  system?: { restore?: { available: boolean; openhc?: boolean; detail?: string } };
+  system?: { restore?: { available: boolean; openhc?: boolean; detail?: string }; update?: UpdateStatus };
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -637,6 +655,11 @@ export class Io {
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));
   /** Return to stock. One-way; iod acts only on the literal "confirm". */
   restoreStock = () => this.#publish('system/restore', 'confirm');
+  /** Software updates: check the channel now, install what it found (download,
+   *  install, reboot), or switch channel (stable | dev; checks at once). */
+  updateCheck = () => this.#publish('system/update/check', '');
+  updateInstall = () => this.#publish('system/update/install', '');
+  updateChannel = (c: 'stable' | 'dev') => this.#publish('system/update/channel', c);
   /** Unshare and unmount a volume so its drive can be pulled. */
   ejectVolume = (id: string) => this.#publish(`storage/eject/${id}`, '');
 
