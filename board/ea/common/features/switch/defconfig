@@ -1,3 +1,10 @@
 # openHC — BCM53125 managed-switch userspace. Shared by ea3-v1/ea3-v2/ea1-v2-poe.
-# Just bridge tooling for the two port netdevs; kernel side is the linux.fragment.
+# Kernel side is the linux.fragment; this is what switchd drives.
+#
+# iproute2 (`ip` + `bridge`) is REQUIRED, not bridge-utils: switchd configures
+# the switch through it, and `bridge vlan` is how per-port 802.1Q filtering is
+# offloaded to the b53. brctl (bridge-utils) cannot do VLAN filtering at all, so
+# it would cap the switch at a plain unmanaged bridge. bridge-utils stays for the
+# brctl muscle-memory / scripts, but iproute2 is the one switchd needs.
 BR2_PACKAGE_BRIDGE_UTILS=y
+BR2_PACKAGE_IPROUTE2=y

@@ -235,27 +235,29 @@ jobs:
           # resolved from ohc.features with no build, so it is cheap to ask here.
           pkgchanged=$(echo "$changed" | grep -E '^packages/' || true)
           if [ -n "$pkgchanged" ]; then
-            # Workspace-wide inputs rebuild every board: the lockfile, the
-            # workspace manifest, the shared cargo/toolchain config, and the
-            # staging driver itself all change what every board compiles.
-            if echo "$pkgchanged" | grep -qE '^packages/(Cargo\.(toml|lock)|\.cargo/|rust-toolchain|build\.sh|README)'; then
+            # Workspace-wide inputs rebuild every board: the workspace manifest,
+            # the shared cargo/toolchain config, and the staging driver itself
+            # all change what every board compiles. Cargo.lock is NOT here: a
+            # lockfile change is resolved to the crates it touches (below).
+            if echo "$pkgchanged" | grep -qE '^packages/(Cargo\.toml|\.cargo/|rust-toolchain|build\.sh|README)'; then
               echo ">> packages/: workspace-wide file changed — building all"
               echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
             fi
+            lockchanged=""
+            echo "$pkgchanged" | grep -qx 'packages/Cargo\.lock' && lockchanged=1
             # The crate each changed file lives in (first path component). A file
             # sitting directly under packages/ is not attributable to one crate,
             # so treat it as workspace-wide and build everything.
             crates=""
             while IFS= read -r f; do
               [ -n "$f" ] || continue
+              [ "$f" = "packages/Cargo.lock" ] && continue
               c=$(printf '%s\n' "$f" | sed -n 's#^packages/\([^/]*\)/.*#\1#p')
               [ -z "$c" ] && { echo ">> packages/: unattributable file '$f' — building all"; echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0; }
               crates="$crates $c"
             done <<EOF
           $pkgchanged
           EOF
-            crates=$(printf '%s\n' $crates | awk 'NF' | sort -u | tr '\n' ' ')
-            echo ">> changed package crates: $crates"
             # Each board's shipped crates, asked once, as padded lines
             # "<board>  <crate> <crate> " so a whole-word " <crate> " grep cannot
             # match a board name or a crate substring. No associative arrays —
@@ -263,6 +265,26 @@ jobs:
             ships_table=$(for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
               printf '%s  %s \n' "$b" "$(bash packages/build.sh "$b" --crates 2>/dev/null)"
             done)
+            # A dependency bump touches only Cargo.lock. Rather than rebuild every
+            # board, diff the lockfile base..head and keep the shipped crates whose
+            # TRANSITIVE resolved dependency set changed (a core-crate dep bump hits
+            # iod/webd/sysmond, so every board; a storage-only dep hits only
+            # storage boards). It is a lockfile parse, not `cargo metadata`, so the
+            # select job needs no Rust toolchain; see the script header. Any
+            # failure to read either lockfile falls back to building all.
+            if [ -n "$lockchanged" ]; then
+              shipped=$(printf '%s\n' "$ships_table" | awk '{for(i=2;i<=NF;i++)print $i}' | sort -u | tr '\n' ' ')
+              git show "$base:packages/Cargo.lock" > "$RUNNER_TEMP/Cargo.lock.base" 2>/dev/null || true
+              if [ ! -s "$RUNNER_TEMP/Cargo.lock.base" ] \
+                 || ! lockcrates=$(python3 .github/scripts/lock-impacted-crates.py "$RUNNER_TEMP/Cargo.lock.base" packages/Cargo.lock $shipped); then
+                echo ">> packages/Cargo.lock: could not resolve the change — building all"
+                echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+              echo ">> Cargo.lock change impacts crates: ${lockcrates:-none}"
+              crates="$crates $lockcrates"
+            fi
+            crates=$(printf '%s\n' $crates | awk 'NF' | sort -u | tr '\n' ' ')
+            echo ">> changed package crates: $crates"
             for c in $crates; do
               # || true: a no-match grep under `set -o pipefail` would otherwise
               # abort the whole step before the shared-dependency fallback below
@@ -475,7 +497,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex git rsync unzip wget cpio file figlet \
-            python3 libncurses-dev libssl-dev libelf-dev ca-certificates perl patch xz-utils
+            python3 libncurses-dev libssl-dev libelf-dev pkg-config ca-certificates perl patch xz-utils
 
       # The one genuinely shared artefact. Keyed on the board files that pin
       # versions, NOT on the board, so all eight matrix jobs hit the same entry.
@@ -530,22 +552,31 @@ jobs:
           restore-keys: |
             out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-
 
-      # The EA family shares ONE ccache, keyed on the family rather than the
-      # board, so a translation unit compiled for ea1-v2 (WebKit, ICU, the
-      # toolchain's own host-gcc) is a hit for every other EA board and every
-      # later run. The rolling run_id key saves a fresh entry each run and the
-      # restore-keys walk back: this board's newest ccache first, then any EA
-      # board's. restore/save split (not plain actions/cache) so a FAILED build
-      # still saves the objects it did compile — the save step runs on always().
-      - name: Restore the EA family ccache
-        if: startsWith(matrix.board, 'ea')
+      # ccache, for the boards that build WebKit: the EA family shares ONE,
+      # keyed on the family rather than the board, so a translation unit
+      # compiled for ea1-v2 (WebKit, ICU, the toolchain's own host-gcc) is a hit
+      # for every other EA board and every later run; the HC-800 has its own
+      # (x86_64 musl, nothing to share). The rolling key saves a fresh entry each
+      # run AND each attempt, and the restore-keys walk back: this board's newest
+      # ccache first, then any of its family's. restore/save split (not plain
+      # actions/cache) so a FAILED build still saves the objects it did compile —
+      # the save step runs on always().
+      #
+      # This is what lets a PR finish a cold WebKit at all: PRs do not save the
+      # output tree (below), so a build that runs out of time keeps nothing but
+      # this, and its re-run must pick up the WebKit objects the last ATTEMPT
+      # compiled. Hence run_attempt in the key — attempts share a run_id, and a
+      # cache key can be written once, so without it attempt 3 would only ever
+      # see attempt 1's objects.
+      - name: Restore ccache
+        if: startsWith(matrix.board, 'ea') || matrix.board == 'hc800'
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+          key: ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
-            ccache-ea-${{ env.BUILDROOT_REF }}-
+            ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
+            ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-
 
       - name: Fetch Buildroot
         run: |
@@ -626,9 +657,10 @@ jobs:
           # Consumed by board/common/post-build.sh (empty on non-EA / when absent).
           OHC_SGX_WPE_SYSROOT: ${{ steps.sgxsr.outputs.wpe }}
           OHC_SGX_I386_SYSROOT: ${{ steps.sgxsr.outputs.i386 }}
-          # Shared ccache dir for the EA family (see the restore/save steps and
-          # board/ea/common/common_defconfig). build.sh forwards it to make only
-          # when set; a board whose defconfig has no BR2_CCACHE ignores it.
+          # The ccache dir (see the restore/save steps; BR2_CCACHE in
+          # board/ea/common/common_defconfig and board/hc800/hc800_defconfig).
+          # build.sh forwards it to make only when set; a board whose defconfig
+          # has no BR2_CCACHE ignores it.
           BR2_CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -e
@@ -751,30 +783,36 @@ jobs:
       # that restored one). A FAILED build is still saved — its broken package
       # has no stamp, so Buildroot redoes it — and keeps everything before it.
       - name: Trim the output tree before caching
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           O=output/build/${{ matrix.board }}
           [ -d "$O" ] || exit 0
           rm -rf "$O"/build/linux-* "$O"/images
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
+      # main only. A PR run RESTOREs (from main's newest tree, via restore-keys)
+      # but never saves: every PR would otherwise park its own 1-2 GB tree per
+      # board, and with the 10 GB repo cap that evicts the main trees every
+      # later run depends on. PR-scoped caches are not readable by other
+      # branches anyway. Release runs build from a tag ref, whose cache is
+      # likewise invisible to everyone else, so they do not save either.
       - name: Save Buildroot output tree
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
           path: output/build/${{ matrix.board }}
           key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
 
-      # Save the shared EA ccache on always(): even a failed build compiled
-      # objects worth keeping for the next run, and a typo deep in WebKit should
-      # not cost that work. ccache caps itself (--max-size in the defconfig), so
-      # this never grows without bound.
-      - name: Save the EA family ccache
-        if: always() && startsWith(matrix.board, 'ea')
+      # Save the ccache on always(), PRs included: even a failed build compiled
+      # objects worth keeping for the next run or attempt, and a typo deep in
+      # WebKit should not cost that work. ccache caps itself (--max-size in the
+      # board's defconfig), so this never grows without bound.
+      - name: Save ccache
+        if: always() && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-ea-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}
+          key: ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # On a release, attach the bundle so the flasher can pull the latest image
       # for a board straight from the release.
@@ -797,6 +835,64 @@ jobs:
             output/build/${{ matrix.board }}/*.log
           retention-days: 7
           if-no-files-found: ignore
+
+  # The rolling `dev` pre-release: the dev update channel (ohc-update on the
+  # box; stable is a published release, which `Attach to release` fills). CI
+  # artifacts need a GitHub token to download; release assets do not, so a box
+  # can fetch these directly. A push rebuilds only the boards it touches, so
+  # each board's zip is replaced on its own and the others stay — the zip names
+  # carry their own versions (openhc-<board>-<sha>-dev.zip). The `dev` tag
+  # follows the newest commit that published.
+  images-dev-release:
+    name: dev release
+    needs: [config, select, images-build]
+    # Whatever built: one board failing must not hold back the others' images
+    # (only successful boards upload an artifact).
+    if: >-
+      !cancelled() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: dev-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: openhc-*
+          path: bundles
+          merge-multiple: true
+      - name: Publish to the dev pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -l bundles
+          # The tag first (create, or move it here), then the release on it.
+          if gh api "repos/$GH_REPO/git/refs/tags/dev" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/dev" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/dev -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          notes="Rolling development builds of main — the dev update channel. Each board's image is replaced when a commit that affects it builds, so the zips can come from different commits; the version is in each name (openhc-<board>-<sha>-dev.zip). Not a release: for that, use the latest published one."
+          gh release view dev >/dev/null 2>&1 || \
+            gh release create dev --prerelease --title "dev (rolling)" --notes "$notes"
+          existing=$(gh release view dev --json assets -q '.assets[].name')
+          for z in bundles/openhc-*.zip; do
+            n=$(basename "$z")
+            # openhc-<board>-<version>.zip: the board is everything before the
+            # version, which starts with the 7-hex short sha.
+            board=$(echo "$n" | sed -E 's/^openhc-(.*)-[0-9a-f]{7,}-dev\.zip$/\1/')
+            for old in $(echo "$existing" | grep -E "^openhc-${board}-[0-9a-f]{7,}-dev\.zip$" || true); do
+              [ "$old" = "$n" ] || gh release delete-asset dev "$old" --yes
+            done
+            gh release upload dev "$z" --clobber
+            echo "dev: $n"
+          done
+
 
   # Republish the latest image for every board the newest main run did NOT
   # rebuild, pulled from the per-board carry-forward cache the build job fills.
@@ -951,7 +1047,7 @@ jobs:
       - name: cargo test
         if: matrix.board == 'hc800'
         working-directory: packages
-        run: cargo test -p iod
+        run: cargo test -p iod -p switchd
 
       # portal too — it is in the artifact, and `cargo check` would not have
       # produced a binary for it. The portal binary now lives in the `wifi`

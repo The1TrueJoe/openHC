@@ -22,6 +22,8 @@ const HTTP = `${location.origin}/iod`;
 const SYS = `${location.origin}/sys`;
 /* ohc-audiod's configuration REST, proxied by webd at /audio. */
 const AUDIO = `${location.origin}/audio`;
+/* switchd's configuration REST, proxied by webd at /switch (switch boards only). */
+const SWITCH = `${location.origin}/switch`;
 /* ohc-storaged's REST (external drives, the SMB share), proxied at /storage. */
 const STORAGE = `${location.origin}/storage`;
 const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
@@ -39,7 +41,10 @@ export interface SerialPort {
   dev: string | null;
   label: string;
   baud: number;
-  /** 'host' — a real tty. 'mcu' — routed through the IO protocol, no device node. */
+  /** 'host' — a real tty on a SoC UART. 'mcu' — a tty the ohc-iomcu line
+   *  discipline mux-es over the IO protocol's UART opcodes (shown with a "via
+   *  MCU" hint). Both are openable; `dev === null` is the only non-bridgeable
+   *  case. */
   transport: 'host' | 'mcu';
   /** What THIS port will actually run at. Per port, not one global list: a
    *  host 16550A and a UART reached over the IO microcontroller's protocol do
@@ -72,10 +77,110 @@ export interface Capabilities {
   /** Audio, discovered at runtime (not board.env). Absent when the box has no
    *  sound card AND no receiver binaries — the same "nothing behind it" rule. */
   audio?: AudioStatus;
+  /** The managed switch, discovered at runtime by probing switchd. Absent on a
+   *  board with no DSA switch (switchd is not shipped there), so no Switch
+   *  panel — the same "nothing behind it" rule. */
+  switch?: SwitchOverview;
   /** External drives + the SMB share, when this board runs ohc-storaged. */
   storage?: StorageStatus;
   /** The on-screen web view, when this board has a display program. */
   display?: DisplayCfg;
+}
+
+// ── Managed switch (switchd) ────────────────────────────────────────────────
+
+export type SwitchMode = 'managed' | 'isolated' | 'custom';
+
+/** How an L3 interface gets its address. Matches switchd's internally-tagged
+ *  serde enum: `{mode:'static',addr:'10.0.0.5/24'}`. */
+export type Addressing =
+  | { mode: 'dhcp' }
+  | { mode: 'static'; addr: string; gw?: string }
+  | { mode: 'none' };
+
+export interface SwitchPortConfig {
+  enabled: boolean;
+  /** Address for a ROUTED port (isolated mode, or a custom port not bridged). */
+  addressing?: Addressing;
+  /** 802.1Q port VLAN id (custom + vlan_filtering). */
+  pvid?: number;
+  tagged?: number[];
+  untagged?: number;
+}
+
+export interface SwitchBridgeConfig {
+  name: string;
+  stp: boolean;
+  vlan_filtering: boolean;
+  members: string[];
+  addressing: Addressing;
+}
+
+export interface SwitchVlan {
+  id: number;
+  name?: string;
+}
+
+/** The persisted topology — what PUT /switch/api/switch/config takes. */
+export interface SwitchConfig {
+  mode: SwitchMode;
+  bridge: SwitchBridgeConfig;
+  ports: Record<string, SwitchPortConfig>;
+  vlans: SwitchVlan[];
+}
+
+/** Live per-port state, read back from the kernel by switchd. `present` false
+ *  means DSA never created the slave — the first thing to check. */
+export interface SwitchPortStatus {
+  name: string;
+  present: boolean;
+  carrier: boolean;
+  operstate: string;
+  speed?: number;
+  duplex?: string;
+  master?: string;
+  admin_up: boolean;
+  stats: {
+    rx_bytes: number; tx_bytes: number;
+    rx_packets: number; tx_packets: number;
+    rx_errors: number; tx_errors: number;
+  };
+}
+
+/** GET /switch/api/switch: saved config + live readback. The panel draws from
+ *  this on load; live port updates then arrive over MQTT (`state/switch/...`). */
+export interface SwitchOverview {
+  mode: SwitchMode;
+  bridge: {
+    name: string; present: boolean; stp: boolean;
+    vlan_filtering: boolean; members: string[]; addresses: string[];
+  };
+  ports: SwitchPortStatus[];
+  vlans: SwitchVlan[];
+  config: SwitchConfig;
+}
+
+/** What switchd's apply/PUT returns: what ran and anything that failed. */
+export interface ApplyResult {
+  ok: boolean;
+  l3_iface?: string;
+  steps: string[];
+  errors: string[];
+}
+
+/** Software updates (ohc-updated, retained `system/update`). `installable` is
+ *  false on boards with no on-box installer yet (they update with ohc-flash). */
+export interface UpdateStatus {
+  channel: 'stable' | 'dev';
+  board: string;
+  current: string;
+  latest: string | null;
+  available: boolean;
+  installable: boolean;
+  state: 'idle' | 'checking' | 'downloading' | 'installing' | 'rebooting' | 'error';
+  progress: number | null;
+  error: string | null;
+  checked_at: number | null;
 }
 
 /** One mounted filesystem on a plugged-in drive (ohc-storaged). */
@@ -328,7 +433,15 @@ export interface IoState {
   /** External drives (ohc-storaged), live. */
   storage?: { volumes?: StorageVolume[]; share?: StorageShare };
   /** Return-to-stock availability (boards with the ohc-restore helper). */
-  system?: { restore?: { available: boolean; openhc?: boolean; detail?: string } };
+  system?: { restore?: { available: boolean; openhc?: boolean; detail?: string }; update?: UpdateStatus };
+  /** Live managed-switch state from switchd: the mode, the bridge, and each
+   *  port's status keyed by name (`switch.port.lan1`). The fuller picture
+   *  (saved config) comes over REST. */
+  switch?: {
+    mode?: SwitchMode;
+    bridge?: SwitchOverview['bridge'];
+    port?: Record<string, SwitchPortStatus>;
+  };
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -497,6 +610,18 @@ export const rest = {
       body: JSON.stringify({ mqtt }),
     }),
 
+  /** switchd: the managed switch's live state + saved topology. Loaded once;
+   *  live port changes arrive over MQTT. Absent (rejects) on non-switch boards. */
+  switch: () => j<SwitchOverview>(`${SWITCH}/api/switch`),
+  /** Replace the switch topology (configuration). Validated + applied by switchd;
+   *  returns what ran. A 400 carries `{errors}` explaining why it was refused. */
+  saveSwitchConfig: (c: SwitchConfig) =>
+    j<ApplyResult>(`${SWITCH}/api/switch/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(c),
+    }),
+
   /** Return-to-stock. `available` is false on boards with no CEFDK/MFH (the UI
    *  then shows nothing); `openhc` true means the install's MFH item is present
    *  and a restore would do something. */
@@ -647,6 +772,15 @@ export class Io {
     this.#publish('health/fan', v === 'auto' ? 'auto' : String(Math.max(0, Math.min(100, Math.round(v)))));
   /** Return to stock. One-way; iod acts only on the literal "confirm". */
   restoreStock = () => this.#publish('system/restore', 'confirm');
+  /** Switch port admin up/down — a LIVE toggle (not persisted; the persistent
+   *  one is PUT /switch/api/switch/config). switchd re-reads the port after. */
+  setSwitchPort = (name: string, up: boolean) =>
+    this.#publish(`switch/port/${name}`, up ? 'up' : 'down');
+  /** Software updates: check the channel now, install what it found (download,
+   *  install, reboot), or switch channel (stable | dev; checks at once). */
+  updateCheck = () => this.#publish('system/update/check', '');
+  updateInstall = () => this.#publish('system/update/install', '');
+  updateChannel = (c: 'stable' | 'dev') => this.#publish('system/update/channel', c);
   /** Unshare and unmount a volume so its drive can be pulled. */
   ejectVolume = (id: string) => this.#publish(`storage/eject/${id}`, '');
 

@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * What every Control4 EA board shares: front-panel LEDs, the reset/enable lines
+ * stock firmware releases at boot, the heatsink sensor, and the framebuffer
+ * CEFDK leaves scanning out. Boards add their own differences on top.
+ */
+#include "ce5300.dtsi"
+
+/ {
+	chosen {
+		/*
+		 * CEFDK leaves the VDC pipe running 720x480 out of a fixed buffer in
+		 * an e820-reserved window; simplefb takes it over as /dev/fb0.
+		 * Values read off the VDC on an EA-3 (upp_c surface 0x7fc00000,
+		 * stride 0xb80 = 736 px * 4). Size = stride * height.
+		 */
+		framebuffer@7fc00000 {
+			compatible = "simple-framebuffer";
+			reg = <0x7fc00000 (2944 * 480)>;
+			width = <720>;
+			height = <480>;
+			stride = <2944>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	/*
+	 * Recovered verbatim from the stock kernel's gpio_led[] (num_leds = 6);
+	 * the two 4-ball LEDs are active low. The names are ABI: iod and
+	 * OHC_RESTORE_BUTTON_LED address them under /sys/class/leds.
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		led-network {
+			label = "c4::network";
+			gpios = <&gpio 15 GPIO_ACTIVE_HIGH>;
+		};
+		led-warn-red {
+			label = "warn::red";
+			gpios = <&gpio 99 GPIO_ACTIVE_HIGH>;
+		};
+		led-warn-yellow {
+			label = "warn::yellow";
+			gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+		};
+		led-warn-blue {
+			label = "warn::blue";
+			gpios = <&gpio 100 GPIO_ACTIVE_HIGH>;
+		};
+		led-4ball-red {
+			label = "c4::4ball_red";
+			gpios = <&gpio 102 GPIO_ACTIVE_LOW>;
+		};
+		led-4ball-blue {
+			label = "c4::4ball_blue";
+			gpios = <&gpio 34 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+/*
+ * Boot-time states from stock /etc/init.d/c4_gpio_config, setup_gpio_common(),
+ * for the lines EVERY EA board uses. Lines that belong to one feature (the
+ * switch, the DSP, Wi-Fi) or one board (EA3) live in that feature's or board's
+ * .dtsi, so a board without the hardware never drives them. A line no file
+ * hogs keeps whatever CEFDK left it at.
+ *
+ * These have to be driven from the kernel, not an init script: by the time
+ * userspace runs, everything the kernel probes at boot has already missed its
+ * device (measured on an EA3: gpio26 usb_2_serial_reset was an output driven
+ * LOW, holding the USB-serial bridge down). Outputs are hogged high (released
+ * from reset / enabled). Names for all of them are assembled in
+ * ea-gpio-names.dtsi, which every board includes last.
+ */
+&gpio {
+	/* IO microcontroller (relays, contacts, IR) */
+	io-reset-hog {
+		gpio-hog;
+		gpios = <7 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "io_reset";
+	};
+	/* CP2104 USB-serial bridge in front of the EM357 Zigbee radio */
+	usb-2-serial-reset-hog {
+		gpio-hog;
+		gpios = <26 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb_2_serial_reset";
+	};
+	/* EM357: released, so it runs its application from power-on */
+	zigbee-reset-hog {
+		gpio-hog;
+		gpios = <29 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "zigbee_reset";
+	};
+	ldo-enable-hog {
+		gpio-hog;
+		gpios = <43 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "ldo_enable";
+	};
+	n-fpga-reload-hog {
+		gpio-hog;
+		gpios = <57 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_fpga_reload";
+	};
+	/*
+	 * Power block shared by the EA1 and EA3: stock setup_gpio_ea1() and
+	 * setup_gpio_ea3() both drive these two high (setup_gpio_ea3() adds
+	 * only ac_pwr, in ea3.dtsi), and c4_board_name() is "ea1" for the PoE
+	 * board too. poe_type (54) and twelve_volt_ok (122) are the inputs of
+	 * the same block: named, not hogged.
+	 */
+	n-twelve-volt-current-limit-hog {
+		gpio-hog;
+		gpios = <75 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_twelve_volt_current_limit";
+	};
+	n-usb-current-limit-hog {
+		gpio-hog;
+		gpios = <121 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "n_usb_current_limit";
+	};
+};
+
+/*
+ * Rear USB port power: a load switch on gpio44 (EHCI 01:0d.1). NOT in the stock
+ * script: the stock kernel's closed c4overcurrent driver drives it, registered
+ * by ninjago_board_init() on every board type with platform data
+ * { gpio_oc = 97, gpio_pwr = 44 }. Its probe drives 44 low, waits, then high;
+ * on a falling edge of 97 (the load switch's active-low fault flag) it cuts 44
+ * for 2500 jiffies and powers it back up. Measured on an EA3 (PR #51):
+ * the bootloader leaves 44 low and the port sees nothing (PORTSC SE0, no
+ * connect); high, a USB stick enumerates as high-speed; low again, it
+ * disconnects. "usb_rear_power" and "usb_rear_oc" are ours; the vendor names
+ * are only the driver's gpio_pwr/gpio_oc. Nothing in openHC acts on the fault
+ * line yet: it is named so it can be watched.
+ *
+ * Not a hog: a fixed regulator that is the controller's vbus-supply (patch
+ * 0016), so it follows root-hub port power and usbcore's port control cuts the
+ * port's 5 V --
+ *   echo 1 > /sys/bus/usb/devices/<roothub>-0:1.0/<roothub>-port1/disable
+ * or uhubctl. Needs the regulator core, which only the fat kernel carries
+ * (linux/real-kernel.fragment); the size-limited bootstrap kernel has none,
+ * so on it the rear port stays unpowered -- it only has to reach p1 and kexec.
+ */
+/ {
+	usb_rear_vbus: regulator-usb-rear-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb_rear_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpios = <&gpio 44 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+};
+
+&usb_rear {
+	vbus-supply = <&usb_rear_vbus>;
+};
+
+/* Heatsink sensor; ohc-fand drives the fan from its hwmon. */
+&i2c0 {
+	temperature-sensor@48 {
+		compatible = "national,lm75";
+		reg = <0x48>;
+	};
+};

@@ -95,6 +95,20 @@ jobs:
           restore-keys: |
             out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-
 
+      # WebKit's compiled objects, kept OUTSIDE the output tree so they survive
+      # a patch-triggered re-extract and an evicted/reset output cache. Its own
+      # key namespace (ccache-wpe-i386-*), independent of the EA family ccache in
+      # images.yml. Same restore/save split so a failed build still saves what it
+      # compiled. Capped at 2G by the defconfig (the output tree is the other
+      # large cache entry; the repo budget is 10 GB).
+      - name: Restore the WPE ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.ccache-wpe
+          key: ccache-wpe-i386-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-wpe-i386-${{ env.BUILDROOT_REF }}-
+
       - name: Fetch Buildroot + apply openHC's buildroot patches
         run: |
           set -e
@@ -110,19 +124,46 @@ jobs:
           done
 
       - name: Build the i386 WPE stack
+        env:
+          BR2_CCACHE_DIR: ${{ github.workspace }}/.ccache-wpe
         run: |
           set -e
-          # Force wpewebkit to re-extract + re-apply its SOURCE patches
-          # (BR2_GLOBAL_PATCH_DIR board/ea/common/gpu-wpe-i386/patches/wpewebkit/*) + rebuild.
-          # The restored output-tree cache carries wpewebkit's .stamp_built, so an
-          # incremental build would SKIP re-patching entirely and silently ship an
-          # unpatched libWPEWebKit -- which is exactly how the GLContext fix went
-          # missing for two builds. Removing its build dir clears the stamps and
-          # forces the patch set to be applied. (Local packages wpebackend-pvr/webview
-          # re-sync on their own; only the downloaded+patched wpewebkit needs this.)
+          # wpewebkit's SOURCE patches (BR2_GLOBAL_PATCH_DIR
+          # board/ea/common/gpu-wpe-i386/patches/wpewebkit/*) are applied by
+          # Buildroot at extract time only, and the restored output tree carries
+          # .stamp_built/.stamp_patched, so an unchanged-stamp incremental build
+          # would silently ship an unpatched libWPEWebKit (how the GLContext fix
+          # went missing for two builds). Rather than wiping wpewebkit on EVERY
+          # run (which made every build a cold 2h40m compile), wipe it only when
+          # the patch set changed: a hash of the patch dirs is kept inside the
+          # cached tree, and a mismatch removes the build dir so Buildroot
+          # re-extracts and re-patches. ccache then makes even that re-extract a
+          # mostly-hit compile (only TUs the patch touched miss).
+          # (Local packages wpebackend-pvr/webview re-sync on their own.)
           O="output/build/gpu-wpe-i386/build"
-          if [ -d "$O" ]; then rm -rf "$O"/wpewebkit-* && echo ">> cleared cached wpewebkit to re-apply source patches"; fi
-          BUILDROOT_DIR="$HOME/buildroot" BOARD=gpu-wpe-i386 bash ./build/build.sh
+          WANT=$(cat board/ea/common/gpu-wpe-i386/patches/wpewebkit/* build/buildroot-patches/*.patch \
+                   | sha256sum | cut -d' ' -f1)
+          SUMF="$O/.ohc-wpe-patches.sum"
+          if [ -d "$O" ]; then
+            if [ "$(cat "$SUMF" 2>/dev/null)" != "$WANT" ]; then
+              rm -rf "$O"/wpewebkit-* && echo ">> WPE patch set changed: cleared wpewebkit to re-apply source patches"
+            else
+              echo ">> WPE patch set unchanged ($WANT): reusing cached wpewebkit tree"
+            fi
+          fi
+          mkdir -p "$O" && printf '%s\n' "$WANT" > "$SUMF"
+          # Zero ccache's counters so the stats below describe THIS run only
+          # (its host binary is part of the restored output tree, if present).
+          CC=$(ls output/build/gpu-wpe-i386/host/bin/ccache 2>/dev/null || true)
+          [ -n "$CC" ] && CCACHE_DIR="$BR2_CCACHE_DIR" "$CC" -z || true
+          BUILDROOT_DIR="$HOME/buildroot" BOARD=gpu-wpe-i386 bash ./build/build.sh \
+            && rc=0 || rc=$?
+          CC=$(ls output/build/gpu-wpe-i386/host/bin/ccache 2>/dev/null || true)
+          if [ -n "$CC" ]; then
+            echo "=== ccache stats (this run) ==="
+            CCACHE_DIR="$BR2_CCACHE_DIR" "$CC" -s || true
+          fi
+          exit "$rc"
 
       # Harvest output/build/gpu-wpe-i386/target — a complete i386 glibc sysroot
       # (its own ld-linux.so.2 + libc, plus the WPE stack and DDK blobs) — and
@@ -205,6 +246,13 @@ jobs:
         with:
           path: output/build/gpu-wpe-i386
           key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-${{ github.run_id }}
+
+      - name: Save the WPE ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache-wpe
+          key: ccache-wpe-i386-${{ env.BUILDROOT_REF }}-${{ github.run_id }}
 
       # A build that fails deep in a package leaves the reason in Buildroot's log,
       # not the step output.

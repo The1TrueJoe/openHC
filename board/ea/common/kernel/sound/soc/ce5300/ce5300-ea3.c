@@ -16,10 +16,11 @@
  * SoC side being wired as a permanent slave). So the SoC generates neither
  * bit clock nor word select, and this driver must not try to.
  *
- * There is no device tree on these boards -- CEFDK boots the kernel directly --
- * so the card is instantiated from a platform device registered by board code
- * rather than from DT, and the codec is named by its I2C address.
+ * The card device is the "control4,ea-audio" node in the board's built-in DTB
+ * (ea-audio-dsp.dtsi), which also puts the codec on i2c-3; the codec is named
+ * by its I2C address, kept stable by the i2c3 alias.
  */
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <sound/soc.h>
@@ -74,9 +75,16 @@ static int ea_audio_probe(struct platform_device *pdev)
 	return devm_snd_soc_register_card(&pdev->dev, &ea_card);
 }
 
+static const struct of_device_id ea_audio_of_match[] = {
+	{ .compatible = "control4,ea-audio" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ea_audio_of_match);
+
 static struct platform_driver ea_audio_driver = {
 	.driver = {
 		.name = "ce5300-ea-audio",
+		.of_match_table = ea_audio_of_match,
 		.pm   = &snd_soc_pm_ops,
 	},
 	.probe = ea_audio_probe,
@@ -84,5 +92,4 @@ static struct platform_driver ea_audio_driver = {
 module_platform_driver(ea_audio_driver);
 
 MODULE_DESCRIPTION("Control4 EA-series (CE5300 + ADAU1451) ASoC machine driver");
-MODULE_ALIAS("platform:ce5300-ea-audio");
 MODULE_LICENSE("GPL");

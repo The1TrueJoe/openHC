@@ -31,7 +31,7 @@ is the same controller block: on a live EA3 its registers at `+0x14`/`+0x18` rea
 else zero because no driver had configured it. Control4's own ASoC device name
 `"adau1451.3-0038"` independently says bus 3, address 0x38.
 
-Fixed in `board/ea/common/patches/linux/0001-i2c-pxa-pci-enumerate-without-DT.patch`.
+Fixed in `board/ea/common/patches/linux/0001-i2c-pxa-ce5300-dt.patch`.
 **Without that patch nothing else here can work.**
 
 ## Layout

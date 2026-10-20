@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * EA3 (both board revisions): what setup_gpio_ea3() in stock c4_gpio_config
+ * adds over setup_gpio_ea1(), which is only ac_pwr (80), a status input: named,
+ * not hogged. The rest of that block (54/75/121/122) is the EA1's too and lives
+ * in ea.dtsi.
+ */
+#include "ea.dtsi"
+
+#define EA_LINE_80	"ac_pwr"

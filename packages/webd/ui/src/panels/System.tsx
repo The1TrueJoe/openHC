@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Lightbulb, RotateCcw, TriangleAlert } from 'lucide-react';
+import { Download, Lightbulb, RotateCcw, TriangleAlert } from 'lucide-react';
 import { io, type Capabilities, type IoState } from '../api';
 import { useIoState } from '../App';
 import { HealthSection } from './Health';
@@ -15,8 +15,94 @@ export function SystemPanel({ caps }: { caps: Capabilities }) {
     <div className="space-y-4">
       <HealthSection />
       {caps.leds?.length ? <LedSection caps={caps} state={state} /> : null}
+      <UpdateSection />
       <RestoreSection />
     </div>
+  );
+}
+
+/* Software updates (ohc-updated): the channel, what it offers this board, and
+   an Install that downloads, installs and reboots. Only on boards built with
+   the `update` feature — elsewhere there is no retained system/update. */
+function UpdateSection() {
+  const u = useIoState().system?.update;
+  const [armed, setArmed] = useState(false);
+  if (!u) return null;
+  const busy = ['checking', 'downloading', 'installing', 'rebooting'].includes(u.state);
+  const when = u.checked_at ? new Date(u.checked_at * 1000).toLocaleString() : null;
+  const doing: Record<string, string> = {
+    checking: 'Checking…',
+    downloading: `Downloading ${u.latest ?? ''}… ${u.progress ?? 0}%`,
+    installing: `Installing ${u.latest ?? ''}…`,
+    rebooting: 'Installed — rebooting. This page will reconnect when the controller is back.',
+  };
+  return (
+    <section className="hair rounded-xl border bg-panel p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <Download size={15} className="text-muted" />
+        Software update
+      </h2>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+        <span>Running <code>{u.current}</code></span>
+        <label className="flex items-center gap-2">
+          Channel
+          <select
+            value={u.channel}
+            disabled={busy}
+            onChange={(e) => { setArmed(false); io.updateChannel(e.target.value as 'stable' | 'dev'); }}
+            className="hair rounded-md border bg-raised px-2 py-1 text-xs"
+          >
+            <option value="stable">Stable — published releases</option>
+            <option value="dev">Dev — latest build of main</option>
+          </select>
+        </label>
+        <button disabled={busy} onClick={() => io.updateCheck()}
+                className="hair rounded-lg border px-3 py-1 transition hover:border-accent/50 disabled:opacity-50">
+          Check now
+        </button>
+      </div>
+      <p className="mt-3 text-xs text-muted">
+        {busy ? doing[u.state]
+          : u.state === 'error' ? <span className="text-alarm">{u.error}</span>
+          : u.latest === null ? (when ? `Nothing on the ${u.channel} channel for this board yet.` : 'Not checked yet.')
+          : u.available ? <>Version <code>{u.latest}</code> is available on the {u.channel} channel.</>
+          : <>Up to date with the {u.channel} channel ({u.latest}).</>}
+        {when && !busy && <span className="ml-2">Checked {when}.</span>}
+      </p>
+      {u.state === 'downloading' && (
+        <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-raised">
+          <div className="h-full bg-accent transition-all" style={{ width: `${u.progress ?? 0}%` }} />
+        </div>
+      )}
+      {u.available && !busy && (
+        u.installable ? (
+          <div className="mt-3 flex items-center gap-2">
+            {!armed ? (
+              <button onClick={() => setArmed(true)}
+                      className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs font-medium transition hover:bg-accent/30">
+                Install {u.latest}…
+              </button>
+            ) : (
+              <>
+                <span className="text-xs">Downloads, installs and reboots the controller.</span>
+                <button onClick={() => { setArmed(false); io.updateInstall(); }}
+                        className="rounded-lg bg-accent/30 px-3 py-1.5 text-xs font-medium transition hover:bg-accent/40">
+                  Install and reboot
+                </button>
+                <button onClick={() => setArmed(false)}
+                        className="hair rounded-lg border px-3 py-1.5 text-xs transition hover:border-accent/50">
+                  Cancel
+                </button>
+              </>
+            )}
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-muted">
+            This board installs updates with <code>ohc-flash</code> for now; on-box install is coming.
+          </p>
+        )
+      )}
+    </section>
   );
 }
 

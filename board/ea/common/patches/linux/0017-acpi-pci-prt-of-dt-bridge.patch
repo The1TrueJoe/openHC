@@ -1,0 +1,69 @@
+ACPI: PCI: find the _PRT of a bridge that has a device-tree node
+
+openHC's EA boards (Intel CE5300) boot with ACPI and link a device tree into
+the kernel (patch 0015) to describe board devices behind the CE5300 A/V bridge
+00:01.0: GPIO hogs and names, the I2C devices, the SPI switch, the USB VBUS
+supply. Bus 1 only gets an OF node through that bridge's node, so the bridge
+must be in the tree -- and then pci_set_of_node() gives it an OF fwnode,
+pci_set_acpi_fwnode() skips attaching its ACPI companion, and
+acpi_pci_irq_find_prt_entry() finds no handle for bus 1. Every device on it
+comes up "PCI INT x: no GSI" (measured on an EA3: gpio, spi, i2c, e1000,
+sdhci, ehci, the i2s), so the eMMC times out, eth0 has no carrier and SPI
+transfers never complete.
+
+The bridge's namespace node and its _PRT are still there. When a bus's bridge
+has no companion, look that node up under the parent bus's node by _ADR -- the
+same lookup acpi_pci_find_companion() does -- and use its _PRT. Nothing changes
+for a bridge that has a companion, which is every ACPI-only system.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/acpi/pci_irq.c
++++ b/drivers/acpi/pci_irq.c
+@@ -195,6 +195,32 @@
+ 	*entry_ptr = entry;
+ 
+ 	return 0;
++}
++
++/*
++ * The ACPI node that holds the _PRT for devices on @bus: normally the ACPI
++ * companion of the bus's bridge. A PCI-PCI bridge described in a device tree
++ * (a built-in DT alongside ACPI, hanging board devices off the PCI functions
++ * behind it) has an OF fwnode instead, so pci_set_acpi_fwnode() never attached
++ * its companion -- yet its namespace node, and the _PRT under it, still exist.
++ * Find it under the parent bus's node by _ADR, as acpi_pci_find_companion()
++ * would have.
++ */
++static struct acpi_device *acpi_pci_bus_prt_node(struct pci_bus *bus)
++{
++	struct pci_dev *bridge = bus->self;
++	struct acpi_device *parent;
++
++	if (!bus->bridge)
++		return NULL;
++	if (ACPI_COMPANION(bus->bridge) || !bridge)
++		return ACPI_COMPANION(bus->bridge);
++
++	parent = acpi_pci_bus_prt_node(bridge->bus);
++	if (!parent)
++		return NULL;
++	return acpi_find_child_device(parent, (PCI_SLOT(bridge->devfn) << 16) |
++				      PCI_FUNC(bridge->devfn), true);
+ }
+ 
+ static int acpi_pci_irq_find_prt_entry(struct pci_dev *dev,
+@@ -203,11 +229,9 @@
+ 	acpi_status status;
+ 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+ 	struct acpi_pci_routing_table *entry;
+-	acpi_handle handle = NULL;
++	acpi_handle handle;
+ 
+-	if (dev->bus->bridge)
+-		handle = ACPI_HANDLE(dev->bus->bridge);
+-
++	handle = acpi_device_handle(acpi_pci_bus_prt_node(dev->bus));
+ 	if (!handle)
+ 		return -ENODEV;
+ 

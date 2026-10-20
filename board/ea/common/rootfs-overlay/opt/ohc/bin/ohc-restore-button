@@ -6,7 +6,7 @@
 # the native CEFDK button recovery is not dependable on every EA unit: an EA1
 # with the boot fuse blown does not rewrite mtd0 from the button, so the physical
 # gesture is offered in software instead. The front ID button is a bare SoC GPIO
-# (gpio-ea-board deliberately leaves line 32 to us, unclaimed), so this polls it
+# (the board DTB names line 32 id_button but deliberately leaves it unclaimed), so this polls it
 # with libgpiod rather than reading an input device.
 #
 # FAIL-SAFE: the watcher only ARMS after it has seen the line in its released

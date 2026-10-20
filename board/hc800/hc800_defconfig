@@ -34,6 +34,18 @@ BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/linux/
 # hint so the HDMI and coax digital outputs are two PCMs, not one mirrored.
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/patches"
 
+# --- ccache: what lets CI finish a cold WebKit ---
+# WebKit (the wpe feature) is ~2h40m of cold compile, LLVM and Mesa more on top,
+# and a PR run saves no output tree (only main does, under the 10 GB repo-cache
+# cap) -- so a run that hits the job deadline used to keep nothing and its re-run
+# started WebKit over. CI points BR2_CCACHE_DIR at a directory it caches on its
+# own key, saved even when the build fails (.github/workflows/ci.yml), so each
+# attempt resumes from the objects the last one compiled. Its own cache, not the
+# EA family's: different libc, nothing to share. Capped smaller than the EA's 3G
+# so the two together leave room for main's output trees in the 10 GB.
+BR2_CCACHE=y
+BR2_CCACHE_INITIAL_SETUP="--max-size=2G"
+
 # --- rootfs: standalone gzipped cpio, GRUB loads it as an external initrd ---
 # A separate file rather than initramfs-in-the-bzImage (ioxv1/ca1 style) because
 # GRUB 0.97's `initrd` builtin works here — verified by string-dumping the

@@ -254,8 +254,8 @@ libraries conditional on a driver actually wanting them.
 
 The panel is 720x480 and that isn't a setting anywhere in openHC. CEFDK leaves
 the display pipe enabled with a 720x480 timing scanning ARGB8888 out of
-`0x7fc00000`; all `ce5300-fb` does is hand that existing buffer to
-`simple-framebuffer`. **simplefb has no modeset path by design**, it describes a
+`0x7fc00000`; the board device tree just describes that existing buffer to
+`simple-framebuffer` (a `/chosen/framebuffer` node). **simplefb has no modeset path by design**, it describes a
 framebuffer somebody else configured.
 
 So the UI is SD until someone drives the display controller properly, which means
@@ -283,7 +283,7 @@ SoC is a set-top box, and a controller running a launcher isn't one.
 
 | Check | Result |
 |---|---|
-| `/proc/iomem` claims inside the 1.8 GB | exactly one: `ce5300-fb` at `0x7fc00000` |
+| `/proc/iomem` claims inside the 1.8 GB | exactly one: the framebuffer at `0x7fc00000` (then `ce5300-fb`, now simplefb from the board DTB) |
 | does DRAM exist at the top of the range? | yes — simplefb draws through it and the panel shows it |
 | write test at `0x40000000` (1 GB) | `0xa5a5a5a5` and `0x5a5a5a5a` both read back; original restored |
 | aliasing into low memory? | no — neighbour word undisturbed, low addresses read different values |

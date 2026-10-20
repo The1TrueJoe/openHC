@@ -186,18 +186,18 @@ script laying down symlinks cannot do.
 ⏳ is hardware that exists and has no driver yet. When those land they inherit
 the names above with no client change — that is what the convention buys.
 
-## Where it is not met yet: the two x86 boards' own lines
+## Where it is not met yet: the HC-800's own lines
 
 The relays, contacts and IR above are done. The boards' **other** GPIO — resets,
-enables, straps, the setup button — is not, on either x86 family:
+enables, straps, the setup button — is done on the EA family and not yet on the
+HC-800:
 
 | board | lines | state |
 |---|---|---|
 | HC-800 | `zigbee_reset`, `io_reset`, `wlan_disable`, `lan_disable`, `setup_button`, 3 straps | unnamed; offsets in `board.env` |
-| EA1 / EA3 | `dsp_reset`, `codec_reset`, `io_reset`, `zigbee_reset`, `usb_2_serial_reset`, … | named as **consumer labels**, not line names |
+| EA1 / EA3 | `dsp_reset`, `codec_reset`, `io_reset`, `zigbee_reset`, `usb_2_serial_reset`, `id_button`, `board_id0..5`, … | **named**: `gpio-line-names` in the board device tree |
 
-The EA case is the subtler of the two and worth being exact about, because it
-looks done and is not. `gpio-ea-board.c` calls
+The EA lines used to look named and not be. The old `gpio-ea-board.c` called
 `gpio_request_one(101, flags, "dsp_reset")`, and a request sets the line's
 **consumer**, not its **name**. Those are different fields in
 `GPIO_V2_GET_LINEINFO_IOCTL`:
@@ -208,31 +208,24 @@ looks done and is not. `gpio-ea-board.c` calls
 	           ^^^^^^^  ^^^^^^^^^^^
 	           name     consumer
 
-# gpiofind dsp_reset      # finds nothing — gpiofind matches on NAME
+# gpiofind dsp_reset      # found nothing — gpiofind matches on NAME
 ```
 
-So they show up in `/sys/kernel/debug/gpio` and are invisible to every tool that
-resolves by name. Different fields, and only one of them is the handle.
+The EA boards now carry a device tree linked into the kernel
+(`board/ea/common/kernel/arch/x86/boot/dts/`), so the gpiochip's node has a real
+`gpio-line-names`, and the reset/enable lines are `gpio-hog`s. Inputs (the
+board-id straps, the ID button) are named but not claimed, so `gpiofind id_button`
+and `gpioget` work on them.
 
-### The fix, and why it is one fix and not two
+### The HC-800 fix
 
-Neither board has a device tree, so neither can carry `gpio-line-names` the way
-the CA-1 and the IO Extender do. But gpiolib does not actually require a device
-tree — it reads that property off the **parent device** of the gpiochip, through
-the generic `device_property_*` API. Device tree is only one of the things that
-can back it. On x86 the equivalent is a **software node**, which is precisely
-what it exists for.
-
-So both boards get the same property, attached to the parent before the GPIO
-driver binds:
-
-| board | parent of the gpiochip | where to attach |
-|---|---|---|
-| EA1 / EA3 | PCI `8086:2e67` | `DECLARE_PCI_FIXUP_EARLY` in `gpio-ea-board.c` |
-| HC-800 | the `gpio_ich` platform device from `lpc_ich` | a platform-bus notifier on `BUS_NOTIFY_ADD_DEVICE` |
-
-After which `gpiofind dsp_reset` and `gpiofind setup_button` work on every board
-in the fleet, and `OHC_GPIO_*` leaves `board.env` the way `OHC_RELAY_GPIOS` did.
+The HC-800 has no device tree, but gpiolib does not actually require one — it
+reads `gpio-line-names` off the **parent device** of the gpiochip, through the
+generic `device_property_*` API. On x86 the non-DT backing for that is a
+**software node**, attached to the `gpio_ich` platform device from `lpc_ich`
+by a platform-bus notifier on `BUS_NOTIFY_ADD_DEVICE`, before the GPIO driver
+binds. After which `gpiofind setup_button` works there too, and `OHC_GPIO_*`
+leaves `board.env` the way `OHC_RELAY_GPIOS` did.
 
 ### Why not the vendor's `/dev/gpio/dsp_reset`
 

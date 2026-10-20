@@ -2,9 +2,8 @@
 # that HAVE the switch: ea3-v1, ea3-v2, ea1-v2-poe.
 #
 # Three pieces: (1) the SPI master spi-pxa2xx-pci on PCI 8086:2e6a; (2) the b53
-# switch driver; (3) board glue spi-ea-b53-board.c, which registers the switch at
-# CS 1 and hands DSA the port map (CPU=5, jacks=1 and 2) as platform_data since
-# there is no DTB. DSA's bring-up of port 1 is still UNVERIFIED (the stock config
+# switch driver; (3) the switch node in the board DTB (kernel/arch/x86/boot/dts/
+# ea-switch.dtsi): CS 1, SPI mode 3, port map CPU=5, jacks=1 and 2. DSA's bring-up of port 1 is still UNVERIFIED (the stock config
 # isolates it); if DSA does not attach, S40net falls back to the master and only
 # the primary jack works, so the board stays reachable either way.
 #
@@ -25,10 +24,9 @@ CONFIG_SPI_PXA2XX=y
 #
 # MODULES, not built-in: an x86_64 EA-3 bzImage is right at CEFDK's 7,417,856-byte
 # window and DSA + b53 + tag codecs are the slice that pushes it over; as modules
-# they load from p1 after mount. SAFE because the glue (spi-ea-b53-board.c, obj-y,
-# subsys_initcall) only registers the SPI board_info and calls NO b53/dsa symbol,
-# so there is no obj-y→module link dependency; the module binds the already-
-# registered device by deferred probe. S39ea-switch modprobes b53_spi BEFORE
+# they load from p1 after mount. SAFE because the device comes from the DTB, so
+# nothing built in calls a b53/dsa symbol; the module binds the already-created
+# spi device when it loads (S39ea-switch, and only with ohc.switch=1). S39ea-switch modprobes b53_spi BEFORE
 # S40net so DSA still attaches at boot. The SPI master stays =y (the bus the
 # device sits on).
 #

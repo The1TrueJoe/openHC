@@ -43,11 +43,12 @@
 # cannot be an ENV match — the helper reads it out of sysfs.
 SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/%c"
 
-# User serial ports and radios, both from board.env. Nothing matches on the EA
-# family, where the user ports are routed through the microcontroller and have
-# no device node at all — the same rule will name them the day they become real
-# ttys. No KERNEL== prefix match, because which tty naming the SoC uses (ttyS,
-# ttymxc, ttyAMA) is exactly what board.env already answers.
+# User serial ports and radios, both from board.env. On the EA family the user
+# ports are routed through the microcontroller; the ohc-iomcu line discipline
+# now exposes each as a /dev/ttyOHC<n> tty, and ohc-udev-name numbers them
+# straight after any host ports. No KERNEL== prefix match, because which tty
+# naming the SoC uses (ttyS, ttymxc, ttyAMA, ttyOHC) is exactly what
+# board.env + the helper already answer.
 SUBSYSTEM=="tty", KERNEL!="tty", KERNEL!="tty[0-9]*", \
   PROGRAM="/usr/bin/ohc-udev-name tty %k", SYMLINK+="ohc/%c"
 

@@ -1,0 +1,60 @@
+x86/of: link a board device tree into the kernel (BUILTIN_DTB)
+
+CEFDK's bootlinux hands the kernel no DTB, so everything ACPI does not
+describe on a Control4 EA (the switch on SPI, the codec on I2C, the LEDs and
+reset lines on GPIO, the firmware framebuffer) was registered from C board
+files. x86 already reads a DTB from boot_params (SETUP_DTB) and populates it
+alongside ACPI; it just had no way to carry one of its own.
+
+Add BUILTIN_DTB / BUILTIN_DTB_NAME, the same pair loongarch has, on top of
+GENERIC_BUILTIN_DTB (which already links the blob at __dtb_start through
+KERNEL_DTB() in INIT_DATA), and use it in x86_flattree_get_config() when the
+boot loader passed none. A DTB from the boot loader or kexec --dtb still
+wins, which keeps a test tree one kexec away from the running box.
+
+ACPI keeps the platform: x86_flattree_get_config() only takes the SMP/IRQ
+config from the tree when acpi_disabled, so a wrong tree loses board
+devices, not the boot.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -660,6 +660,25 @@
+ 	  for Android development. Unless you are building for the Android
+ 	  Goldfish emulator say N here.
+ 
++config BUILTIN_DTB
++	bool "Built-in device tree for board description"
++	depends on OF
++	select OF_EARLY_FLATTREE
++	select GENERIC_BUILTIN_DTB
++	help
++	  Link one device tree into the kernel and use it when the boot loader
++	  passes none (no SETUP_DTB in boot_params). ACPI, when present, still
++	  owns interrupts, CPUs and PCI routing; the tree only describes the
++	  board devices ACPI leaves out. A DTB passed by the boot loader (or by
++	  kexec --dtb) takes precedence over the built-in one.
++
++config BUILTIN_DTB_NAME
++	string "Source file for built-in dtb"
++	depends on BUILTIN_DTB
++	help
++	  Base name (without suffix, relative to arch/x86/boot/dts/) of the DTS
++	  file that is compiled and linked into the kernel.
++
+ # Following is an alphabetically sorted list of 32 bit extended platforms
+ # Please maintain the alphabetic order if and when there are additions
+ 
+--- a/arch/x86/kernel/devicetree.c
++++ b/arch/x86/kernel/devicetree.c
+@@ -307,6 +307,9 @@
+ 		}
+ 
+ 		early_init_dt_verify(dt, __pa(dt));
++	} else if (IS_ENABLED(CONFIG_BUILTIN_DTB) &&
++		   !fdt_check_header(__dtb_start)) {
++		early_init_dt_verify(__dtb_start, __pa_symbol(__dtb_start));
+ 	}
+ 
+ 	unflatten_and_copy_device_tree();

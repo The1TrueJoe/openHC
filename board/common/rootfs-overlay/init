@@ -9,6 +9,11 @@
 #   * if p1 holds a valid openHC rootfs -> switch_root into it (persistent);
 #   * otherwise -> run openHC from RAM (first boot after a flash, or recovery
 #     when p1 is empty/corrupt).
+#   * `ohc.ramboot=1` on the kernel command line -> run from RAM and leave p1
+#     alone, even when it holds a valid openHC. For testing a kernel + rootfs in
+#     RAM (ohc-flash kexec / netboot) on an installed box: pivoting would pair
+#     the test kernel with p1's userspace and modules (vermagic mismatch), and
+#     p1's S00kexec would kexec its own installed kernel on top of the test one.
 #
 # Doing the choice here, in the initramfs, means the CEFDK autoscript NEVER has
 # to change between "install" and "installed" — which matters because openHC has
@@ -25,6 +30,12 @@
 /bin/mount -t proc     proc     /proc 2>/dev/null
 /bin/mount -t sysfs    sysfs    /sys  2>/dev/null
 /bin/mount -t devtmpfs devtmpfs /dev  2>/dev/null
+
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" ohc.ramboot=1 "*)
+        echo "openHC: ohc.ramboot=1 -- running from RAM, p1 left alone"
+        exec /sbin/init ;;
+esac
 
 ROOT=/dev/mmcblk0p1
 NEW=/mnt/root
