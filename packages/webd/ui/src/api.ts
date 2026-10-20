@@ -511,10 +511,19 @@ export interface DisplayCfg {
   enabled: boolean;
   url: string;
   /** Day/night for the on-panel view: the browser's own dark mode, so any page
-   *  follows it. 'auto' leaves pages at their default. */
+   *  follows it. 'auto' is dark from sunset to sunrise at the box's location. */
   theme: 'auto' | 'light' | 'dark';
+  /** IANA zone placing the box for 'auto' (its principal city's sun times). */
+  timezone?: string;
+  /** Exact location for 'auto', degrees; both or neither. Overrides the zone. */
+  latitude?: number | null;
+  longitude?: number | null;
   /** Read-only: the board has an on-screen display program (its Display tab). */
   available?: boolean;
+  /** Read-only: the scheme in force now. */
+  scheme?: 'light' | 'dark';
+  /** Read-only: for 'auto', when it next flips (sunrise/sunset), Unix seconds. */
+  next_change?: number | null;
 }
 
 export const rest = {
