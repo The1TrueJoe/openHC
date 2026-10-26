@@ -153,12 +153,16 @@ has even answered:
 /sys/class/ohc/iomcu/port    baud      online
 ```
 
-iod reads its relay, contact, IR and serial counts from there, not from
-board.env, so on a device-tree board there is exactly one copy of them. `online`
-separates "this board has four relays and the part is not answering" from "this
-board has no relays". board.env carries no IO counts for an IO-microcontroller
-board: a driver that has not bound means the board declares nothing, and iod's
-diagnosis points at the firmware node and dmesg.
+iod reads its relay, contact, IR and serial counts from there, so there is
+exactly one copy of them, in the firmware. `online` separates "this board has
+four relays and the part is not answering" from "this board has no relays". A
+driver that has not bound means the board declares nothing, and iod's diagnosis
+points at the firmware node and dmesg.
+
+The IO Extender has no microcontroller, and the same rule holds there: iod
+counts the `relay1..N` / `contact1..N` lines its device tree names and the
+`openHC IR out N` lirc devices its IR driver registers. No board's `board.env`
+counts IO; it only says how the IO is reached (`OHC_IO_BACKEND`).
 
 ## What each board actually gets
 
