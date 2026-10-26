@@ -37,6 +37,14 @@ case "$1" in
 		# every one of those is noise, not diagnosis.
 		[ -x /usr/bin/splash ] || exit 0
 
+		# The on-screen web view (S95ohc-display, opt-in) owns the screen
+		# while it runs: the network scripts redraw the splash on every
+		# address change, and on the EAs that would overdraw the view on
+		# fb0. Turning the view off removes the pid file first, then calls
+		# this to put the splash back.
+		pid=$(cat /run/ohc-display.pid 2>/dev/null)
+		[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && exit 0
+
 		# From here on the board DID opt in, so every failure is loud. This
 		# used to exit 0 in silence, and a board that drew nothing then also
 		# explained nothing -- there was no way to tell "no framebuffer" from

@@ -1,6 +1,9 @@
 # EA-family kernel patches (Buildroot `BR2_GLOBAL_PATCH_DIR`)
 
-Applied to vanilla Linux 7.1.8 for every `ea*` board.
+Applied to vanilla Linux 7.1.8 for every `ea*` board, after the x86 patches
+the EA family shares with the HC-800 in `board/common/patches/linux/`
+(today one: **0015**, the built-in device tree). Both directories are in
+`BR2_GLOBAL_PATCH_DIR` (`common_defconfig`).
 
 There are three kinds of EA kernel source, and each has one home:
 
@@ -23,7 +26,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
-| 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB` |
+| 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
 
@@ -76,7 +79,7 @@ They are gone. Each board's tree is now linked into the kernel:
 | `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) |
 | `ea-wifi.dtsi` | the `wifi` feature: `wlan_disable` |
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
-| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3, the card node, `codec_reset`/`dsp_reset` |
+| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3 with its firmware and program check, the simple-audio-card, `codec_reset`/`dsp_reset` |
 | `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
 | `board/ea/<board>/<board>.dts` | the board: includes matching its `ohc.features` |
 
@@ -145,7 +148,10 @@ What the move changed, beyond deleting C:
 ### 0015 — x86: built-in device tree
 
 **Necessary as a patch: yes** — it adds Kconfig symbols and an early-boot hook
-to `arch/x86`. See "The board device tree" above.
+to `arch/x86`, plus the `arch/x86/boot/dts/Makefile` every other DT
+architecture has. See "The board device tree" above. It lives in
+`board/common/patches/linux/` because the HC-800 links its tree the same
+way; there is one copy.
 
 
 ### 0016 — ehci-pci: board VBUS supply follows root-hub port power
@@ -269,6 +275,11 @@ The switch burned the most time of anything here, so the traps stay recorded:
    (`spi92`), and DSA's platform_data needed `netdev[cpu_port]` set by hand.
    Neither matters with a device tree: the switch is a child of the SSP node and
    the conduit is `ethernet = <&gbe>`.
+5. **The CE5300 SSP has Quark's register layout but not Quark's clock** (0009).
+   It has no DDS: routing it through Quark's DDS_RATE path wedges the SSP
+   (`b53-switch spi92.1: Flush failed / SPI transfer failed: -5`). It is clocked
+   like a CE4100/PXA25x part, a /2 SCR divisor off a 10 MHz input clock, and
+   skips pxa2xx's flush-first, which times out on a stopped SSP.
 
 Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.

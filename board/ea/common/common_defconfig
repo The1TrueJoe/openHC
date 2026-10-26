@@ -90,6 +90,13 @@ BR2_CCACHE_INITIAL_SETUP="--max-size=3G"
 # BR2_TOOLCHAIN_BUILDROOT_MUSL is not set
 BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
 
+# Userspace built for speed (-O2), not the fleet-wide -Os. This board has the
+# room to spare (see above), and glibc 2.42 does not even link at -Os on x86_64
+# (BZ 33367: GCC leaves modf's trunc() as a libcall) without a backport. The
+# kernel has its own CONFIG_CC_OPTIMIZE_FOR_SIZE, so the bzImage is unaffected.
+# BR2_OPTIMIZE_S is not set
+BR2_OPTIMIZE_2=y
+
 # C++ and wide characters for WPE WebKit, which pulls in ICU and harfbuzz.
 # Without these the wpewebkit package is unselectable and kconfig drops it in
 # SILENCE — the build succeeds and the engine is simply absent.
@@ -108,6 +115,7 @@ BR2_USE_WCHAR=y
 BR2_PACKAGE_DEJAVU=y
 
 # Both point back into this directory, which is the giveaway that they were
-# never per-board settings.
-BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/patches"
+# never per-board settings. The patch list starts with the x86 patches the
+# HC-800 shares (common/patches: 0015, the built-in device tree).
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/common/patches $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/patches"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/post-image.sh"

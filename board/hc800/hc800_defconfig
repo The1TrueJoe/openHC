@@ -15,6 +15,12 @@
 BR2_x86_64=y
 BR2_x86_bonnell=y
 
+# Userspace built for speed (-O2), not the fleet-wide -Os: this board boots off
+# a hard disk, so image size costs nothing, and a slow Atom is where the speed
+# shows. The kernel has its own CONFIG_CC_OPTIMIZE_FOR_SIZE and is unaffected.
+# BR2_OPTIMIZE_S is not set
+BR2_OPTIMIZE_2=y
+
 # x86_64 pulls in objtool, which #includes <gelf.h>. Without this the kernel
 # build dies on a missing HOST header while naming only itself:
 #   tools/objtool/include/objtool/elf.h:10:10: fatal error: gelf.h
@@ -30,9 +36,12 @@ BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
 BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_BZIMAGE=y
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/linux/hc800.fragment"
-# Kernel patches (patches/linux/): 0001 adds the hda-generic "indep_dig_outs"
-# hint so the HDMI and coax digital outputs are two PCMs, not one mirrored.
-BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/patches"
+# Kernel patches. common/patches is shared with the EA family: 0015 links
+# the board device tree into the kernel (BUILTIN_DTB). This board's own
+# (patches/linux/): 0001 adds the hda-generic "indep_dig_outs" hint so the HDMI
+# and coax digital outputs are two PCMs, not one mirrored; 0002 gives lpc_ich's
+# GPIO cell an OF compatible so the tree can describe gpio_ich.
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/common/patches $(BR2_EXTERNAL_OPENHC_PATH)/hc800/patches"
 
 # --- ccache: what lets CI finish a cold WebKit ---
 # WebKit (the wpe feature) is ~2h40m of cold compile, LLVM and Mesa more on top,
@@ -106,11 +115,12 @@ BR2_PACKAGE_THS8200=y
 # post-image.sh: the IO microcontroller as a serdev child of ttyS3.
 BR2_PACKAGE_HC800_ACPI=y
 
-# --- front panel: six LEDs and the ID button ---
-# Injects board/hc800/kernel/drivers, which registers leds-gpio and
-# gpio-keys-polled for wiring no x86 firmware describes. Offsets came out of the
-# vendor kernel's own board file and are confirmed three ways; see board.env.
-BR2_OHC_HC800_KERNEL_DRIVERS=y
+# --- board device tree: the front panel and the GPIO line names ---
+# Copied into arch/x86/boot/dts/ and linked in by name (CONFIG_BUILTIN_DTB_NAME
+# in linux/hc800.fragment). It describes the six LEDs and the ID button, wiring
+# no x86 firmware describes; offsets came out of the vendor kernel's own board
+# file and are confirmed three ways, see board.env.
+BR2_OHC_BOARD_DTS="hc800/hc800.dts"
 
 # --- rootfs overlay + image publishing ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and

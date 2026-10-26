@@ -8,8 +8,8 @@
 # the board, and the reason it is here is that a stock x86_64 defconfig either
 # leaves it off or builds it as a module.
 #
-# Everything here is mainline. This board needs no patches. See
-# https://the1truejoe.github.io/openHC/hc800/.
+# Nearly everything here is mainline; the board's kernel patches are listed in
+# hc800_defconfig. See https://the1truejoe.github.io/openHC/hc800/.
 
 # ── all-builtin, no loadable modules ──────────────────────────────────────
 # Same call as the EA family: the image is self-contained, so there is no
@@ -184,9 +184,9 @@ CONFIG_SND_HDA_PATCH_LOADER=y
 # ── ICH7 platform glue: LPC → GPIO, SMBus, watchdog ───────────────────────
 # lpc_ich is the MFD that spawns gpio_ich; without it there is no GPIO chip and
 # no way to touch zigbee_reset / io_reset / wlan_disable / lan_disable / the
-# board-revision straps. GPIO_CDEV is the chardev ABI libgpiod uses. Note
-# mainline gpio-ich supplies no line names — address lines by chip + offset,
-# per rootfs-overlay/opt/ohc/board.env.
+# board-revision straps. GPIO_CDEV is the chardev ABI libgpiod uses. The line
+# names come from the board device tree (front panel, below), so gpiofind
+# resolves zigbee_reset, io_reset and the rest by name.
 CONFIG_MFD_CORE=y
 CONFIG_LPC_ICH=y
 CONFIG_GPIOLIB=y
@@ -273,10 +273,19 @@ CONFIG_SENSORS_CORETEMP=y
 CONFIG_SENSORS_W83627EHF=y
 
 # ── front panel: six LEDs and the ID button ───────────────────────────────
-# The consumer drivers for what ohc-hc800.c registers. NONE of these are in the
-# x86_64 arch defconfig, and without them that driver registers two platform
-# devices that nothing binds — the build succeeds, /sys/class/leds stays empty,
-# and it looks like the GPIO map is wrong rather than the kernel config.
+# DEVICE TREE. GRUB passes no DTB, so the board's own (board/hc800/hc800.dts)
+# is linked into the kernel by BUILTIN_DTB (board/common/patches/linux/
+# 0015) and gives gpio_ich a node (patches/linux/0002) with the line names,
+# the LEDs and the ID button hanging off it. ACPI keeps the platform. kexec
+# --dtb overrides the built-in tree, so a test tree needs no rebuild.
+CONFIG_OF=y
+CONFIG_BUILTIN_DTB=y
+CONFIG_BUILTIN_DTB_NAME="hc800"
+
+# The consumer drivers for the tree's gpio-leds and gpio-keys-polled nodes.
+# NONE of these are in the x86_64 arch defconfig, and without them the tree's
+# devices exist and nothing binds them — the build succeeds, /sys/class/leds
+# stays empty, and it looks like the GPIO map is wrong rather than the config.
 #
 # The triggers are not decoration: the vendor drives c4::power from default-on
 # and the blue wifi channel from a blink trigger, and this keeps that behaviour

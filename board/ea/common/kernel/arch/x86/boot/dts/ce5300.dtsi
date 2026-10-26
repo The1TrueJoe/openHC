@@ -15,7 +15,8 @@
  *
  * Layout follows arch/x86/platform/ce4100/falconfalls.dts, which the CE5300
  * keeps for the functions used here (audio 01:06.2, GPIO 01:0b.1, I2C 01:0b.2,
- * SPI 01:0b.4, GbE 01:0c.0 -- all measured on EA boards).
+ * SPI 01:0b.4, GbE 01:0c.0 -- all measured on EA boards). The boot-flash
+ * controller (01:17.0) is not on falconfalls; its devfn is from lspci on an EA1.
  */
 #include <dt-bindings/gpio/gpio.h>
 
@@ -184,6 +185,70 @@
 			 * 01:0d.0 and 01:0d.2 (the Zigbee CP2104) need no node. */
 			usb_rear: usb@d,1 {
 				reg = <0x16900 0 0 0 0>;
+			};
+
+			/* spi-ea-ce5xx (8086:08a0): the DEDICATED boot-flash
+			 * controller, not the SSP above. Like the SSP, the PCI device
+			 * is the controller, so its child is the chip: the 16 MiB
+			 * S25FL127S holding CEFDK and the Master Flash Header, probed
+			 * by JEDEC id. 16.67 MHz is the clock ratio the driver
+			 * programs (ce5xx_hw_init()).
+			 */
+			bootflash: spi@17,0 {
+				reg = <0x1b800 0 0 0 0>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				flash@0 {
+					compatible = "jedec,spi-nor";
+					reg = <0>;
+					spi-max-frequency = <16670000>;
+
+					/*
+					 * Named views of the regions CEFDK's mask ROM
+					 * fixes, from `mfh list spi_nor` on an EA1. The
+					 * whole chip stays mtd0 (MTD_PARTITIONED_MASTER),
+					 * so the offsets ohc-restore and the flasher
+					 * write at keep meaning what they did; these
+					 * are mtd1.. and READ-ONLY, so nothing can
+					 * erase through one. Writes go through mtd0.
+					 *
+					 * cefdk:     cefdk_s1, cefdk_s2, cefdk_s1h,
+					 *            cefdk_s2h (the firmware itself)
+					 * mfh:       the item table (SHA-256 at
+					 *            +0x1e0, checked by the mask ROM)
+					 *            and its chained banks, up to
+					 *            uc8051_fw at 0x80800
+					 * mfh-items: where the items' contents live
+					 *            (8051 firmware, manifest,
+					 *            ip_params, cefdk_params with the
+					 *            autoscript enable byte, splash,
+					 *            plat_params, openHC's script).
+					 *            Their offsets differ per box, so
+					 *            the MFH table is what locates them.
+					 */
+					partitions {
+						compatible = "fixed-partitions";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						partition@0 {
+							label = "cefdk";
+							reg = <0x0 0x80000>;
+							read-only;
+						};
+						partition@80000 {
+							label = "mfh";
+							reg = <0x80000 0x800>;
+							read-only;
+						};
+						partition@80800 {
+							label = "mfh-items";
+							reg = <0x80800 0xf7f800>;
+							read-only;
+						};
+					};
+				};
 			};
 		};
 	};
