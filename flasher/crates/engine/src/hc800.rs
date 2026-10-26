@@ -534,7 +534,7 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
             .map_err(|e| bail_umount(format!("{e}")))?;
     }
     let first = ssh.run(&format!("sync; head -n 1 {dflt}"), true).map_err(|e| bail_umount(format!("{e}")))?;
-    if first.trim() != once.to_string() {
+    if hc::default_entry(&first) != Some(once) {
         return Err(bail_umount(format!("{dflt} reads back {:?}, expected {once} — menu.lst NOT changed", first.trim())));
     }
     p.emit(Event::detail(format!("saved default -> entry {once} ({})", hc::FACTORY_ONCE_TITLE)));

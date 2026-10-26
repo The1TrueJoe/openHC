@@ -111,7 +111,7 @@ pub fn stock(reboot: bool) -> io::Result<()> {
     std::fs::write(&dflt, &text)?;
     run("sync", &[])?;
     let first = std::fs::read_to_string(&dflt)?.lines().next().unwrap_or("").trim().to_string();
-    if first != once.to_string() {
+    if hc::default_entry(&first) != Some(once) {
         return Err(io::Error::other(format!(
             "{dflt} reads back {first:?}, expected {once} — menu.lst NOT changed"
         )));

@@ -147,6 +147,17 @@ mod tests {
         assert!(f.len() > 32, "needs padding for savedefault to rewrite in place");
     }
 
+    #[test]
+    fn a_default_file_reads_as_grub_reads_it() {
+        // GRUB's savedefault leaves `N\0\n…`; busybox sed keeps the NUL.
+        assert_eq!(hc800::default_entry("2\0"), Some(2));
+        assert_eq!(hc800::default_entry("2\0\n\n\n file is used"), Some(2));
+        assert_eq!(hc800::default_entry(&hc800::default_file(3)), Some(3));
+        assert_eq!(hc800::default_entry("12\n"), Some(12));
+        assert_eq!(hc800::default_entry("\0"), None);
+        assert_eq!(hc800::default_entry(""), None);
+    }
+
     /// The stock HC-800 menu.lst, as read off sda1 (backups/hc800/hc800-sda1.img).
     const HC800_STOCK_MENU: &str = "serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1\n\
         terminal serial\n\nsupport_factorydefault\t1\nfactorydefault\t\t0\ndefault\t\t\t1\n\
@@ -202,23 +213,44 @@ mod tests {
 
     #[test]
     fn the_first_boot_init_parses_into_sh_c_and_one_script() {
-        // What the kernel does with it: after `--` every argument goes to init,
-        // a double-quoted one whole. One quoted pair, nothing nested.
+        // What the kernel does with it: after `--` every argument goes to the
+        // rdinit program, a double-quoted one whole. One quoted pair, nothing
+        // nested. rdinit, because stock's own initramfs /init ignores init=.
         let init = hc800::STOCK_FIRSTBOOT_INIT;
         let (head, script) = init.split_once(" -- -c ").unwrap();
-        assert_eq!(head, "init=/bin/sh");
+        assert_eq!(head, "panic=10 rdinit=/bin/sh", "panic= bounds a failure to one reboot");
         assert!(script.starts_with('"') && script.ends_with('"'), "{script}");
         let body = &script[1..script.len() - 1];
         assert!(!body.contains('"'), "a nested quote would split the script: {body}");
-        // Every step runs even if one fails, and stock's init always starts last.
-        assert!(body.ends_with("exec /sbin/init"), "{body}");
-        assert!(!body.contains("&&"), "{body}");
-        for step in ["mount -t proc proc /proc", "mount -o remount,rw /", "mkdir -p /tmp", "chmod 1777 /tmp",
-                     "mount -o remount,ro /", "umount /proc"] {
-            assert!(body.split("; ").any(|s| s == step), "missing `{step}` in {body}");
+        // Control4's /init reads these words from /proc/cmdline, script included.
+        for w in ["root=", "type=", "debug=", "init="] {
+            assert!(!body.contains(w), "`{w}` in the script would reach Control4's /init: {body}");
         }
-        // The root goes back to read-only before init, as a normal boot hands it over.
-        assert!(body.find("remount,ro").unwrap() < body.find("exec").unwrap());
+        // Every step runs even if one fails, and Control4's /init always starts last.
+        assert!(body.ends_with("exec /init"), "{body}");
+        assert!(!body.contains("&&"), "{body}");
+        let steps: Vec<&str> = body.split(';').collect();
+        let root = format!("mount {} /r", hc800::VENDOR_ROOT_PART);
+        let mkdir = format!("mkdir -m{} /r/tmp", hc800::VENDOR_TMP_MODE);
+        for step in ["mount -t devtmpfs none /dev", "mkdir /r", root.as_str(), mkdir.as_str(), "umount /r",
+                     "umount /dev"] {
+            assert!(steps.contains(&step), "missing `{step}` in {body}");
+        }
+        // Its mounts are undone before /init, which mounts /dev itself.
+        let pos = |s: &str| steps.iter().position(|x| *x == s).unwrap();
+        assert!(pos("umount /r") > pos(&mkdir) && pos("umount /dev") > pos("umount /r"));
+    }
+
+    #[test]
+    fn the_first_boot_kernel_line_fits_the_255_byte_buffer() {
+        // A 254-character line lost its closing quote on the unit and the
+        // first boot panicked. Everything after the kernel's path counts.
+        let (m, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
+        let fb = &m[m.find(hc800::STOCK_FIRSTBOOT_TITLE).unwrap()..];
+        let k = fb.lines().find(|l| l.starts_with("kernel")).unwrap();
+        let args = k["kernel".len()..].trim_start().split_once(' ').unwrap().1;
+        assert!(args.len() <= hc800::MAX_KERNEL_ARGS, "{} chars: {args}", args.len());
+        assert!(hc800::MAX_KERNEL_ARGS < 254);
     }
 
     #[test]

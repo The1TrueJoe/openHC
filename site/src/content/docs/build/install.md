@@ -169,10 +169,12 @@ the saved default at the first:
    minutes, re-imaging `sda3`/`sda4` from `sda2`), and its `savedefault` points
    at the next entry.
 2. Stock's first boot: a copy of the stock entry whose kernel line adds an
-   `init=/bin/sh -- -c "…"` that creates `/tmp` (mode 1777) and then runs stock's
-   own init. Control4's restore never creates `/tmp`, and without it Director
-   restarts every 20 seconds. Its `savedefault` points back at the stock
-   entry, so every later boot is plain stock.
+   `rdinit=/bin/sh -- -c "…"`. That shell runs inside Control4's kernel-embedded
+   initramfs, creates `/tmp` (mode 1777) on `sda4`, and then hands over to
+   Control4's own `/init`. (`init=` would not do: that `/init` reads it into a
+   variable it never uses.) Control4's restore never creates `/tmp`, and
+   without it Director restarts every 20 seconds. Its `savedefault` points back
+   at the stock entry, so every later boot is plain stock.
 
 Nothing logs in to the box after the restore. It never writes `default 0`:
 Control4's `restore.sh` reboots without touching `menu.lst`, so that restores
