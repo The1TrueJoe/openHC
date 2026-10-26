@@ -23,5 +23,6 @@ BR2_INSTALL_LIBSTDCPP=y
 # NOTE on the broker: openHC's IO already speaks MQTT (iod, a rumqttc client), and
 # zigbee2mqtt publishes to a broker too. The broker is per board, not here: the
 # CA-1 enables mosquitto (fixed by the move to Buildroot 2026.02.3). The HC-800's
-# EM357 runs EmberZNet 4.7.2 (EZSP v4), which zigbee2mqtt's drivers cannot speak,
-# so it has no use for one.
+# EM357 shipped on EmberZNet 4.7.2 (EZSP v4), which zigbee2mqtt's drivers cannot
+# speak; the boot-time reflash to 6.7.8 (board/common/firmware/zigbee/em357) is what
+# changes that.
