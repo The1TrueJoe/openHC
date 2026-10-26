@@ -12,11 +12,21 @@
  * knows Linux works without knowing anything about Control4. Userspace daemons
  * become clients of the kernel rather than owners of a UART.
  *
- * A LINE DISCIPLINE, not serdev: serdev binds through device tree or ACPI, and
- * these are x86 PCs whose BIOS has no node describing a Control4 co-processor,
- * so nothing is ever enumerated to bind to. TIOCSETD needs no enumeration — the
- * way PPP, SLIP and n_gsm attach — and it leaves the choice of WHICH port in
- * userspace, where the board description already lives.
+ * TWO FRONT ENDS, one core. Everything below the transport — framing, the
+ * bootloader bring-up, the gpiochip, the lirc devices, the MCU-routed ttys — is
+ * shared, and each front end only supplies a way to write bytes and feeds what
+ * it reads into ohc_feed().
+ *
+ *   serdev        A board whose device tree puts a "control4,io-mcu" node under
+ *                 the MCU's UART (the EA family, from its built-in DTB) gets
+ *                 the device bound at boot, counts and line rate taken from the
+ *                 node. Nothing in userspace is involved.
+ *
+ *   line          A board with no tree (the HC-800's BIOS has no node for a
+ *   discipline    Control4 co-processor) has nothing for serdev to enumerate.
+ *                 TIOCSETD needs no enumeration — the way PPP, SLIP and n_gsm
+ *                 attach — so S12iomcu writes the counts into the module
+ *                 parameters and iomcu-attach hands the port over.
  *
  * Copyright (C) 2026 openHC
  */
@@ -25,14 +35,18 @@
 
 #include <linux/cdev.h>
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/gpio/driver.h>
 #include <linux/math64.h>
 #include <media/rc-core.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
+#include <linux/property.h>
+#include <linux/serdev.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/tty.h>
@@ -41,6 +55,7 @@
 #include <linux/tty_ldisc.h>
 #include <linux/tty_port.h>
 #include <linux/uaccess.h>
+#include <linux/wait.h>
 #include <linux/workqueue.h>
 
 /*
@@ -60,6 +75,9 @@ module_param(ldisc_num, int, 0444);
 MODULE_PARM_DESC(ldisc_num, "line discipline number to register (default N_DEVELOPMENT)");
 
 /*
+ * The line discipline's geometry. A serdev device ignores these and reads the
+ * same counts from its device tree node instead.
+ *
  * Writable, because this is built in and a built-in's parameters can otherwise
  * only come from the kernel command line. The init script writes these from
  * board.env then attaches the discipline; geometry is latched at attach, so a
@@ -210,10 +228,32 @@ struct ohc_frame {
 	int len;
 };
 
+/*
+ * What sits behind the part, from the module parameters (line discipline) or
+ * the device tree node (serdev). Latched once, at attach or probe.
+ */
+struct ohc_geometry {
+	int relays;
+	int contacts;
+	int ir_out;		/* rear jacks */
+	int ir_blaster;		/* 1 = internal front blaster */
+	int ir_in;		/* 1 = front receiver */
+	int uarts;		/* MCU-routed user serial ports */
+};
+
 struct ohc_iomcu {
-	struct tty_struct *tty;
+	/*
+	 * The transport, set by the front end. write() returns the bytes it
+	 * took or -errno; the front end's receive path calls ohc_feed().
+	 */
+	int (*write)(struct ohc_iomcu *mcu, const u8 *buf, int len);
+	const char *name;		/* for messages: ttyS3, serial0-0 */
+	struct tty_struct *tty;		/* line discipline only */
+	struct serdev_device *serdev;	/* serdev only */
+
+	struct ohc_geometry geo;
 	struct gpio_chip gc;
-	struct device *dev;
+	struct device *dev;		/* parent for the chip and rc devices */
 
 	/* One conversation at a time: the MCU answers one question at a time. */
 	struct mutex io_lock;
@@ -229,6 +269,16 @@ struct ohc_iomcu {
 	enum rx_state state;
 	u8 body[OHC_MAX_PAYLOAD + 8];
 	int body_len;
+
+	/*
+	 * Bootloader bring-up. The TI serial bootloader does not speak DLE/STX,
+	 * so while raw is set received bytes collect here instead of reaching
+	 * the decoder. See ohc_bringup.
+	 */
+	bool raw;
+	u8 raw_buf[64];
+	int raw_len;
+	wait_queue_head_t raw_wait;
 
 	u8 seq;
 
@@ -256,9 +306,9 @@ struct ohc_iomcu {
 	const char **names;
 
 	/*
-	 * Latched at attach. Reading the module parameters on every access
-	 * would let a sysfs write shift the line map underneath a gpiochip that
-	 * has already told userspace what its lines are.
+	 * Latched at attach, from geo. Reading the module parameters on every
+	 * access would let a sysfs write shift the line map underneath a
+	 * gpiochip that has already told userspace what its lines are.
 	 */
 	int n_relays;
 	int n_contacts;
@@ -303,6 +353,18 @@ static u8 ohc_checksum(const u8 *body, int len)
 	return (u8)(~sum) + 1;
 }
 
+/* Hand bytes to the front end's transport, and count them for the diagnosis. */
+static int ohc_xmit(struct ohc_iomcu *mcu, const u8 *buf, int len)
+{
+	int ret = mcu->write(mcu, buf, len);
+
+	if (ret > 0)
+		mcu->tx_bytes += ret;
+	if (ret >= 0 && ret < len)
+		pr_warn("%s: short write: %d of %d bytes\n", mcu->name, ret, len);
+	return ret < 0 ? ret : 0;
+}
+
 static int ohc_write_frame(struct ohc_iomcu *mcu, u8 opcode, u8 seq,
 			   const u8 *payload, int len)
 {
@@ -340,13 +402,9 @@ static int ohc_write_frame(struct ohc_iomcu *mcu, u8 opcode, u8 seq,
 	if (ck == DLE)
 		out[n++] = DLE;
 
-	ret = mcu->tty->ops->write(mcu->tty, out, n);
-	if (ret > 0)
-		mcu->tx_bytes += ret;
-	if (ret >= 0 && ret < n)
-		pr_warn("short write: %d of %d bytes\n", ret, n);
+	ret = ohc_xmit(mcu, out, n);
 	kfree(out);
-	return ret < 0 ? ret : 0;
+	return ret;
 }
 
 /*
@@ -773,6 +831,19 @@ static void ohc_feed(struct ohc_iomcu *mcu, const u8 *buf, int count)
 		mcu->first_rx_len += take;
 	}
 
+	if (READ_ONCE(mcu->raw)) {
+		unsigned long flags;
+		int take;
+
+		spin_lock_irqsave(&mcu->rx_lock, flags);
+		take = min_t(int, count, (int)sizeof(mcu->raw_buf) - mcu->raw_len);
+		memcpy(mcu->raw_buf + mcu->raw_len, buf, take);
+		mcu->raw_len += take;
+		spin_unlock_irqrestore(&mcu->rx_lock, flags);
+		wake_up(&mcu->raw_wait);
+		return;
+	}
+
 	for (i = 0; i < count; i++) {
 		u8 b = buf[i];
 
@@ -1007,7 +1078,7 @@ static void ohc_add_nodes(struct ohc_iomcu *mcu, int lines)
 		device_create(&ohc_class, NULL, mcu->devt + i,
 			      NULL, "%s", mcu->names[i]);
 	mcu->nodes_added = true;
-	pr_info("%s: /dev/ohc/%s .. %s\n", mcu->tty->name,
+	pr_info("%s: /dev/ohc/%s .. %s\n", mcu->name,
 		mcu->names[0], mcu->names[lines - 1]);
 }
 
@@ -1185,21 +1256,22 @@ static void ohc_uart_rx(struct ohc_iomcu *mcu, const u8 *payload, int len)
 static void ohc_register_serial(struct ohc_iomcu *mcu)
 {
 	struct tty_driver *drv;
+	int n = mcu->geo.uarts;
 	int i, ret;
 
-	if (uarts <= 0)
+	if (n <= 0)
 		return;
-	if (uarts > 32) {
+	if (n > 32) {
 		pr_warn("%s: %d user serial ports is implausible; ignoring\n",
-			mcu->tty->name, uarts);
+			mcu->name, n);
 		return;
 	}
 
-	mcu->uarts = kcalloc(uarts, sizeof(*mcu->uarts), GFP_KERNEL);
+	mcu->uarts = kcalloc(n, sizeof(*mcu->uarts), GFP_KERNEL);
 	if (!mcu->uarts)
 		return;
 
-	drv = tty_alloc_driver(uarts, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
+	drv = tty_alloc_driver(n, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
 	if (IS_ERR(drv)) {
 		kfree(mcu->uarts);
 		mcu->uarts = NULL;
@@ -1216,7 +1288,7 @@ static void ohc_register_serial(struct ohc_iomcu *mcu)
 	tty_set_operations(drv, &ohc_serial_tty_ops);
 	drv->driver_state = mcu;
 
-	for (i = 0; i < uarts; i++) {
+	for (i = 0; i < n; i++) {
 		struct ohc_uart *u = &mcu->uarts[i];
 
 		tty_port_init(&u->port);
@@ -1232,8 +1304,8 @@ static void ohc_register_serial(struct ohc_iomcu *mcu)
 	ret = tty_register_driver(drv);
 	if (ret) {
 		pr_warn("%s: cannot register serial tty driver: %d\n",
-			mcu->tty->name, ret);
-		for (i = 0; i < uarts; i++)
+			mcu->name, ret);
+		for (i = 0; i < n; i++)
 			tty_port_destroy(&mcu->uarts[i].port);
 		tty_driver_kref_put(drv);
 		kfree(mcu->uarts);
@@ -1242,13 +1314,13 @@ static void ohc_register_serial(struct ohc_iomcu *mcu)
 	}
 
 	mcu->serial_driver = drv;
-	mcu->n_uarts = uarts;
+	mcu->n_uarts = n;
 
-	for (i = 0; i < uarts; i++)
-		tty_port_register_device(&mcu->uarts[i].port, drv, i, NULL);
+	for (i = 0; i < n; i++)
+		tty_port_register_device(&mcu->uarts[i].port, drv, i, mcu->dev);
 
 	pr_info("%s: %d MCU-routed user serial port(s) as /dev/%s0..%d\n",
-		mcu->tty->name, uarts, drv->name, uarts - 1);
+		mcu->name, n, drv->name, n - 1);
 }
 
 static void ohc_unregister_serial(struct ohc_iomcu *mcu)
@@ -1271,7 +1343,7 @@ static void ohc_unregister_serial(struct ohc_iomcu *mcu)
 	mcu->n_uarts = 0;
 }
 
-/* ---- line discipline ---------------------------------------------------- */
+/* ---- registration ------------------------------------------------------- */
 
 /*
  * Register the IR side: one lirc device per emitter, plus one for the receiver.
@@ -1304,6 +1376,7 @@ static int ohc_register_emitter(struct ohc_iomcu *mcu, struct ohc_emitter *em,
 	em->carrier = 38000;	/* so a bare `ir-ctl -S` does something sane */
 
 	rc->priv = em;
+	rc->dev.parent = mcu->dev;
 	rc->driver_name = "ohc-iomcu";
 	rc->device_name = em->name;
 	rc->tx_ir = ohc_tx_ir;
@@ -1322,7 +1395,7 @@ static int ohc_register_emitter(struct ohc_iomcu *mcu, struct ohc_emitter *em,
 
 static void ohc_register_rc(struct ohc_iomcu *mcu)
 {
-	int n = ir_out + (ir_blaster ? 1 : 0);
+	int n = mcu->geo.ir_out + (mcu->geo.ir_blaster ? 1 : 0);
 	struct rc_dev *rx;
 	int i, ok = 0;
 
@@ -1336,32 +1409,32 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 		 * Jacks are numbered from 1 to match the silkscreen; the front
 		 * blaster is not a jack and is named, not numbered.
 		 */
-		for (i = 0; i < ir_out; i++) {
+		for (i = 0; i < mcu->geo.ir_out; i++) {
 			int ret = ohc_register_emitter(mcu, &mcu->emitters[i], 1u << i,
 						       kasprintf(GFP_KERNEL,
 								 "openHC IR out %d", i + 1));
 
 			if (ret)
 				pr_warn("%s: IR out %d did not register: %d\n",
-					mcu->tty->name, i + 1, ret);
+					mcu->name, i + 1, ret);
 			else
 				ok++;
 		}
-		if (ir_blaster) {
-			int ret = ohc_register_emitter(mcu, &mcu->emitters[ir_out],
-						       1u << ir_out,
+		if (mcu->geo.ir_blaster) {
+			int ret = ohc_register_emitter(mcu, &mcu->emitters[mcu->geo.ir_out],
+						       1u << mcu->geo.ir_out,
 						       kstrdup("openHC IR front blaster",
 							       GFP_KERNEL));
 
 			if (ret)
 				pr_warn("%s: front blaster did not register: %d\n",
-					mcu->tty->name, ret);
+					mcu->name, ret);
 			else
 				ok++;
 		}
 	}
 
-	if (ir_in) {
+	if (mcu->geo.ir_in) {
 		u8 on = 1;
 
 		/*
@@ -1371,6 +1444,7 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 		rx = rc_allocate_device(RC_DRIVER_IR_RAW);
 		if (rx) {
 			rx->priv = mcu;
+			rx->dev.parent = mcu->dev;
 			rx->driver_name = "ohc-iomcu";
 			rx->device_name = "openHC IR front receiver";
 			rx->input_phys = "ohc-iomcu/front";
@@ -1392,8 +1466,99 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 	}
 
 	if (ok || mcu->rx)
-		pr_info("%s: %d IR emitter(s)%s\n", mcu->tty->name, ok,
+		pr_info("%s: %d IR emitter(s)%s\n", mcu->name, ok,
 			mcu->rx ? " and a receiver" : "");
+}
+
+/* ---- bootloader bring-up ------------------------------------------------ */
+
+static void ohc_raw_reset(struct ohc_iomcu *mcu)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&mcu->rx_lock, flags);
+	mcu->raw_len = 0;
+	spin_unlock_irqrestore(&mcu->rx_lock, flags);
+}
+
+static bool ohc_raw_seen(struct ohc_iomcu *mcu, const u8 *needle, int n)
+{
+	unsigned long flags;
+	bool hit = false;
+	int i;
+
+	spin_lock_irqsave(&mcu->rx_lock, flags);
+	for (i = 0; !hit && i + n <= mcu->raw_len; i++)
+		hit = !memcmp(mcu->raw_buf + i, needle, n);
+	spin_unlock_irqrestore(&mcu->rx_lock, flags);
+	return hit;
+}
+
+/*
+ * Send @out on a clean slate, then wait up to @ms for @needle to show up in
+ * what comes back. No needle: just give the part @ms to act on it.
+ */
+static bool ohc_raw_xfer(struct ohc_iomcu *mcu, const u8 *out, int len,
+			 const u8 *needle, int n, int ms)
+{
+	ohc_raw_reset(mcu);
+	if (ohc_xmit(mcu, out, len))
+		return false;
+	if (!needle) {
+		msleep(ms);
+		return true;
+	}
+	return wait_event_timeout(mcu->raw_wait, ohc_raw_seen(mcu, needle, n),
+				  msecs_to_jiffies(ms)) > 0;
+}
+
+/*
+ * Start the application. The part (TM4C on EA, LM3S on HC) powers up in the TI
+ * serial bootloader and does NOT run its application on its own; until it does
+ * it answers nothing on DLE/STX, which was long mistaken for dead silicon. The
+ * plain TI sequence, bytes from the vendor's reflash library:
+ *
+ *   autobaud      55 55                  -> 00 cc  (bootloader ACK)
+ *   PING          03 20 20               -> 00 cc
+ *   COMMAND_RUN   07 32 22 00 00 10 00   -> nothing, by design: it has jumped
+ *                                           to the application at 0x1000
+ *   app autobaud  55 55                  -> 10 02 d7 ... (AUTO_BAUD_RESP)
+ *
+ * The last knock is for the application, which autobauds onto our line rate
+ * from its own first 55 55. GET_STATUS is deliberately not sent: its reply is a
+ * packet that must itself be ACKed or the bootloader desyncs.
+ *
+ * Runs from probe_work, never from the ldisc's open(), for the reason given at
+ * ohc_probe — the replies have to be able to reach ohc_feed.
+ */
+static int ohc_bringup(struct ohc_iomcu *mcu)
+{
+	static const u8 knock[] = { 0x55, 0x55 };
+	static const u8 ack[]   = { 0x00, 0xcc };
+	static const u8 ping[]  = { 0x03, 0x20, 0x20 };
+	static const u8 run[]   = { 0x07, 0x32, 0x22, 0x00, 0x00, 0x10, 0x00 };
+	static const u8 dstx[]  = { DLE, STX };
+	bool ok;
+
+	mutex_lock(&mcu->io_lock);
+	WRITE_ONCE(mcu->raw, true);
+	ok = ohc_raw_xfer(mcu, knock, sizeof(knock), ack, sizeof(ack), 400);
+	if (ok) {
+		/* PING mostly confirms the link before the un-ACKed RUN. */
+		ohc_raw_xfer(mcu, ping, sizeof(ping), ack, sizeof(ack), 400);
+		ohc_raw_xfer(mcu, run, sizeof(run), NULL, 0, 300);
+		ohc_raw_xfer(mcu, knock, sizeof(knock), dstx, sizeof(dstx), 700);
+	}
+	/* Whatever the decoder held from before is stale; hunt afresh. */
+	mcu->state = RX_IDLE;
+	mcu->body_len = 0;
+	WRITE_ONCE(mcu->raw, false);
+	mutex_unlock(&mcu->io_lock);
+
+	if (!ok)
+		pr_warn("%s: the TI bootloader did not ACK autobaud (55 55)\n",
+			mcu->name);
+	return ok ? 0 : -ENODEV;
 }
 
 /*
@@ -1402,7 +1567,9 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
  * THIS CANNOT HAPPEN IN open(). tty_set_ldisc() holds tty->ldisc_sem across the
  * ldisc's open(), and the receive path needs that same semaphore to deliver the
  * reply — so a request from open() times out every time, and the part looks
- * dead to this driver while answering userspace perfectly.
+ * dead to this driver while answering userspace perfectly. serdev has no such
+ * lock, but takes the same deferred path: a second of bring-up has no business
+ * in the boot-time probe.
  */
 static void ohc_probe(struct work_struct *work)
 {
@@ -1411,7 +1578,18 @@ static void ohc_probe(struct work_struct *work)
 	struct ohc_frame f;
 	int i, lines, ret;
 
+	/*
+	 * Ask the application first, so a part that is already running — a
+	 * warm reboot, a kexec, or iomcu-attach having done this — is left
+	 * alone; only silence earns the bootloader sequence.
+	 */
 	ret = ohc_request(mcu, OP_FIRMWARE_VERSION, NULL, 0, &f);
+	if (ret) {
+		pr_info("%s: no application answering; starting it from the TI bootloader\n",
+			mcu->name);
+		if (!ohc_bringup(mcu))
+			ret = ohc_request(mcu, OP_FIRMWARE_VERSION, NULL, 0, &f);
+	}
 	if (ret) {
 		/*
 		 * No chip. A gpiochip standing in for a part that is not
@@ -1420,7 +1598,7 @@ static void ohc_probe(struct work_struct *work)
 		 * trusted a contact.
 		 */
 		pr_warn("no reply from the IO microcontroller on %s; no gpiochip registered\n",
-			mcu->tty->name);
+			mcu->name);
 		pr_warn("  tx=%lu rx=%lu frames=%lu badcsum=%lu\n",
 			mcu->tx_bytes, mcu->rx_bytes, mcu->rx_frames, mcu->rx_bad_csum);
 		if (mcu->first_rx_len)
@@ -1455,6 +1633,7 @@ static void ohc_probe(struct work_struct *work)
 	}
 
 	mcu->gc.label = "ohc-iomcu";
+	mcu->gc.parent = mcu->dev;
 	mcu->gc.owner = THIS_MODULE;
 	mcu->gc.base = -1;
 	mcu->gc.ngpio = lines;
@@ -1478,7 +1657,7 @@ static void ohc_probe(struct work_struct *work)
 		schedule_delayed_work(&mcu->poll_work, msecs_to_jiffies(poll_ms));
 
 	pr_info("%s: %d relays, %d contacts as GPIO lines\n",
-		mcu->tty->name, mcu->n_relays, mcu->n_contacts);
+		mcu->name, mcu->n_relays, mcu->n_contacts);
 
 	ohc_register_serial(mcu);
 	ohc_register_rc(mcu);
@@ -1491,50 +1670,57 @@ err_names:
 	mcu->names = NULL;
 }
 
-static int ohc_ldisc_open(struct tty_struct *tty)
+/* ---- shared attach / detach --------------------------------------------- */
+
+/*
+ * Everything a front end needs before it opens the port. The chip itself is
+ * registered later, from probe_work, once the part has answered.
+ */
+static struct ohc_iomcu *ohc_core_alloc(const struct ohc_geometry *geo)
 {
 	struct ohc_iomcu *mcu;
 
-	if (!tty->ops->write)
-		return -EOPNOTSUPP;
-	if (relays < 0 || contacts < 0 || relays > 32 || contacts > 32)
-		return -EINVAL;
+	if (geo->relays < 0 || geo->contacts < 0 ||
+	    geo->relays > 32 || geo->contacts > 32)
+		return ERR_PTR(-EINVAL);
 	/*
-	 * A board may have IR and no GPIO lines at all, so "no relays and no
-	 * contacts" is not a reason to refuse the port — only "nothing at all
-	 * behind it" is.
+	 * A board may have IR and no GPIO lines at all (the EA1), so "no relays
+	 * and no contacts" is not a reason to refuse the port — only "nothing
+	 * at all behind it" is.
 	 */
-	if (relays + contacts == 0 && ir_out + ir_blaster + ir_in == 0)
-		return -EINVAL;
+	if (geo->relays + geo->contacts + geo->ir_out + geo->ir_blaster +
+	    geo->ir_in + geo->uarts == 0)
+		return ERR_PTR(-EINVAL);
 
 	mcu = kzalloc(sizeof(*mcu), GFP_KERNEL);
 	if (!mcu)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
-	mcu->tty = tty;
-	mcu->n_relays = relays;
-	mcu->n_contacts = contacts;
+	mcu->geo = *geo;
+	mcu->n_relays = geo->relays;
+	mcu->n_contacts = geo->contacts;
 	mutex_init(&mcu->io_lock);
 	spin_lock_init(&mcu->rx_lock);
 	init_completion(&mcu->reply);
+	init_waitqueue_head(&mcu->raw_wait);
 	INIT_DELAYED_WORK(&mcu->poll_work, ohc_poll);
 	INIT_DELAYED_WORK(&mcu->probe_work, ohc_probe);
-	tty->disc_data = mcu;
-	/* See ohc_ldisc_receive_buf2: zero here means nothing is ever delivered. */
-	tty->receive_room = 65536;
-
-	/* Talk to the part once this returns and the ldisc lock is released. */
-	schedule_delayed_work(&mcu->probe_work, msecs_to_jiffies(50));
-	return 0;
+	return mcu;
 }
 
-static void ohc_ldisc_close(struct tty_struct *tty)
+/* The port is open and bytes reach ohc_feed: talk to the part. */
+static void ohc_core_start(struct ohc_iomcu *mcu)
 {
-	struct ohc_iomcu *mcu = tty->disc_data;
-	int i, lines;
+	schedule_delayed_work(&mcu->probe_work, msecs_to_jiffies(50));
+}
 
-	if (!mcu)
-		return;
+/*
+ * Undo everything probe_work registered. The port must still be open: a
+ * request in flight needs its reply to finish.
+ */
+static void ohc_core_teardown(struct ohc_iomcu *mcu)
+{
+	int i, lines;
 
 	cancel_delayed_work_sync(&mcu->probe_work);
 	cancel_delayed_work_sync(&mcu->poll_work);
@@ -1558,7 +1744,51 @@ static void ohc_ldisc_close(struct tty_struct *tty)
 			kfree(mcu->names[i]);
 		kfree(mcu->names);
 	}
+}
 
+/* ---- front end: line discipline ----------------------------------------- */
+
+static int ohc_ldisc_xmit(struct ohc_iomcu *mcu, const u8 *buf, int len)
+{
+	return mcu->tty->ops->write(mcu->tty, buf, len);
+}
+
+static int ohc_ldisc_open(struct tty_struct *tty)
+{
+	struct ohc_geometry geo = {
+		.relays = relays, .contacts = contacts,
+		.ir_out = ir_out, .ir_blaster = ir_blaster, .ir_in = ir_in,
+		.uarts = uarts,
+	};
+	struct ohc_iomcu *mcu;
+
+	if (!tty->ops->write)
+		return -EOPNOTSUPP;
+
+	mcu = ohc_core_alloc(&geo);
+	if (IS_ERR(mcu))
+		return PTR_ERR(mcu);
+
+	mcu->tty = tty;
+	mcu->name = tty->name;
+	mcu->write = ohc_ldisc_xmit;
+	tty->disc_data = mcu;
+	/* See ohc_ldisc_receive_buf2: zero here means nothing is ever delivered. */
+	tty->receive_room = 65536;
+
+	/* Talk to the part once this returns and the ldisc lock is released. */
+	ohc_core_start(mcu);
+	return 0;
+}
+
+static void ohc_ldisc_close(struct tty_struct *tty)
+{
+	struct ohc_iomcu *mcu = tty->disc_data;
+
+	if (!mcu)
+		return;
+
+	ohc_core_teardown(mcu);
 	tty->disc_data = NULL;
 	kfree(mcu);
 	pr_info("detached from %s\n", tty->name);
@@ -1615,6 +1845,155 @@ static struct tty_ldisc_ops ohc_ldisc = {
 	.receive_buf2	= ohc_ldisc_receive_buf2,
 };
 
+/* ---- front end: serdev -------------------------------------------------- *
+ *
+ * The board's device tree describes the part as a child of the UART it is
+ * wired to, and the counts that the line discipline takes from module
+ * parameters come from the node instead:
+ *
+ *	&uart1 {
+ *		io-mcu {
+ *			compatible = "control4,io-mcu";
+ *			current-speed = <460800>;
+ *			control4,relays = <1>;
+ *			control4,contacts = <1>;
+ *			control4,ir-outputs = <6>;	// rear jacks
+ *			control4,ir-blaster;		// internal front emitter
+ *			control4,ir-receiver;		// front learner
+ *			control4,uarts = <3>;		// MCU-routed serial
+ *		};
+ *	};
+ *
+ * A UART with a serdev child is no longer a tty: the port belongs to this
+ * driver from boot, and there is no /dev/ttyS<n> left for anything to attach to.
+ */
+#if IS_REACHABLE(CONFIG_SERIAL_DEV_BUS)
+
+static int ohc_serdev_xmit(struct ohc_iomcu *mcu, const u8 *buf, int len)
+{
+	return serdev_device_write(mcu->serdev, buf, len,
+				   msecs_to_jiffies(OHC_TIMEOUT_MS));
+}
+
+static size_t ohc_serdev_receive_buf(struct serdev_device *serdev,
+				     const u8 *buf, size_t count)
+{
+	ohc_feed(serdev_device_get_drvdata(serdev), buf, count);
+	return count;
+}
+
+static const struct serdev_device_ops ohc_serdev_ops = {
+	.receive_buf	= ohc_serdev_receive_buf,
+	.write_wakeup	= serdev_device_write_wakeup,
+};
+
+/* An absent count is zero: a board describes only what it has. */
+static int ohc_prop_count(struct device *dev, const char *prop)
+{
+	u32 v = 0;
+
+	device_property_read_u32(dev, prop, &v);
+	return v > 32 ? -1 : (int)v;
+}
+
+static int ohc_serdev_probe(struct serdev_device *serdev)
+{
+	struct device *dev = &serdev->dev;
+	struct ohc_geometry geo = {
+		.relays     = ohc_prop_count(dev, "control4,relays"),
+		.contacts   = ohc_prop_count(dev, "control4,contacts"),
+		.ir_out     = ohc_prop_count(dev, "control4,ir-outputs"),
+		.ir_blaster = device_property_read_bool(dev, "control4,ir-blaster"),
+		.ir_in      = device_property_read_bool(dev, "control4,ir-receiver"),
+		.uarts      = ohc_prop_count(dev, "control4,uarts"),
+	};
+	struct ohc_iomcu *mcu;
+	u32 speed = 115200;
+	unsigned int got;
+	int ret;
+
+	device_property_read_u32(dev, "current-speed", &speed);
+
+	if (geo.ir_out < 0 || geo.uarts < 0)
+		return dev_err_probe(dev, -EINVAL, "implausible IR or serial count\n");
+	mcu = ohc_core_alloc(&geo);
+	if (IS_ERR(mcu))
+		return dev_err_probe(dev, PTR_ERR(mcu),
+				     "node describes no relays, contacts, IR or serial\n");
+
+	mcu->serdev = serdev;
+	mcu->dev = dev;
+	mcu->name = dev_name(dev);
+	mcu->write = ohc_serdev_xmit;
+	/* Before open: bytes can arrive the moment the port is up. */
+	serdev_device_set_drvdata(serdev, mcu);
+	serdev_device_set_client_ops(serdev, &ohc_serdev_ops);
+
+	ret = serdev_device_open(serdev);
+	if (ret) {
+		kfree(mcu);
+		return dev_err_probe(dev, ret, "cannot open the UART\n");
+	}
+
+	/*
+	 * Raw 8N1 and NO flow control. serdev opens a port with CRTSCTS set,
+	 * and nothing drives CTS on these boards, so leaving it would stall
+	 * the first byte forever.
+	 */
+	got = serdev_device_set_baudrate(serdev, speed);
+	serdev_device_set_flow_control(serdev, false);
+	ret = serdev_device_set_parity(serdev, SERDEV_PARITY_NONE);
+	if (ret)
+		dev_warn(dev, "cannot clear parity: %d\n", ret);
+	if (got != speed)
+		dev_warn(dev, "asked for %u baud, the UART gave %u\n", speed, got);
+
+	ohc_core_start(mcu);
+	dev_info(dev, "IO microcontroller at %u baud\n", got);
+	return 0;
+}
+
+static void ohc_serdev_remove(struct serdev_device *serdev)
+{
+	struct ohc_iomcu *mcu = serdev_device_get_drvdata(serdev);
+
+	ohc_core_teardown(mcu);
+	serdev_device_close(serdev);
+	kfree(mcu);
+}
+
+static const struct of_device_id ohc_serdev_of_match[] = {
+	{ .compatible = "control4,io-mcu" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ohc_serdev_of_match);
+
+static struct serdev_device_driver ohc_serdev_driver = {
+	.probe	= ohc_serdev_probe,
+	.remove	= ohc_serdev_remove,
+	.driver	= {
+		.name		= "ohc-iomcu",
+		.of_match_table	= ohc_serdev_of_match,
+	},
+};
+
+static int ohc_serdev_register(void)
+{
+	return serdev_device_driver_register(&ohc_serdev_driver);
+}
+
+static void ohc_serdev_unregister(void)
+{
+	serdev_device_driver_unregister(&ohc_serdev_driver);
+}
+
+#else /* no serdev bus: the line discipline is the only way in */
+
+static int ohc_serdev_register(void) { return 0; }
+static void ohc_serdev_unregister(void) { }
+
+#endif
+
 static int __init ohc_iomcu_init(void)
 {
 	int ret;
@@ -1633,11 +2012,20 @@ static int __init ohc_iomcu_init(void)
 		return ret;
 	}
 	pr_info("line discipline %d registered\n", ldisc_num);
+
+	ret = ohc_serdev_register();
+	if (ret) {
+		pr_err("cannot register the serdev driver: %d\n", ret);
+		tty_unregister_ldisc(&ohc_ldisc);
+		class_unregister(&ohc_class);
+		return ret;
+	}
 	return 0;
 }
 
 static void __exit ohc_iomcu_exit(void)
 {
+	ohc_serdev_unregister();
 	tty_unregister_ldisc(&ohc_ldisc);
 	class_unregister(&ohc_class);
 }

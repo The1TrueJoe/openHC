@@ -18,9 +18,11 @@
  *
  *   2. ATTACH. The kernel driver gpio-ohc-iomcu presents the relays, contacts
  *      and IR as standard kernel devices, but it has to be given a port first.
- *      On x86 there is no device tree or ACPI node describing a Control4
- *      co-processor, so serdev has nothing to enumerate and the attachment has
- *      to come from userspace: set the line speed, then TIOCSETD. util-linux's
+ *      Where the device tree describes the part (the EA family) the kernel
+ *      binds it as serdev and runs the bring-up itself, and this tool is not
+ *      used. Where nothing does (the HC-800) serdev has nothing to enumerate
+ *      and the attachment has to come from userspace: set the line speed, then
+ *      TIOCSETD. util-linux's
  *      ldattach does the ioctl but drags in fifty other binaries; this is that
  *      ioctl, plus the bring-up that has to happen first.
  *

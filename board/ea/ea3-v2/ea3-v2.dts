@@ -16,3 +16,17 @@
 	model = "Control4 EA-3 v2";
 	compatible = "control4,ea3-v2", "intel,ce5300";
 };
+
+/*
+ * What sits behind the IO microcontroller (the node is in ea.dtsi). The same
+ * counts as board.env's OHC_RELAYS, OHC_CONTACTS, OHC_IR_* and OHC_IO_UARTS,
+ * which iod still reads: keep them in step.
+ */
+&io_mcu {
+	control4,relays = <1>;
+	control4,contacts = <1>;
+	control4,ir-outputs = <6>;	/* rear jacks */
+	control4,ir-blaster;		/* internal front emitter */
+	control4,ir-receiver;		/* front learner */
+	control4,uarts = <3>;		/* combo jacks in serial mode */
+};
