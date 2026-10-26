@@ -268,7 +268,7 @@ CONFIG_SENSORS_W83627EHF=y
 
 # ── front panel: six LEDs and the ID button ───────────────────────────────
 # DEVICE TREE. GRUB passes no DTB, so the board's own (board/hc800/hc800.dts)
-# is linked into the kernel by BUILTIN_DTB (board/common/x86/patches/linux/
+# is linked into the kernel by BUILTIN_DTB (board/common/patches/linux/
 # 0015) and gives gpio_ich a node (patches/linux/0002) with the line names,
 # the LEDs and the ID button hanging off it. ACPI keeps the platform. kexec
 # --dtb overrides the built-in tree, so a test tree needs no rebuild.

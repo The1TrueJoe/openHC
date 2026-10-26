@@ -65,7 +65,7 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
 #                     and by nothing else.
 #
 # arch/ carries the EA family's shared .dtsi files (arch/x86/boot/dts/, linked
-# in by common/x86/patches/linux/0015's BUILTIN_DTB), so .dts/.dtsi are
+# in by common/patches/linux/0015's BUILTIN_DTB), so .dts/.dtsi are
 # mirrored too.
 OHC_KERNEL_SUBTREES = arch drivers sound
 # NOT unconditional, despite living under common/. The only thing in that mirror

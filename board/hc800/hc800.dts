@@ -2,7 +2,7 @@
 /*
  * Control4 HC-800 (Lite-On AE100: Atom D525 + NM10/ICH7): the front panel and
  * the ICH GPIO line names, which no firmware on this PC describes. Linked into
- * the kernel by BUILTIN_DTB (board/common/x86/patches/linux/0015); GRUB 0.97
+ * the kernel by BUILTIN_DTB (board/common/patches/linux/0015); GRUB 0.97
  * passes no tree of its own.
  *
  * ACPI still owns the platform -- CPUs, interrupts, PCI routing, the UARTs

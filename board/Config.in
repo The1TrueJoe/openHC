@@ -27,7 +27,7 @@ config BR2_OHC_EA_KERNEL_DRIVERS
 
 # The board's own device tree, which sits at the root of its board folder, so
 # external.mk can copy it into the kernel beside the shared .dtsi files. An x86
-# board names it in CONFIG_BUILTIN_DTB_NAME (patch common/x86/.../0015). Written
+# board names it in CONFIG_BUILTIN_DTB_NAME (patch common/patches/linux/0015). Written
 # by build/build.sh for every EA board — the defconfigs are assembled by
 # convention there, so it already knows — and set in hc800_defconfig. Has a
 # prompt for the same reason as above: without one the line would be discarded.
