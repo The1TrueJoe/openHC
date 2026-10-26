@@ -682,8 +682,7 @@ done
 #
 # Same shape as the linux-dirclean above: a cached step that silently ignores
 # changed input.
-for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board/*/*/packages/*/*.mk \
-           "$REPO"/board/*/firmware/*/*/*.mk; do
+for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board/*/*/packages/*/*.mk; do
     [ -e "$_mk" ] || continue
     _pkg=$(basename "$(dirname "$_mk")")
     # only if this build selects it, else make has no such target
