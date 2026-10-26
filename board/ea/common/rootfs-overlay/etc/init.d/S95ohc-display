@@ -73,10 +73,7 @@ start() {
 		XEOF
 	fi
 
-	# Prime the SGX microkernel once. The FIRST EGL client after boot fails to
-	# reach PVR services unless the ukernel is already up; a services client
-	# (sgxinit) brings it up and then EGL works (see [[c4-ea-fat-kernel]]).
-	[ -x /opt/sgx-i386/run.sh ] && /opt/sgx-i386/run.sh sgxinit >/dev/null 2>&1
+	# The SGX services are already up: S60sgx runs their init client at boot.
 
 	echo "ohc-display: starting the on-panel web view -> $OHC_DISPLAY_URL (theme=$OHC_DISPLAY_THEME)"
 	# WEBVIEW_RETRY: webd may still be coming up; webview reloads until the page
