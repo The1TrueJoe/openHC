@@ -26,8 +26,8 @@ drivers/pwm/Makefile|obj-y += pwm-ce5300.o
 drivers/spi/Makefile|obj-y += spi-ea-ce5xx.o
 
 # --- audio (ASoC lives outside drivers/; the hook mirrors sound/ too) ---
-# The codec goes in the existing codecs/ dir. The platform + machine + glue drivers
-# get their own directory, so sound/soc/Makefile is told to descend into it.
+# The codec goes in the existing codecs/ dir. The CE5300 I2S platform driver gets
+# its own directory, so sound/soc/Makefile is told to descend into it.
 # obj-m, not obj-y: the SoC core and these drivers are built as modules so the
 # ea3 bzImage stays inside CEFDK's bootlinux window — they load from p1 via
 # S45ea-audio (same move as the switch's b53). See features/audio-dsp/linux.fragment.

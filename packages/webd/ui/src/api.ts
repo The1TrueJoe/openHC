@@ -248,11 +248,29 @@ export interface AudioReceiver {
 }
 
 /** A named jack on a board with an endpoint map (board.env OHC_AUDIO_OUTPUTS). */
+/** One tone knob an output has: the software tone stage's bass/treble/balance,
+ *  or on a DSP board those and its EQ bands. Live values arrive as
+ *  `<base>/state/audio/<id>/<output>`; 0 is neutral. */
+export interface ToneKnob {
+  id: string;
+  label: string;
+  /** Knobs sharing a group are drawn together: "eq" is the graphic equaliser. */
+  group?: string;
+  min: number;
+  max: number;
+  /** "dB"; "balance": -100 (left only) .. 100 (right only); or "choice": an
+   *  index into `choices` (a DSP selector such as its output mode). */
+  unit: 'dB' | 'balance' | 'choice';
+  choices?: string[];
+}
+
 export interface AudioPort {
   id: string;
   label: string;
   device: string;
   pcm: string;
+  /** The output's tone knobs, in order; absent when it has no tone stage. */
+  tone?: ToneKnob[];
 }
 
 /** A Spotify Connect or AirPlay endpoint: the name a phone shows, and the
@@ -337,6 +355,13 @@ export interface LibraryEntry {
 }
 
 /** A displayable URL for `AudioMeta.cover`. */
+/** A tone knob's live value on an output (0, neutral, until one arrives). */
+export const toneValue = (audio: IoState['audio'], knob: string, output: string): number => {
+  const m = audio?.[knob];
+  const v = m && typeof m === 'object' ? (m as Record<string, unknown>)[output] : undefined;
+  return typeof v === 'number' ? v : 0;
+};
+
 export const audioCover = (c: string) => (/^https?:\/\//.test(c) ? c : auth(`${AUDIO}/api/audio/${c}`));
 
 /** `/api/audio`, and the shape inside `caps.audio`. `volume`/`now_playing` are
@@ -422,10 +447,9 @@ export interface IoState {
     library?: LibraryState;
     /** Input id → triggered on (playing to its default routes). */
     input?: Record<string, boolean>;
-    /** Output id → tone (images with the tone stage): dB, dB, -100..100. */
-    bass?: Record<string, number>;
-    treble?: Record<string, number>;
-    balance?: Record<string, number>;
+    /** Output id → tone, one entry per knob id the map lists for an output
+     *  (`bass`, `treble`, `balance`, `eq1k`, ...): see toneValue(). */
+    [knob: string]: unknown;
   };
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
@@ -761,8 +785,8 @@ export class Io {
   announce = (output: string, source = 'chime') => this.#publish(`audio/announce/${output}`, source);
   /** Trigger an input on or off: while on it plays to its default routes. */
   setInput = (input: string, on: boolean) => this.#publish(`audio/input/${input}`, on ? 'ON' : 'OFF');
-  /** An output's tone: bass/treble in dB (-12..12), balance -100 (left) .. 100 (right). */
-  setTone = (output: string, knob: 'bass' | 'treble' | 'balance', value: number) =>
+  /** One of an output's tone knobs (its map entry's `tone`), in the knob's unit. */
+  setTone = (output: string, knob: string, value: number) =>
     this.#publish(`audio/${knob}/${output}`, String(Math.round(value)));
   /** The library player: play|pause|toggle|stop|next|previous|seek <s>|clear|
    *  add <uri>|replace <uri>|random ON/OFF|repeat ON/OFF|update. */

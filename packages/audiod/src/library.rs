@@ -355,7 +355,7 @@ mod tests {
     }
     #[test]
     fn conf_plays_to_the_output_without_a_mixer() {
-        let p = Port { id: "analog2".into(), label: "Analog 2".into(), device: "hw:CARD=Intel,DEV=2".into(), pcm: "ohc_analog2".into(), swap: false };
+        let p = Port { id: "analog2".into(), label: "Analog 2".into(), device: "hw:CARD=Intel,DEV=2".into(), pcm: "ohc_analog2".into(), swap: false, ..Default::default() };
         let c = mpd_conf(&p);
         assert!(c.contains("music_directory \"/media\""));
         assert!(c.contains("bind_to_address \"127.0.0.1\""));
