@@ -171,8 +171,9 @@ that restores forever. An earlier version of the tool did exactly that.
 
 `uninstall` also checks that stock's root (`sda4`) still has its `/tmp` mount
 point, mode 1777, and creates it if not. Stock mounts a tmpfs there, and without
-the directory Control4's Director restarts every 20 seconds. One unit came back
-from a factory restore without it.
+the directory Control4's Director restarts every 20 seconds. Control4's own
+factory restore never creates it: the root tarball on `sda2` has no `tmp`, and
+neither `restore.sh` nor stock's `rcS` makes one.
 
 The first `menu.lst.pre-openhc` the tool writes is the as-shipped file, and it
 is never overwritten. Keep a byte copy of `sda1` off the box too. It is the one

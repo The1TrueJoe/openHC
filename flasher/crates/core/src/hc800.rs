@@ -34,8 +34,9 @@ pub const KERNEL_LABEL: &str = "kernel_fs_hc800";
 pub const VENDOR_ROOT_PART: &str = "/dev/sda4";
 
 /// Stock mounts a tmpfs on `/tmp`, so the root needs the directory itself, and
-/// without it Director crash-loops every ~20 s. A sda4 that a factory restore
-/// left without one was found on a unit (2026-10-26).
+/// without it Director crash-loops every ~20 s. Control4's own factory restore
+/// never creates it: `root-fs-sherman.tgz` on sda2 has no `tmp` entry, and
+/// neither `restore.sh` nor stock's `rcS` makes one (checked 2026-10-26).
 pub const VENDOR_TMP_MODE: &str = "1777";
 
 /// GRUB's name for [`KERNEL_PART`]. GRUB counts partitions from zero, so sda3

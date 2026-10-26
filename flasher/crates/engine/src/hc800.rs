@@ -718,8 +718,9 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
 ///
 /// Stock's fstab mounts a tmpfs there, so the directory is only a mount point,
 /// but without it rcS cannot write `/tmp/startup.log` and Director restarts
-/// every ~20 s. One unit came back from a factory restore without it, and
-/// nothing in openHC removes it. sda4 is mounted again at a mount point of our
+/// every ~20 s. Control4's factory restore never creates it (no `tmp` in its
+/// tarball, no `mkdir` in `restore.sh` or `rcS`), so any box that has been
+/// through one, via the ID button or `ohc-flash restore`, lacks it. sda4 is mounted again at a mount point of our
 /// own, which works whether it is already mounted (as `/` on stock, or as
 /// `/mnt/ohc-datadev` on openHC) or not, and shows the on-disk directory
 /// rather than the tmpfs over it.
