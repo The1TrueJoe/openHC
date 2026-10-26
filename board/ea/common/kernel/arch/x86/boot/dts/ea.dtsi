@@ -194,6 +194,7 @@
 	heatsink_temp: temperature-sensor@48 {
 		compatible = "national,lm75";
 		reg = <0x48>;
+		label = "Heatsink";	/* hwmon `label`: what the Health panel calls it */
 		#thermal-sensor-cells = <0>;
 	};
 };
@@ -233,6 +234,7 @@
 / {
 	fan: pwm-fan {
 		compatible = "pwm-fan";
+		label = "Fan";		/* hwmon `label`, as above */
 		pwms = <&pwm 2 10000 0>;
 		/* off, then 30% to 100% in tens: one level per trip below */
 		cooling-levels = <0 77 102 128 153 179 204 230 255>;
