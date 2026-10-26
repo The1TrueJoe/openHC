@@ -2,26 +2,25 @@
 #
 # There is no open toolchain for the ADAU145x — its instruction set is not
 # public — so the program is built by Analog Devices' SigmaStudio+, driven from
-# a script rather than its GUI: SigmaStudio+ has a headless console app
-# (SStudioPlusConsole.exe: link/compile, export) and a Thrift scripting API.
-# It is Windows-only, hence windows-latest.
+# a script rather than its GUI, through The1TrueJoe/sigmastudio-plus-action:
+# a silent install on a Windows runner and SigmaStudio+'s headless console app
+# (SStudioPlusConsole.exe: createproject, update*, lcd, export).
 #
 # THE INSTALLER IS NOT IN THIS REPO AND IS NOT DOWNLOADED FROM ANALOG DEVICES
 # HERE. Its download needs a myAnalog sign-in and acceptance of ADI's software
-# license, which only a person can give. The repo owner downloads it once and
-# stages it privately; this workflow fetches that copy with two secrets:
+# license, which only a person can give. The repo owner downloaded it once and
+# staged it in a private repo; this workflow fetches that copy with two secrets:
 #
-#   SIGMASTUDIO_INSTALLER_URL  a GitHub release-asset API URL in a PRIVATE repo,
-#                              https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>
-#   SIGMASTUDIO_TOKEN          a fine-grained token with read access to that repo
+#   SIGMASTUDIO_INSTALLER_URL  the release-asset API URL in the private repo
+#   SIGMASTUDIO_TOKEN          a fine-grained token, Contents: read on that repo
 #
 # With either secret missing the job says so and stops, green.
 #
-# Stage 1 (this file today) proves the toolchain on a GitHub runner: installer
-# type, a silent install, the console app running headless, ADAU145x support.
-# Stage 2 adds the design script and the export, handed to the EA image build as
-# an artifact — the exported program never enters git (ADI's license restricts
-# distributing generated code outside the products it runs on).
+# Stage 1 (this file today) proves the toolchain: install, the console app
+# headless, ADAU145x support. Stage 2 adds the design script and the export,
+# handed to the EA image build as an artifact — the exported program never
+# enters git (ADI's license restricts distributing generated code outside the
+# products it runs on).
 name: dsp-program
 
 permissions:
@@ -38,15 +37,13 @@ on:
 jobs:
   toolchain:
     runs-on: windows-latest
-    env:
-      INSTALLER_URL: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
-      TOKEN: ${{ secrets.SIGMASTUDIO_TOKEN }}
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - name: Staged installer?
         id: staged
+        shell: pwsh
+        env:
+          INSTALLER_URL: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
+          TOKEN: ${{ secrets.SIGMASTUDIO_TOKEN }}
         run: |
           if (-not $env:INSTALLER_URL -or -not $env:TOKEN) {
             "::notice::SigmaStudio+ is not staged (SIGMASTUDIO_INSTALLER_URL / SIGMASTUDIO_TOKEN unset) - nothing to do"
@@ -55,115 +52,24 @@ jobs:
             "ok=true" >> $env:GITHUB_OUTPUT
           }
 
-      - name: Fetch the installer
+      - name: SigmaStudio+
         if: steps.staged.outputs.ok == 'true'
-        run: |
-          New-Item -ItemType Directory -Force logs | Out-Null
-          $h = @{ Authorization = "Bearer $env:TOKEN"; Accept = 'application/octet-stream' }
-          Invoke-WebRequest -Uri $env:INSTALLER_URL -Headers $h -OutFile ssplus-setup.exe
-          $f = Get-Item ssplus-setup.exe
-          "installer: $($f.Length) bytes, sha256 $((Get-FileHash $f).Hash)" | Tee-Object logs/installer.txt
-
-      # The installer technology is not documented, so read it off the binary
-      # and use that technology's own silent switch. SigmaStudio+ 3.4.0 is a
-      # classic InstallShield setup.exe around an MSI (NGSS_3.4.0.msi, 32-bit):
-      # measured on a runner, it relaunches from temp, skips its .NET 4.7.2
-      # prerequisite (present) and runs `msiexec /i` -- with full UI unless
-      # /v passes /qn. So /s /v"/qn" goes first; /silent (a Suite switch) left
-      # the MSI at a dialog nobody can see. Every attempt is bounded and killed
-      # if it hangs, and the next one is tried.
-      - name: Silent install
-        if: steps.staged.outputs.ok == 'true'
-        timeout-minutes: 25
-        run: |
-          $logs = (Resolve-Path logs).Path
-          $bytes = [IO.File]::ReadAllBytes("ssplus-setup.exe")
-          $text = [Text.Encoding]::ASCII.GetString($bytes)
-          $kind = switch -Regex ($text) {
-            'Inno Setup'          { 'inno'; break }
-            'Nullsoft'            { 'nsis'; break }
-            'WixBundle|WiX Toolset|\.wixburn' { 'burn'; break }
-            'ISSetupStream|InstallShield' { 'installshield'; break }
-            default               { 'unknown' }
-          }
-          "installer type: $kind" | Tee-Object -Append logs/installer.txt
-          $attempts = switch ($kind) {
-            'inno'          { ,"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG=`"$logs\setup.log`"" }
-            'nsis'          { ,'/S' }
-            'burn'          { ,"/quiet /norestart /log `"$logs\setup.log`"" }
-            'installshield' { "/s /v`"/qn REBOOT=ReallySuppress /l*v \`"$logs\msi.log\`"`"",
-                              "/silent /debuglog`"$logs\suite.log`"" }
-            default         { '/silent', '/S', '/quiet /norestart', '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' }
-          }
-          function Find-Console {
-            Get-ChildItem -Path 'C:\Program Files', 'C:\Program Files (x86)', 'C:\Analog Devices' `
-              -Recurse -Filter SStudioPlusConsole.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          }
-          # The files are in place within seconds; what can hang is the MSI's last
-          # step, which runs dpinst64 to install the Cypress USB driver for ADI's USBi
-          # programming dongle (CAInstallDriverCyUSB64x64, measured on a runner). Its
-          # /SW hides the wizard but not Windows' "install this device software?"
-          # prompt, so it waits forever. CI never talks to hardware: once the console
-          # app exists the installer gets 30 s to exit, then dpinst64 is stopped.
-          function Stop-Tree($id) {
-            Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $id } |
-              ForEach-Object { Stop-Tree $_.ProcessId }
-            Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-          }
-          foreach ($a in $attempts) {
-            "--- attempt: $a" | Tee-Object -Append logs/installer.txt
-            $p = Start-Process -FilePath .\ssplus-setup.exe -ArgumentList $a -PassThru
-            $deadline = (Get-Date).AddMinutes(10); $found = $null
-            while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
-              if (-not $found -and (Find-Console)) { $found = Get-Date; "    console app in place" | Tee-Object -Append logs/installer.txt }
-              if ($found -and ((Get-Date) - $found).TotalSeconds -gt 30) { break }
-              Start-Sleep -Seconds 5
+        uses: The1TrueJoe/sigmastudio-plus-action@v1
+        with:
+          installer-url: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
+          token: ${{ secrets.SIGMASTUDIO_TOKEN }}
+          # SigmaStudio+ 3.4.0, as staged in the private repo.
+          installer-sha256: 47814f9691d6a0f334b341caa6a49db2a03f6549b62db3cc82530845c1268640
+          run: |
+            New-Item -ItemType Directory -Force logs | Out-Null
+            & $env:SSPLUS_CONSOLE --help *>&1 | Tee-Object logs/console.txt
+            if ($LASTEXITCODE) { "::error::console app exit $LASTEXITCODE"; exit 1 }
+            Get-ChildItem -Path $env:SSPLUS_HOME -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'ADAU145|ADAU146|Sigma ?3[05]0' } |
+              Select-Object -First 40 -ExpandProperty FullName | Tee-Object logs/adau145x.txt
+            if (-not (Get-Content logs/adau145x.txt -ErrorAction SilentlyContinue)) {
+              "::error::no ADAU145x/146x support files under $env:SSPLUS_HOME"; exit 1
             }
-            if (-not $p.HasExited) {
-              $dp = Get-Process dpinst64, dpinst -ErrorAction SilentlyContinue
-              if ($found -and $dp) {
-                "    installed; stuck in the USB-driver step (dpinst), not needed here: stopping it" | Tee-Object -Append logs/installer.txt
-                $dp | Stop-Process -Force -ErrorAction SilentlyContinue
-                if (-not $p.WaitForExit(120 * 1000)) { Stop-Tree $p.Id }
-              } else {
-                "    still running at the limit: killed (waiting on a dialog?)" | Tee-Object -Append logs/installer.txt
-                Stop-Tree $p.Id
-              }
-            } else {
-              "    exit code: $($p.ExitCode)" | Tee-Object -Append logs/installer.txt
-            }
-            if (Find-Console) { "    installed" | Tee-Object -Append logs/installer.txt; break }
-          }
-
-      - name: Find the console app
-        if: steps.staged.outputs.ok == 'true'
-        id: console
-        run: |
-          $exe = Get-ChildItem -Path 'C:\Program Files', 'C:\Program Files (x86)', 'C:\Analog Devices' `
-                   -Recurse -Filter SStudioPlusConsole.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { "::error::SStudioPlusConsole.exe not found after install"; exit 1 }
-          "console: $($exe.FullName)" | Tee-Object logs/console.txt
-          "exe=$($exe.FullName)" >> $env:GITHUB_OUTPUT
-          "root=$($exe.Directory.Parent.FullName)" >> $env:GITHUB_OUTPUT
-
-      # Headless is the whole point: no desktop session on a runner. A timeout
-      # turns a console app that waits on a UI into a clear failure.
-      - name: Console app, headless
-        if: steps.staged.outputs.ok == 'true'
-        timeout-minutes: 5
-        run: |
-          & "${{ steps.console.outputs.exe }}" --help *>&1 | Tee-Object -Append logs/console.txt
-          "exit code: $LASTEXITCODE" | Tee-Object -Append logs/console.txt
-
-      - name: ADAU145x support
-        if: steps.staged.outputs.ok == 'true'
-        run: |
-          Get-ChildItem -Path "${{ steps.console.outputs.root }}" -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match 'ADAU145|ADAU146|Sigma ?3[05]0' } |
-            Select-Object -First 40 -ExpandProperty FullName | Tee-Object logs/adau145x.txt
-          if (-not (Get-Content logs/adau145x.txt -ErrorAction SilentlyContinue)) {
-            "::warning::no ADAU145x/146x files found under the install"
-          }
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
