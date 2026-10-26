@@ -43,7 +43,7 @@ tty)
         n=$((n + 1))
         [ "${e%%:*}" = "$dev" ] && { echo "serial/$n"; exit 0; }
     done
-    # MCU-routed user serial ports: the ohc-iomcu line discipline exposes each
+    # MCU-routed user serial ports: the gpio-ohc-iomcu driver exposes each
     # as /dev/ttyOHC<k> (k 0-based). iod appends them AFTER the host ports, so
     # they continue the same numbering: ttyOHC0 is serial/(host count + 1).
     case "$dev" in

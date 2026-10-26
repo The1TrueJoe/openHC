@@ -441,7 +441,7 @@ async fn mcu_info(c: &Arc<Config>) -> Out {
 /// Can this board's relays and contacts actually be reached?
 ///
 /// Where the lines COME from differs per board and nothing below this cares;
-/// only the diagnosis does, because "attach the line discipline" and "the pins
+/// only the diagnosis does, because "the driver did not bind" and "the pins
 /// are still muxed to the video port" send you to very different places.
 fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
     match c.board.io.backend {
@@ -449,12 +449,16 @@ fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
         Backend::None => Err(Fault::NoSuch("no IO on this board".into())),
         Backend::Mcu => Err(Fault::NoChip(match c.board.io.mcu_online {
             Some(false) => format!(
-                "{} is attached on {} but the microcontroller is not answering it",
+                "{} is bound on {} but the microcontroller is not answering it",
                 crate::gpio_io::CHIP_LABEL,
                 c.board.io.mcu_tty.as_deref().unwrap_or("its port")
             ),
-            _ => format!(
-                "{} is not attached — no device tree node bound it, and S12iomcu did not attach it",
+            Some(true) => format!(
+                "{} is answering but registered no gpiochip for this board",
+                crate::gpio_io::CHIP_LABEL
+            ),
+            None => format!(
+                "{} has not bound the IO microcontroller: the board's firmware node (device tree / ACPI table) is missing or the probe failed — see dmesg",
                 crate::gpio_io::CHIP_LABEL
             ),
         })),

@@ -11,7 +11,7 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 #
 # The split: `packages/` at the repo root holds everything SHARED across boards —
 # the Rust service daemons AND the board-agnostic Buildroot packages (figlet,
-# splash, iomcu-attach, librespot). Anything that is BOARD SILICON belongs with
+# splash, librespot). Anything that is BOARD SILICON belongs with
 # the board tree that owns it, and lands here.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))

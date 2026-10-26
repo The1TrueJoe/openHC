@@ -140,9 +140,9 @@ gpiochip1 - 8 lines:
 The **chip** does get an entry, because a chip *is* a device and its number is
 exactly the sort of thing that moves.
 
-**The IO microcontroller's own tty gets no entry either.** A line discipline
-owns it, and its interface is the gpiochip and the lirc devices — pointing at
-the raw port would only invite a second writer.
+**The IO microcontroller's own UART gets no entry either.** It has no tty at
+all: gpio-ohc-iomcu holds it as a serdev device, and its interface is the
+gpiochip, the lirc devices and the `ttyOHC` ports.
 
 ### Why the rules delegate
 

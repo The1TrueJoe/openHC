@@ -9,10 +9,8 @@
 # nothing and the driver would silently not exist, which is exactly the trap
 # documented in ea/common/kernel/objs.mk.
 #
-# Built-in does not cost configurability: module_param entries still appear
-# under /sys/module/gpio_ohc_iomcu/parameters/, and the ones that describe the
-# board are writable there. The init script sets them from board.env and THEN
-# attaches the line discipline, which is when the geometry is read.
+# Built-in costs nothing here: gpio-ohc-iomcu takes the board's description
+# from the firmware node it binds to, not from parameters.
 # NOTE: drivers/Makefile only descends into gpio/ when CONFIG_GPIOLIB=y, so this
 # line quietly builds nothing on a board without it. Every openHC board has
 # GPIOLIB, but if one ever does not, the symptom is an absent gpiochip and no

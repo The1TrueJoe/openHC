@@ -1,6 +1,6 @@
 ---
 title: IO as GPIO
-description: The IO microcontroller behind a standard Linux gpiochip — bound from the device tree where there is one, a line discipline where there is not, and what userspace sees.
+description: The IO microcontroller behind a standard Linux gpiochip — a serdev device bound from the board's firmware (device tree or ACPI), and what userspace sees.
 sidebar:
   order: 2
 ---
@@ -46,7 +46,7 @@ but it reaches the hardware through `/dev/gpiochipN` like anything else would.
 **There is no longer a fallback.** iod used to carry its own DLE/STX
 implementation for boards whose kernel had no driver, and that path is gone: two
 implementations of one wire format drift apart, and the second one is always the
-one nobody tests. If the discipline is not attached, iod says so and serves
+one nobody tests. If the driver has not bound the part, iod says so and serves
 capabilities, and no relay or contact works — which is the truth, and better than
 a daemon quietly fighting the kernel for the same UART.
 
@@ -91,15 +91,18 @@ device. Nothing is labelled 0, so a client sending it has almost certainly
 assumed zero-based, and driving relay 1 for it would be the worst available
 answer.
 
-## serdev where there is a tree, a line discipline where there is not
+## Bound by firmware, as a serdev device
 
-`serdev` is the modern way a kernel driver claims a UART instead of leaving it
+`serdev` is the kernel's way for a driver to claim a UART instead of leaving it
 to userspace. Its devices are **enumerated by firmware** — a device tree node or
-an ACPI device that says "there is a thing on this port".
+an ACPI device that says "there is a thing on this port" — so every board with
+an IO microcontroller describes it, with what sits behind it, and the driver
+binds it at boot. Nothing in userspace attaches anything, and the UART has no
+`/dev/ttyS*` of its own: a UART with a serdev child belongs to that driver.
 
-**The EA family has a tree.** Its kernel links a built-in device tree (the
+**The EA family: its device tree.** Its kernel links a built-in tree (the
 board's own `board/ea/<board>/<board>.dts`), and the part is a child of the UART
-it is wired to, with what sits behind it:
+it is wired to:
 
 ```dts
 &uart1 {
@@ -120,78 +123,30 @@ it is wired to, with what sits behind it:
 };
 ```
 
-The driver binds it at boot, runs the bootloader bring-up itself and registers
-the chip, the lirc devices and the `ttyOHC` ports. Nothing in userspace is
-involved, and there is no `/dev/ttyS1` any more: a UART with a serdev child
-belongs to that driver.
+**The HC-800: an ACPI table.** Its BIOS describes the UART the part is on
+(ttyS3, `\_SB.PCI0.SBRG.UAR4`, a PNP0501 at 0x2E8 on IRQ 10) and nothing behind
+it, so openHC adds the child in `board/hc800/acpi/ssdt-iomcu.asl`, loaded from
+the front of the initrd as an ACPI table upgrade. `_HID "PRP0001"` with the same
+`compatible` and properties in `_DSD` makes it the identical binding, read by
+the identical driver code.
 
-**The HC-800 has it in ACPI.** Its BIOS describes the UART the part is on
-(ttyS3, a PNP0501 at 0x2E8) and nothing behind it, so openHC adds the child in
-an ACPI table, `board/hc800/acpi/ssdt-iomcu.asl`, loaded from the front of the
-initrd as a table upgrade. `_HID "PRP0001"` with the same `compatible` and
-properties in `_DSD` makes it the identical binding, read by the identical
-driver code.
-
-Why not the HC-800's device tree, which describes its GPIO and LEDs? A device
-is described where its parent is, and this UART's parent is ACPI. Moving the
-UART itself into the tree would cost its interrupt — on an x86 box whose
-interrupts belong to ACPI a tree-described UART is timer-polled, roughly every
-8 ms, and a 16550A at 115200 fills its 16-byte FIFO in under 2 ms, so every IR
-capture would overrun. The EA's UARTs are tree nodes and polled already (their
+Why not the HC-800's device tree, which names its GPIO and LEDs? A device is
+described where its parent is, and this UART's parent is ACPI. Moving the UART
+itself into the tree would cost its interrupt — on an x86 box whose interrupts
+belong to ACPI a tree-described UART is timer-polled, roughly every 8 ms, and a
+16550A at 115200 fills its 16-byte FIFO in under 2 ms, so every IR capture
+would overrun. The EA's UARTs are tree nodes and polled already (their
 interrupt never fired under openHC), so there the tree is the natural home.
 
-A **line discipline** remains for a board, or a test kernel, whose firmware
-describes nothing: userspace opens the port and hands it to the kernel with
-`TIOCSETD`, the way PPP, SLIP and `n_gsm` are attached. Every front end shares
-one core — framing, bring-up, gpiochip, lirc, serial — and differs only in how
-bytes get to it.
-
-:::note[The number is `N_DEVELOPMENT`]
-The discipline registers as 29, the slot the kernel reserves for out-of-tree
-line disciplines. It is overridable with the `ldisc_num` parameter, because the
-numbering is a uapi constant that has grown over time and a collision should be
-a loud module-load failure an operator can work around — not a reason to patch
-a header.
-:::
-
-## Attaching it (no firmware description)
-
-`/etc/init.d/S12iomcu` does this at boot, from `board.env`. On a board whose
-firmware describes the part — today, every board with one — it only reports
-that the kernel bound it, and stops.
-
-```sh
-echo 4 > /sys/module/gpio_ohc_iomcu/parameters/relays
-echo 4 > /sys/module/gpio_ohc_iomcu/parameters/contacts
-iomcu-attach /dev/ttyS3 115200 29
-```
-
-It runs **early** — before `iod` and `webd` — because those are clients of the
-chip. `iomcu-attach` stays running: the discipline lives as long as the fd is
-open.
-
-The geometry is set through sysfs rather than passed to `modprobe` because these
-images are deliberately all-builtin (`CONFIG_MODULES=n` — self-contained image,
-no depmod, no load ordering, no `.ko` in the initrd). A built-in's parameters
-would otherwise only be settable on the kernel command line. The driver latches
-the counts when the discipline attaches, so a later sysfs write affects the next
-attach and never a chip that has already told userspace what its lines are.
-
-| board.env key | what it does |
-|---|---|
-| `OHC_IO_BACKEND` | `mcu` — anything else and the script does nothing |
-| `OHC_IO_MCU_TTY` | which port the part is on |
-| `OHC_IO_MCU_BAUD` | its line rate — see the [protocol page](/shared/io-mcu/) |
-| `OHC_RELAYS` / `OHC_CONTACTS` / `OHC_IR_*` / `OHC_IO_UARTS` | what sits behind the part |
-| `OHC_IO_MCU_LDISC` | discipline number, default 29 |
-
-No shipped board sets any of these but `OHC_IO_BACKEND`: the EA device trees
-and the HC-800's ACPI table are the description.
+At bind the driver starts the part's application from the TI bootloader if it
+has to (see the [protocol page](/shared/io-mcu/)), identifies it, and registers
+the gpiochip, one lirc device per emitter plus the receiver, and a
+`/dev/ttyOHC<n>` per MCU-routed serial port.
 
 ## Where iod gets the counts
 
-Whichever front end attached, the driver publishes what it latched, before the
-part has even answered:
+The driver publishes what its firmware node declared at probe, before the part
+has even answered:
 
 ```
 /sys/class/ohc/iomcu/relays  contacts  ir_out  ir_blaster  ir_in  uarts
@@ -201,8 +156,9 @@ part has even answered:
 iod reads its relay, contact, IR and serial counts from there, not from
 board.env, so on a device-tree board there is exactly one copy of them. `online`
 separates "this board has four relays and the part is not answering" from "this
-board has no relays". board.env's counts are only read when the driver never
-attached at all, and no shipped board sets them.
+board has no relays". board.env carries no IO counts for an IO-microcontroller
+board: a driver that has not bound means the board declares nothing, and iod's
+diagnosis points at the firmware node and dmesg.
 
 ## What each board actually gets
 
@@ -238,7 +194,8 @@ UART that answers one question at a time.
 ## The chip refuses to appear for a dead microcontroller
 
 The driver identifies the part before registering anything. If the MCU does not
-answer, `ldattach` succeeds and **no gpiochip is created**.
+answer, the device stays bound (and `/sys/class/ohc/iomcu/online` reads 0) but
+**no gpiochip is created**.
 
 That is deliberate. A gpiochip standing in for a microcontroller that is not
 talking is a chip whose every read is a lie, and it would be indistinguishable
@@ -322,21 +279,15 @@ and reads the links only to report the friendlier path.
 
 ## Two failures worth remembering
 
-Both cost a build cycle each, and neither produced an error message anywhere.
+Neither produced an error message anywhere.
 
-**A request issued from the line discipline's `open()` can never be answered.**
-`tty_set_ldisc()` holds `tty->ldisc_sem` for writing across the ldisc's open, and
-the receive path needs that same lock to deliver bytes. So the reply cannot
-arrive until `open()` returns. Identify is done from a work item now, once the
-lock is gone.
+**The autobaud knock has to go first.** Asking "is the application up?" with a
+FIRMWARE_VERSION frame before the `55 55` spoils the TI bootloader's autobaud,
+and the knock after it then gets no ACK at all. Measured on an HC-800 held in
+its bootloader by `io_reset`: frame first, silence; knock first, `00 cc`. A
+running application answers the same knock with an AUTO_BAUD_RESP frame, so one
+knock tells the two apart.
 
-**A line discipline that implements only `receive_buf` and never sets
-`tty->receive_room` is handed nothing, forever.** The tty layer clamps delivery
-to `receive_room`, which defaults to zero. Implement `receive_buf2` — it returns
-what it consumed and is not clamped — or set `receive_room`, or the driver
-transmits happily and observes silence.
-
-The shared symptom is the nasty part: a microcontroller that answers a userspace
-daemon perfectly and appears dead to the kernel driver on the same wire, at the
-same baud, with the same termios. Everything points at the hardware, and the
-hardware is fine.
+**serdev opens a port with hardware flow control on.** Nothing drives CTS on
+these boards, so a driver that does not clear it transmits nothing, forever, and
+the part looks dead. `serdev_device_set_flow_control(serdev, false)` at probe.
