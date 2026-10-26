@@ -471,7 +471,7 @@
         }
       },
       "summary": "Output tone (retained, ohc-audiod)",
-      "description": "Images with the tone stage (the ohceq ALSA plugin): `{knob}` is `bass` or `treble` (dB, -12..12; shelves at 120 Hz and 8 kHz) or `balance` (-100 left only .. 100 right only). Applies to everything on `{output}`. Boosting lowers the overall level by the boost, so nothing clips."
+      "description": "One topic per tone knob the output has; the map (`audio/map`) lists them under each output's `tone` with their range and unit. With the software tone stage (the ohceq ALSA plugin): `{knob}` is `bass` or `treble` (dB, -12..12; shelves at 120 Hz and 8 kHz) or `balance` (-100 left only .. 100 right only); boosting lowers the overall level by the boost, so nothing clips. On an output whose tone the board's DSP does (the EA3): `mode` (0 Tone, 1 EQ, 2 Flat, 3 Test tone — which path the DSP plays through), `loudness` (0 off, 1 on), the same three, and the graphic EQ bands `eq31` `eq63` `eq125` `eq250` `eq500` `eq1k` `eq2k` `eq4k` `eq8k` `eq16k` (dB, -12..12), set as DSP controls. A knob with `choices` takes the choice's index. Applies to everything on `{output}`."
     },
     "audioSetTone": {
       "address": "openhc/{box}/cmd/audio/{knob}/{output}",
@@ -481,7 +481,7 @@
         }
       },
       "summary": "Set an output tone",
-      "description": "`bass`/`treble` in dB (-12..12) or `balance` (-100..100), clamped. Heard at once (the plugin reads its controls as it plays) and saved across reboots."
+      "description": "Any knob the output's `tone` list has, in its unit (dB, or -100..100 for balance), clamped to its range. Heard at once and saved across reboots."
     },
     "audioInput": {
       "address": "openhc/{box}/state/audio/input/{input}",

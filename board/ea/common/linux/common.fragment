@@ -212,6 +212,11 @@ CONFIG_LEDS_GPIO=y
 CONFIG_LEDS_TRIGGERS=y
 CONFIG_LEDS_TRIGGER_HEARTBEAT=y
 CONFIG_LEDS_TRIGGER_NETDEV=y
+# The front ID button (gpio-keys-polled in ea.dtsi; ohc-restore-button reads its
+# events). A module, per the size budget below: udev loads it off the node's
+# modalias.
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_GPIO_POLLED=m
 # CONFIG_GPIO_SODAVILLE is not set
 # GPIO from userspace: libgpiod 1.6.4 (Buildroot 2024.02.9) speaks the v1 chardev
 # ABI, which 7.1.8 gates behind CONFIG_GPIO_CDEV_V1 (deprecated, default off).
@@ -292,8 +297,9 @@ CONFIG_PWM_SYSFS=y
 #
 # The boot flash is NOT on the pxa2xx SSP (8086:2e6a) the BCM switch rides — once
 # assumed, proven wrong on an EA1 ("SPI transfer failed: -5"). It is on its own
-# block, PCI 01:17.0 8086:08a0 ("FLASH memory"), driven by spi-ea-ce5xx.c, which
-# instantiates the chip so spi-nor below autodetects the S25FL127S.
+# block, PCI 01:17.0 8086:08a0 ("FLASH memory"), driven by spi-ea-ce5xx.c; the
+# chip is its flash@0 child in the board DTB, so spi-nor below autodetects the
+# S25FL127S.
 #
 # BACK UP mtd0 BEFORE WRITING TO IT. A bad MFH/autoscript costs the button and
 # the CEFDK shell to recover.
@@ -309,7 +315,12 @@ CONFIG_MTD=y
 CONFIG_MTD_BLOCK=y
 CONFIG_MTD_SPI_NOR=y
 CONFIG_SPI_MEM=y
-# CONFIG_MTD_OF_PARTS is not set
+# Named, read-only partitions from the DTB's fixed-partitions (cefdk, mfh,
+# mfh-items: ce5300.dtsi). PARTITIONED_MASTER keeps the whole chip as mtd0
+# beside them -- every offset ohc-restore, boot-init and the flasher write at is
+# a whole-chip offset into /dev/mtd0, and without it mtd0 would become "cefdk".
+CONFIG_MTD_OF_PARTS=y
+CONFIG_MTD_PARTITIONED_MASTER=y
 
 # --- warnings are not errors ---
 # The mainline x86 defconfigs set WERROR. Buildroot used to force it off (its

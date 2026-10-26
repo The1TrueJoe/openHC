@@ -1,0 +1,1 @@
+Shared by the x86 boards: listed in BR2_GLOBAL_PATCH_DIR by board/ea/common/common_defconfig and board/hc800/hc800_defconfig, never by the ARM boards (ioxv1, ca1). linux/ touches arch/x86 alone; shairport-sync/ is the audio feature's (see its README).

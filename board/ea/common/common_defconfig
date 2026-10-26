@@ -115,7 +115,8 @@ BR2_USE_WCHAR=y
 BR2_PACKAGE_DEJAVU=y
 
 # Both point back into this directory, which is the giveaway that they were
-# never per-board settings. board/common/patches carries the audio feature's
-# shairport-sync patches, shared with the HC-800.
+# never per-board settings. The patch list starts with the patches the HC-800
+# shares (common/patches: 0015, the built-in device tree, and the audio
+# feature's shairport-sync patches).
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/common/patches $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/patches"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/post-image.sh"

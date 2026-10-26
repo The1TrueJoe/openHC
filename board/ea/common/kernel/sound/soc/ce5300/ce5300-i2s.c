@@ -18,7 +18,10 @@
  * failure looks like a codec or routing bug somewhere else entirely.
  *
  * So the default is probe-only: bind, map, and read ONE register that is known
- * to answer.
+ * to answer. It still registers the CPU DAI, behind a component with no PCM
+ * ops and a startup that refuses: the board's simple-audio-card then forms the
+ * card, so the codec's DSP controls exist and can be tuned, while anything
+ * opening the PCM gets -ENODEV at once rather than reaching a TX register.
  *
  * CORRECTION, measured 2026-08-30: this file used to claim pcim_enable_device()
  * made a full register dump safe. It does not. With the device bound and
@@ -30,9 +33,20 @@
  * done yet. See ce5300_dump().
  *
  * Pass ce5300_i2s.enable_pcm=1 once the inferred fields are confirmed.
+ *
+ * MEASURED 2026-10-26 on a stock unit while it played (ce5300-i2s.h): the base,
+ * the descriptor format and mode word, the DMA context's registers (and with
+ * them the playback position), and TX0's configuration. What remains inferred
+ * is which writes START the engine, and the ungate itself.
+ *
+ * Periods are paced by a timer, not the interrupt: the PCI interrupt is not
+ * routed on every kernel openHC boots, and the position register is exact, so
+ * a period-length hrtimer that reports elapsed periods from it is all ALSA
+ * needs (the pattern of sound/drivers/dummy.c).
  */
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/hrtimer.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -62,6 +76,10 @@ struct ce5300_i2s {
 	dma_addr_t		ring_phys;
 	unsigned int		nr_desc;
 	struct snd_pcm_substream *substream;
+
+	struct hrtimer		tick;		/* one period; reports elapsed periods */
+	ktime_t			period;
+	atomic_t		running;
 };
 
 /* The ring uses a 32-byte stride, so index it by bytes rather than by C array. */
@@ -121,14 +139,17 @@ static void ce5300_dump(struct ce5300_i2s *i2s)
 
 	dev_warn(i2s->dev, "dump_regs=1: reading TX/DMA -- this hangs the SoC if the block is still gated\n");
 	for (i = 0; i < CE5300_TX_CONTEXTS; i++)
-		dev_info(i2s->dev, "  TX%u ctrl=%#010x satr=%#010x\n", i,
+		dev_info(i2s->dev, "  TX%u run=%#010x ctrl=%#010x level=%#010x\n", i,
+			 readl(i2s->base + CE5300_TX_REG(i, CE5300_TX_RUN_REG)),
 			 readl(i2s->base + CE5300_TX_REG(i, CE5300_TX_CTRL)),
-			 readl(i2s->base + CE5300_TX_REG(i, CE5300_TX_SATR)));
+			 readl(i2s->base + CE5300_TX_REG(i, CE5300_TX_LEVEL)));
 	for (i = 0; i < CE5300_DMA_CONTEXTS; i++)
-		dev_info(i2s->dev, "  DMA%u ctrl=%#010x head=%#010x tail=%#010x\n", i,
+		dev_info(i2s->dev, "  DMA%u ctrl=%#010x desc=%#010x next=%#010x src=%#010x left=%#010x\n", i,
 			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_CTRL)),
-			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_SRCDMA_START)),
-			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_SRCDMA_STOP)));
+			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_CUR_DESC)),
+			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_NEXT_DESC)),
+			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_CUR_SRC)),
+			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_SIZE)));
 }
 
 /* ---- PCM ---------------------------------------------------------------- */
@@ -203,9 +224,23 @@ static int ce5300_pcm_prepare(struct snd_soc_component *comp,
 		 * fully populated, so nothing should ever halt the engine.
 		 */
 		d->flags_mode = cpu_to_le32(CE5300_DMA_FLAGS_PLAYBACK);
+		d->tag   = 0;
+		d->size2 = cpu_to_le32(period_bytes);
+		d->self  = cpu_to_le32(desc_phys_at(i2s, i));
 	}
 	/* Publish every descriptor before the engine can be pointed at them. */
 	wmb();
+
+	i2s->period = ns_to_ktime(div_u64((u64)rt->period_size * NSEC_PER_SEC, rt->rate));
+
+	/* TX0's other registers as a playing stock unit has them (ce5300-i2s.h),
+	 * all but the run bit, which only trigger sets. */
+	writel(CE5300_TX0_STOCK_00 & ~CE5300_TX_RUN,
+	       i2s->base + CE5300_TX_REG(i2s->tx, CE5300_TX_RUN_REG));
+	writel(CE5300_TX0_STOCK_08, i2s->base + CE5300_TX_REG(i2s->tx, 0x08));
+	writel(CE5300_TX0_STOCK_10, i2s->base + CE5300_TX_REG(i2s->tx, 0x10));
+	writel(CE5300_TX0_STOCK_14, i2s->base + CE5300_TX_REG(i2s->tx, 0x14));
+	writel(CE5300_TX0_STOCK_1C, i2s->base + CE5300_TX_REG(i2s->tx, 0x1c));
 
 	/* Bind this TX stream to our DMA context, and set the I2S format. */
 	ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_CTRL),
@@ -239,49 +274,79 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		/*
-		 * INFERRED (see ce5300-i2s.h): head descriptor -> SRCDMA_START,
-		 * tail -> SRCDMA_STOP, then the control word, then the TX enable
-		 * bit. The vendor writes three DMA registers here but __regparm3
-		 * stripped which; these are the only two address registers and
-		 * the only control register in the block, so this is the natural
-		 * fit -- and it is exactly what needs confirming on hardware.
+		 * The vendor's three writes -- "descriptor base, size, mode" --
+		 * onto the registers a playing context was MEASURED to hold: the
+		 * head as the NEXT descriptor, nothing left in the current one,
+		 * then the mode word with the run bit. Which of these starts the
+		 * engine is still INFERRED; this is the reading that fits.
 		 */
 		writel(i2s->ring_phys,
-		       i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_SRCDMA_START));
-		writel(desc_phys_at(i2s, i2s->substream->runtime->periods - 1),
-		       i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_SRCDMA_STOP));
-		writel(CE5300_DMA_FLAGS_PLAYBACK,
+		       i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_NEXT_DESC));
+		writel(0, i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_SIZE));
+		writel(CE5300_DMA_FLAGS_PLAYBACK | CE5300_DMA_RUN,
 		       i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_CTRL));
-		ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_CTRL),
-			      CE5300_TX_ENABLE, CE5300_TX_ENABLE);
+		ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_RUN_REG),
+			      CE5300_TX_RUN, CE5300_TX_RUN);
+		atomic_set(&i2s->running, 1);
+		hrtimer_start(&i2s->tick, i2s->period, HRTIMER_MODE_REL_SOFT);
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		/* Stop is a lone clear of the same bit; it does not touch the DMA
-		 * block and does not clear the interrupt mask. */
-		ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_CTRL),
-			      CE5300_TX_ENABLE, 0);
+		atomic_set(&i2s->running, 0);
+		if (!hrtimer_callback_running(&i2s->tick))
+			hrtimer_try_to_cancel(&i2s->tick);
+		ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_RUN_REG),
+			      CE5300_TX_RUN, 0);
+		ce5300_update(i2s, CE5300_DMA_REG(i2s->dma, CE5300_DMA_CTRL),
+			      CE5300_DMA_RUN, 0);
 		return 0;
 	default:
 		return -EINVAL;
 	}
 }
 
+/* Wait out a tick that was mid-flight when trigger stopped the stream. */
+static int ce5300_pcm_sync_stop(struct snd_soc_component *comp,
+				struct snd_pcm_substream *ss)
+{
+	struct ce5300_i2s *i2s = snd_soc_component_get_drvdata(comp);
+
+	hrtimer_cancel(&i2s->tick);
+	return 0;
+}
+
+/* One period has gone by: let ALSA read the position and refill. */
+static enum hrtimer_restart ce5300_pcm_tick(struct hrtimer *t)
+{
+	struct ce5300_i2s *i2s = container_of(t, struct ce5300_i2s, tick);
+
+	if (!atomic_read(&i2s->running))
+		return HRTIMER_NORESTART;
+	/* May stop the stream (xrun, drain), which clears running. */
+	snd_pcm_period_elapsed(i2s->substream);
+	if (!atomic_read(&i2s->running))
+		return HRTIMER_NORESTART;
+	hrtimer_forward_now(t, i2s->period);
+	return HRTIMER_RESTART;
+}
+
 /*
- * UNIMPLEMENTED ON PURPOSE. ALSA needs a byte position within the ring, and the
- * register that carries it did not survive the decompile -- the vendor reads a
- * "current descriptor address" register whose offset is stripped. Returning a
- * fabricated position would make playback appear to work while drifting, which
- * is a far worse failure than an honest -EINVAL at open time.
- *
- * To finish this: dump the DMA block while a stream runs, find the register
- * that walks through the descriptor addresses, and convert it to a frame offset.
+ * The position, from the context's current source address (MEASURED to walk
+ * through the buffer while stock plays). Our periods are contiguous in one
+ * buffer, so its offset from the start is the byte position in the ring.
  */
 static snd_pcm_uframes_t ce5300_pcm_pointer(struct snd_soc_component *comp,
 					    struct snd_pcm_substream *ss)
 {
-	return 0;
+	struct ce5300_i2s *i2s = snd_soc_component_get_drvdata(comp);
+	struct snd_pcm_runtime *rt = ss->runtime;
+	u32 src = readl(i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_CUR_SRC));
+	u32 off = src - (u32)rt->dma_addr;
+
+	if (off >= snd_pcm_lib_buffer_bytes(ss))
+		return 0;
+	return bytes_to_frames(rt, off);
 }
 
 static int ce5300_pcm_new(struct snd_soc_component *comp,
@@ -301,6 +366,7 @@ static const struct snd_soc_component_driver ce5300_component = {
 	.close		= ce5300_pcm_close,
 	.prepare	= ce5300_pcm_prepare,
 	.trigger	= ce5300_pcm_trigger,
+	.sync_stop	= ce5300_pcm_sync_stop,
 	.pointer	= ce5300_pcm_pointer,
 	/* .pcm_new, not .pcm_construct: mainline renamed this member in 5.6,
 	 * but this kernel's snd_soc_component_driver still calls it pcm_new.
@@ -316,15 +382,40 @@ static const struct snd_soc_component_driver ce5300_component = {
  * worth setting: the codec is the I2S master, so we neither generate clocks nor
  * choose a direction. Keeping it equally empty is deliberate, not lazy.
  */
+#define CE5300_DAI_PLAYBACK {						\
+	.stream_name	= "Playback",					\
+	.channels_min	= 2,						\
+	.channels_max	= 2,						\
+	.rates		= SNDRV_PCM_RATE_48000,				\
+	.formats	= SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,	\
+}
+
 static struct snd_soc_dai_driver ce5300_dai = {
 	.name = "ce5300-i2s",
-	.playback = {
-		.stream_name	= "Playback",
-		.channels_min	= 2,
-		.channels_max	= 2,
-		.rates		= SNDRV_PCM_RATE_48000,
-		.formats	= SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,
-	},
+	.playback = CE5300_DAI_PLAYBACK,
+};
+
+/* ---- probe-only: the DAI without a PCM ---------------------------------- */
+
+static int ce5300_dai_startup_off(struct snd_pcm_substream *ss,
+				  struct snd_soc_dai *dai)
+{
+	dev_dbg(dai->dev, "PCM not registered (ce5300_i2s.enable_pcm=0)\n");
+	return -ENODEV;
+}
+
+static const struct snd_soc_dai_ops ce5300_dai_off_ops = {
+	.startup = ce5300_dai_startup_off,
+};
+
+static struct snd_soc_dai_driver ce5300_dai_off = {
+	.name = "ce5300-i2s",
+	.playback = CE5300_DAI_PLAYBACK,
+	.ops = &ce5300_dai_off_ops,
+};
+
+static const struct snd_soc_component_driver ce5300_component_off = {
+	.name = DRV_NAME,
 };
 
 /* ---- PCI --------------------------------------------------------------- */
@@ -361,10 +452,14 @@ static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id
 
 	if (!enable_pcm) {
 		dev_info(&pdev->dev,
-			 "probe-only (enable_pcm=0): mapped, not registering a PCM. "
+			 "probe-only (enable_pcm=0): mapped, DAI registered without a PCM. "
 			 "Several control fields are still inferred -- see ce5300-i2s.h\n");
-		return 0;
+		return devm_snd_soc_register_component(&pdev->dev,
+						       &ce5300_component_off,
+						       &ce5300_dai_off, 1);
 	}
+
+	hrtimer_setup(&i2s->tick, ce5300_pcm_tick, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret)

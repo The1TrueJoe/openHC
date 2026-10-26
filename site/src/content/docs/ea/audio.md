@@ -6,7 +6,7 @@ sidebar:
 ---
 
 **Status: kernel drivers written, not yet proven on hardware.** The userspace half
-is standard and should work the moment a card appears. Read
+is the HC-800's audio scheme and should work the moment the PCM does. Read
 [what is still unproven](#what-is-still-unproven) before trusting any of this.
 
 ## The thing that blocked everything
@@ -38,13 +38,16 @@ Fixed in `board/ea/common/patches/linux/0001-i2c-pxa-ce5300-dt.patch`.
 
 ```
 sound/soc/ce5300/ce5300-i2s.c    platform driver: I2S + scatter-gather DMA (PCI 8086:2e60)
-sound/soc/ce5300/ce5300-ea3.c    machine driver: ties CPU DAI + codec into a card
-sound/soc/codecs/adau1451-c4.c   codec driver
-board/ea/common/features/audio-dsp/linux.fragment  kernel config (EA3 DSP)
-board/common/features/audio/defconfig              userspace packages (EA + HC-800)
+sound/soc/codecs/adau1451-c4.c   codec driver, on the kernel's sigmadsp core
+arch/x86/boot/dts/ea-audio-dsp.dtsi  the codec, its firmware, and the card (simple-audio-card)
+board/ea/common/firmware/dsp/adau1451/  the DSP's configuration (ea3.json) and its builder
+board/ea/common/features/audio-dsp/     kernel config + the firmware package (EA3 DSP)
+board/common/features/audio/defconfig   userspace packages (EA + HC-800)
 ```
 
-Enable with `audio` in a board's `ohc.features`.
+Enable with `audio` and `audio-dsp` in a board's `ohc.features`. There is no
+board machine driver: the card is the kernel's `simple-audio-card`, described in
+the DTB.
 
 ## No vendor binaries are required
 
@@ -54,20 +57,39 @@ playback:
 - **The SoC audio DSPs** run 1.8 MB of signed firmware loaded through the security
   engine, but they only do decode and mix. The **I²S render path needs none of
   it**, which is what makes a mainline driver possible at all.
-- **The ADAU1451** requests `ea3-1451.bin`, but at 48 kHz nothing from it's ever
-  written: the vendor pre-seeds the DSP's current samplerate to 48000, its
-  reload returns immediately, and the data-chunk loader is `#if 0`'d dead code.
-  The codec self-boots its own program from EEPROM; Linux only pushes parameter
-  RAM. So `request_firmware` is dropped entirely.
+- **The ADAU1451** boots its own program from the board's EEPROM; Linux only
+  pushes parameter RAM. Stock requests `ea3-1451.bin`, but at 48 kHz nothing
+  from it is ever written. openHC loads a firmware file of **its own** instead,
+  built from `ea3.json`: the kernel's stock sigmadsp core writes its tables and
+  makes its knobs into ALSA controls. See [the DSP](#the-dsp-openhcs-configuration).
 
 :::caution[One header must never be committed]
 `ea3-dsp-params.h` is 10,410 `#define`s with an Analog Devices header stating it
-"may not be distributed whole or in any part to third parties". The vendor driver
-uses 41 of those symbols and **every one is a mixer control** — bass, balance,
-loudness, input gain, a 10-band EQ. None are in the audio datapath, so the port
-omits all of them. Restoring tone controls later needs exactly those 41
-addresses, not the file.
+"may not be distributed whole or in any part to third parties". openHC does not
+need it: the addresses its tone controls use were read off a running unit, and
+every table they index is computed by openHC.
 :::
+
+## The DSP: openHC's configuration
+
+The program in the EEPROM reads every knob as an **index 0..48** from a
+parameter cell and looks the setting up in a 49-entry table, 24 neutral. openHC
+fills those tables from its own designs and hands the cells to ALSA:
+
+| Knob | Design |
+|---|---|
+| Bass, Treble | RBJ shelves at 120 Hz / 8 kHz, ±12 dB — the HC-800's software tone stage |
+| Balance | linear, one side to silence — the HC-800's |
+| EQ 31 Hz … 16 kHz | ten RBJ peaking bands, Q 1.414, ±12 dB |
+
+`board/ea/common/firmware/dsp/adau1451/ea3.json` is the whole configuration —
+cells, tables, designs — and `mkfw.py` builds it into the kernel's SigmaDSP
+firmware format (`/lib/firmware/openhc/adau1451-ea3.bin`). The board DTB names
+the file and the program it belongs to (`control4,program-version`); on any
+other program the driver writes nothing. ohc-audiod reads the same profile for
+its knob list, so the web UI shows exactly those knobs, set over MQTT like the
+HC-800's tone. The [directory's README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)
+has the map and how it was proven.
 
 ## What the stock system exposes
 
@@ -123,24 +145,29 @@ Full extraction: the [CE5300 audio register map](/ea/audio-regmap/).
 ## What is still unproven
 
 The platform driver **does not register a PCM by default** (`enable_pcm=0`). It
-binds, maps BAR0 and dumps registers. That is deliberate: registering a PCM whose
+binds, maps BAR0 and dumps registers, and registers its DAI with a startup that
+refuses — so the card forms and the DSP controls can be tuned, while anything
+opening the PCM gets `-ENODEV` at once. That is deliberate: registering a PCM whose
 trigger cannot reliably move samples is worse than absent, because userspace
 opens it, gets silence, and the failure looks like a codec or routing problem
 somewhere else entirely.
 
-Four things are still inferred:
+A stock unit was read while it played (2026-10-26; the
+[register map](/ea/audio-regmap/#measured-on-a-stock-unit-while-it-plays) has
+the capture), and the driver now follows it: the base, the descriptor format and
+its mode word, the DMA context's registers — and with them **the playback
+position** (`+0x1010`, the current source address), which `.pointer` reads — and
+TX0's configuration. Periods are paced by a timer from that position, so no
+interrupt is needed. Two things are still inferred:
 
-1. **Which three DMA registers `render_start` writes.** `__regparm3` stripped the
-   arguments. Head → `0x1010`, tail → `0x1038`, control → `0x101c` is the only fit
-   matching the two descriptor addresses the render context carries.
-2. **Which bit of `TX_CTRL` is the stream enable.** Bit 0 is the only 1-bit field
-   ever written there and channel-config clears it, so "cleared to reconfigure,
-   set to run" is the natural reading, but no site proves it.
-3. **The interrupt mask register offset.** The read-modify-write is visible; the
-   offset isn't.
-4. **The DMA position register**, which is why `.pointer` currently returns 0.
-   ALSA needs a real byte position; fabricating one makes playback appear to work
-   while drifting.
+1. **Which writes start the engine.** The vendor's three ("descriptor base,
+   size, mode") are taken as the head descriptor into `NEXT_DESC`, 0 into the
+   bytes-left register, and the mode word with bit 31 (set while stock plays,
+   never in a descriptor) into the control register; the TX run bit as bit 0 of
+   TX0 `+0x00`, the register that reads `0x21` while stock plays (bit 0 of
+   `TX_CTRL`, the old guess, reads 0 there).
+2. **The ungate** — why the TX and DMA blocks hang on access under openHC when
+   stock reads them freely. The plan is below.
 
 Master/slave couldn't be determined either, but it matters less than it sounds:
 the render path exposes **no** clock-direction control at all, consistent with the
@@ -158,13 +185,33 @@ with the device already enabled.
 
 1. Flash a kernel with the i2c patch; confirm `i2cdetect -y -r 3` shows `0x38`.
    **Nothing below matters until this passes.**
-2. Load the codec alone and read its samplerate register, it should report
-   48000, proving the DSP is alive and running its own program.
-3. Bring up the card so `aplay -l` lists it and `amixer` works.
-4. Confirm the four inferred fields against the register dump, set
-   `enable_pcm=1`, and finish `.pointer`.
-5. `speaker-test -c2 -twav`. This is what distinguishes "no card" from "no
-   sound".
+2. With the card up (`aplay -l` shows `openhcea`), `amixer -c openhcea contents`
+   lists the DSP controls and `ReadBack DSP Program` reads 10: the DSP is alive
+   and running openHC's parameters.
+3. **Find the ungate** — reads first, then one write at a time. Every write
+   below is a test: do it on a **RAM-booted** openHC (`ohc.ramboot=1`), never a
+   flashed kernel, and expect to power-cycle if a read hangs.
+   1. Read the Clock and Reset Unit (`00:00.2`, registers at `0xbfffef00`) and
+      compare with stock's values in the register map:
+
+      ```sh
+      for o in $(seq 0 4 156); do printf '%02x %s\n' $o $(devmem $((0xbfffef00 + o)) 32); done
+      ```
+
+      Every register that differs is a candidate clock-enable or reset bit.
+   2. Read `AUD_IO +0x00` (`devmem 0xdfa80000 32`, proven safe): `0x1` here,
+      `0x7` on stock. Its bits 1–2 are the first suspects — the block's own
+      sub-block enables.
+   3. Try the cheapest first: set `AUD_IO +0x00` to `0x7`, then read one TX
+      register (`devmem 0xdfa82000 32`). If that hangs or answers nothing, set
+      the CRU candidates one register at a time, re-testing the same read.
+   4. Whatever turns out to ungate it goes into the driver's probe (or into the
+      board DT if it is a clock the kernel can name), and `dump_regs=1` then
+      shows the TX/DMA blocks the way the stock capture does.
+4. `ce5300_i2s.enable_pcm=1`, then `speaker-test -c2 -twav`. The position should
+   advance (`/proc/asound/openhcea/pcm0p/sub0/status`), the DAC unmutes while it
+   plays, and the DSP's Mode → Test tone is the way to tell a dead I²S from a
+   dead analog path.
 
 ## AirPlay and Spotify Connect
 
@@ -184,13 +231,88 @@ alsa-lib. It **requires a Spotify Premium account**, with a free account the
 device is discovered and then refuses to play, which looks like a bug and isn't
 one.
 
-## Why the feature is currently off
+## What still blocks sound
 
-`audio` is disabled on ea3-v2 to keep the image under the
-[copy window](/ea/boot-chain/#the-copy-window). The drivers compile on
-i686 but have never been built for x86_64, and the platform driver is probe-only
-anyway, so right now the feature can contribute nothing except size and compile
-risk.
+The `audio` and `audio-dsp` features are on for both EA3 boards and the drivers
+build for x86_64 (modules, loaded by `S45ea-audio`). Two things stand between
+that and sound:
 
-It has a second blocker regardless of size: **`ce5300-i2s.c` reading TX register
-`0x2004` hangs the SoC**, so the register dump must stay off.
+- **The DSP has no program.** The ADAU1451 does not boot one by itself:
+  measured under openHC, its PLL is off, its core idle and its RAM random. Stock
+  loads everything over I²C at boot from a userspace SigmaStudio download
+  (`/control4/bin/ea3_dsploader`). openHC's own program is being built with
+  SigmaStudio+ in CI, and the driver gains a load path for it.
+- **The CE5300 I²S block hangs on access.** Reading its TX/DMA registers
+  (`0x2004` and beyond) hangs the SoC under openHC, where stock reads them
+  freely. The register dump stays off until the cause below is found.
+
+## The CE5300's power and clock controllers
+
+The obvious explanations for that hang are a powered-down island or a gated
+clock. Both were checked against a stock unit, **read-only**, and both are
+ruled out for audio. The work also mapped the controllers, which the
+[switch bring-up](/ea/switch/) leaned on too.
+
+### P-Unit power islands
+
+The SoC switches whole functional blocks on and off through its P-Unit. Stock
+drives it from Intel's closed `intel_ce_pm.ko`; disassembled, its `punit_mode()`
+is a short port-I/O handshake:
+
+| | |
+|---|---|
+| Device | PCI `00:1e.0` (`8086:070c`); the OSPM registers are its I/O BAR1, `0xb040` on the units seen |
+| Island word | `+0x20`: two bits per island, set = powered **off**; **audio is island 4, mask `0x0c00`** |
+| Command | `+0x08` &= ~`0x30`; write the word to `+0x20`; `+0x04` = (old & `0xfe000000`) \| (seq << 21) \| `0x201` |
+| Done | poll `+0x00` until bit 8 (busy) clears and bits 12:9 echo `seq` |
+
+`/proc/icepm/state` on stock lists the islands and their drivers: 3 holds
+`ismdclock`, GbE, PCIe, SATA and USB; **4 holds `audio` alone**; 5–9 are video
+decode, mux/encode, post-processing, capture/display and graphics. The island
+word reads `0` on stock **and on openHC**: every island is powered, so this is
+not the gate.
+
+### Clock and Reset Unit
+
+PCI `00:00.2` (`8086:2e52`), BAR0 `0xbfffef00`, 256 bytes. Stock drives it from
+Intel's closed `clock_control.ko`, whose table names 185 fields (register, bit,
+width). The audio ones:
+
+| Register | Bits | Field |
+|---|---|---|
+| `+0x0c` | 13, 12 | `AU_DSP1_CLK_EN`, `AU_DSP0_CLK_EN` |
+| | 11:6 | `DSP1_CLK_FRQ`, `DSP0_CLK_FRQ` |
+| | 1, 0 | `AU_DSP1_RST`, `AU_DSP0_RST` |
+| `+0x10` | 4 | `ADAC_RESET` |
+| | 3, 2 | `MCLK1_OUT_EN`, `MCLK0_OUT_EN` |
+| | 1, 0 | `AU_XSI_CLK_EN`, `AU_IF_RST` |
+| `+0x7c` | 31:0 | `AV_DDS_CTRL` |
+
+Stock and openHC read **identically** here (`+0x0c` = `0xf843`, `+0x10` =
+`0x17`: interface out of reset, XSI clock on, MCLK0 out on), so audio is not
+gated here either. The whole block differs in two registers only: `+0x94`
+(`0x7ff` on openHC, `0x7fc` on stock) and `+0x98` (`0x7ff` vs `0x7fe`).
+Neither is named in `clock_control`'s table, and it names no SPI/SSP clock at
+all.
+
+### The A/V media clock
+
+PCI `01:0c.1` (`8086:2e6f`), BAR0 `0xdffe1000`, bound by stock's `ismdclock`.
+It holds the media timestamp and clock-recovery counters: on stock they tick
+even with nothing playing, in groups at a `0x40` stride. Under openHC the whole
+block reads zero; nothing initializes it. It gates no peripheral clock.
+
+### What is left
+
+- **`AUD_IO +0x00`** is the one audio register that differs: `0x1` under
+  openHC, `0x7` on a playing stock unit. Its bits 1–2 are the prime suspects
+  for the I²S block's own sub-block enables, and the next test is to set them
+  and read one TX register (`0xdfa82000`), on a RAM-booted openHC, expecting a
+  possible hang.
+- **The master clock's rate.** The ADAU1451 runs from the SoC's MCLK0 (enabled
+  on both). Its rate may come from the A/V DDS or audio PLL that stock's media
+  stack programs, and that stack never runs under openHC. If the DSP's PLL
+  will not lock once a program is loaded, this is where to look.
+
+The stock unit's I²S/DMA registers, captured while it played, are in the
+[register map](/ea/audio-regmap/#measured-on-a-stock-unit-while-it-plays).
