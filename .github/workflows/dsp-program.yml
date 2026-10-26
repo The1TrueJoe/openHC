@@ -65,30 +65,52 @@ jobs:
           "installer: $($f.Length) bytes, sha256 $((Get-FileHash $f).Hash)" | Tee-Object logs/installer.txt
 
       # The installer technology is not documented, so read it off the binary
-      # and use that technology's own silent switch.
+      # and use that technology's own silent switch. SigmaStudio+ 3.4.0 is an
+      # InstallShield Suite (Advanced UI) bootstrapper (ISSetupStream,
+      # BillboardType): its switch is /silent. The MSI-style /s /v"/qn" of an
+      # older InstallShield setup.exe is not understood there and leaves it at a
+      # dialog nobody can see, so every attempt is bounded and killed if it
+      # hangs, and the next one is tried.
       - name: Silent install
         if: steps.staged.outputs.ok == 'true'
+        timeout-minutes: 25
         run: |
+          $logs = (Resolve-Path logs).Path
           $bytes = [IO.File]::ReadAllBytes("ssplus-setup.exe")
           $text = [Text.Encoding]::ASCII.GetString($bytes)
           $kind = switch -Regex ($text) {
             'Inno Setup'          { 'inno'; break }
             'Nullsoft'            { 'nsis'; break }
-            'InstallShield'       { 'installshield'; break }
             'WixBundle|WiX Toolset|\.wixburn' { 'burn'; break }
+            'ISSetupStream|InstallShield' { 'installshield'; break }
             default               { 'unknown' }
           }
           "installer type: $kind" | Tee-Object -Append logs/installer.txt
-          $switches = switch ($kind) {
-            'inno'          { '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG=logs\setup.log' }
-            'nsis'          { '/S' }
-            'installshield' { '/s /v"/qn /l*v logs\setup.log"' }
-            'burn'          { '/quiet /norestart /log logs\setup.log' }
-            default         { '/S /quiet /VERYSILENT /norestart' }
+          $attempts = switch ($kind) {
+            'inno'          { ,"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG=`"$logs\setup.log`"" }
+            'nsis'          { ,'/S' }
+            'burn'          { ,"/quiet /norestart /log `"$logs\setup.log`"" }
+            'installshield' { "/silent /debuglog`"$logs\suite.log`"",
+                              "/s /v`"/qn /l*v \`"$logs\msi.log\`"`"" }
+            default         { '/silent', '/S', '/quiet /norestart', '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' }
           }
-          "switches: $switches" | Tee-Object -Append logs/installer.txt
-          $p = Start-Process -FilePath .\ssplus-setup.exe -ArgumentList $switches -Wait -PassThru
-          "exit code: $($p.ExitCode)" | Tee-Object -Append logs/installer.txt
+          function Find-Console {
+            Get-ChildItem -Path 'C:\Program Files', 'C:\Program Files (x86)', 'C:\Analog Devices' `
+              -Recurse -Filter SStudioPlusConsole.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          foreach ($a in $attempts) {
+            "--- attempt: $a" | Tee-Object -Append logs/installer.txt
+            $p = Start-Process -FilePath .\ssplus-setup.exe -ArgumentList $a -PassThru
+            if (-not $p.WaitForExit(10 * 60 * 1000)) {
+              "    still running after 10 min: killed (waiting on a dialog?)" | Tee-Object -Append logs/installer.txt
+              Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $p.Id } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              continue
+            }
+            "    exit code: $($p.ExitCode)" | Tee-Object -Append logs/installer.txt
+            if (Find-Console) { "    installed" | Tee-Object -Append logs/installer.txt; break }
+          }
 
       - name: Find the console app
         if: steps.staged.outputs.ok == 'true'
