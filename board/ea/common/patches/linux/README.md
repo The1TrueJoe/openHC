@@ -76,7 +76,7 @@ They are gone. Each board's tree is now linked into the kernel:
 | `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) |
 | `ea-wifi.dtsi` | the `wifi` feature: `wlan_disable` |
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
-| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3, the card node, `codec_reset`/`dsp_reset` |
+| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3 with its firmware and program check, the simple-audio-card, `codec_reset`/`dsp_reset` |
 | `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
 | `board/ea/<board>/<board>.dts` | the board: includes matching its `ohc.features` |
 
@@ -269,6 +269,11 @@ The switch burned the most time of anything here, so the traps stay recorded:
    (`spi92`), and DSA's platform_data needed `netdev[cpu_port]` set by hand.
    Neither matters with a device tree: the switch is a child of the SSP node and
    the conduit is `ethernet = <&gbe>`.
+5. **The CE5300 SSP has Quark's register layout but not Quark's clock** (0009).
+   It has no DDS: routing it through Quark's DDS_RATE path wedges the SSP
+   (`b53-switch spi92.1: Flush failed / SPI transfer failed: -5`). It is clocked
+   like a CE4100/PXA25x part, a /2 SCR divisor off a 10 MHz input clock, and
+   skips pxa2xx's flush-first, which times out on a stopped SSP.
 
 Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.

@@ -367,8 +367,8 @@ jobs:
 
       # Reuse a toolchain already built for this exact config across runs. Keyed
       # on everything that defines the EA toolchain — the Buildroot ref, both
-      # common defconfigs, the glibc patch, the Buildroot patch set, and build.sh
-      # itself (it composes the defconfig). A hit means the tarball is already on
+      # common defconfigs, the Buildroot patch set, and build.sh itself (it
+      # composes the defconfig). A hit means the tarball is already on
       # disk and the build below is skipped; a miss builds it from cold. On a hit
       # the artifact upload still runs, so the image jobs always get their SDK.
       - name: Restore cached EA SDK
@@ -376,7 +376,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ea-sdk.tar
-          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'build/buildroot-patches/**', 'build/build.sh') }}
 
       - name: Fetch Buildroot
         if: steps.sdkcache.outputs.cache-hit != 'true'
@@ -395,8 +395,7 @@ jobs:
       # into the compiler stays valid and no SDK relocation is needed ($GITHUB_
       # WORKSPACE is identical across GitHub-hosted jobs). BOARD is any EA board:
       # the toolchain config lives entirely in the shared common defconfigs, so
-      # all five resolve to the same toolchain. The glibc BZ33367 patch applies
-      # here (BR2_GLOBAL_PATCH_DIR is set in common_defconfig), baking it in.
+      # all five resolve to the same toolchain.
       - name: Build the EA toolchain (once)
         if: steps.sdkcache.outputs.cache-hit != 'true'
         env:
@@ -416,7 +415,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ea-sdk.tar
-          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'build/buildroot-patches/**', 'build/build.sh') }}
 
       # Reliable same-run handoff to the image jobs (they `needs: toolchain` and
       # download this). Short retention — it is scratch, rebuilt whenever needed.
@@ -871,6 +870,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # A push that rebuilt no board (select picked nothing, or every build
+          # failed) uploads no openhc-* artifact, so there is nothing to publish
+          # and the dev release keeps the images it has.
+          if ! ls bundles/openhc-*.zip >/dev/null 2>&1; then
+            echo "no images built in this run — dev release unchanged"
+            exit 0
+          fi
           ls -l bundles
           # The tag first (create, or move it here), then the release on it.
           if gh api "repos/$GH_REPO/git/refs/tags/dev" >/dev/null 2>&1; then

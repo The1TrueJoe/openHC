@@ -1,7 +1,7 @@
 # --- audio: CE5300 I2S -> ADAU1451 SigmaDSP -> analog out ------------------
 #
-# Pairs with features/audio.defconfig. Three openHC drivers (ce5300-i2s.c platform,
-# ce5300-ea3.c machine, adau1451-c4.c codec) are copied in
+# Pairs with features/audio.defconfig. Two openHC drivers (ce5300-i2s.c platform,
+# adau1451-c4.c codec) are copied in
 # via objs.mk, not patched, so they have NO Kconfig symbol — they are gated only by
 # CONFIG_SND_SOC below deciding whether sound/soc is built at all. Inventing a
 # CONFIG_ symbol here would silently build nothing (see drivers/objs.mk).
@@ -11,10 +11,10 @@
 # snd-pcm + snd-soc-core + our drivers) runs ~290 KB over CEFDK's 7,417,856-
 # byte bootlinux window. As modules the SoC core and the drivers load from p1 after
 # mount, so that weight lands in the rootfs instead. The codec's i2c client and
-# the card's platform device come from the board DTB (ea-audio-dsp.dtsi), so
-# nothing built in references a snd-soc symbol; udev's coldplug modprobes each
-# driver off its device's modalias (ce5300-i2s by PCI id, the other two by their
-# of_device_id tables) and S45ea-audio only waits for the card.
+# the card come from the board DTB (ea-audio-dsp.dtsi), so nothing built in
+# references a snd-soc symbol; udev's coldplug modprobes each driver off its
+# device's modalias (ce5300-i2s by PCI id, adau1451-c4 and snd-soc-simple-card
+# by their of_device_id tables) and S45ea-audio only waits for the card.
 # This is why SND_SOC can now be =m (it could not while the drivers were obj-y:
 # they would fail at `LD vmlinux` with "undefined reference"). A board built
 # without this feature leaves SND_SOC unset, so sound/soc is never descended and
@@ -34,6 +34,17 @@ CONFIG_REGMAP_I2C=y
 # The codec sits at 0x38 on the CE5300's FOURTH I2C controller. Mainline's
 # i2c-pxa-pci hardcodes three, so patches/linux/0001 (DEVS 3 -> 4) is NOT optional
 # for audio — without it the bus does not exist and nothing can probe.
+
+# The card is the kernel's own simple-audio-card, described in the DTB — there is
+# no board machine driver.
+CONFIG_SND_SIMPLE_CARD=m
+
+# The DSP's parameters and ALSA controls go through the stock SigmaDSP core
+# (sound/soc/codecs/sigmadsp*.c), loading openHC's firmware file. Its symbols have
+# no prompt, so they cannot be set here; the ADAU1701 driver is what selects them
+# upstream, and enabling it (one small module that never binds here) is the
+# supported way to get SND_SOC_SIGMADSP + SND_SOC_SIGMADSP_I2C as modules.
+CONFIG_SND_SOC_ADAU1701=m
 
 # Userspace mixer/PCM access: /dev/snd/*.
 CONFIG_SND_MIXER_OSS=n

@@ -90,6 +90,13 @@ BR2_CCACHE_INITIAL_SETUP="--max-size=3G"
 # BR2_TOOLCHAIN_BUILDROOT_MUSL is not set
 BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
 
+# Userspace built for speed (-O2), not the fleet-wide -Os. This board has the
+# room to spare (see above), and glibc 2.42 does not even link at -Os on x86_64
+# (BZ 33367: GCC leaves modf's trunc() as a libcall) without a backport. The
+# kernel has its own CONFIG_CC_OPTIMIZE_FOR_SIZE, so the bzImage is unaffected.
+# BR2_OPTIMIZE_S is not set
+BR2_OPTIMIZE_2=y
+
 # C++ and wide characters for WPE WebKit, which pulls in ICU and harfbuzz.
 # Without these the wpewebkit package is unselectable and kconfig drops it in
 # SILENCE — the build succeeds and the engine is simply absent.
