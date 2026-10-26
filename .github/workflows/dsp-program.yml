@@ -82,6 +82,14 @@ jobs:
             Get-ChildItem -Path $env:SSPLUS_HOME, $env:ProgramData, $env:APPDATA, $env:LOCALAPPDATA -Directory -Recurse -Depth 4 -ErrorAction SilentlyContinue |
               Where-Object { $_.FullName -match 'SigmaStudio|Analog Devices' -and $_.Name -match 'add-?in|plugin|processor|platform|device' } |
               Select-Object -ExpandProperty FullName | Out-File logs/addin-dirs.txt
+            # The host ships NuGet.Core and an UpdateManager, and the install makes
+            # ProgramData\Analog Devices\SigmaStudio 3.4\Plugins: processor support
+            # looks like NuGet add-ins. Record what is there and where they come from.
+            Get-ChildItem -Path "$env:ProgramData\Analog Devices" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 400 | Out-File logs/plugins.txt
+            Get-ChildItem -Path "$env:SSPLUS_HOME\Setup" -Recurse -File -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 400 | Out-File logs/setup.txt
+            Copy-Item "$env:SSPLUS_HOME\Host\*.exe.config" logs/ -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
