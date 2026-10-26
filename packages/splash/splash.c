@@ -273,6 +273,14 @@ int main(int argc, char **argv)
 		fprintf(stderr, "splash: need 32bpp, got %u\n", var.bits_per_pixel);
 		close(fd); return 1;
 	}
+	/* A view that page-flipped (the on-panel webview, when it is turned off)
+	 * can leave the scanout on a later buffer; the banner is drawn at the top
+	 * of the framebuffer, so pan back there first. A driver that cannot pan
+	 * has yoffset 0 already. */
+	if (var.yoffset || var.xoffset) {
+		var.xoffset = var.yoffset = 0;
+		ioctl(fd, FBIOPAN_DISPLAY, &var);
+	}
 	fb_w = var.xres; fb_h = var.yres; fb_stride = fix.line_length;
 
 	fb = mmap(NULL, (size_t)fb_stride * fb_h, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);

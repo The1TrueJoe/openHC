@@ -250,6 +250,19 @@ trying to unset any of them is silently ignored, tried it, the image came back
 byte-identical. Reclaiming the space needs a kernel patch making the helper
 libraries conditional on a driver actually wanting them.
 
+## What the panel shows
+
+**The splash, by default.** `S01splash` draws the openHC banner on `/dev/fb0` at
+boot and `S40net` redraws it with the box's address once the network is up.
+Nothing starts a browser: a fresh image runs no webview and opens no listener
+for the panel.
+
+The on-panel web view is opt-in. In the web UI, **Display → Show a web page on
+the controller's own screen** (`POST /api/display`, kept in
+`/opt/ohc/display.conf`) has `S95ohc-display` start `webview` on the libwpe +
+SGX545 path above, loading the dashboard webd already serves (or any URL you
+give it). Turning it off stops the view and redraws the splash, no reboot.
+
 ## The 720x480 ceiling, and why
 
 The panel is 720x480 and that isn't a setting anywhere in openHC. CEFDK leaves

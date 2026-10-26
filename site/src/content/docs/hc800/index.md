@@ -525,6 +525,18 @@ status screen that repaints on change is unmeasurable, and only something
 *animating* costs real CPU (~24% of one core at 30 fps, for the blit alone).
 Getting pixels onto the panel is not the expensive part; rasterising them is.
 
+### What the screen shows by default
+
+**The splash.** `S01splash` draws the openHC banner through i915's fbdev
+emulation at boot, and `S40net` redraws it with the box's address. A fresh
+image starts no browser and opens no listener for the screen.
+
+The full-screen web view is opt-in: **Display → Show a web page on the
+controller's own screen** in the web UI (`POST /api/display`, kept on `/data`
+in `display.conf` because `/opt` is the initramfs here) has `S95ohc-display`
+run `webview` on WPE's DRM platform, described next. Turning it off stops the
+view and puts the splash back, no reboot.
+
 ### Can it run WPE WebKit?
 
 Yes, and more easily than the EA family — with one large caveat.

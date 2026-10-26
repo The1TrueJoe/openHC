@@ -112,9 +112,13 @@ stop() {
 		kill -9 "$p" 2>/dev/null || true
 	done
 	rm -f "$PIDF"
-	# NOTE: the splash is NOT redrawn here — fb0 keeps whatever was last presented
-	# until something overdraws it. A caller that wants the splash back can run
-	# /etc/init.d/S01splash start.
+}
+
+# Give the panel back to the splash. fb0 keeps whatever the view last presented
+# until something overdraws it, so turning the view off redraws the splash; a
+# restart does not, so the panel goes straight from the old view to the new one.
+splash() {
+	[ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash start >/dev/null 2>&1
 }
 
 # Apply the config without tearing the view down when it can be helped: a
@@ -123,7 +127,7 @@ stop() {
 # view has just exited (a FIFO opened write-only waits for a reader).
 reload() {
 	if [ "$OHC_DISPLAY_ENABLE" != 1 ]; then
-		stop
+		stop; splash
 	elif [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null && [ -p "$CTL" ]; then
 		exec 3<>"$CTL"
 		printf 'theme %s\n' "$OHC_DISPLAY_THEME" >&3
@@ -140,7 +144,7 @@ reload() {
 
 case "$1" in
 	start)   start ;;
-	stop)    stop ;;
+	stop)    stop; splash ;;
 	restart) stop; sleep 1; start ;;
 	reload)  reload ;;
 	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
