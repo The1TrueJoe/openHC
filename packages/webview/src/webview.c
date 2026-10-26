@@ -64,7 +64,7 @@
  * top of everything that follows mousemove. Being part of the page it costs a
  * composite per move, which WebKit does on the GPU anyway, and it needs nothing
  * from the display: no cursor plane, no cursor theme. It turns into a hand over
- * links and buttons and an I-beam over text, as the page's CSS cursor says;
+ * links and buttons and an I-beam over text fields, as the page's CSS says;
  * appears on the first move and hides on a key press or after a few idle
  * seconds, since this is a screen across the room, not a desk.
  * Injected into every frame, so each draws it while the pointer is inside it.
@@ -96,8 +96,11 @@ static const char CURSOR_JS[] =
 "    if (!document.documentElement) return;\n"
 "    if (!host) make();\n"
 "    if (!host.isConnected) document.documentElement.appendChild(host);\n"
-"    const c = e.target instanceof Element ? getComputedStyle(e.target).cursor : '';\n"
-"    const want = c === 'pointer' ? 'hand' : c === 'text' ? 'text' : 'arrow';\n"
+"    const t = e.target instanceof Element ? e.target : null;\n"
+"    const c = t ? getComputedStyle(t).cursor : '';\n"
+"    const field = t && c === 'auto' && (t.isContentEditable || t.tagName === 'TEXTAREA' ||\n"
+"      (t.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|range|color|file|image)$/.test(t.type)));\n"
+"    const want = c === 'pointer' ? 'hand' : c === 'text' || field ? 'text' : 'arrow';\n"
 "    if (want !== shape) {\n"
 "      const [x, y, svg] = shapes[want];\n"
 "      img.innerHTML = svg;\n"
