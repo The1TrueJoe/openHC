@@ -871,6 +871,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # A push that rebuilt no board (select picked nothing, or every build
+          # failed) uploads no openhc-* artifact, so there is nothing to publish
+          # and the dev release keeps the images it has.
+          if ! ls bundles/openhc-*.zip >/dev/null 2>&1; then
+            echo "no images built in this run — dev release unchanged"
+            exit 0
+          fi
           ls -l bundles
           # The tag first (create, or move it here), then the release on it.
           if gh api "repos/$GH_REPO/git/refs/tags/dev" >/dev/null 2>&1; then
