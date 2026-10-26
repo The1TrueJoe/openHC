@@ -232,13 +232,88 @@ alsa-lib. It **requires a Spotify Premium account**, with a free account the
 device is discovered and then refuses to play, which looks like a bug and isn't
 one.
 
-## Why the feature is currently off
+## What still blocks sound
 
-`audio` is disabled on ea3-v2 to keep the image under the
-[copy window](/ea/boot-chain/#the-copy-window). The drivers compile on
-i686 but have never been built for x86_64, and the platform driver is probe-only
-anyway, so right now the feature can contribute nothing except size and compile
-risk.
+The `audio` and `audio-dsp` features are on for both EA3 boards and the drivers
+build for x86_64 (modules, loaded by `S45ea-audio`). Two things stand between
+that and sound:
 
-It has a second blocker regardless of size: **`ce5300-i2s.c` reading TX register
-`0x2004` hangs the SoC**, so the register dump must stay off.
+- **The DSP has no program.** The ADAU1451 does not boot one by itself:
+  measured under openHC, its PLL is off, its core idle and its RAM random. Stock
+  loads everything over I²C at boot from a userspace SigmaStudio download
+  (`/control4/bin/ea3_dsploader`). openHC's own program is being built with
+  SigmaStudio+ in CI, and the driver gains a load path for it.
+- **The CE5300 I²S block hangs on access.** Reading its TX/DMA registers
+  (`0x2004` and beyond) hangs the SoC under openHC, where stock reads them
+  freely. The register dump stays off until the cause below is found.
+
+## The CE5300's power and clock controllers
+
+The obvious explanations for that hang are a powered-down island or a gated
+clock. Both were checked against a stock unit, **read-only**, and both are
+ruled out for audio. The work also mapped the controllers, which the
+[switch bring-up](/ea/switch/) leaned on too.
+
+### P-Unit power islands
+
+The SoC switches whole functional blocks on and off through its P-Unit. Stock
+drives it from Intel's closed `intel_ce_pm.ko`; disassembled, its `punit_mode()`
+is a short port-I/O handshake:
+
+| | |
+|---|---|
+| Device | PCI `00:1e.0` (`8086:070c`); the OSPM registers are its I/O BAR1, `0xb040` on the units seen |
+| Island word | `+0x20`: two bits per island, set = powered **off**; **audio is island 4, mask `0x0c00`** |
+| Command | `+0x08` &= ~`0x30`; write the word to `+0x20`; `+0x04` = (old & `0xfe000000`) \| (seq << 21) \| `0x201` |
+| Done | poll `+0x00` until bit 8 (busy) clears and bits 12:9 echo `seq` |
+
+`/proc/icepm/state` on stock lists the islands and their drivers: 3 holds
+`ismdclock`, GbE, PCIe, SATA and USB; **4 holds `audio` alone**; 5–9 are video
+decode, mux/encode, post-processing, capture/display and graphics. The island
+word reads `0` on stock **and on openHC**: every island is powered, so this is
+not the gate.
+
+### Clock and Reset Unit
+
+PCI `00:00.2` (`8086:2e52`), BAR0 `0xbfffef00`, 256 bytes. Stock drives it from
+Intel's closed `clock_control.ko`, whose table names 185 fields (register, bit,
+width). The audio ones:
+
+| Register | Bits | Field |
+|---|---|---|
+| `+0x0c` | 13, 12 | `AU_DSP1_CLK_EN`, `AU_DSP0_CLK_EN` |
+| | 11:6 | `DSP1_CLK_FRQ`, `DSP0_CLK_FRQ` |
+| | 1, 0 | `AU_DSP1_RST`, `AU_DSP0_RST` |
+| `+0x10` | 4 | `ADAC_RESET` |
+| | 3, 2 | `MCLK1_OUT_EN`, `MCLK0_OUT_EN` |
+| | 1, 0 | `AU_XSI_CLK_EN`, `AU_IF_RST` |
+| `+0x7c` | 31:0 | `AV_DDS_CTRL` |
+
+Stock and openHC read **identically** here (`+0x0c` = `0xf843`, `+0x10` =
+`0x17`: interface out of reset, XSI clock on, MCLK0 out on), so audio is not
+gated here either. The whole block differs in two registers only: `+0x94`
+(`0x7ff` on openHC, `0x7fc` on stock) and `+0x98` (`0x7ff` vs `0x7fe`).
+Neither is named in `clock_control`'s table, and it names no SPI/SSP clock at
+all.
+
+### The A/V media clock
+
+PCI `01:0c.1` (`8086:2e6f`), BAR0 `0xdffe1000`, bound by stock's `ismdclock`.
+It holds the media timestamp and clock-recovery counters: on stock they tick
+even with nothing playing, in groups at a `0x40` stride. Under openHC the whole
+block reads zero; nothing initializes it. It gates no peripheral clock.
+
+### What is left
+
+- **`AUD_IO +0x00`** is the one audio register that differs: `0x1` under
+  openHC, `0x7` on a playing stock unit. Its bits 1–2 are the prime suspects
+  for the I²S block's own sub-block enables, and the next test is to set them
+  and read one TX register (`0xdfa82000`), on a RAM-booted openHC, expecting a
+  possible hang.
+- **The master clock's rate.** The ADAU1451 runs from the SoC's MCLK0 (enabled
+  on both). Its rate may come from the A/V DDS or audio PLL that stock's media
+  stack programs, and that stack never runs under openHC. If the DSP's PLL
+  will not lock once a program is loaded, this is where to look.
+
+The stock unit's I²S/DMA registers, captured while it played, are in the
+[register map](/ea/audio-regmap/#measured-on-a-stock-unit-while-it-plays).

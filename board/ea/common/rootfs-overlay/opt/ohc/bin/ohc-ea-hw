@@ -3,15 +3,6 @@
 # in the fleet `ohc` dispatcher; this is the EA-only part that used to live in it.
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-# LM75 heatsink sensor on i2c-0. The board DTB instantiates it (ea.dtsi); this
-# is the safety net for when i2c-0 came up without its node (patch 0001 then
-# registers the adapter bare), because without the sensor ohc-fand has nothing
-# to drive the fan from. A no-op whenever the DTB already created 0-0048.
-if [ -d /sys/bus/i2c/devices/i2c-0 ] && [ ! -d /sys/bus/i2c/devices/0-0048 ]; then
-  echo lm75 0x48 > /sys/bus/i2c/devices/i2c-0/new_device 2>/dev/null
-  sleep 1
-fi
-
 # Report the SoC driver bring-up on the console (input over 921600 is overrun-
 # prone, so let the box tell us what bound). Count gpiochips via the chardev AND
 # legacy sysfs: gpio-sodaville registers /dev/gpiochip0 but does not populate

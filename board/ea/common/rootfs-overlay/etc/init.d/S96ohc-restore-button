@@ -3,16 +3,16 @@
 #
 # Turns a long-press of the front ID button into `ohc-restore stock`. Inert
 # unless BOTH halves are present: the 'restore' feature installed ohc-restore
-# (EA only) and board.env names OHC_RESTORE_BUTTON. Runs LATE (S96, after the IO
-# and web are up) so a press during boot cannot wipe a box mid-bring-up, and the
-# watcher itself only arms after one clean released reading.
-[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+# (EA only) and the board DTB gave udev a button to link as
+# /dev/ohc/input/id-button. Runs LATE (S96, after the IO and web are up) so a
+# press during boot cannot wipe a box mid-bring-up, and the watcher itself never
+# arms on a press that was already down when it started.
 BIN=/opt/ohc/bin/ohc-restore-button
 
 start() {
     [ -x "$BIN" ] || return 0
     [ -x /opt/ohc/bin/ohc-restore ] || return 0     # no restore feature on this board
-    [ -n "$OHC_RESTORE_BUTTON" ] || return 0         # no button configured
+    [ -c /dev/ohc/input/id-button ] || return 0      # no button on this board
     start-stop-daemon -S -q -b -m -p /var/run/ohc-restore-button.pid --exec "$BIN" \
         && echo "restore-button: watching for a long-press return-to-stock"
 }

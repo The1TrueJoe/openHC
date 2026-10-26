@@ -70,11 +70,11 @@ EA5, but neither board has been in hand.
   it rewrote the MFH on a corrupted live EA1 and read it back verified. The full
   `stock` round-trip all the way back to Control4 has **not** yet been run end to
   end on hardware. See [recovery](/shared/recovery/).
-- **A hardware return-to-stock button on the EA.** Holding the front ID button —
-  a bare SoC GPIO the board driver deliberately leaves unclaimed — for ten seconds
-  runs the software restore. It is fail-safe: it arms only after one clean
-  "released" reading, so a wrong line or polarity stays inert rather than wiping a
-  box at boot. The fail-safe behaviour was confirmed on an EA1.
+- **A hardware return-to-stock button on the EA.** Holding the front ID button
+  (a `gpio-keys-polled` node in the board device tree) for ten seconds and
+  letting go runs the software restore. It is fail-safe: a press already down
+  when the watcher starts never counts, so a stuck button stays inert rather than
+  wiping a box at boot.
 - **The EA1 Zigbee NCP**, which now answers. The EHCI `has_hostpc` fix for the
   CE5300 TDI USB core lets the CP2104 bridge enumerate and the EM357 replies: a
   bare ASH reset returns `RSTACK` (0xc1) at 115200 8N1, measured on hardware.
