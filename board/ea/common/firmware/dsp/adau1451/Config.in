@@ -1,0 +1,12 @@
+config BR2_PACKAGE_ADAU1451_FW
+	bool "adau1451-fw (EA3 DSP parameters)"
+	help
+	  openHC's SigmaDSP parameter file for the EA3's ADAU1451, built
+	  from board/ea/common/firmware/dsp/adau1451/ea3.json: the filter
+	  tables behind every tone and EQ knob, the controls ALSA shows
+	  for them, and the DSP's boot settings. Installed as
+	  /lib/firmware/openhc/adau1451-ea3.bin, which the board's device
+	  tree names and the adau1451-c4 codec driver loads through the
+	  kernel's sigmadsp core.
+
+	  Selected by the audio-dsp feature.

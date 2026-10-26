@@ -88,3 +88,15 @@ BR2_OHC_IOXV1_KERNEL_DRIVERS=y
 # fragment for why this board in particular needs it.
 BR2_PACKAGE_KEXEC=y
 BR2_PACKAGE_KEXEC_ZLIB=y
+
+# ir-ctl and ir-keytable, the stock Linux IR tools, for the eight FPGA emitters
+# ohc-iox-irout registers as lirc devices -- the same tools every other openHC
+# board with IR ships (the iomcu feature carries them there):
+#   ir-ctl -d /dev/ohc/ir/out1 -S nec:0x04
+# They come only as part of v4l-utils, whose build needs a C++ compiler even
+# though ir-ctl itself is C, hence C++ in this board's toolchain (as the zigbee
+# feature already does for the CA-1). Costs libstdc++ and the v4l2/DVB tools in
+# the image.
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_PACKAGE_LIBV4L=y
+BR2_PACKAGE_LIBV4L_UTILS=y

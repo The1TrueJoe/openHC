@@ -1,6 +1,6 @@
 #!/bin/sh
-# EA-family hardware bring-up report (and the lm75 safety net). The fan needs no
-# start here: the kernel runs it (pwm-fan + a thermal zone in the board tree).
+# EA-family hardware bring-up report. The fan needs no start here: the kernel
+# runs it (pwm-fan + a thermal zone in the board tree).
 # The universal identity layer (mDNS, timezone) is the fleet S50ohc, which runs
 # right after this. S49 so the hardware is up before S50 reports state.
 BIN=/opt/ohc/bin

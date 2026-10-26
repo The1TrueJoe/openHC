@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * What every Control4 EA board shares: front-panel LEDs, the reset/enable lines
- * stock firmware releases at boot, the heatsink sensor, and the framebuffer
- * CEFDK leaves scanning out. Boards add their own differences on top.
+ * What every Control4 EA board shares: front-panel LEDs, the ID button, the
+ * reset/enable lines stock firmware releases at boot, the heatsink sensor, and
+ * the framebuffer CEFDK leaves scanning out. Boards add their own differences
+ * on top.
  */
+#include <dt-bindings/input/input.h>
 #include "ce5300.dtsi"
 
 / {
@@ -55,6 +57,29 @@
 		led-4ball-blue {
 			label = "c4::4ball_blue";
 			gpios = <&gpio 34 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	/*
+	 * The front ID button: active low (released reads 1, pressed 0,
+	 * verified on an EA1), and the trigger for ohc-restore-button's
+	 * long-press return-to-stock. Polled, as on stock (gpio-keys-polled,
+	 * 40 ms poll, 20 ms debounce, from the stock kernel's tables), because
+	 * gpio-intelce has no interrupts. The input device's name is ABI: udev
+	 * links it as /dev/ohc/input/id-button (70-openhc-io.rules). Stock
+	 * sent KEY_F5; KEY_RESTART is the usual code for a reset button, and
+	 * a browser on the display does not read it as "reload".
+	 */
+	id-button {
+		compatible = "gpio-keys-polled";
+		label = "id-button";
+		poll-interval = <40>;
+
+		button-id {
+			label = "id_button";
+			gpios = <&gpio 32 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_RESTART>;
+			debounce-interval = <20>;
 		};
 	};
 };

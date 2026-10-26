@@ -218,7 +218,7 @@ system cannot tell those apart** — the fd map looks identical either way.
 `ttyS4` was sitting at 9600 when read, but nothing had it open — that's the
 untouched 8250 default, not a measurement of the NCP's rate.
 
-## Zigbee: an EM357 on EmberZNet 4.7.2, served as a network radio
+## Zigbee: an EM357, reflashed to EmberZNet 6.7.8 and served as a network radio
 
 The NCP runs at **115200** (a bare ASH RST is answered with RSTACK at that rate
 and no other) and needs no bootloader dance. An EZSP version query returns
@@ -226,12 +226,21 @@ and no other) and needs no bootloader dance. An EZSP version query returns
 It also comes up as a coordinator on a formed network, channel 19, PAN 0x48B8.
 That is the Control4 mesh it was paired into, stored in the NCP's own flash.
 
-That firmware decides the stack. zigbee2mqtt cannot drive it: zigbee-herdsman's
-`ember` driver needs EZSP 13+ (EmberZNet 7.4), its deprecated `ezsp` driver
-needed 8+, and Silicon Labs dropped EM35x support well before either. zigpy's
-**bellows still speaks EZSP v4**. So `ohc-zigbee` serves the port over TCP
-(`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA drives the radio from
-there:
+That firmware decides the stack, and Control4 itself reflashes the NCP from
+images on its rootfs, so openHC does the same. The `zigbee` feature ships
+**EmberZNet 6.7.8** (EZSP 8), the last EmberZNet line for the EM35x, and at
+boot `ohc-zigbee` reads the running version over EZSP. When it's older, it asks
+the NCP to launch its standalone serial bootloader, uploads the image over
+XMODEM-CRC, runs it and checks the version again. Later boots only read it. An
+upload that dies part-way leaves the bootloader resident, and the next boot
+finishes the job (`packages/zigbee/src/ncp.rs`; `ohc-zigbee --info` and
+`--flash <image.ebl>` by hand).
+
+For the radio stack: zigbee-herdsman's current `ember` driver needs EZSP 13+
+(EmberZNet 7.4), which no EM35x runs; its deprecated `ezsp` driver needs 8+,
+which 6.7.8 meets. zigpy's **bellows speaks both 4 and 8**. So `ohc-zigbee`
+serves the port over TCP (`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA
+drives the radio from there:
 
 - ZHA → add integration → radio type **EZSP**, path
   `socket://<box>:6638`. Or just accept the discovered device: the box advertises
@@ -283,34 +292,44 @@ without opening the case.
 the vendor's exports to **offsets within the chip**, which is what a modern kernel
 and libgpiod want:
 
-| Name | sysfs # | Offset | Dir | Value |
-|---|---|---|---|---|
-| `zigbee_reset` | 206 | **0** | out | 1 (released) |
-| `wlan_disable` | 220 | **14** | out | 0 |
-| `lan_disable` | 221 | **15** | out | 0 |
-| `reset` | 230 | **24** | in | 0 — the ID/setup button |
-| `io_reset` | 239 | **33** | out | 1 (MCU released) |
-| `board_id0` | 240 | **34** | in | 0 |
-| `board_id1` | 244 | **38** | in | 0 |
-| `board_id2` | 245 | **39** | in | 1 |
+| openHC line name | vendor name | sysfs # | Offset | Dir | Value |
+|---|---|---|---|---|---|
+| `zigbee_reset` | `zigbee_reset` | 206 | **0** | out | 1 (released) |
+| `id_button` | (gpio-keys) | 208 | **2** | in | active-low, `KEY_F5` |
+| `wlan_disable` | `wlan_disable` | 220 | **14** | out | 0 |
+| `lan_disable` | `lan_disable` | 221 | **15** | out | 0 |
+| `reset_button` | `reset` | 230 | **24** | in | 0 |
+| `io_reset` | `io_reset` | 239 | **33** | out | 1 (MCU released) |
+| `board_id0` | `board_id0` | 240 | **34** | in | 0 |
+| `board_id1` | `board_id1` | 244 | **38** | in | 0 |
+| `board_id2` | `board_id2` | 245 | **39** | in | 1 |
 
-**Mainline `gpio-ich` does not name lines**, so `gpiofind` won't work here the
-way it does on the CA-1's device tree. Address these by chip label plus offset —
-the sysfs numbers are an artefact of a dynamic base.
+**The lines are named by the board device tree** (`board/hc800/hc800.dts`,
+linked into the kernel by `BUILTIN_DTB`), so `gpiofind io_reset` works. The tree
+gives `gpio_ich` a node under the LPC bridge (00:1f.0); one small kernel patch
+(`patches/linux/0002`) gives `lpc_ich`'s GPIO cell the compatible that hands it
+that node. The sysfs numbers are an artefact of a dynamic base.
 
-### LEDs — mapped by name, not yet by line
+### LEDs and the ID button
 
-Six LED class devices exist, all from a `leds-gpio` platform device the vendor's
-board file registers: `c4::power`, `c4::data`, `c4::network`, `wifi::red`,
-`wifi::yellow`, `wifi::blue`. There's also a `gpio-keys-polled` device for the
-button.
+Six LED channels on four physical LEDs, all active-high, read out of the vendor
+kernel's own `gpio_led` array and confirmed against an EBUSY probe of every line
+and the ICH's `GPIO_USE_SEL` register (`board.env` has the detail). The same
+tree describes them as `gpio-leds`:
 
-**Which ICH offsets these sit on is still unknown.** `CONFIG_DEBUG_FS` is off in
-the vendor kernel so `/sys/kernel/debug/gpio` does not exist, and probing by
-`export` is not conclusive: 30 of the 50 lines refuse to export, which mostly
-reflects ICH pins not muxed as GPIO rather than lines a driver holds. Getting the
-real map means disassembling the board file out of the vendor `bzImage`. Until
-then openHC drives no LEDs on this board, everything else works without them.
+| LED | Offset | Trigger |
+|---|---|---|
+| `hc800:red:wifi` | 8 | none |
+| `hc800:yellow:wifi` | 9 | none |
+| `hc800:blue:wifi` | 10 | `timer` |
+| `hc800:green:data` | 26 | none |
+| `hc800:green:network` | 27 | none |
+| `hc800:green:power` | 28 | `default-on` |
+
+The ID button (offset 2) is a `gpio-keys-polled` input device,
+`hc800-id-button`, emitting `KEY_F5` as the vendor's does (40 ms poll, 20 ms
+debounce). It is the **factory-reset button**, read by GRUB and the stock
+firmware; openHC exposes it and gives it no runtime job.
 
 ## Network
 
@@ -524,6 +543,18 @@ a RAM source — a ceiling around 77 fps for pure blit. So a splash is free, a
 status screen that repaints on change is unmeasurable, and only something
 *animating* costs real CPU (~24% of one core at 30 fps, for the blit alone).
 Getting pixels onto the panel is not the expensive part; rasterising them is.
+
+### What the screen shows by default
+
+**The splash.** `S01splash` draws the openHC banner through i915's fbdev
+emulation at boot, and `S40net` redraws it with the box's address. A fresh
+image starts no browser and opens no listener for the screen.
+
+The full-screen web view is opt-in: **Display → Show a web page on the
+controller's own screen** in the web UI (`POST /api/display`, kept on `/data`
+in `display.conf` because `/opt` is the initramfs here) has `S95ohc-display`
+run `webview` on WPE's DRM platform, described next. Turning it off stops the
+view and puts the splash back, no reboot.
 
 ### Can it run WPE WebKit?
 
