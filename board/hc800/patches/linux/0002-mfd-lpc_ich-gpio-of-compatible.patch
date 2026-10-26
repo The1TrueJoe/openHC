@@ -1,0 +1,31 @@
+From: openHC
+Subject: [PATCH] mfd: lpc_ich: give the GPIO cell an OF compatible
+
+lpc_ich spawns gpio_ich as an MFD cell with no .of_compatible, and
+mfd_add_device() only hands a child an OF node when its cell names one. So
+on an x86 board that links a device tree into the kernel (BUILTIN_DTB) the
+ICH GPIO block can be described -- a node under the LPC bridge's PCI node --
+but the gpiochip never sees it, and nothing in the tree can reference a
+line: no gpio-leds, no gpio-keys, no gpio-line-names.
+
+Name the cell "intel,ich-gpio". With a matching child under the LPC node,
+mfd-core sets it as the child's of_node; dev_fwnode() prefers of_node, so
+gpiochip_choose_fwnode() gives the gpiochip that node and phandles resolve.
+Without one (every board but those that describe it), nothing changes: the
+cell has no OF node, mfd_acpi_add_device() and the swnode behave as before.
+
+The Control4 HC-800 (Atom D525 + NM10) wires its front-panel LEDs and its
+ID button to ICH GPIO lines that neither its BIOS nor ACPI describes; this is
+what lets its device tree, rather than a C board file, say so.
+
+---
+--- a/drivers/mfd/lpc_ich.c
++++ b/drivers/mfd/lpc_ich.c
+@@ -133,6 +133,7 @@
+ 
+ static struct mfd_cell lpc_ich_gpio_cell = {
+ 	.name = "gpio_ich",
++	.of_compatible = "intel,ich-gpio",
+ 	.num_resources = ARRAY_SIZE(gpio_ich_res),
+ 	.resources = gpio_ich_res,
+ 	.ignore_resource_conflicts = true,

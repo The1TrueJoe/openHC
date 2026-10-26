@@ -1,10 +1,12 @@
 x86/of: link a board device tree into the kernel (BUILTIN_DTB)
 
-CEFDK's bootlinux hands the kernel no DTB, so everything ACPI does not
-describe on a Control4 EA (the switch on SPI, the codec on I2C, the LEDs and
-reset lines on GPIO, the firmware framebuffer) was registered from C board
-files. x86 already reads a DTB from boot_params (SETUP_DTB) and populates it
-alongside ACPI; it just had no way to carry one of its own.
+Neither boot loader openHC runs under on x86 hands the kernel a DTB --
+CEFDK's bootlinux on the Control4 EA family, GRUB 0.97 on the HC-800 -- so
+everything ACPI does not describe (the switch on SPI, the codec on I2C, the
+LEDs, buttons and reset lines on GPIO, the firmware framebuffer) was
+registered from C board files. x86 already reads a DTB from boot_params
+(SETUP_DTB) and populates it alongside ACPI; it just had no way to carry one
+of its own.
 
 Add BUILTIN_DTB / BUILTIN_DTB_NAME, the same pair loongarch has, on top of
 GENERIC_BUILTIN_DTB (which already links the blob at __dtb_start through
@@ -15,6 +17,9 @@ wins, which keeps a test tree one kexec away from the running box.
 ACPI keeps the platform: x86_flattree_get_config() only takes the SMP/IRQ
 config from the tree when acpi_disabled, so a wrong tree loses board
 devices, not the boot.
+
+arch/x86/boot/dts/ gets the Makefile every other DT architecture has, so the
+board's .dts (copied in beside it) is compiled and linked by name.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
@@ -58,3 +63,8 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	}
  
  	unflatten_and_copy_device_tree();
+--- /dev/null
++++ b/arch/x86/boot/dts/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0
++dtb-$(CONFIG_BUILTIN_DTB) += $(CONFIG_BUILTIN_DTB_NAME:"%"=%).dtb

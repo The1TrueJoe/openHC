@@ -189,12 +189,11 @@ the names above with no client change — that is what the convention buys.
 ## Where it is not met yet: the HC-800's own lines
 
 The relays, contacts and IR above are done. The boards' **other** GPIO — resets,
-enables, straps, the setup button — is done on the EA family and not yet on the
-HC-800:
+enables, straps, the setup button — is named on both x86 families:
 
 | board | lines | state |
 |---|---|---|
-| HC-800 | `zigbee_reset`, `io_reset`, `wlan_disable`, `lan_disable`, `setup_button`, 3 straps | unnamed; offsets in `board.env` |
+| HC-800 | `zigbee_reset`, `io_reset`, `wlan_disable`, `lan_disable`, `id_button`, `reset_button`, `board_id0..2` | **named**: `gpio-line-names` in the board device tree |
 | EA1 / EA3 | `dsp_reset`, `codec_reset`, `io_reset`, `zigbee_reset`, `usb_2_serial_reset`, `id_button`, `board_id0..5`, … | **named**: `gpio-line-names` in the board device tree |
 
 The EA lines used to look named and not be. The old `gpio-ea-board.c` called
@@ -217,15 +216,16 @@ The EA boards now carry a device tree linked into the kernel
 board-id straps, the ID button) are named but not claimed, so `gpiofind id_button`
 and `gpioget` work on them.
 
-### The HC-800 fix
+### The HC-800
 
-The HC-800 has no device tree, but gpiolib does not actually require one — it
-reads `gpio-line-names` off the **parent device** of the gpiochip, through the
-generic `device_property_*` API. On x86 the non-DT backing for that is a
-**software node**, attached to the `gpio_ich` platform device from `lpc_ich`
-by a platform-bus notifier on `BUS_NOTIFY_ADD_DEVICE`, before the GPIO driver
-binds. After which `gpiofind setup_button` works there too, and `OHC_GPIO_*`
-leaves `board.env` the way `OHC_RELAY_GPIOS` did.
+The HC-800 links its own tree the same way (`board/hc800/hc800.dts`). Its GPIO
+block is not a PCI function but a cell `lpc_ich` spawns off the LPC bridge, so
+the tree puts the `gpio_ich` node under the bridge's PCI node (00:1f.0) and one
+kernel patch gives the cell the compatible (`intel,ich-gpio`) that makes
+mfd-core hand it that node. The same tree carries the front-panel LEDs and the
+ID button, which were a C board file. `OHC_GPIO_*` is still in `board.env`
+because `iod` reads `OHC_GPIO_IO_RESET` from it; moving `iod` to a by-name
+lookup lets that table go the way `OHC_RELAY_GPIOS` did.
 
 ### Why not the vendor's `/dev/gpio/dsp_reset`
 

@@ -292,34 +292,44 @@ without opening the case.
 the vendor's exports to **offsets within the chip**, which is what a modern kernel
 and libgpiod want:
 
-| Name | sysfs # | Offset | Dir | Value |
-|---|---|---|---|---|
-| `zigbee_reset` | 206 | **0** | out | 1 (released) |
-| `wlan_disable` | 220 | **14** | out | 0 |
-| `lan_disable` | 221 | **15** | out | 0 |
-| `reset` | 230 | **24** | in | 0 — the ID/setup button |
-| `io_reset` | 239 | **33** | out | 1 (MCU released) |
-| `board_id0` | 240 | **34** | in | 0 |
-| `board_id1` | 244 | **38** | in | 0 |
-| `board_id2` | 245 | **39** | in | 1 |
+| openHC line name | vendor name | sysfs # | Offset | Dir | Value |
+|---|---|---|---|---|---|
+| `zigbee_reset` | `zigbee_reset` | 206 | **0** | out | 1 (released) |
+| `id_button` | (gpio-keys) | 208 | **2** | in | active-low, `KEY_F5` |
+| `wlan_disable` | `wlan_disable` | 220 | **14** | out | 0 |
+| `lan_disable` | `lan_disable` | 221 | **15** | out | 0 |
+| `reset_button` | `reset` | 230 | **24** | in | 0 |
+| `io_reset` | `io_reset` | 239 | **33** | out | 1 (MCU released) |
+| `board_id0` | `board_id0` | 240 | **34** | in | 0 |
+| `board_id1` | `board_id1` | 244 | **38** | in | 0 |
+| `board_id2` | `board_id2` | 245 | **39** | in | 1 |
 
-**Mainline `gpio-ich` does not name lines**, so `gpiofind` won't work here the
-way it does on the CA-1's device tree. Address these by chip label plus offset —
-the sysfs numbers are an artefact of a dynamic base.
+**The lines are named by the board device tree** (`board/hc800/hc800.dts`,
+linked into the kernel by `BUILTIN_DTB`), so `gpiofind io_reset` works. The tree
+gives `gpio_ich` a node under the LPC bridge (00:1f.0); one small kernel patch
+(`patches/linux/0002`) gives `lpc_ich`'s GPIO cell the compatible that hands it
+that node. The sysfs numbers are an artefact of a dynamic base.
 
-### LEDs — mapped by name, not yet by line
+### LEDs and the ID button
 
-Six LED class devices exist, all from a `leds-gpio` platform device the vendor's
-board file registers: `c4::power`, `c4::data`, `c4::network`, `wifi::red`,
-`wifi::yellow`, `wifi::blue`. There's also a `gpio-keys-polled` device for the
-button.
+Six LED channels on four physical LEDs, all active-high, read out of the vendor
+kernel's own `gpio_led` array and confirmed against an EBUSY probe of every line
+and the ICH's `GPIO_USE_SEL` register (`board.env` has the detail). The same
+tree describes them as `gpio-leds`:
 
-**Which ICH offsets these sit on is still unknown.** `CONFIG_DEBUG_FS` is off in
-the vendor kernel so `/sys/kernel/debug/gpio` does not exist, and probing by
-`export` is not conclusive: 30 of the 50 lines refuse to export, which mostly
-reflects ICH pins not muxed as GPIO rather than lines a driver holds. Getting the
-real map means disassembling the board file out of the vendor `bzImage`. Until
-then openHC drives no LEDs on this board, everything else works without them.
+| LED | Offset | Trigger |
+|---|---|---|
+| `hc800:red:wifi` | 8 | none |
+| `hc800:yellow:wifi` | 9 | none |
+| `hc800:blue:wifi` | 10 | `timer` |
+| `hc800:green:data` | 26 | none |
+| `hc800:green:network` | 27 | none |
+| `hc800:green:power` | 28 | `default-on` |
+
+The ID button (offset 2) is a `gpio-keys-polled` input device,
+`hc800-id-button`, emitting `KEY_F5` as the vendor's does (40 ms poll, 20 ms
+debounce). It is the **factory-reset button**, read by GRUB and the stock
+firmware; openHC exposes it and gives it no runtime job.
 
 ## Network
 
