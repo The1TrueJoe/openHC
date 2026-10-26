@@ -129,3 +129,81 @@ The feature is switched off at present to keep an image under the
 [copy window](/ea/boot-chain/#the-copy-window). It isn't needed to reach
 the network: the always-applied fake-PHY patch gives `eth0` on the primary jack
 on its own.
+
+## When the switch is enabled, b53 still doesn't probe: the kexec-wedged SSP
+
+Turning the `switch` feature on (`ohc.switch=1`) is necessary but, on an
+installed box, not sufficient. openHC reaches its real kernel on the EA3 by
+**kexec** — the autoscript hands off to the fat kernel past the
+[copy window](/ea/boot-chain/#the-copy-window) — and on every kexec boot the b53
+probe dies:
+
+```
+b53-switch spi92.1: probe with driver b53-switch failed with error -22
+```
+
+with the SSP the switch hangs off (the PXA-style controller at PCI `01:0b.4`,
+MMIO `0xdffe0a00`) stuck busy:
+
+```
+SSSR = 0x00001F14   (BSY, bit 4, set — the bit clock never shifts valid data)
+```
+
+A cold **CEFDK-direct** netboot, by contrast, comes up with the SSP alive (BSY
+clear). So the silicon and the clock divider are fine — the CE5X00 10 MHz/SCR
+clock fix (PR #69) already killed the old `Flush failed / SPI transfer -5` wedge.
+Something about the **kexec hand-off** leaves the SSP dead, and it reproduces on
+every cold boot (8/8 in testing).
+
+### What it is not — ruled out by reading, stock vs openHC
+
+Every candidate gate reads **identical** between a working stock boot and a dead
+openHC boot:
+
+| Suspect | Finding | Verdict |
+|---|---|---|
+| CP_TOP clock/reset unit (`00:00.2`, `0xbfffef00`) | all ~40 registers byte-identical stock vs openHC | not it |
+| P-Unit power islands (`00:1e.0` OSPM) | island word `0x0` — all islands on, same as stock | not it |
+| SSP PCI power state (`01:0b.4`) | `D0`, Mem+/BusMaster+ | not it |
+| SSP private clock reg (its own BAR0, `0x00`–`0xff`) | only SSCR0/SSCR1/SSSR populated, nothing past `0x2c` | not it |
+| `ismdclock` (`01:0c.1`, `0xdffe1000`) | dormant A/V timestamp clock, all-zero on openHC only because no media stack runs it | parallel symptom, not the SSP |
+| CRU `+0x94` / `+0x98` | already at stock values on a dead boot; a write is a no-op and b53 still fails | not it |
+
+### What it is — the fat kernel's SPI probe wedges a live SSP
+
+A guarded dump added to `S00kexec`, reading the SSP in the **boot-init kernel
+immediately before `kexec -e`** (while CEFDK's setup is still intact), caught the
+controller **alive** — and the fat kernel's `spi-pxa2xx` probe then **wedges** it:
+
+```
+              pre-kexec (CEFDK-fresh)      post-kexec (fat kernel, dead)
+SSCR0  +0x00  0x00000007                   0x00000207
+SSCR1  +0x04  0x000003C0                   0x00000000   <- driver clears the FIFO thresholds
+SSSR   +0x08  0x0003E005  (BSY clear)      0x00001F14   (BSY set)
++0x24         0x00000003                   0x0000000A   (CE reserved/status reg; a wedge symptom)
+CP_TOP        unchanged across the hand-off
+```
+
+CP_TOP is unchanged across the hand-off, so **no clock is lost in transit** — the
+driver is re-initialising the CE5X00 and killing it. The real deltas are `SSCR1`
+going `0x3C0 → 0` (the probe clears the TX/RX FIFO thresholds the vendor sets) and
+the `SSCR0`/SSE reconfiguration; the controller ends up busy-stuck. (The true
+`SSPSP` register, `+0x2C`, reads `0` on both — untouched, as the vendor expects —
+so it is *not* involved; the `+0x24` change is a reserved status reg reflecting
+the wedge, and writes to it bounce.) Restoring those register values at runtime
+does **not** un-wedge it (BSY stays latched in the engine), so it cannot be
+repaired after the fact: the probe has to stop doing the destructive init in the
+first place.
+
+:::note[Status]
+Root-caused to an in-driver mis-init of the CE5X00 SSP — not a hardware clock
+mystery — so the fix is a `spi-pxa2xx` CE5X00 gate (patch `0009`): set the TX/RX
+FIFO thresholds the CE5X00 way and preserve the vendor enable order, instead of
+leaving `SSCR1=0` and running the sequence that wedges the 32-deep CE5X00 FIFO.
+The patch plus a kexec hardware test are the open work. Until then the switch
+stays off and `eth0` runs on the primary jack via the fake-PHY path; a switch-off
+boot now falls back cleanly (the `S39ea-switch` / `S87ohcswitch` gating fix, PR
+#85). The register-level narrowing is also recorded alongside the
+[audio bring-up](/ea/audio/), which hit the same closed CE5300 clock-controller
+wall.
+:::

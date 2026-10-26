@@ -95,15 +95,17 @@ wpebackend-pvr         libwpe backend: hands WPE the DDK's framebuffer EGL
 sgx545-um  +  sgx545-ce    PowerVR DDK userspace + our GPL kernel driver
 ```
 
-`webview` defaults to `http://localhost/`, which is **webd** above — the
-dashboard is what a controller should show when nobody has said otherwise.
-`WEBVIEW_URL` overrides it, and that is the seam: a layer built on top of
-openHC points the surface somewhere else without openHC needing to know or care
-what serves it.
+Out of the box the screen shows the splash, not a web page: `S01splash` draws
+it at boot (and `S40net` redraws it with the box's address), and nothing starts
+the webview. Turning on **Display → Show a web page** in the web UI (`POST
+/api/display`, persisted in `display.conf`) has `S95ohc-display` start it;
+turning it off stops the view and redraws the splash, without a reboot.
 
-Nothing starts the webview at boot. `S01splash` owns the framebuffer until
-someone runs it by hand, which is deliberate while the display path is still
-being brought up. See `https://the1truejoe.github.io/openHC/ea/graphics/` for what is verified and what is not.
+Once on, `webview` loads `http://localhost/` unless told otherwise — that is
+**webd** above, the same dashboard it serves on `:80` to the network, not a
+listener of its own. `WEBVIEW_URL` overrides it, and that is the seam: a layer
+built on top of openHC points the surface somewhere else without openHC
+needing to know or care what serves it. See `https://the1truejoe.github.io/openHC/ea/graphics/` for what is verified and what is not.
 
 ## Layout
 
