@@ -26,6 +26,14 @@ start() {
         mkdir -p /data/ohc
         return 0
     fi
+    # A host root (OHC_DATA_HOST_ROOT=1, board.env) is another OS's bootable /:
+    # keep the /tmp mount point its fstab needs. Only ever created, never
+    # removed — stock Control4 crash-loops Director without it, and a box
+    # returns to stock on any reset after a boot-once install, with no
+    # `ohc-flash uninstall` to put it back.
+    if [ "${OHC_DATA_HOST_ROOT:-0}" = 1 ] && [ ! -d "$DEVMNT/tmp" ]; then
+        mkdir -m 1777 "$DEVMNT/tmp" && echo "data: $OHC_DATA_DEV had no /tmp; created it (1777)"
+    fi
     sub="$DEVMNT/${OHC_DATA_SUBDIR:-openhc}"
     mkdir -p "$sub/ohc"
     mount --bind "$sub" /data && echo "data: /data on $OHC_DATA_DEV:/${OHC_DATA_SUBDIR:-openhc}"

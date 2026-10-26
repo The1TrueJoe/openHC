@@ -28,8 +28,15 @@ pub const RESTORE_PART: &str = "/dev/sda2";
 pub const KERNEL_PART: &str = "/dev/sda3";
 pub const KERNEL_LABEL: &str = "kernel_fs_hc800";
 
-/// The stock Control4 root. Untouched: openHC runs from an initramfs.
+/// The stock Control4 root. openHC runs from an initramfs and keeps only its
+/// `/openhc` data directory here (S08ohcdata); `uninstall` also makes sure the
+/// `/tmp` mount point stock's fstab needs is present (see [`VENDOR_TMP_MODE`]).
 pub const VENDOR_ROOT_PART: &str = "/dev/sda4";
+
+/// Stock mounts a tmpfs on `/tmp`, so the root needs the directory itself, and
+/// without it Director crash-loops every ~20 s. A sda4 that a factory restore
+/// left without one was found on a unit (2026-10-26).
+pub const VENDOR_TMP_MODE: &str = "1777";
 
 /// GRUB's name for [`KERNEL_PART`]. GRUB counts partitions from zero, so sda3
 /// is `(hd0,2)` — the same value the vendor's own entry uses.

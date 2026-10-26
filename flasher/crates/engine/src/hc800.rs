@@ -648,6 +648,7 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
         if out == before {
             let _ = ssh.run(&format!("umount {gm}"), false);
             p.emit(Event::warn("no openHC entry in menu.lst; nothing to remove".into()));
+            vendor_tmp(ssh, p);
             return Ok(());
         }
         ssh.put_stream(out.as_bytes(), &format!("cat > {menu}"))
@@ -701,10 +702,64 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
         ),
         false,
     );
+
+    // Stock is only healthy if its root has the /tmp mount point.
+    vendor_tmp(ssh, p);
     p.emit(Event::resolved(
-        "removed. The boot chain is back to what Control4 shipped; nothing on this board was ever \
-         written outside menu.lst and the spare kernel partition"
+        "removed. The boot chain is back to what Control4 shipped; outside menu.lst and the spare \
+         kernel partition, openHC only ever wrote its /openhc data directory on the stock root"
             .into(),
     ));
     Ok(())
+}
+
+/// Make sure the stock root (sda4) has `/tmp` with mode 1777 before the box is
+/// handed back to Control4.
+///
+/// Stock's fstab mounts a tmpfs there, so the directory is only a mount point,
+/// but without it rcS cannot write `/tmp/startup.log` and Director restarts
+/// every ~20 s. One unit came back from a factory restore without it, and
+/// nothing in openHC removes it. sda4 is mounted again at a mount point of our
+/// own, which works whether it is already mounted (as `/` on stock, or as
+/// `/mnt/ohc-datadev` on openHC) or not, and shows the on-disk directory
+/// rather than the tmpfs over it.
+///
+/// A warning, not an error: the boot chain is already restored by now, and the
+/// fix by hand is one `mkdir`.
+fn vendor_tmp(ssh: &Ssh, p: &Progress) {
+    let vm = "/mnt/ohc-vroot";
+    let mode = hc::VENDOR_TMP_MODE;
+    // `ls -ld`'s permission string rather than `stat -c`, which is a busybox
+    // build option stock may not have. 1777 reads `drwxrwxrwt`.
+    let cmd = format!(
+        "mkdir -p {vm} && mount {part} {vm} || exit 1; \
+         if [ -d {vm}/tmp ]; then was=$(ls -ld {vm}/tmp | cut -c1-10); else was=missing; mkdir {vm}/tmp; fi; \
+         chmod {mode} {vm}/tmp; now=$(ls -ld {vm}/tmp | cut -c1-10); sync; umount {vm}; echo \"$was $now\"",
+        part = hc::VENDOR_ROOT_PART
+    );
+    let out = ssh.run(&cmd, true).map(|s| s.trim().to_string());
+    let (was, now) = match out.as_deref().ok().and_then(|o| o.split_once(' ')) {
+        Some((w, n)) => (w.to_string(), n.to_string()),
+        None => {
+            let _ = ssh.run(&format!("umount {vm} 2>/dev/null"), false);
+            p.emit(Event::warn(format!(
+                "could not check /tmp on the stock root ({}). If Control4's Director keeps \
+                 restarting, run `mkdir -p /tmp && chmod {mode} /tmp && mount /tmp` on the box",
+                hc::VENDOR_ROOT_PART
+            )));
+            return;
+        }
+    };
+    const WANT: &str = "drwxrwxrwt";
+    if now != WANT {
+        p.emit(Event::warn(format!("stock /tmp reads {now} after chmod {mode}; Director may not start")));
+    } else if was == "missing" {
+        p.emit(Event::warn(format!(
+            "the stock root had no /tmp (Director would crash-loop); created it, mode {mode}"
+        )));
+    } else if was != WANT {
+        p.emit(Event::step(format!("stock /tmp was {was}; set to {mode}")));
+    } else {
+        p.emit(Event::detail(format!("stock /tmp present, mode {mode}")));
+    }
 }
