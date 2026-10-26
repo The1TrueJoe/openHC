@@ -15,6 +15,12 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 # the board tree that owns it, and lands here.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
+#
+# ...and firmware that is BUILT into the image from source kept in the board's
+# firmware/ tree (board/ea/common/firmware/dsp/adau1451 — the EA3 DSP's
+# parameter file, generated from its profile). It is not a package of its own:
+# the folder holds the source, the generator and this build rule together.
+include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/firmware/*/*/*.mk))
 
 # ── openHC's own kernel drivers: copied in, not patched in ─────────────────
 #

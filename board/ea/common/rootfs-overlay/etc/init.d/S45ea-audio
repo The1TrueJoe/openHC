@@ -12,15 +12,16 @@
 #
 # WHY before S95librespot: librespot (and shairport) open /dev/snd/*, which only
 # exists once the card is registered. Each modprobe pulls snd / snd-pcm /
-# snd-soc-core by modules.dep; the three openHC drivers bind by name/alias, not by
-# symbol dep, so they are loaded explicitly and in order:
-#   ce5300-i2s   — CPU DAI + PCM component (binds its PCI device)
-#   adau1451-c4  — codec component (binds the i2c-3 0x38 node in the board DTB)
-#   ce5300-ea3   — machine driver, binds the "control4,ea-audio" DTB node and
-#                  registers the card
+# snd-soc-core (and the codec the sigmadsp core) by modules.dep; the drivers
+# themselves bind by name/alias, not by symbol dep, so they are loaded explicitly
+# and in order:
+#   ce5300-i2s           CPU DAI (+ the PCM once enable_pcm=1), binds its PCI device
+#   adau1451-c4          codec, binds the i2c-3 0x38 node in the board DTB; loads
+#                        /lib/firmware/openhc/adau1451-ea3.bin (the DSP parameters)
+#   snd-soc-simple-card  the card, from the board DTB's simple-audio-card node
 # Deferred probe makes the order forgiving, but this is the natural bring-up order.
 
-MODS="ce5300-i2s adau1451-c4 ce5300-ea3"
+MODS="ce5300-i2s adau1451-c4 snd-soc-simple-card"
 
 start() {
     loaded=0
@@ -33,17 +34,19 @@ start() {
         echo "ea-audio: no audio-dsp modules in this image, skipping"
         return 0
     fi
-    # Best-effort wait for the card to appear so S95librespot finds a PCM device.
+    # Best-effort wait for the card (and with it the DSP controls ohc-audiod sets)
+    # so S92ohcaudiod and S95librespot find it. By id, not number: "openhcea" is
+    # the simple-audio-card's name with the dash dropped.
     i=0
     while [ $i -lt 10 ]; do
-        [ -e /dev/snd/pcmC0D0p ] && { echo "ea-audio: card ready"; return 0; }
+        [ -e /proc/asound/openhcea ] && { echo "ea-audio: card ready"; return 0; }
         sleep 1; i=$((i + 1))
     done
     echo "ea-audio: modules loaded (card not up yet)"
 }
 
 stop() {
-    for m in ce5300-ea3 adau1451-c4 ce5300-i2s; do
+    for m in snd-soc-simple-card adau1451-c4 ce5300-i2s; do
         modprobe -r "$m" >/dev/null 2>&1 || true
     done
 }
