@@ -82,6 +82,7 @@ radio` runs only this step.
 | Board | Archive | Status |
 |---|---|---|
 | HC-800 | `/dev/sda2:/restore_images/root-fs-sherman.tgz` | proven, 6.7.8 → 4.7.2 → 6.7.8 three times |
+| EA family | `/dev/mmcblk0p2:/recfs.tar.xz` | proven on an EA1: 6.7.8 → 4.7.2 (bootloader v45 bA8, ~2.5 min with the 1m45 unpack) → 6.7.8 |
 | CA-1 | not mapped yet | a radio openHC reflashed is refused, one it didn't is left alone |
 
 Control4 would also put its image back by itself, but only once its `zap`
