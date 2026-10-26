@@ -57,7 +57,7 @@ a daemon quietly fighting the kernel for the same UART.
               │
       DLE/STX over a UART
               │
-   gpio-ohc-iomcu  (serdev or ldisc)       the kernel owns the protocol
+   gpio-ohc-iomcu  (serdev: DT or ACPI)    the kernel owns the protocol
               │
       /dev/gpiochipN                       standard, and open to anything
         │          │
@@ -125,11 +125,26 @@ the chip, the lirc devices and the `ttyOHC` ports. Nothing in userspace is
 involved, and there is no `/dev/ttyS1` any more: a UART with a serdev child
 belongs to that driver.
 
-**The HC-800 has none.** Its BIOS describes 8250 UARTs and nothing else, so no
-serdev device is created there. A **line discipline** needs no enumeration:
-userspace opens the port and hands it to the kernel with `TIOCSETD`, the way
-PPP, SLIP and `n_gsm` are attached. Both front ends share one core — framing,
-bring-up, gpiochip, lirc, serial — and differ only in how bytes get to it.
+**The HC-800 has it in ACPI.** Its BIOS describes the UART the part is on
+(ttyS3, a PNP0501 at 0x2E8) and nothing behind it, so openHC adds the child in
+an ACPI table, `board/hc800/acpi/ssdt-iomcu.asl`, loaded from the front of the
+initrd as a table upgrade. `_HID "PRP0001"` with the same `compatible` and
+properties in `_DSD` makes it the identical binding, read by the identical
+driver code.
+
+Why not the HC-800's device tree, which describes its GPIO and LEDs? A device
+is described where its parent is, and this UART's parent is ACPI. Moving the
+UART itself into the tree would cost its interrupt — on an x86 box whose
+interrupts belong to ACPI a tree-described UART is timer-polled, roughly every
+8 ms, and a 16550A at 115200 fills its 16-byte FIFO in under 2 ms, so every IR
+capture would overrun. The EA's UARTs are tree nodes and polled already (their
+interrupt never fired under openHC), so there the tree is the natural home.
+
+A **line discipline** remains for a board, or a test kernel, whose firmware
+describes nothing: userspace opens the port and hands it to the kernel with
+`TIOCSETD`, the way PPP, SLIP and `n_gsm` are attached. Every front end shares
+one core — framing, bring-up, gpiochip, lirc, serial — and differs only in how
+bytes get to it.
 
 :::note[The number is `N_DEVELOPMENT`]
 The discipline registers as 29, the slot the kernel reserves for out-of-tree
@@ -139,10 +154,11 @@ a loud module-load failure an operator can work around — not a reason to patch
 a header.
 :::
 
-## Attaching it (no device tree)
+## Attaching it (no firmware description)
 
 `/etc/init.d/S12iomcu` does this at boot, from `board.env`. On a board whose
-tree describes the part it only reports that the kernel bound it, and stops.
+firmware describes the part — today, every board with one — it only reports
+that the kernel bound it, and stops.
 
 ```sh
 echo 4 > /sys/module/gpio_ohc_iomcu/parameters/relays
@@ -164,13 +180,13 @@ attach and never a chip that has already told userspace what its lines are.
 | board.env key | what it does |
 |---|---|
 | `OHC_IO_BACKEND` | `mcu` — anything else and the script does nothing |
-| `OHC_IO_MCU_TTY` | which port the part is on (`/dev/ttyS3` on HC-800) |
-| `OHC_IO_MCU_BAUD` | 115200 on HC-800 (the EA family's 460800 is in its tree) — see the [protocol page](/shared/io-mcu/) |
+| `OHC_IO_MCU_TTY` | which port the part is on |
+| `OHC_IO_MCU_BAUD` | its line rate — see the [protocol page](/shared/io-mcu/) |
 | `OHC_RELAYS` / `OHC_CONTACTS` / `OHC_IR_*` / `OHC_IO_UARTS` | what sits behind the part |
 | `OHC_IO_MCU_LDISC` | discipline number, default 29 |
 
-On the EA family none of these but `OHC_IO_BACKEND` exist: the device tree is
-the description.
+No shipped board sets any of these but `OHC_IO_BACKEND`: the EA device trees
+and the HC-800's ACPI table are the description.
 
 ## Where iod gets the counts
 
@@ -185,8 +201,8 @@ part has even answered:
 iod reads its relay, contact, IR and serial counts from there, not from
 board.env, so on a device-tree board there is exactly one copy of them. `online`
 separates "this board has four relays and the part is not answering" from "this
-board has no relays". board.env's counts are only the fallback when the driver
-never attached at all, which on the HC-800 means S12iomcu did not run.
+board has no relays". board.env's counts are only read when the driver never
+attached at all, and no shipped board sets them.
 
 ## What each board actually gets
 

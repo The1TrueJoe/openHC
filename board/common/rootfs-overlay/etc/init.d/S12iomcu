@@ -10,25 +10,28 @@
 # the chip, not owners of the UART. Anything else on the box can use it too;
 # that is the point of putting it in the kernel rather than behind a daemon.
 #
-# Only for a board with no device tree node for the part (the HC-800, whose BIOS
-# has none). A board whose tree has a "control4,io-mcu" child on the MCU's UART
-# (the EA family) gets it bound as a serdev device at boot, counts and all, and
-# there is nothing here to do — the script says so and stops.
+# Only for a board whose firmware does not describe the part. Every board with
+# an IO microcontroller now does — the EA family in its device tree, the HC-800
+# in an ACPI table — and gets it bound as a serdev device at boot, counts and
+# all, so this says so and stops. The attach below is the fallback for a test
+# kernel or tree without the description.
 #
 # Without a node, the attachment is a LINE DISCIPLINE: iomcu-attach hands the
 # port to the kernel the same way PPP and n_gsm are attached, and it stays
 # running to hold the discipline in place.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 
-# Is the part described in the device tree? Then the kernel owns the port, and
-# the only useful thing to say is whether the driver bound it.
-dt_bound() {
+# Is the part described by firmware — a device tree node (EA) or an ACPI table
+# (HC-800, board/hc800/acpi/)? Then the kernel owns the port, and the only
+# useful thing to say is whether the driver bound it. modalias covers both: an
+# ACPI PRP0001 device reports the same of: compatible as a tree node.
+fw_bound() {
     for d in /sys/bus/serial/devices/*; do
-        grep -qs 'control4,io-mcu' "$d/of_node/compatible" || continue
+        grep -qs 'control4,io-mcu' "$d/modalias" || continue
         if [ -e "$d/driver" ]; then
-            echo "iomcu: bound from the device tree (${d##*/}) — no attach needed"
+            echo "iomcu: bound from firmware (${d##*/}) — no attach needed"
         else
-            echo "iomcu: ${d##*/} is in the device tree but no driver bound it (see dmesg)"
+            echo "iomcu: ${d##*/} is described by firmware but no driver bound it (see dmesg)"
         fi
         return 0
     done
@@ -43,7 +46,7 @@ start() {
     # Boards with no IO microcontroller: nothing to attach, and saying so beats
     # a failure that looks like broken hardware.
     [ "$OHC_IO_BACKEND" = "mcu" ] || { echo "iomcu: no IO microcontroller on this board"; return 0; }
-    dt_bound && return 0
+    fw_bound && return 0
     [ -n "$OHC_IO_MCU_TTY" ] || { echo "iomcu: OHC_IO_MCU_TTY is unset in board.env"; return 1; }
     [ -d "$PARAMS" ] || { echo "iomcu: gpio-ohc-iomcu is not in this kernel"; return 1; }
 
