@@ -64,11 +64,16 @@ jobs:
             New-Item -ItemType Directory -Force logs | Out-Null
             & $env:SSPLUS_CONSOLE --help *>&1 | Tee-Object logs/console.txt
             if ($LASTEXITCODE) { "::error::console app exit $LASTEXITCODE"; exit 1 }
+            # Where SigmaStudio+ keeps its per-processor support is not documented,
+            # so record the install tree and every name that mentions the family
+            # before asserting anything about it.
+            Get-ChildItem -Path $env:SSPLUS_HOME -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName | Out-File logs/tree.txt
             Get-ChildItem -Path $env:SSPLUS_HOME -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -match 'ADAU145|ADAU146|Sigma ?3[05]0' } |
-              Select-Object -First 40 -ExpandProperty FullName | Tee-Object logs/adau145x.txt
+              Where-Object { $_.Name -match '145[0-2]|146[0-7]|ADAU|Sigma ?3[05]0|SigmaDSP' } |
+              Select-Object -First 200 -ExpandProperty FullName | Tee-Object logs/adau145x.txt
             if (-not (Get-Content logs/adau145x.txt -ErrorAction SilentlyContinue)) {
-              "::error::no ADAU145x/146x support files under $env:SSPLUS_HOME"; exit 1
+              "::warning::nothing named for ADAU145x/146x under $env:SSPLUS_HOME; see logs/tree.txt"
             }
 
       - uses: actions/upload-artifact@v4
