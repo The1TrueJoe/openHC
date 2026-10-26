@@ -15,7 +15,8 @@
  *
  * Layout follows arch/x86/platform/ce4100/falconfalls.dts, which the CE5300
  * keeps for the functions used here (audio 01:06.2, GPIO 01:0b.1, I2C 01:0b.2,
- * SPI 01:0b.4, GbE 01:0c.0 -- all measured on EA boards).
+ * SPI 01:0b.4, GbE 01:0c.0 -- all measured on EA boards). The PWM block at
+ * 01:0b.6 is the CE5300's own (falconfalls has none); measured on an EA1.
  */
 #include <dt-bindings/gpio/gpio.h>
 
@@ -171,6 +172,16 @@
 				reg = <0x15c00 0 0 0 0>;
 				#address-cells = <1>;
 				#size-cells = <0>;
+			};
+
+			/* pwm-ce5300 (8086:089f): four channels on one BAR. The
+			 * driver registers its chip against this PCI device, so the
+			 * pwm core finds it through this node and, with no of_xlate
+			 * of its own, parses specifiers with of_pwm_xlate_with_flags:
+			 * <channel period-ns flags>. */
+			pwm: pwm@b,6 {
+				reg = <0x15e00 0 0 0 0>;
+				#pwm-cells = <3>;
 			};
 
 			/* e1000 (8086:2e6e), fake-PHY mode via patch 0003. Labelled so

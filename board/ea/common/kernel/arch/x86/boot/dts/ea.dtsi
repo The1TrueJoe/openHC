@@ -164,10 +164,151 @@
 	vbus-supply = <&usb_rear_vbus>;
 };
 
-/* Heatsink sensor; ohc-fand drives the fan from its hwmon. */
+/* Heatsink sensor: the thermal zone below reads it through its hwmon. */
 &i2c0 {
-	temperature-sensor@48 {
+	heatsink_temp: temperature-sensor@48 {
 		compatible = "national,lm75";
 		reg = <0x48>;
+		#thermal-sensor-cells = <0>;
+	};
+};
+
+/*
+ * THE FAN, AND THE CURVE THAT DRIVES IT. This replaces the shell daemon
+ * ohc-fand: the kernel's pwm-fan is the cooling device, the thermal zone reads
+ * the LM75 and the step_wise governor moves the fan between cooling-levels.
+ *
+ * The fan is a plain DC fan whose SUPPLY the PWM switches (no PWM input of its
+ * own) on pwm-ce5300 channel 2. At 25 kHz its driver chip browns out below ~70%
+ * duty and the motor stalls, chirping as it retries; at 100 kHz (period 10 us)
+ * the supply is smooth enough for it to run clean at 30%. Below that it grinds,
+ * and at ~206 Hz it never starts at all. Heard on an EA1, 2026-10-25 (PR #70).
+ * So 30% (77/255) is the lowest level that is not off. From a standstill, 25%
+ * already started clean at 100 kHz, so the floor needs no start kick; if a fan
+ * ever needs one, it is pwm-fan's fan-stop-to-start-percent/-us.
+ *
+ * The curve is ohc-fand's, which was the stock [ea_fan] profile with a 30%
+ * floor: on at 50 C, then +10% per degree, so 100% from 57 C. One active trip
+ * per level, each mapped to exactly that level; step_wise takes the highest
+ * level whose trip is reached. Each step has 1 C of hysteresis so a 0.5 C
+ * LM75 reading cannot flap it, and the first has 3 C, which stands in for
+ * ohc-fand's 60 s cool-down hold at the floor.
+ *
+ * Until the zone takes over, pwm-fan holds the fan at its top level (its probe
+ * sets the maximum), so a sensor that never binds leaves the fan at 100%.
+ * fan-shutdown-percent does the same on the way down: poweroff, reboot and kexec
+ * leave it running flat out rather than stopped.
+ *
+ * MANUAL CONTROL (the web UI, via sysmond) switches this zone's policy to
+ * user_space and writes the fan's hwmon pwm1; "auto" switches it back to
+ * step_wise. Manual cannot outlast the hot trip: at 75 C sysmond hands the
+ * fan back to the curve, and at 80 C the kernel shuts the box down whatever the
+ * policy is.
+ */
+/ {
+	fan: pwm-fan {
+		compatible = "pwm-fan";
+		pwms = <&pwm 2 10000 0>;
+		/* off, then 30% to 100% in tens: one level per trip below */
+		cooling-levels = <0 77 102 128 153 179 204 230 255>;
+		#cooling-cells = <2>;
+		fan-shutdown-percent = <100>;
+	};
+
+	thermal-zones {
+		heatsink-thermal {
+			polling-delay = <5000>;
+			polling-delay-passive = <0>;
+			thermal-sensors = <&heatsink_temp>;
+
+			trips {
+				fan_on: fan-on {
+					temperature = <50000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+				fan_40: fan-40 {
+					temperature = <51000>;
+					hysteresis = <1000>;
+					type = "active";
+				};
+				fan_50: fan-50 {
+					temperature = <52000>;
+					hysteresis = <1000>;
+					type = "active";
+				};
+				fan_60: fan-60 {
+					temperature = <53000>;
+					hysteresis = <1000>;
+					type = "active";
+				};
+				fan_70: fan-70 {
+					temperature = <54000>;
+					hysteresis = <1000>;
+					type = "active";
+				};
+				fan_80: fan-80 {
+					temperature = <55000>;
+					hysteresis = <1000>;
+					type = "active";
+				};
+				fan_90: fan-90 {
+					temperature = <56000>;
+					hysteresis = <1000>;
+					type = "active";
+				};
+				fan_full: fan-full {
+					temperature = <57000>;
+					hysteresis = <1000>;
+					type = "active";
+				};
+				/* Ends a manual hold (sysmond); no kernel action. */
+				heatsink-hot {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+				heatsink-crit {
+					temperature = <80000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map-30 {
+					trip = <&fan_on>;
+					cooling-device = <&fan 1 1>;
+				};
+				map-40 {
+					trip = <&fan_40>;
+					cooling-device = <&fan 2 2>;
+				};
+				map-50 {
+					trip = <&fan_50>;
+					cooling-device = <&fan 3 3>;
+				};
+				map-60 {
+					trip = <&fan_60>;
+					cooling-device = <&fan 4 4>;
+				};
+				map-70 {
+					trip = <&fan_70>;
+					cooling-device = <&fan 5 5>;
+				};
+				map-80 {
+					trip = <&fan_80>;
+					cooling-device = <&fan 6 6>;
+				};
+				map-90 {
+					trip = <&fan_90>;
+					cooling-device = <&fan 7 7>;
+				};
+				map-100 {
+					trip = <&fan_full>;
+					cooling-device = <&fan 8 8>;
+				};
+			};
+		};
 	};
 };

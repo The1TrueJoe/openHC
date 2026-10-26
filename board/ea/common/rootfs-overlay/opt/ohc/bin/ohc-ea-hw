@@ -5,8 +5,9 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 # LM75 heatsink sensor on i2c-0. The board DTB instantiates it (ea.dtsi); this
 # is the safety net for when i2c-0 came up without its node (patch 0001 then
-# registers the adapter bare), because without the sensor ohc-fand has nothing
-# to drive the fan from. A no-op whenever the DTB already created 0-0048.
+# registers the adapter bare), so the temperature is at least still readable.
+# A hand-made LM75 has no thermal zone, so the fan then stays at the full speed
+# pwm-fan probes at. A no-op whenever the DTB already created 0-0048.
 if [ -d /sys/bus/i2c/devices/i2c-0 ] && [ ! -d /sys/bus/i2c/devices/0-0048 ]; then
   echo lm75 0x48 > /sys/bus/i2c/devices/i2c-0/new_device 2>/dev/null
   sleep 1
@@ -21,6 +22,11 @@ np=$(cat /sys/class/pwm/pwmchip0/npwm 2>/dev/null || echo none)
 ic=$(ls -d /sys/bus/i2c/devices/i2c-* 2>/dev/null | wc -l)
 echo "ohc-hw: gpiochips=$gc pwmchip0.npwm=$np i2c-buses=$ic"
 for d in /sys/class/hwmon/hwmon*; do
-  [ "$(cat "$d/name" 2>/dev/null)" = lm75 ] && \
-    echo "ohc-hw: lm75 temp=$(cat "$d/temp1_input" 2>/dev/null) milliC ($d)"
+  case "$(cat "$d/name" 2>/dev/null)" in
+    lm75) echo "ohc-hw: lm75 temp=$(cat "$d/temp1_input" 2>/dev/null) milliC ($d)" ;;
+    pwmfan) echo "ohc-hw: pwm-fan pwm1=$(cat "$d/pwm1" 2>/dev/null)/255 ($d)" ;;
+  esac
+done
+for z in /sys/class/thermal/thermal_zone*; do
+  [ -r "$z/type" ] && echo "ohc-hw: thermal $(cat "$z/type") $(cat "$z/temp") milliC policy=$(cat "$z/policy") mode=$(cat "$z/mode")"
 done
