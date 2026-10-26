@@ -55,7 +55,15 @@ Under openHC it is a **writable `/dev/mtd0`** via the in-tree `spi-ea-ce5xx`
 controller driver — confirmed on this EA1, `/proc/mtd` shows a 16 MB `mtd0` on
 `spi0.0`. That is what makes an in-place install and a software return-to-stock
 possible without serial; see [the boot chain](/ea/boot-chain/) and
-[recovery](/shared/recovery/).
+[recovery](/shared/recovery/). The board device tree also names the regions
+CEFDK's mask ROM fixes, as read-only partitions beside the whole-chip `mtd0`:
+
+```
+mtd0: 01000000 00010000 "spi0.0"      whole chip, the one writes go through
+mtd1: 00080000 00010000 "cefdk"       0x000000  cefdk_s1/s2/s1h/s2h
+mtd2: 00000800 00010000 "mfh"         0x080000  MFH item table (+ banks)
+mtd3: 00f7f800 00010000 "mfh-items"   0x080800  the items' contents
+```
 
 ### RAM: CEFDK withholds most of it
 
