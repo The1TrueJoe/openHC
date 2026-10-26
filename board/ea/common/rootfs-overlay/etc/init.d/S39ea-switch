@@ -68,6 +68,16 @@ start() {
 # (/run/ohc/net.conf) that S40net reads. A no-op where switchd is not shipped
 # (boards without the `switch` feature) or OHC_DSA_PORTS is empty.
 apply_topology() {
+    # Switch-off gate, same as start(): the case below calls apply_topology
+    # UNCONDITIONALLY after start() (start only `return`s from the function when
+    # the switch is off), so without this check switchd built a carrier-less
+    # br-lan and wrote /run/ohc/net.conf=br-lan even switch-off — S40net then
+    # deferred to the dead bridge, failed DHCP and never fell back to eth0, so a
+    # headless box got only a 169.254 link-local and was unreachable.
+    case " $(cat /proc/cmdline 2>/dev/null) " in
+        *" ohc.switch=1 "*) ;;
+        *) return 0 ;;
+    esac
     [ -x /opt/ohc/bin/switchd ] || return 0
     [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
     export OHC_DSA_PORTS
