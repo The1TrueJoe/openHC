@@ -42,10 +42,18 @@ speak dB and −100..100.
 | Balance | 0x0dc2 | 0x0091 / 0x00c2 | linear, one side to silence — the HC-800's |
 | EQ 31 Hz … 16 kHz | 0x0dc3 … 0x0dcc | 0x02d9, 0x04d3 … 0x0cbb | RBJ peaking, Q 1.414 |
 
-Plus cells written once at boot: **Volume 100** (it boots at 0, silent —
-openHC sets output levels in ALSA, as on the HC-800), Max Volume 100, the
+Plus cells written once at boot: **Volume 0**, Max Volume 100, the
 volume-curve select, Input Gain 24 (0 dB), the test oscillator's level, and a
 read-only `ReadBack DSP Program` (the version cell).
+
+## Silent unless something plays
+
+* **At boot** the DSP's Volume is written 0 and the DAC's soft mute is held.
+  ohc-audiod restores the output's saved level and tone, *then* raises Volume to
+  its `run` value (100 — the output's level lives in ALSA, as on the HC-800).
+* **While idle** the DAC stays muted: the codec's ASoC `mute_stream` releases it
+  when a stream is prepared and asserts it again when the last one closes, so
+  there is no hiss on the jacks between songs.
 
 To change a design, edit `ea3.json` and rebuild. The bass and treble shelves
 match the HC-800's software stage, so a setting sounds the same on both boxes.

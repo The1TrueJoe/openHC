@@ -10,6 +10,9 @@
     "computed by mkfw.py from the designs below. Nothing here comes from a",
     "Control4 or Analog Devices file.",
     "",
+    "A cell's value is written at boot; a run value, if it has one, is what",
+    "ohc-audiod sets once it is up.",
+    "",
     "Every knob is 49 steps with 24 as its neutral, because that is the size of",
     "the program's tables: tone and EQ steps are step_db apart (0.5 dB gives",
     "-12..+12 dB), balance steps are 100/24 percent (-100..+100).",
@@ -58,8 +61,8 @@
   ],
   "cells": [
     {
-      "control": "DSP Volume", "cell": "0x0dd1", "value": 100,
-      "_doc": "0..Max Volume through the program's volume curve. It boots at 0 (silent); openHC runs it full and sets each output's level in ALSA, as on the HC-800"
+      "control": "DSP Volume", "cell": "0x0dd1", "value": 0, "run": 100,
+      "_doc": "0..Max Volume through the program's volume curve. Written 0 at boot so nothing plays while the box comes up; ohc-audiod sets the run value once it has restored the output's saved level and tone. openHC sets each output's level in ALSA, as on the HC-800, so the DSP runs it full"
     },
     { "control": "DSP Max Volume", "cell": "0x0dd2", "value": 100 },
     { "control": "DSP Volume Curve", "cell": "0x0dd3", "value": 0,

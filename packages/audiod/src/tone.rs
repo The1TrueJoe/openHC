@@ -20,7 +20,9 @@
 //!   the kernel's sigmadsp core made from that firmware: 4 bytes, big-endian,
 //!   an index 0..48 into a table the DSP looks the setting up in, 24 neutral.
 //!   Tone steps are the profile's `step_db`; balance is 100/24 % a step. No
-//!   software stage sits in front of such a port.
+//!   software stage sits in front of such a port. The DSP boots silent (its
+//!   Volume cell at 0); once the saved level and tone are back, `run` sets the
+//!   profile's run values, which is what lets it play.
 //!
 //! Nothing but this daemon writes them (unlike the level, which AirPlay and
 //! Spotify also move), so the saved settings are the truth and are published
@@ -85,6 +87,17 @@ pub(crate) fn plugin_knobs() -> Vec<Knob> {
 struct Profile {
     step_db: f64,
     knobs: Vec<ProfileKnob>,
+    #[serde(default)]
+    cells: Vec<ProfileCell>,
+}
+
+/// A fixed cell: the firmware writes its `value` at boot; `run`, if set, is
+/// what this daemon writes once the output's level and tone are restored.
+#[derive(Deserialize)]
+struct ProfileCell {
+    control: String,
+    #[serde(default)]
+    run: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +143,32 @@ pub fn knobs(p: &Port) -> Vec<Knob> {
     }
 }
 
+/// A DSP profile's run values: (control, bytes for amixer).
+fn dsp_run(profile: &str) -> Result<Vec<(String, String)>, String> {
+    let p: Profile = serde_json::from_str(profile).map_err(|e| e.to_string())?;
+    Ok(p.cells
+        .into_iter()
+        .filter_map(|c| c.run.map(|v| (c.control, be_bytes(v))))
+        .collect())
+}
+
+fn be_bytes(v: u32) -> String {
+    v.to_be_bytes().map(|b| b.to_string()).join(",")
+}
+
+/// Bring a DSP output up to playing: its run values, after the level and tone.
+pub fn run(p: &Port) {
+    let Some(path) = &p.dsp else { return };
+    match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|t| dsp_run(&t)) {
+        Ok(cells) => {
+            for (name, value) in cells {
+                cset(p, &name, &value);
+            }
+        }
+        Err(e) => eprintln!("audiod: {}: DSP profile {path}: {e}", p.id),
+    }
+}
+
 /// Give every output its knobs.
 pub fn fill(b: &mut Board) {
     for p in &mut b.outputs {
@@ -152,8 +191,7 @@ fn control(p: &Port, k: &Knob, v: i32) -> (String, String) {
         How::Plugin(suffix) => (format!("{} {suffix} Playback Volume", p.pcm), v.to_string()),
         How::Dsp { control, per_index } => {
             let i = (f64::from(DSP_FLAT) + f64::from(v) / per_index).round().clamp(0.0, f64::from(DSP_STEPS - 1)) as u32;
-            let bytes = i.to_be_bytes().map(|b| b.to_string()).join(",");
-            (control.clone(), bytes)
+            (control.clone(), be_bytes(i))
         }
     }
 }
@@ -178,16 +216,20 @@ pub fn save(tones: &HashMap<String, Tone>) {
     }
 }
 
-/// Write one knob to its control.
-pub fn apply_knob(p: &Port, k: &Knob, v: i32) {
-    let (name, value) = control(p, k, v);
+fn cset(p: &Port, name: &str, value: &str) {
     // `--` so amixer does not read a negative value as an option.
     let st = Command::new("amixer")
-        .args(["-q", "-c", &p.card(), "cset", &format!("name={name}"), "--", &value])
+        .args(["-q", "-c", &p.card(), "cset", &format!("name={name}"), "--", value])
         .status();
     if !matches!(st, Ok(s) if s.success()) {
         eprintln!("audiod: amixer cset {name} {value} failed ({st:?})");
     }
+}
+
+/// Write one knob to its control.
+pub fn apply_knob(p: &Port, k: &Knob, v: i32) {
+    let (name, value) = control(p, k, v);
+    cset(p, &name, &value);
 }
 
 pub fn apply(p: &Port, t: &Tone) {
@@ -233,6 +275,13 @@ mod tests {
         assert_eq!(control(&p, bal, 100).1, "0,0,0,48");
         assert_eq!(control(&p, bal, -50).1, "0,0,0,12");
         assert_eq!(control(&p, knob(&p, "eq1k").unwrap(), 3), ("DSP EQ 1 kHz".into(), "0,0,0,30".into()));
+    }
+    #[test]
+    fn the_ea3_dsp_boots_silent_and_audiod_raises_its_volume() {
+        assert_eq!(dsp_run(EA3).unwrap(), vec![("DSP Volume".to_string(), "0,0,0,100".to_string())]);
+        let p: serde_json::Value = serde_json::from_str(EA3).unwrap();
+        let vol = p["cells"].as_array().unwrap().iter().find(|c| c["control"] == "DSP Volume").unwrap();
+        assert_eq!(vol["value"], 0);
     }
     #[test]
     fn an_old_saved_tone_still_loads() {

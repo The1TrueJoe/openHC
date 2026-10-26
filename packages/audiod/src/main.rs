@@ -94,6 +94,9 @@ impl App {
             let tones = self.tones.lock().unwrap();
             for p in &self.board.outputs {
                 tone::apply(p, &tones.get(&p.id).cloned().unwrap_or_default());
+                // A DSP output boots silent; it may play now its level and
+                // tone are back.
+                tone::run(p);
             }
             drop(tones);
             let live = self.live_inputs.lock().unwrap().clone();

@@ -36,6 +36,13 @@
  * other — a board revision with a different EEPROM — nothing is written and
  * the part runs as it booted.
  *
+ * Silent unless something plays. The DAC soft mute is held from probe and is
+ * then ASoC's to move (.mute_stream): released when a stream is prepared,
+ * asserted again when the last one closes — so nothing reaches the jacks at
+ * power-on or while the output idles. On top of that the firmware boots the
+ * program's Volume cell at 0, and ohc-audiod raises it once it has restored
+ * the output's saved level and tone.
+ *
  * 48 kHz only. That is the one rate the firmware lists, and the CE5300 I2S
  * this codec feeds from is fixed there too.
  *
@@ -74,7 +81,6 @@ struct adau1451_c4 {
 	struct regmap *ctrl;		/* 0xf4xx core control, 16-bit words */
 	struct sigmadsp *dsp;		/* NULL: run the program as it booted */
 	struct gpio_desc *mute_gpio;	/* DAC soft mute, asserted = muted */
-	bool out_on;			/* "DSP Output Playback Switch" */
 };
 
 /*
@@ -134,50 +140,10 @@ static int adau1451_c4_start(struct adau1451_c4 *st)
 	return 0;
 }
 
-static void adau1451_c4_apply_mute(struct adau1451_c4 *st)
-{
-	gpiod_set_value_cansleep(st->mute_gpio, !st->out_on);
-}
-
-/*
- * The DAC mute is a board GPIO, not part of the DSP, and it is a control of
- * its own rather than tied to a PCM stream: the DSP also plays what reaches it
- * without one (its analog input, its test oscillator), and until the CE5300
- * I2S is finished there is no stream at all.
- */
-static int adau1451_c4_out_get(struct snd_kcontrol *kc,
-			       struct snd_ctl_elem_value *uc)
-{
-	struct snd_soc_component *comp = snd_kcontrol_chip(kc);
-	struct adau1451_c4 *st = snd_soc_component_get_drvdata(comp);
-
-	uc->value.integer.value[0] = st->out_on;
-	return 0;
-}
-
-static int adau1451_c4_out_put(struct snd_kcontrol *kc,
-			       struct snd_ctl_elem_value *uc)
-{
-	struct snd_soc_component *comp = snd_kcontrol_chip(kc);
-	struct adau1451_c4 *st = snd_soc_component_get_drvdata(comp);
-	bool on = uc->value.integer.value[0];
-
-	if (on == st->out_on)
-		return 0;
-	st->out_on = on;
-	adau1451_c4_apply_mute(st);
-	return 1;
-}
-
-static const struct snd_kcontrol_new adau1451_c4_controls[] = {
-	SOC_SINGLE_BOOL_EXT("DSP Output Playback Switch", 0,
-			    adau1451_c4_out_get, adau1451_c4_out_put),
-};
-
 /*
  * Bind: hand the firmware's controls to the card, then fill parameter RAM with
- * the core stopped and start it. The DAC stays muted until the program is
- * running on openHC's parameters.
+ * the core stopped and start it. The DAC stays muted throughout; only a stream
+ * releases it (adau1451_c4_mute_stream).
  */
 static int adau1451_c4_component_probe(struct snd_soc_component *comp)
 {
@@ -185,7 +151,7 @@ static int adau1451_c4_component_probe(struct snd_soc_component *comp)
 	int ret;
 
 	if (!st->dsp)
-		goto unmute;
+		return 0;
 
 	ret = sigmadsp_attach(st->dsp, comp);
 	if (ret)
@@ -198,14 +164,7 @@ static int adau1451_c4_component_probe(struct snd_soc_component *comp)
 	ret = sigmadsp_setup(st->dsp, ADAU1451_RATE);
 	if (ret)
 		dev_err(comp->dev, "writing the DSP parameters failed: %d\n", ret);
-	ret = adau1451_c4_start(st);
-	if (ret)
-		return ret;
-
-unmute:
-	st->out_on = true;
-	adau1451_c4_apply_mute(st);
-	return 0;
+	return adau1451_c4_start(st);
 }
 
 static void adau1451_c4_component_remove(struct snd_soc_component *comp)
@@ -223,8 +182,19 @@ static int adau1451_c4_startup(struct snd_pcm_substream *substream,
 	return st->dsp ? sigmadsp_restrict_params(st->dsp, substream) : 0;
 }
 
+/* The DAC soft mute follows the stream: open while one plays, shut otherwise. */
+static int adau1451_c4_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
+{
+	struct adau1451_c4 *st = snd_soc_component_get_drvdata(dai->component);
+
+	gpiod_set_value_cansleep(st->mute_gpio, mute);
+	return 0;
+}
+
 static const struct snd_soc_dai_ops adau1451_c4_dai_ops = {
 	.startup	= adau1451_c4_startup,
+	.mute_stream	= adau1451_c4_mute_stream,
+	.no_capture_mute = 1,
 };
 
 /*
@@ -251,8 +221,6 @@ static struct snd_soc_dai_driver adau1451_c4_dai = {
 static const struct snd_soc_component_driver adau1451_c4_component = {
 	.probe		= adau1451_c4_component_probe,
 	.remove		= adau1451_c4_component_remove,
-	.controls	= adau1451_c4_controls,
-	.num_controls	= ARRAY_SIZE(adau1451_c4_controls),
 };
 
 /*
