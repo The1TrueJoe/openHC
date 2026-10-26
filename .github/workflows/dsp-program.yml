@@ -1,0 +1,128 @@
+# Build openHC's own ADAU1451 program (the EA3's DSP) with SigmaStudio+.
+#
+# There is no open toolchain for the ADAU145x — its instruction set is not
+# public — so the program is built by Analog Devices' SigmaStudio+, driven from
+# a script rather than its GUI: SigmaStudio+ has a headless console app
+# (SStudioPlusConsole.exe: link/compile, export) and a Thrift scripting API.
+# It is Windows-only, hence windows-latest.
+#
+# THE INSTALLER IS NOT IN THIS REPO AND IS NOT DOWNLOADED FROM ANALOG DEVICES
+# HERE. Its download needs a myAnalog sign-in and acceptance of ADI's software
+# license, which only a person can give. The repo owner downloads it once and
+# stages it privately; this workflow fetches that copy with two secrets:
+#
+#   SIGMASTUDIO_INSTALLER_URL  a GitHub release-asset API URL in a PRIVATE repo,
+#                              https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>
+#   SIGMASTUDIO_TOKEN          a fine-grained token with read access to that repo
+#
+# With either secret missing the job says so and stops, green.
+#
+# Stage 1 (this file today) proves the toolchain on a GitHub runner: installer
+# type, a silent install, the console app running headless, ADAU145x support.
+# Stage 2 adds the design script and the export, handed to the EA image build as
+# an artifact — the exported program never enters git (ADI's license restricts
+# distributing generated code outside the products it runs on).
+name: dsp-program
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  # workflow_dispatch only registers from the default branch, so until this lands
+  # on main, a path-filtered push trigger is how it runs on a feature branch.
+  push:
+    paths:
+      - .github/workflows/dsp-program.yml
+
+jobs:
+  toolchain:
+    runs-on: windows-latest
+    env:
+      INSTALLER_URL: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
+      TOKEN: ${{ secrets.SIGMASTUDIO_TOKEN }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Staged installer?
+        id: staged
+        run: |
+          if (-not $env:INSTALLER_URL -or -not $env:TOKEN) {
+            "::notice::SigmaStudio+ is not staged (SIGMASTUDIO_INSTALLER_URL / SIGMASTUDIO_TOKEN unset) - nothing to do"
+            "ok=false" >> $env:GITHUB_OUTPUT
+          } else {
+            "ok=true" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Fetch the installer
+        if: steps.staged.outputs.ok == 'true'
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          $h = @{ Authorization = "Bearer $env:TOKEN"; Accept = 'application/octet-stream' }
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -Headers $h -OutFile ssplus-setup.exe
+          $f = Get-Item ssplus-setup.exe
+          "installer: $($f.Length) bytes, sha256 $((Get-FileHash $f).Hash)" | Tee-Object logs/installer.txt
+
+      # The installer technology is not documented, so read it off the binary
+      # and use that technology's own silent switch.
+      - name: Silent install
+        if: steps.staged.outputs.ok == 'true'
+        run: |
+          $bytes = [IO.File]::ReadAllBytes("ssplus-setup.exe")
+          $text = [Text.Encoding]::ASCII.GetString($bytes)
+          $kind = switch -Regex ($text) {
+            'Inno Setup'          { 'inno'; break }
+            'Nullsoft'            { 'nsis'; break }
+            'InstallShield'       { 'installshield'; break }
+            'WixBundle|WiX Toolset|\.wixburn' { 'burn'; break }
+            default               { 'unknown' }
+          }
+          "installer type: $kind" | Tee-Object -Append logs/installer.txt
+          $switches = switch ($kind) {
+            'inno'          { '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG=logs\setup.log' }
+            'nsis'          { '/S' }
+            'installshield' { '/s /v"/qn /l*v logs\setup.log"' }
+            'burn'          { '/quiet /norestart /log logs\setup.log' }
+            default         { '/S /quiet /VERYSILENT /norestart' }
+          }
+          "switches: $switches" | Tee-Object -Append logs/installer.txt
+          $p = Start-Process -FilePath .\ssplus-setup.exe -ArgumentList $switches -Wait -PassThru
+          "exit code: $($p.ExitCode)" | Tee-Object -Append logs/installer.txt
+
+      - name: Find the console app
+        if: steps.staged.outputs.ok == 'true'
+        id: console
+        run: |
+          $exe = Get-ChildItem -Path 'C:\Program Files', 'C:\Program Files (x86)', 'C:\Analog Devices' `
+                   -Recurse -Filter SStudioPlusConsole.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { "::error::SStudioPlusConsole.exe not found after install"; exit 1 }
+          "console: $($exe.FullName)" | Tee-Object logs/console.txt
+          "exe=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          "root=$($exe.Directory.Parent.FullName)" >> $env:GITHUB_OUTPUT
+
+      # Headless is the whole point: no desktop session on a runner. A timeout
+      # turns a console app that waits on a UI into a clear failure.
+      - name: Console app, headless
+        if: steps.staged.outputs.ok == 'true'
+        timeout-minutes: 5
+        run: |
+          & "${{ steps.console.outputs.exe }}" --help *>&1 | Tee-Object -Append logs/console.txt
+          "exit code: $LASTEXITCODE" | Tee-Object -Append logs/console.txt
+
+      - name: ADAU145x support
+        if: steps.staged.outputs.ok == 'true'
+        run: |
+          Get-ChildItem -Path "${{ steps.console.outputs.root }}" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'ADAU145|ADAU146|Sigma ?3[05]0' } |
+            Select-Object -First 40 -ExpandProperty FullName | Tee-Object logs/adau145x.txt
+          if (-not (Get-Content logs/adau145x.txt -ErrorAction SilentlyContinue)) {
+            "::warning::no ADAU145x/146x files found under the install"
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.staged.outputs.ok == 'true'
+        with:
+          name: sigmastudio-toolchain-logs
+          path: logs/
+          if-no-files-found: ignore
