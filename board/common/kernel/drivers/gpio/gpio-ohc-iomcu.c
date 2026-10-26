@@ -1503,9 +1503,19 @@ static bool ohc_raw_seen(struct ohc_iomcu *mcu, const u8 *needle, int n)
 	return hit;
 }
 
+static const u8 ohc_boot_ack[] = { 0x00, 0xcc };	/* TI bootloader ACK */
+static const u8 ohc_app_frame[] = { DLE, STX };		/* anything the app says */
+
+static bool ohc_raw_answered(struct ohc_iomcu *mcu)
+{
+	return ohc_raw_seen(mcu, ohc_boot_ack, sizeof(ohc_boot_ack)) ||
+	       ohc_raw_seen(mcu, ohc_app_frame, sizeof(ohc_app_frame));
+}
+
 /*
  * Send @out on a clean slate, then wait up to @ms for @needle to show up in
- * what comes back. No needle: just give the part @ms to act on it.
+ * what comes back. No needle: wait for either the bootloader's ACK or an
+ * application frame, whichever comes; the caller looks at which.
  */
 static bool ohc_raw_xfer(struct ohc_iomcu *mcu, const u8 *out, int len,
 			 const u8 *needle, int n, int ms)
@@ -1513,10 +1523,9 @@ static bool ohc_raw_xfer(struct ohc_iomcu *mcu, const u8 *out, int len,
 	ohc_raw_reset(mcu);
 	if (ohc_xmit(mcu, out, len))
 		return false;
-	if (!needle) {
-		msleep(ms);
-		return true;
-	}
+	if (!needle)
+		return wait_event_timeout(mcu->raw_wait, ohc_raw_answered(mcu),
+					  msecs_to_jiffies(ms)) > 0;
 	return wait_event_timeout(mcu->raw_wait, ohc_raw_seen(mcu, needle, n),
 				  msecs_to_jiffies(ms)) > 0;
 }
@@ -1537,26 +1546,38 @@ static bool ohc_raw_xfer(struct ohc_iomcu *mcu, const u8 *out, int len,
  * from its own first 55 55. GET_STATUS is deliberately not sent: its reply is a
  * packet that must itself be ACKed or the bootloader desyncs.
  *
+ * THE KNOCK GOES FIRST, before any DLE/STX. The bootloader autobauds on the
+ * first bytes it hears, so asking "is the application up?" with a
+ * FIRMWARE_VERSION frame spoils the measurement, and the 55 55 after it gets no
+ * ACK at all — measured on an HC-800 held in its bootloader by io_reset: frame
+ * then knock, silence; knock first, 00 cc. A running application answers the
+ * same knock with an AUTO_BAUD_RESP frame, so one knock tells the two apart and
+ * a part that is already up (a warm reboot, a kexec, iomcu-attach) is left as
+ * it is.
+ *
  * Runs from probe_work, never from the ldisc's open(), for the reason given at
  * ohc_probe — the replies have to be able to reach ohc_feed.
  */
-static int ohc_bringup(struct ohc_iomcu *mcu)
+static void ohc_bringup(struct ohc_iomcu *mcu)
 {
 	static const u8 knock[] = { 0x55, 0x55 };
-	static const u8 ack[]   = { 0x00, 0xcc };
 	static const u8 ping[]  = { 0x03, 0x20, 0x20 };
 	static const u8 run[]   = { 0x07, 0x32, 0x22, 0x00, 0x00, 0x10, 0x00 };
-	static const u8 dstx[]  = { DLE, STX };
-	bool ok;
+	bool boot = false;
 
 	mutex_lock(&mcu->io_lock);
 	WRITE_ONCE(mcu->raw, true);
-	ok = ohc_raw_xfer(mcu, knock, sizeof(knock), ack, sizeof(ack), 400);
-	if (ok) {
+	if (ohc_raw_xfer(mcu, knock, sizeof(knock), NULL, 0, 400))
+		boot = ohc_raw_seen(mcu, ohc_boot_ack, sizeof(ohc_boot_ack));
+	if (boot) {
 		/* PING mostly confirms the link before the un-ACKed RUN. */
-		ohc_raw_xfer(mcu, ping, sizeof(ping), ack, sizeof(ack), 400);
-		ohc_raw_xfer(mcu, run, sizeof(run), NULL, 0, 300);
-		ohc_raw_xfer(mcu, knock, sizeof(knock), dstx, sizeof(dstx), 700);
+		ohc_raw_xfer(mcu, ping, sizeof(ping), ohc_boot_ack,
+			     sizeof(ohc_boot_ack), 400);
+		ohc_raw_reset(mcu);
+		ohc_xmit(mcu, run, sizeof(run));
+		msleep(300);
+		ohc_raw_xfer(mcu, knock, sizeof(knock), ohc_app_frame,
+			     sizeof(ohc_app_frame), 700);
 	}
 	/* Whatever the decoder held from before is stale; hunt afresh. */
 	mcu->state = RX_IDLE;
@@ -1564,10 +1585,10 @@ static int ohc_bringup(struct ohc_iomcu *mcu)
 	WRITE_ONCE(mcu->raw, false);
 	mutex_unlock(&mcu->io_lock);
 
-	if (!ok)
-		pr_warn("%s: the TI bootloader did not ACK autobaud (55 55)\n",
+	/* Silence is not reported here: FIRMWARE_VERSION is the verdict. */
+	if (boot)
+		pr_info("%s: started the application from the TI bootloader\n",
 			mcu->name);
-	return ok ? 0 : -ENODEV;
 }
 
 /*
@@ -1587,18 +1608,9 @@ static void ohc_probe(struct work_struct *work)
 	struct ohc_frame f;
 	int i, lines, ret;
 
-	/*
-	 * Ask the application first, so a part that is already running — a
-	 * warm reboot, a kexec, or iomcu-attach having done this — is left
-	 * alone; only silence earns the bootloader sequence.
-	 */
+	/* Knock first (see ohc_bringup), then identify. */
+	ohc_bringup(mcu);
 	ret = ohc_request(mcu, OP_FIRMWARE_VERSION, NULL, 0, &f);
-	if (ret) {
-		pr_info("%s: no application answering; starting it from the TI bootloader\n",
-			mcu->name);
-		if (!ohc_bringup(mcu))
-			ret = ohc_request(mcu, OP_FIRMWARE_VERSION, NULL, 0, &f);
-	}
 	if (ret) {
 		/*
 		 * No chip. A gpiochip standing in for a part that is not
