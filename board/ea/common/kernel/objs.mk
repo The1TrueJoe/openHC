@@ -20,17 +20,18 @@ drivers/pwm/Makefile|obj-y += pwm-ce5300.o
 # the general-purpose SPI the switch rides). It is on a DEDICATED block, PCI
 # 01:17.0 "FLASH memory [0501]" 8086:08a0, which has no mainline driver. This is
 # a spi-mem port of Intel's out-of-tree ce5xx_spi_flash; it registers the master
-# AND instantiates the chip (modalias spi-nor), so in-tree spi-nor autodetects
-# the S25FL127S and openHC gets /dev/mtd0 -- what a software stock-restore and an
-# in-place autoscript rewrite need. Unconditional; the flash is always present.
+# with its DTB node, whose flash@0 child (ce5300.dtsi) in-tree spi-nor binds, so
+# openHC gets /dev/mtd0 -- what a software stock-restore and an in-place
+# autoscript rewrite need. Unconditional; the flash is always present.
 drivers/spi/Makefile|obj-y += spi-ea-ce5xx.o
 
 # --- audio (ASoC lives outside drivers/; the hook mirrors sound/ too) ---
 # The codec goes in the existing codecs/ dir. The platform + machine + glue drivers
 # get their own directory, so sound/soc/Makefile is told to descend into it.
 # obj-m, not obj-y: the SoC core and these drivers are built as modules so the
-# ea3 bzImage stays inside CEFDK's bootlinux window — they load from p1 via
-# S45ea-audio (same move as the switch's b53). See features/audio-dsp/linux.fragment.
+# ea3 bzImage stays inside CEFDK's bootlinux window — udev loads them from p1 off
+# their devices' modaliases (same move as the switch's b53). See
+# features/audio-dsp/linux.fragment.
 sound/soc/codecs/Makefile|obj-m += adau1451-c4.o
 sound/soc/Makefile|obj-m += ce5300/
 

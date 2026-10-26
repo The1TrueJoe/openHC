@@ -186,10 +186,10 @@ anything.
 Because `/dev/mtd0` is writable (above), the EA1 has a **software** return-to-stock
 that needs no serial: openHC's install adds exactly one `script` item to the
 SPI-NOR MFH, and `ohc-restore` removes it. It can be triggered from iod (REST/MQTT),
-the web UI System panel, or by **holding the front ID button** — a bare SoC GPIO
-(`gpiochip0` line 32, active-low: released `1`, pressed `0`, confirmed on this
-EA1) that the board device tree leaves unclaimed. The watcher is fail-safe: it arms only
-after one clean released reading, so a wrong polarity stays inert.
+the web UI System panel, or by **holding the front ID button** — SoC GPIO 32
+(active-low, confirmed on this EA1), a `gpio-keys-polled` node in the board
+device tree. The watcher times the hold from the button's input events and is
+fail-safe: a press already down when it starts never counts.
 
 This matters on the EA1 specifically: with the boot fuse blown, the native
 recessed CEFDK button does **not** rewrite the SPI-NOR MFH, so it alone won't undo

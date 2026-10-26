@@ -10,14 +10,15 @@
 # reason: an x86_64 EA-3 bzImage with the whole ALSA SoC core built in (snd +
 # snd-pcm + snd-soc-core + our drivers) runs ~290 KB over CEFDK's 7,417,856-
 # byte bootlinux window. As modules the SoC core and the drivers load from p1 after
-# mount (S45ea-audio modprobes them), so that weight lands in the rootfs instead.
-# The codec's i2c client and the card's platform device come from the board DTB
-# (ea-audio-dsp.dtsi), so nothing built in references a snd-soc symbol; the
-# modules bind those devices when S45ea-audio loads them.
+# mount, so that weight lands in the rootfs instead. The codec's i2c client and
+# the card's platform device come from the board DTB (ea-audio-dsp.dtsi), so
+# nothing built in references a snd-soc symbol; udev's coldplug modprobes each
+# driver off its device's modalias (ce5300-i2s by PCI id, the other two by their
+# of_device_id tables) and S45ea-audio only waits for the card.
 # This is why SND_SOC can now be =m (it could not while the drivers were obj-y:
 # they would fail at `LD vmlinux` with "undefined reference"). A board built
 # without this feature leaves SND_SOC unset, so sound/soc is never descended and
-# none of the .ko exist — S45ea-audio's modprobes fail harmlessly.
+# none of the .ko exist — and no card node, so S45ea-audio has nothing to wait for.
 CONFIG_SOUND=m
 CONFIG_SND=m
 CONFIG_SND_PCM=m
