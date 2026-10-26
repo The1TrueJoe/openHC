@@ -1,4 +1,4 @@
-//! ohc-audiod — the openHC audio daemon.
+//! audiod — the openHC audio daemon.
 //!
 //! Owns audio end to end, with its own MQTT presence (no IPC through iod):
 //!
@@ -52,7 +52,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "ohc-audiod", description = "Audio: Spotify Connect + AirPlay endpoints and input routes mapped onto outputs. Configuration here; live state and control over MQTT (<base>/state/audio/*, <base>/cmd/audio/*)."),
+    info(title = "audiod", description = "Audio: Spotify Connect + AirPlay endpoints and input routes mapped onto outputs. Configuration here; live state and control over MQTT (<base>/state/audio/*, <base>/cmd/audio/*)."),
     tags((name = "Audio", description = "Outputs, inputs and the endpoint map."))
 )]
 struct ApiDoc;
@@ -325,7 +325,7 @@ struct BrowseQuery {
 
 #[utoipa::path(get, path = "/api/audio/library/browse", tag = "Audio",
     summary = "Folders and tracks in one library folder",
-    description = "The music-library player's view of /media (the drives ohc-storaged mounts): `kind` dir|file, `path` (pass a dir back as `path`; give a file or dir to `cmd/audio/library/replace` or `add` to play it), and for tracks title/artist/album/duration_s.",
+    description = "The music-library player's view of /media (the drives storaged mounts): `kind` dir|file, `path` (pass a dir back as `path`; give a file or dir to `cmd/audio/library/replace` or `add` to play it), and for tracks title/artist/album/duration_s.",
     params(BrowseQuery),
     responses((status = 200, description = "entries"), (status = 503, description = "no library player running")))]
 async fn library_browse(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<BrowseQuery>) -> axum::response::Response {
@@ -355,10 +355,10 @@ async fn library_search(State(app): Ctx, axum::extract::Query(q): axum::extract:
     }
 }
 
-#[utoipa::path(get, path = "/api/health", tag = "Audio", summary = "ohc-audiod liveness",
+#[utoipa::path(get, path = "/api/health", tag = "Audio", summary = "audiod liveness",
     responses((status = 200, description = "ok")))]
 async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "service": "ohc-audiod" }))
+    Json(json!({ "ok": true, "service": "audiod" }))
 }
 
 /// Publish everything that changes. Retained drops unchanged values.

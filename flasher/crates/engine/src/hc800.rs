@@ -560,28 +560,24 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     Ok(())
 }
 
-/// The box's own return-to-stock tool (packages/restore), present on an openHC
-/// built with the `restore` feature.
-const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
-
 /// Return the box to stock Control4.
 ///
-/// An openHC that carries `ohc-restore` does the menu rewrite itself — the
+/// An openHC that carries `restore` does the menu rewrite itself — the
 /// same [`hc::factory_once_menu`], from this same core crate, that the web UI's
 /// restore control runs — so there is one code path on the box. `--no-reboot` hands back the verified result before anything goes
 /// down; the reboot is then sent the way [`factory_restore`] sends it. Stock
 /// Control4 or an older openHC has no such tool and gets [`factory_restore`],
 /// the same rewrite done over SSH.
 pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
-    if !ssh.test(&format!("-x {RESTORE_BIN}")) {
+    let Some(bin) = crate::restore_bin(ssh) else {
         return factory_restore(ssh, p);
-    }
-    let st = ssh.run(&format!("{RESTORE_BIN} status"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
+    };
+    let st = ssh.run(&format!("{bin} status"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
     p.emit(Event::detail(st.trim().to_string()));
     p.emit(Event::step("arming Control4's factory restore for one boot (on the box)".into()));
     let out = ssh
-        .run(&format!("{RESTORE_BIN} stock --no-reboot 2>&1"), true)
-        .map_err(|e| anyhow::anyhow!("ohc-restore stock failed, nothing rebooted: {e}"))?;
+        .run(&format!("{bin} stock --no-reboot 2>&1"), true)
+        .map_err(|e| anyhow::anyhow!("restore stock failed, nothing rebooted: {e}"))?;
     for l in out.lines().filter(|l| !l.trim().is_empty()) {
         p.emit(Event::detail(l.trim().to_string()));
     }

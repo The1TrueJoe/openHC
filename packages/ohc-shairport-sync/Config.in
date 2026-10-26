@@ -28,8 +28,8 @@ config BR2_PACKAGE_OHC_SHAIRPORT_SYNC
 	  built from shairport-sync's development branch: that is where
 	  several AirPlay 2 instances can share one host and one address,
 	  each on its own port (shairport-sync#2277, #2273, #2278, #2287).
-	  ohc-audiod runs one per AirPlay endpoint. Built with the D-Bus
-	  remote control (how ohc-audiod moves a sender's volume slider)
+	  audiod runs one per AirPlay endpoint. Built with the D-Bus
+	  remote control (how audiod moves a sender's volume slider)
 	  and the metadata pipe (now-playing and cover art).
 
 	  https://github.com/mikebrady/shairport-sync

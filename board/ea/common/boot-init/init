@@ -112,9 +112,9 @@ if ! valid_p1; then
     fi
 fi
 
-# ONE-SHOT STOCK RESTORE. `ohc-restore stock` run on durable openHC cannot reformat
+# ONE-SHOT STOCK RESTORE. `restore stock` run on durable openHC cannot reformat
 # its own root (p1), so it drops this flag on p1 and reboots with the autoscript
-# still enabled. Here, pre-pivot, p1 is only a mount — so ohc-restore can reimage it
+# still enabled. Here, pre-pivot, p1 is only a mount — so restore can reimage it
 # from p2's recfs.tar.xz and then clear the autoscript, exactly the context the
 # durable run lacked. Consume the flag FIRST (while p1 is still mounted) so no
 # future reboot can re-trigger a wipe; then only reimage once /dev/mtd0 is reachable
@@ -125,7 +125,7 @@ if [ -f "$NEW/.ohc-stock-pending" ]; then
     echo "openHC: stock restore requested — reimaging p1 to Control4"
     # Consume the flag now, while p1 is still mounted: this boot owns the request, so
     # a later unrelated reboot can never re-trigger a wipe. (If we skip below, the
-    # user simply re-runs `ohc-restore stock`.)
+    # user simply re-runs `restore stock`.)
     /bin/rm -f "$NEW/.ohc-stock-pending"
     /bin/sync
     # finalize clears the autoscript enable byte over /dev/mtd0, so the restore is
@@ -142,7 +142,7 @@ if [ -f "$NEW/.ohc-stock-pending" ]; then
     done
     if [ -c /dev/mtd0 ]; then
         /bin/umount "$NEW" 2>/dev/null
-        if /usr/sbin/ohc-restore reimage-finalize; then
+        if /usr/sbin/restore reimage-finalize; then
             echo "openHC: restored to stock — rebooting"
             /bin/sync
             /sbin/reboot -f

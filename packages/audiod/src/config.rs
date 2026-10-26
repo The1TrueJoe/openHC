@@ -32,7 +32,7 @@ pub struct Endpoints {
     pub airplay: Vec<Endpoint>,
     pub routes: Vec<Route>,
     /// The music-library player (mpd, playing what is on /media — the drives
-    /// ohc-storaged mounts): at most one, on the output named here.
+    /// storaged mounts): at most one, on the output named here.
     pub library: Vec<Endpoint>,
 }
 

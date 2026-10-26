@@ -7,7 +7,7 @@ config BR2_PACKAGE_OHC_NQPTP
 	  by every shairport-sync instance; this build is nqptp's
 	  development branch, which serves several instances (each with
 	  its own shared-memory interface) where the 1.2.x releases serve
-	  one. Started by ohc-audiod (or S99shairport-sync), not by an
+	  one. Started by audiod (or S99shairport-sync), not by an
 	  init script of its own.
 
 	  https://github.com/mikebrady/nqptp

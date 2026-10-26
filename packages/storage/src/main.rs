@@ -1,9 +1,9 @@
-//! ohc-storaged — external drives, mounted and shared.
+//! storaged — external drives, mounted and shared.
 //!
 //! Plug a USB stick or disk (or, on the HC-800, an eSATA drive) into any openHC
 //! board with USB and it is mounted under /media and shared over SMB, which
 //! macOS (Finder → Network, or smb://<box>.local) and Windows (\\<box>.local or
-//! \\<ip>) both open natively. On boards with audio, ohc-audiod's library
+//! \\<ip>) both open natively. On boards with audio, audiod's library
 //! player plays music from the same mounts.
 //!
 //! * **MQTT** (live): `<base>/state/storage/volumes` — every mounted volume
@@ -45,7 +45,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "ohc-storaged", description = "External drives (USB, eSATA): mounted under /media and shared over SMB. Share settings here; volumes and eject over MQTT (<base>/state/storage/*, <base>/cmd/storage/*)."),
+    info(title = "storaged", description = "External drives (USB, eSATA): mounted under /media and shared over SMB. Share settings here; volumes and eject over MQTT (<base>/state/storage/*, <base>/cmd/storage/*)."),
     tags((name = "Storage", description = "Volumes and the SMB share."))
 )]
 struct ApiDoc;
@@ -392,10 +392,10 @@ async fn files_delete(State(app): Ctx, axum::extract::Query(q): axum::extract::Q
     }
 }
 
-#[utoipa::path(get, path = "/api/health", tag = "Storage", summary = "ohc-storaged liveness",
+#[utoipa::path(get, path = "/api/health", tag = "Storage", summary = "storaged liveness",
     responses((status = 200, description = "ok")))]
 async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "service": "ohc-storaged" }))
+    Json(json!({ "ok": true, "service": "storaged" }))
 }
 
 async fn mqtt(app: Arc<App>) {

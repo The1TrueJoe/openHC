@@ -3,7 +3,7 @@
 //! The settings page has always had "also publish to an external broker"
 //! (URL, credentials, CA, client cert). With a real broker on the box, that is
 //! exactly mosquitto's bridge feature, and doing it there carries EVERY daemon's
-//! topics (iod's IO, ohc-audiod's audio, sysmond's health), not just iod's. So
+//! topics (iod's IO, audiod's audio, sysmond's health), not just iod's. So
 //! iod renders the stanza into `/etc/mosquitto/conf.d/openhc-bridge.conf` and
 //! restarts mosquitto when it changed; an empty/disabled bridge removes the file.
 //!

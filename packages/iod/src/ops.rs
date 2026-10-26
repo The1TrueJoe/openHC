@@ -260,11 +260,11 @@ pub async fn dispatch(c: &Arc<Config>, cmd: Cmd) -> Out {
 /// Path to the return-to-stock helper. Present only on boards whose `ohc.features`
 /// has `restore` (the EA family and the HC-800); absent elsewhere, which is how
 /// the UI knows not to offer the control.
-const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
+const RESTORE_BIN: &str = "/opt/ohc/bin/restore";
 
 /// Read-only: is a software return-to-stock available here, and what does the boot
 /// chain currently say (the EA's MFH, the HC-800's menu.lst)? Shells out to
-/// `ohc-restore status` and passes its stdout through.
+/// `restore status` and passes its stdout through.
 pub async fn restore_status() -> Out {
     if !std::path::Path::new(RESTORE_BIN).exists() {
         return Ok(json!({ "available": false, "reason": "no restore support on this board" }));
@@ -273,7 +273,7 @@ pub async fn restore_status() -> Out {
         .arg("status")
         .output()
         .await
-        .map_err(|e| Fault::Io(format!("ohc-restore: {e}")))?;
+        .map_err(|e| Fault::Io(format!("restore: {e}")))?;
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let openhc = text.contains("state: openHC");
     Ok(json!({
@@ -283,7 +283,7 @@ pub async fn restore_status() -> Out {
     }))
 }
 
-/// Destructive, one-way: `ohc-restore stock` hands the box to Control4's own
+/// Destructive, one-way: `restore stock` hands the box to Control4's own
 /// factory recovery (EA: MFH revert + p1 reimage; HC-800: a one-shot GRUB entry
 /// into the factory restore). Requires `confirm: true`. Spawned DETACHED so this call returns
 /// before the box reboots itself out from under the connection.
@@ -303,7 +303,7 @@ async fn restore_stock(confirm: bool) -> Out {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| Fault::Io(format!("ohc-restore stock: {e}")))?;
+        .map_err(|e| Fault::Io(format!("restore stock: {e}")))?;
     Ok(json!({ "started": true, "note": "returning to stock; the controller will reboot" }))
 }
 
@@ -417,7 +417,7 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
         // Each port carries its own permitted rates; see SerialPort::bauds.
         m.insert("serials".into(), json!(io.serials));
     }
-    // NO audio here either: that is ohc-audiod's, with its own REST (/audio/api
+    // NO audio here either: that is audiod's, with its own REST (/audio/api
     // via webd) and MQTT (<base>/state/audio/*).
     v
 }

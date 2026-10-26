@@ -1023,7 +1023,7 @@ jobs:
       # features to crates (core + each feature's `packages` file), the same
       # list the image build stages. So a feature's daemon is compiled only for
       # the boards that have the feature — the IO Extender (ARMv5, no 64-bit
-      # atomics) is not held to code it never runs, like ohc-storaged.
+      # atomics) is not held to code it never runs, like storaged.
       - name: Which crates ${{ matrix.board }} ships
         run: |
           crates=$(bash packages/build.sh ${{ matrix.board }} --crates)

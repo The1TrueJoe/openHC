@@ -5,7 +5,7 @@
 //! rather than in iod: the alternative is a Health panel that reads from one
 //! daemon and writes to another for no reason a user could see. The actual work
 //! still lives in a shell helper (`ohc-fand`) exactly the way iod routes
-//! return-to-stock through `ohc-restore` — we shell out and pass its answer on.
+//! return-to-stock through `restore` — we shell out and pass its answer on.
 //!
 //! The EA fan's pwm is the pwm-ce5300 channel under /sys/class/pwm, NOT a hwmon
 //! pwm, so the telemetry series never sees it. `ohc-fand status` is therefore
@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 /// The fan helper. Present only on boards that ship it (the EA family); absent
 /// elsewhere, which is exactly how the UI learns not to offer the control — the
-/// same gate `ohc-restore` gives return-to-stock.
+/// same gate `restore` gives return-to-stock.
 const FAND_BIN: &str = "/opt/ohc/bin/ohc-fand";
 
 fn available() -> bool {

@@ -1,4 +1,4 @@
-//! ohc-restore — return a Control4 controller to stock, run on the box itself.
+//! restore — return a Control4 controller to stock, run on the box itself.
 //!
 //! One tool, one interface (`status`, `stock`) for iod, the web UI's restore
 //! control, the EA's front-button watcher and the flasher. The HC-800
@@ -277,7 +277,7 @@ fn cmd_revert() -> io::Result<()> {
     }
     if did {
         println!("revert: OK — CEFDK will boot the stock kernel item. (p1 still openHC;");
-        println!("        run `ohc-restore install` to undo, or `stock` to finish.)");
+        println!("        run `restore install` to undo, or `stock` to finish.)");
     } else {
         println!("revert: nothing to do — already stock.");
     }
@@ -336,7 +336,7 @@ fn cmd_stock() -> io::Result<()> {
 
 /// Reimage p1 to stock and clear the autoscript, in place. Only valid where p1 is
 /// not the running root (a ramboot, or boot-init pre-pivot). boot-init calls this as
-/// `ohc-restore reimage-finalize` after it sees the one-shot flag; `cmd_stock` calls
+/// `restore reimage-finalize` after it sees the one-shot flag; `cmd_stock` calls
 /// it directly when it is already running with p1 free.
 fn cmd_reimage_finalize() -> io::Result<()> {
     // Refuse BEFORE touching p1 if we could not finish: the reimage succeeds without
@@ -637,12 +637,12 @@ fn main() {
             "status" => hc800::status(),
             "stock" => hc800::stock(!args.iter().any(|a| a == "--no-reboot")),
             _ => {
-                eprintln!("usage: ohc-restore {{status|stock [--no-reboot]}}   (HC-800)");
+                eprintln!("usage: restore {{status|stock [--no-reboot]}}   (HC-800)");
                 std::process::exit(2);
             }
         };
         if let Err(e) = r {
-            eprintln!("ohc-restore {cmd}: {e}");
+            eprintln!("restore {cmd}: {e}");
             std::process::exit(1);
         }
         return;
@@ -664,18 +664,18 @@ fn main() {
             let file = args.get(2).map(String::as_str).unwrap_or("");
             let comp = args.iter().any(|a| a == "--compensate");
             if file.is_empty() {
-                eprintln!("usage: ohc-restore restore-mfh <backup.bin> [--compensate]");
+                eprintln!("usage: restore restore-mfh <backup.bin> [--compensate]");
                 std::process::exit(2);
             }
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: ohc-restore {{status|revert|install|stock|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: restore {{status|revert|install|stock|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };
     if let Err(e) = r {
-        eprintln!("ohc-restore {cmd}: {e}");
+        eprintln!("restore {cmd}: {e}");
         std::process::exit(1);
     }
 }

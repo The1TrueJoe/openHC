@@ -1,5 +1,5 @@
 //! `/iod/*`, `/sys/*`, `/audio/*` and `/mqtt` — reverse proxies onto the other
-//! daemons (iod, sysmond, ohc-audiod) and the box's mosquitto WebSocket
+//! daemons (iod, sysmond, audiod) and the box's mosquitto WebSocket
 //! listener.
 //!
 //! iod listens on its own port because it is a separate process with a
@@ -39,23 +39,23 @@ pub fn sysmond_addr() -> String {
     std::env::var("WEBD_SYSMOND_ADDR").unwrap_or_else(|_| "127.0.0.1:7071".into())
 }
 
-/// Where ohc-audiod listens — audio configuration.
+/// Where audiod listens — audio configuration.
 pub fn audiod_addr() -> String {
     std::env::var("WEBD_AUDIOD_ADDR").unwrap_or_else(|_| "127.0.0.1:7072".into())
 }
 
-/// Where ohc-storaged listens — external drives and the SMB share.
+/// Where storaged listens — external drives and the SMB share.
 pub fn storaged_addr() -> String {
     std::env::var("WEBD_STORAGED_ADDR").unwrap_or_else(|_| "127.0.0.1:7073".into())
 }
 
-/// Where ohc-updated listens — software updates.
+/// Where updated listens — software updates.
 pub fn updated_addr() -> String {
     std::env::var("WEBD_UPDATED_ADDR").unwrap_or_else(|_| "127.0.0.1:7074".into())
 }
 
 /// Where switchd listens — managed-switch configuration (switch boards only).
-/// 7075: ohc-storaged took 7073 and ohc-updated took 7074 (both merged from main).
+/// 7075: storaged took 7073 and updated took 7074 (both merged from main).
 pub fn switchd_addr() -> String {
     std::env::var("WEBD_SWITCHD_ADDR").unwrap_or_else(|_| "127.0.0.1:7075".into())
 }
@@ -73,13 +73,13 @@ pub async fn handler(mut req: Request) -> Response {
     let (addr, mount, who) = if path.starts_with("/sys/") {
         (sysmond_addr(), "/sys", "sysmond")
     } else if path.starts_with("/audio/") {
-        (audiod_addr(), "/audio", "ohc-audiod")
+        (audiod_addr(), "/audio", "audiod")
     } else if path.starts_with("/storage/") {
-        (storaged_addr(), "/storage", "ohc-storaged")
+        (storaged_addr(), "/storage", "storaged")
     } else if path.starts_with("/switch/") {
         (switchd_addr(), "/switch", "switchd")
     } else if path.starts_with("/update/") {
-        (updated_addr(), "/update", "ohc-updated")
+        (updated_addr(), "/update", "updated")
     } else if path == "/mqtt" {
         (mqtt_ws_addr(), "", "mosquitto")
     } else {

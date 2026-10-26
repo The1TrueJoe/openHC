@@ -5,7 +5,7 @@
 # board/ea/common/post-image.sh), and the storage stack built in put ea1-v2 at
 # 8.3 MB. As modules it costs the kernel image nothing: eudev loads the USB
 # disk drivers from the device's modalias, mount(2) loads a filesystem by its
-# fs-<type> alias, and ohc-storaged modprobes ksmbd before starting
+# fs-<type> alias, and storaged modprobes ksmbd before starting
 # ksmbd.mountd. ext4 stays built in — the 'emmc' feature boots from it.
 CONFIG_SCSI=m
 CONFIG_BLK_DEV_SD=m

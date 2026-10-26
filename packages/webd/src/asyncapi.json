@@ -3,13 +3,13 @@
   "info": {
     "title": "openHC IO over MQTT",
     "version": "0.1.0",
-    "description": "The live state and control surface of an openHC controller: IO (relays, contacts, IR, serial, front-panel LEDs — iod), audio (ohc-audiod), external drives (ohc-storaged), software updates (ohc-updated), health (sysmond) and return-to-stock (iod), all on the controller's own mosquitto.\n\nThe rule: anything a control system (Home Assistant, Control4) acts on or watches change is here; configuration and things that rarely change are REST (see the OpenAPI document) — the audio endpoint map, the MQTT settings, full-resolution telemetry history.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
+    "description": "The live state and control surface of an openHC controller: IO (relays, contacts, IR, serial, front-panel LEDs — iod), audio (audiod), external drives (storaged), software updates (updated), health (sysmond) and return-to-stock (iod), all on the controller's own mosquitto.\n\nThe rule: anything a control system (Home Assistant, Control4) acts on or watches change is here; configuration and things that rarely change are REST (see the OpenAPI document) — the audio endpoint map, the MQTT settings, full-resolution telemetry history.\n\n**Three prefixes.** `state/` is RETAINED, so a subscriber that connects an hour late is told the truth immediately. `event/` is NOT retained, because 'a remote was pressed' must never be replayed to whoever connects next. `cmd/` is what you publish.\n\n**Payloads are bare where they can be.** A boolean goes out as `ON`/`OFF` and a number as digits, so a consumer needs no JSON parser; only structured data is JSON.\n\n**Everything counts from 1**, because that is what is printed on the back of the box. A topic numbered 0 is rejected rather than treated as the first device."
   },
   "servers": {
     "onboard": {
       "host": "{host}:1883",
       "protocol": "mqtt",
-      "description": "The controller's mosquitto. iod (IO), ohc-audiod (audio), ohc-storaged (drives), ohc-updated (updates) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
+      "description": "The controller's mosquitto. iod (IO), audiod (audio), storaged (drives), updated (updates) and sysmond (health) each publish their own topics on it; bridging to a house broker is mosquitto's bridge, set from the settings page.",
       "variables": {
         "host": {
           "default": "<openhc800|openea1|openea3|openca1|openioxv1>-<mac>.local"
@@ -256,7 +256,7 @@
         }
       },
       "summary": "Selected ALSA output (retained)",
-      "description": "The device string the stock network receivers render to, e.g. `hw:DSP` (boards without named outputs). Absent/empty means they follow the system default PCM. Published by ohc-audiod; the list of outputs is its REST `/audio/api/audio`."
+      "description": "The device string the stock network receivers render to, e.g. `hw:DSP` (boards without named outputs). Absent/empty means they follow the system default PCM. Published by audiod; the list of outputs is its REST `/audio/api/audio`."
     },
     "audioVolumeState": {
       "address": "openhc/{box}/state/audio/volume",
@@ -315,7 +315,7 @@
           "$ref": "#/components/messages/Json"
         }
       },
-      "summary": "Audio endpoint map (retained, ohc-audiod)",
+      "summary": "Audio endpoint map (retained, audiod)",
       "description": "Boards with named outputs: `outputs` and `inputs` (hardware), the configured `spotify`/`airplay` (name + output) and `routes` (input + output), and `instances` — every supervised process with its `running` flag and whether it is `playing`. JSON. Changing the map is configuration: REST `PUT /audio/api/audio/endpoints`."
     },
     "healthNow": {
@@ -366,7 +366,7 @@
         }
       },
       "summary": "Return-to-stock availability (retained, iod)",
-      "description": "`{available, openhc, detail}` on boards with the ohc-restore helper (EA family, HC-800); `available:false` elsewhere."
+      "description": "`{available, openhc, detail}` on boards with the restore helper (EA family, HC-800); `available:false` elsewhere."
     },
     "systemRestoreStock": {
       "address": "openhc/{box}/cmd/system/restore",
@@ -400,7 +400,7 @@
           "$ref": "#/components/messages/Number"
         }
       },
-      "summary": "Output level 0..100 (retained, ohc-audiod)",
+      "summary": "Output level 0..100 (retained, audiod)",
       "description": "Boards with named outputs: the one volume of that jack. Every endpoint, route and announcement on the output goes through it, and its AirPlay/Spotify endpoints use it as their hardware mixer, so a phone volume slider moves it too; this topic shows whichever moved last. Setting it also moves the playing AirPlay or Spotify app's slider. Same curve as AirPlay's dasl_tapered profile (every halving −10 dB), so the number matches the sender's slider; 0 mutes."
     },
     "audioSetLevel": {
@@ -420,7 +420,7 @@
           "$ref": "#/components/messages/OnOff"
         }
       },
-      "summary": "An announcement is playing (retained, ohc-audiod)",
+      "summary": "An announcement is playing (retained, audiod)",
       "description": "ON while an announcement plays on `{output}`; its music is ducked underneath."
     },
     "audioAnnounce": {
@@ -440,7 +440,7 @@
           "$ref": "#/components/messages/Json"
         }
       },
-      "summary": "Now playing on an endpoint (retained, ohc-audiod)",
+      "summary": "Now playing on an endpoint (retained, audiod)",
       "description": "Per Spotify/AirPlay endpoint (`tag` as in state/audio/map instances, e.g. `spotify-1`): `state` (playing/paused/stopped), `title`, `artist`, `album`, `cover` (an image URL, or for AirPlay a path under REST `/audio/api/audio/` such as `cover/airplay-1?v=3`), `client` (the phone or app), `duration_ms`. Cleared (empty retained message) when the session ends."
     },
     "audioLibrary": {
@@ -450,7 +450,7 @@
           "$ref": "#/components/messages/Json"
         }
       },
-      "summary": "Library player state (retained, ohc-audiod)",
+      "summary": "Library player state (retained, audiod)",
       "description": "Boards with a `library` endpoint: mpd playing the drives under /media. `state` (play/pause/stop/offline), `elapsed_s` with `elapsed_at_ms` (when it was read, so a client can run the clock), `duration_s`, `position`, `queue_length`, `random`, `repeat`, `updating` (indexing the drives). What it plays is `state/audio/meta/library-0`; its volume is its output level. Cleared when there is no library endpoint."
     },
     "audioLibraryCommand": {
@@ -470,7 +470,7 @@
           "$ref": "#/components/messages/Number"
         }
       },
-      "summary": "Output tone (retained, ohc-audiod)",
+      "summary": "Output tone (retained, audiod)",
       "description": "Images with the tone stage (the ohceq ALSA plugin): `{knob}` is `bass` or `treble` (dB, -12..12; shelves at 120 Hz and 8 kHz) or `balance` (-100 left only .. 100 right only). Applies to everything on `{output}`. Boosting lowers the overall level by the boost, so nothing clips."
     },
     "audioSetTone": {
@@ -490,7 +490,7 @@
           "$ref": "#/components/messages/OnOff"
         }
       },
-      "summary": "Input triggered on (retained, ohc-audiod)",
+      "summary": "Input triggered on (retained, audiod)",
       "description": "ON while `{input}` is playing to its default routes (the routes in state/audio/map). Every input starts OFF."
     },
     "audioSetInput": {
@@ -510,8 +510,8 @@
           "$ref": "#/components/messages/Json"
         }
       },
-      "summary": "Mounted external volumes (retained, ohc-storaged)",
-      "description": "Every filesystem on a plugged-in USB (or eSATA) drive that ohc-storaged mounted and shares: `id` (kernel name, e.g. `sdb2`), `name` (the share and the folder under /media), `label`, `fs`, `bus` (`usb`/`esata`), `drive` (vendor + model), `size_bytes`, `used_bytes`, `mount`, `read_only`. JSON array; empty when nothing is plugged in."
+      "summary": "Mounted external volumes (retained, storaged)",
+      "description": "Every filesystem on a plugged-in USB (or eSATA) drive that storaged mounted and shares: `id` (kernel name, e.g. `sdb2`), `name` (the share and the folder under /media), `label`, `fs`, `bus` (`usb`/`esata`), `drive` (vendor + model), `size_bytes`, `used_bytes`, `mount`, `read_only`. JSON array; empty when nothing is plugged in."
     },
     "storageShare": {
       "address": "openhc/{box}/state/storage/share",
@@ -520,7 +520,7 @@
           "$ref": "#/components/messages/Json"
         }
       },
-      "summary": "SMB share settings (retained, ohc-storaged)",
+      "summary": "SMB share settings (retained, storaged)",
       "description": "`enabled`, the login `user`, `guest` access, and how to reach it: `smb` (macOS: smb://<box>.local) and `windows` (\\\\<box>.local). The password is never published; set it with REST `PUT /storage/api/storage/share`."
     },
     "storageEject": {
@@ -550,7 +550,7 @@
           "$ref": "#/components/messages/Json"
         }
       },
-      "summary": "Software update status (retained, ohc-updated)",
+      "summary": "Software update status (retained, updated)",
       "description": "`channel` (stable = published GitHub releases, dev = the rolling pre-release of main), `board`, `current` (this box's version), `latest` (the channel's version for this board, once checked), `available`, `installable` (this board has an on-box installer; others update with ohc-flash), `state` (idle | checking | downloading | installing | rebooting | error), `progress` (0-100 while downloading), `error`, `checked_at` (unix seconds). Checked a minute after start and every 12 hours."
     },
     "updateCheck": {
@@ -786,7 +786,7 @@
       "channel": {
         "$ref": "#/channels/audioMap"
       },
-      "summary": "Audio endpoint map (retained, ohc-audiod)"
+      "summary": "Audio endpoint map (retained, audiod)"
     },
     "healthNow": {
       "action": "send",
@@ -842,7 +842,7 @@
       "channel": {
         "$ref": "#/channels/audioLevel"
       },
-      "summary": "Output level 0..100 (retained, ohc-audiod)"
+      "summary": "Output level 0..100 (retained, audiod)"
     },
     "audioSetLevel": {
       "action": "receive",
@@ -856,7 +856,7 @@
       "channel": {
         "$ref": "#/channels/audioAnnouncing"
       },
-      "summary": "An announcement is playing (retained, ohc-audiod)"
+      "summary": "An announcement is playing (retained, audiod)"
     },
     "audioAnnounce": {
       "action": "receive",
@@ -870,14 +870,14 @@
       "channel": {
         "$ref": "#/channels/audioMeta"
       },
-      "summary": "Now playing on an endpoint (retained, ohc-audiod)"
+      "summary": "Now playing on an endpoint (retained, audiod)"
     },
     "audioLibrary": {
       "action": "send",
       "channel": {
         "$ref": "#/channels/audioLibrary"
       },
-      "summary": "Library player state (retained, ohc-audiod)"
+      "summary": "Library player state (retained, audiod)"
     },
     "audioLibraryCommand": {
       "action": "receive",
@@ -891,7 +891,7 @@
       "channel": {
         "$ref": "#/channels/audioTone"
       },
-      "summary": "Output tone (retained, ohc-audiod)"
+      "summary": "Output tone (retained, audiod)"
     },
     "audioSetTone": {
       "action": "receive",
@@ -905,7 +905,7 @@
       "channel": {
         "$ref": "#/channels/audioInput"
       },
-      "summary": "Input triggered on (retained, ohc-audiod)"
+      "summary": "Input triggered on (retained, audiod)"
     },
     "audioSetInput": {
       "action": "receive",
@@ -919,14 +919,14 @@
       "channel": {
         "$ref": "#/channels/storageVolumes"
       },
-      "summary": "Mounted external volumes (retained, ohc-storaged)"
+      "summary": "Mounted external volumes (retained, storaged)"
     },
     "storageShare": {
       "action": "send",
       "channel": {
         "$ref": "#/channels/storageShare"
       },
-      "summary": "SMB share settings (retained, ohc-storaged)"
+      "summary": "SMB share settings (retained, storaged)"
     },
     "storageEject": {
       "action": "receive",
@@ -947,7 +947,7 @@
       "channel": {
         "$ref": "#/channels/updateState"
       },
-      "summary": "Software update status (retained, ohc-updated)"
+      "summary": "Software update status (retained, updated)"
     },
     "updateCheck": {
       "action": "receive",

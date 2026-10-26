@@ -1,4 +1,4 @@
-//! ohc-zigbee — bring the EM35x Zigbee NCP up and hold it up.
+//! zigbee — bring the EM35x Zigbee NCP up and hold it up.
 //!
 //! A first-class openHC package (built and staged into the rootfs like iod/webd),
 //! gated onto only the boards whose `ohc.features` lists `zigbee`. It replaces the
@@ -139,7 +139,7 @@ fn main() {
     let dev = match std::env::var("OHC_ZIGBEE_TTY") {
         Ok(d) if !d.is_empty() => d,
         _ => {
-            println!("ohc-zigbee: OHC_ZIGBEE_TTY unset — no radio on this board, nothing to do");
+            println!("zigbee: OHC_ZIGBEE_TTY unset — no radio on this board, nothing to do");
             return;
         }
     };
@@ -151,7 +151,7 @@ fn main() {
     let fd = match open_serial(&dev, baud) {
         Ok(fd) => fd,
         Err(e) => {
-            eprintln!("ohc-zigbee: cannot open {dev}: {e}");
+            eprintln!("zigbee: cannot open {dev}: {e}");
             std::process::exit(1);
         }
     };
@@ -164,9 +164,9 @@ fn main() {
         }
     }
     if up {
-        println!("ohc-zigbee: NCP up on {dev} (RSTACK)");
+        println!("zigbee: NCP up on {dev} (RSTACK)");
     } else {
-        println!("ohc-zigbee: NCP did not answer on {dev} after 4 tries — holding the port anyway");
+        println!("zigbee: NCP did not answer on {dev} after 4 tries — holding the port anyway");
     }
 
     if let Some(port) = std::env::var("OHC_ZIGBEE_TCP_PORT").ok().and_then(|p| p.parse::<u16>().ok()) {
@@ -192,12 +192,12 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
     let listener = match TcpListener::bind((bind, port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("ohc-zigbee: cannot listen on {bind}:{port}: {e} — holding the port only");
+            eprintln!("zigbee: cannot listen on {bind}:{port}: {e} — holding the port only");
             return;
         }
     };
     let _ = listener.set_nonblocking(true);
-    println!("ohc-zigbee: serving {dev} on tcp {bind}:{port} (zigpy: socket://<this box>:{port})");
+    println!("zigbee: serving {dev} on tcp {bind}:{port} (zigpy: socket://<this box>:{port})");
 
     let mut client: Option<TcpStream> = None;
     let mut buf = [0u8; 4096];
@@ -223,9 +223,9 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
                 let _ = s.set_nonblocking(false);
                 let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
                 if client.is_some() {
-                    println!("ohc-zigbee: {peer} replaces the previous client");
+                    println!("zigbee: {peer} replaces the previous client");
                 } else {
-                    println!("ohc-zigbee: client {peer}");
+                    println!("zigbee: client {peer}");
                 }
                 // Stale NCP output belongs to nobody; do not hand it to the
                 // new client mid-frame.
@@ -242,7 +242,7 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
             if r > 0 {
                 if let Some(c) = &mut client {
                     if c.write_all(&buf[..r as usize]).is_err() {
-                        println!("ohc-zigbee: client gone (write failed)");
+                        println!("zigbee: client gone (write failed)");
                         client = None;
                     }
                 }
@@ -259,7 +259,7 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
                 }
             };
             if gone {
-                println!("ohc-zigbee: client disconnected");
+                println!("zigbee: client disconnected");
                 client = None;
             }
         }

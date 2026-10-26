@@ -42,7 +42,7 @@ openHC's install makes exactly **one** change to this flash — it appends a sin
 `0x80000`, SHA-256 protected) that redirects CEFDK to openHC's autoscript. The
 stock kernel item, the stock kernel and p2's factory payload are left untouched,
 which is why returning to stock is just removing that one item. See
-[recovery](/shared/recovery/) for `ohc-restore` and
+[recovery](/shared/recovery/) for `restore` and
 [secure boot](/ea/secure-boot/) for the autoscript takeover itself.
 
 ## CEFDK cannot be interrupted on a normal boot

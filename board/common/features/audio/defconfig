@@ -3,10 +3,10 @@
 # kernel half here — the sound hardware is per board (the EA-3's ADAU1451 DSP is
 # the audio-dsp feature, the HC-800's HDA codec is in its own fragment).
 #
-# The daemon is ohc-audiod (packages/audiod, staged by this feature's
+# The daemon is audiod (packages/audiod, staged by this feature's
 # `packages` file). With OHC_AUDIO_OUTPUTS in board.env it runs N Spotify Connect
 # and N AirPlay instances mapped onto named outputs; without it, the single
-# S95librespot / S99shairport-sync instances run and ohc-audiod reports them and
+# S95librespot / S99shairport-sync instances run and audiod reports them and
 # turns their output/volume knobs. Its state and control are MQTT
 # (<base>/state/audio/*, <base>/cmd/audio/*), its configuration REST (:7072,
 # webd /audio/).
@@ -20,7 +20,7 @@ BR2_PACKAGE_ALSA_UTILS=y
 BR2_PACKAGE_ALSA_UTILS_APLAY=y
 BR2_PACKAGE_ALSA_UTILS_AMIXER=y
 BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
-# alsaloop plays an input live on an output (ohc-audiod's input routes).
+# alsaloop plays an input live on an output (audiod's input routes).
 # (arecord comes with _APLAY; there is no separate symbol for it.)
 BR2_PACKAGE_ALSA_UTILS_ALSALOOP=y
 BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
@@ -28,10 +28,10 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 # AirPlay 2 (it also takes classic AirPlay senders): openHC's own
 # packages/ohc-shairport-sync and packages/ohc-nqptp, shairport-sync's and nqptp's
 # development branches, where several AirPlay 2 receivers can share one host and
-# address on their own ports. ohc-audiod runs one per AirPlay endpoint and the one
+# address on their own ports. audiod runs one per AirPlay endpoint and the one
 # nqptp they share. Buildroot's shairport-sync (4.3.7) predates all of that; it
 # was classic-only here, so Apple Music (AirPlay 2 only) could not reach it.
-# Built with the D-Bus remote control (how ohc-audiod moves a sender's volume
+# Built with the D-Bus remote control (how audiod moves a sender's volume
 # slider) and the metadata pipe.
 # BR2_PACKAGE_SHAIRPORT_SYNC is not set
 BR2_PACKAGE_OHC_SHAIRPORT_SYNC=y
@@ -53,8 +53,8 @@ BR2_PACKAGE_AVAHI_LIBDNSSD_COMPATIBILITY=y
 # Spotify Connect. Not in Buildroot — packages/librespot is openHC's own (Rust).
 BR2_PACKAGE_LIBRESPOT=y
 
-# The music-library player: mpd, run by ohc-audiod (one instance, when the
-# endpoint map has a `library` entry) over /media, where ohc-storaged mounts the
+# The music-library player: mpd, run by audiod (one instance, when the
+# endpoint map has a `library` entry) over /media, where storaged mounts the
 # drives. Its own S95mpd is replaced by an overlay stub (audiod supervises it).
 # mpd is C++: the musl boards (HC-800) need the C++ toolchain and libstdc++,
 # which the EA family's glibc toolchain already has.
@@ -70,5 +70,5 @@ BR2_PACKAGE_MPD_FAAD2=y
 BR2_PACKAGE_MPD_LIBSNDFILE=y
 
 # Per-output tone (bass, treble, balance): openHC's own ALSA plugin
-# (packages/alsa-ohceq), one stage per output, driven by ohc-audiod.
+# (packages/alsa-ohceq), one stage per output, driven by audiod.
 BR2_PACKAGE_ALSA_OHCEQ=y

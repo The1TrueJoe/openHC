@@ -196,7 +196,7 @@ pub fn selected() -> Option<String> {
 /// board actually has. Creates the parent directory so a fresh box works.
 ///
 /// Returns the device written. The receivers do not pick this up until they are
-/// restarted AND their init scripts source the file — see the TODO; ohc-audiod
+/// restarted AND their init scripts source the file — see the TODO; audiod
 /// restarts them after writing it (see main.rs).
 pub fn select(device: &str) -> Result<String, String> {
     let known = outputs();
@@ -211,7 +211,7 @@ pub fn select(device: &str) -> Result<String, String> {
         let _ = std::fs::create_dir_all(parent);
     }
     let body = format!(
-        "# Written by ohc-audiod (audio output selection). Sourced by the receiver init\n\
+        "# Written by audiod (audio output selection). Sourced by the receiver init\n\
          # scripts. Do not edit by hand — the Audio panel owns this file.\n\
          OHC_AUDIO_DEVICE=\"{device}\"\n"
     );

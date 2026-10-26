@@ -49,7 +49,7 @@ at `0xa0f1c`:
 | `0x01`/`0xff` (off) | stock kernel item (container @ `0x400`) | `/dev/mmcblk0p1` (stock) |
 
 Flipping that byte over `/dev/mtd0` is remote, reversible and verified
-(`ohc-restore revert`/`install`, live on the EA3). It is a 64 KiB
+(`restore revert`/`install`, live on the EA3). It is a 64 KiB
 read-modify-erase-write with read-back verify; a bad MFH *table* write bricks past
 the recessed button, so the only writes we do are the byte-exact, unit-tested
 enable-byte toggle — never a hand-rolled table append on a live box.
@@ -107,14 +107,14 @@ before it pivots.** The autoscript loads the kernel + this ~1–2 MB initramfs i
 RAM and runs `/init`, which normally mounts p1 and `switch_root`s into it. At that
 instant p1 is only a mount — exactly the context the durable system lacks.
 
-Flow (`ohc-restore stock`):
+Flow (`restore stock`):
 
 1. **On durable** (`p1_is_root()` true): can't touch p1. Drop a one-shot flag
    `/.ohc-stock-pending` on p1, leave the autoscript enabled, and reboot.
 2. **boot-init**, pre-pivot, sees the flag: remove it (so a failed finalize can't
    loop), unmount p1, wait for `/dev/mtd0` (SPI-NOR probes async — MTD is built
    into the same kernel, so the node *does* appear here), then run
-   `ohc-restore reimage-finalize`:
+   `restore reimage-finalize`:
    - mount p2 ro; **empty p1's existing ext4 in place** and
      `unxz -c recfs.tar.xz | tar -x` onto it. Reusing the ext4 keeps its
      type/LABEL/UUID and needs no `mke2fs` — so no e2fsprogs in the initramfs, only
@@ -125,7 +125,7 @@ Flow (`ohc-restore stock`):
    - `reboot -f`.
 3. **Cold boot** → CEFDK (autoscript off) → stock kernel item → stock p1.
 
-When `ohc-restore stock` is run somewhere p1 is already free (a flasher ramboot,
+When `restore stock` is run somewhere p1 is already free (a flasher ramboot,
 whose separate full-rootfs initramfs leaves p1 unmounted), step 1's detour is
 skipped and the finalize runs immediately.
 
@@ -136,23 +136,23 @@ heals rather than stranding. p2 is never written in any path.
 
 ## Code
 
-- `ohc-restore stock` — `cmd_stock`: `p1_is_root()` → `stage_stock_flag()` (durable)
+- `restore stock` — `cmd_stock`: `p1_is_root()` → `stage_stock_flag()` (durable)
   or `cmd_reimage_finalize()` (p1 free).
-- `ohc-restore reimage-finalize` — `cmd_reimage_finalize` = `reimage_p1_direct()` +
+- `restore reimage-finalize` — `cmd_reimage_finalize` = `reimage_p1_direct()` +
   `revert`. Called by boot-init; refuses if p1 is root.
-- `ohc-restore recovery-kexec` — the old recovery-kernel kexec, kept for boards
+- `restore recovery-kexec` — the old recovery-kernel kexec, kept for boards
   where kexec can place segments (EA1); not used on the EA3.
 - boot-init hook: `board/ea/common/boot-init/init` (flag check + `/dev/mtd0` wait +
   finalize, before `switch_root`).
-- initramfs bundling: `build/mk-boot-init.sh` copies the static `ohc-restore` and
+- initramfs bundling: `build/mk-boot-init.sh` copies the static `restore` and
   symlinks the `tar`/`unxz`/`rm`/`reboot` applets; `board/common/busybox-openhc.fragment`
   pins those applets on.
 
 ## The switch surface
 
-- **`ohc-restore status`** — boot target (enable byte) + whether a stock restore is
+- **`restore status`** — boot target (enable byte) + whether a stock restore is
   possible (p2 `recfs.tar.xz` present).
-- **`ohc-restore stock`** — one-way return to factory via the flow above.
+- **`restore stock`** — one-way return to factory via the flow above.
   Destructive; the red two-step "Return to stock" control in the web UI (via iod's
   `restore.stock`) is its front end.
 - **stock → openHC** — the installer (`ohc-flash`); at that point the box is stock
@@ -161,6 +161,6 @@ heals rather than stranding. p2 is never written in any path.
 ## Remaining: one destructive hardware test
 
 Not yet run end-to-end on the EA3 (the box is recoverable here via serial + p2 + a
-CH341A). On durable openHC: `ohc-restore stock`, reboot, and watch serial for the
+CH341A). On durable openHC: `restore stock`, reboot, and watch serial for the
 boot-init flag path — expect the p1 empty+extract, the `revert`, the reboot, and
 stock Control4 back on p1 — then reinstall openHC with `ohc-flash` to return.

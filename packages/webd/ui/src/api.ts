@@ -20,11 +20,11 @@ const HTTP = `${location.origin}/iod`;
    HTTP gave /iod/sys/api/now, which 404s — webd proxies /sys to sysmond and
    /iod to iod, and they are not nested. */
 const SYS = `${location.origin}/sys`;
-/* ohc-audiod's configuration REST, proxied by webd at /audio. */
+/* audiod's configuration REST, proxied by webd at /audio. */
 const AUDIO = `${location.origin}/audio`;
 /* switchd's configuration REST, proxied by webd at /switch (switch boards only). */
 const SWITCH = `${location.origin}/switch`;
-/* ohc-storaged's REST (external drives, the SMB share), proxied at /storage. */
+/* storaged's REST (external drives, the SMB share), proxied at /storage. */
 const STORAGE = `${location.origin}/storage`;
 const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/mqtt`;
 
@@ -81,7 +81,7 @@ export interface Capabilities {
    *  board with no DSA switch (switchd is not shipped there), so no Switch
    *  panel — the same "nothing behind it" rule. */
   switch?: SwitchOverview;
-  /** External drives + the SMB share, when this board runs ohc-storaged. */
+  /** External drives + the SMB share, when this board runs storaged. */
   storage?: StorageStatus;
   /** The on-screen web view, when this board has a display program. */
   display?: DisplayCfg;
@@ -168,7 +168,7 @@ export interface ApplyResult {
   errors: string[];
 }
 
-/** Software updates (ohc-updated, retained `system/update`). `installable` is
+/** Software updates (updated, retained `system/update`). `installable` is
  *  false on boards with no on-box installer yet (they update with ohc-flash). */
 export interface UpdateStatus {
   channel: 'stable' | 'dev';
@@ -183,7 +183,7 @@ export interface UpdateStatus {
   checked_at: number | null;
 }
 
-/** One mounted filesystem on a plugged-in drive (ohc-storaged). */
+/** One mounted filesystem on a plugged-in drive (storaged). */
 export interface StorageVolume {
   id: string;
   /** The share name, and the folder under /media. */
@@ -277,7 +277,7 @@ export interface AudioEndpoints {
   library?: AudioEndpoint[];
 }
 
-/** One supervised process ohc-audiod runs for the map. */
+/** One supervised process audiod runs for the map. */
 export interface AudioInstance {
   tag: string;
   kind: 'spotify' | 'airplay' | 'route' | 'library' | 'helper';
@@ -289,7 +289,7 @@ export interface AudioInstance {
   playing?: boolean;
 }
 
-/** ohc-audiod's endpoint map: the board's outputs/inputs, the configured
+/** audiod's endpoint map: the board's outputs/inputs, the configured
  *  endpoints, and what is running. Arrives over REST once and over MQTT
  *  (`<base>/state/audio/map`) whenever it changes. */
 export interface AudioMap extends AudioEndpoints {
@@ -305,7 +305,7 @@ export interface AudioMeta {
   title?: string;
   artist?: string;
   album?: string;
-  /** An absolute image URL (Spotify), or a path under ohc-audiod's API (AirPlay). */
+  /** An absolute image URL (Spotify), or a path under audiod's API (AirPlay). */
   cover?: string;
   /** The phone or app driving it. */
   client?: string;
@@ -430,9 +430,9 @@ export interface IoState {
   /** sysmond telemetry, republished by iod: the latest sample, the ring at one
    *  point a minute, and the fan. */
   health?: { now?: Telemetry; history?: History; fan?: FanStatus };
-  /** External drives (ohc-storaged), live. */
+  /** External drives (storaged), live. */
   storage?: { volumes?: StorageVolume[]; share?: StorageShare };
-  /** Return-to-stock availability (boards with the ohc-restore helper). */
+  /** Return-to-stock availability (boards with the restore helper). */
   system?: { restore?: { available: boolean; openhc?: boolean; detail?: string }; update?: UpdateStatus };
   /** Live managed-switch state from switchd: the mode, the bridge, and each
    *  port's status keyed by name (`switch.port.lan1`). The fuller picture
@@ -544,10 +544,10 @@ export const rest = {
     j<History>(`${SYS}/api/history${seconds ? `?seconds=${seconds}` : ''}`),
   /** Fan presence/mode/duty. `available:false` on boards with no fan helper. */
   fan: () => j<FanStatus>(`${SYS}/api/fan`),
-  /** ohc-audiod: outputs, inputs, the endpoint map, the receivers. Loaded once;
+  /** audiod: outputs, inputs, the endpoint map, the receivers. Loaded once;
    *  live changes arrive over MQTT. */
   audio: () => j<AudioStatus>(`${AUDIO}/api/audio`),
-  /** ohc-storaged: volumes and the share. Absent board feature = rejected. */
+  /** storaged: volumes and the share. Absent board feature = rejected. */
   storage: () => j<StorageStatus>(`${STORAGE}/api/storage`),
   /** The file browser. `path` is `<volume>/<path inside it>`. */
   files: (path: string) => j<FileEntry[]>(`${STORAGE}/api/files?path=${encodeURIComponent(path)}`),

@@ -172,7 +172,7 @@ Points that matter for the port:
 - **Adding a third entry doesn't disturb the first two.** The factory-restore
   path stays byte-identical, so recovery is untouched.
 - **Back to stock from openHC:** `ohc-flash restore` and the web UI's *Reset
-  to stock* both run the box's `ohc-restore stock`, which arms Control4's
+  to stock* both run the box's `restore stock`, which arms Control4's
   factory restore for exactly one boot. The ID button held at power-on is
   still Control4's own factory reset. See [recovery](/shared/recovery/#hc-800).
 
@@ -229,7 +229,7 @@ That is the Control4 mesh it was paired into, stored in the NCP's own flash.
 That firmware decides the stack. zigbee2mqtt cannot drive it: zigbee-herdsman's
 `ember` driver needs EZSP 13+ (EmberZNet 7.4), its deprecated `ezsp` driver
 needed 8+, and Silicon Labs dropped EM35x support well before either. zigpy's
-**bellows still speaks EZSP v4**. So `ohc-zigbee` serves the port over TCP
+**bellows still speaks EZSP v4**. So `zigbee` serves the port over TCP
 (`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA drives the radio from
 there:
 
@@ -239,7 +239,7 @@ there:
   the two keys ZHA's discovery reads.
 - One client at a time. A new connection replaces the old one, so an HA restart
   isn't locked out by its own half-open socket. Connects and disconnects go to
-  syslog (`ohc-zigbee:`).
+  syslog (`zigbee:`).
 - Verified 2026-10-02: `bellows info` over `socket://` read the version, EUI64
   `00:0f:ff:00:00:60:2d:6a` and the existing network, on two back-to-back
   connections.
@@ -373,7 +373,7 @@ the app playing to it.
 
 ### Endpoints
 
-`ohc-audiod` (packages/audiod, started by `S92ohcaudiod`) owns audio. It turns
+`audiod` (packages/audiod, started by `S92ohcaudiod`) owns audio. It turns
 `board.env`'s outputs into ALSA `dmix` devices (`ohc_analog1`, …) and the input
 into a `dsnoop`, all at 44.1 kHz so nothing resamples, and supervises:
 
