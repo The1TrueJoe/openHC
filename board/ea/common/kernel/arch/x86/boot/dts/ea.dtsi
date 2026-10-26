@@ -190,20 +190,20 @@
  * The curve is ohc-fand's, which was the stock [ea_fan] profile with a 30%
  * floor: on at 50 C, then +10% per degree, so 100% from 57 C. One active trip
  * per level, each mapped to exactly that level; step_wise takes the highest
- * level whose trip is reached. Each step has 1 C of hysteresis so a 0.5 C
- * LM75 reading cannot flap it, and the first has 3 C, which stands in for
- * ohc-fand's 60 s cool-down hold at the floor.
+ * level whose trip is reached. Each trip has 1 C of hysteresis so a 0.5 C
+ * LM75 reading cannot flap it; a tree cannot say "hold for 60 s", so on the
+ * first trip that same band does the job of ohc-fand's cool-down hold at the
+ * floor (on at 50 C, off below 49 C).
  *
  * Until the zone takes over, pwm-fan holds the fan at its top level (its probe
  * sets the maximum), so a sensor that never binds leaves the fan at 100%.
- * fan-shutdown-percent does the same on the way down: poweroff, reboot and kexec
- * leave it running flat out rather than stopped.
  *
  * MANUAL CONTROL (the web UI, via sysmond) switches this zone's policy to
  * user_space and writes the fan's hwmon pwm1; "auto" switches it back to
- * step_wise. Manual cannot outlast the hot trip: at 75 C sysmond hands the
- * fan back to the curve, and at 80 C the kernel shuts the box down whatever the
- * policy is.
+ * step_wise. Manual cannot outlast the hot trip: at 80 C (ohc-fand's CRITICAL)
+ * sysmond hands the fan back to the curve, which is at 100% by then. There is
+ * deliberately no critical trip: ohc-fand never powered the box off, and where
+ * 80 C on a heatsink sensor stands against the CE5300's real limit is unmeasured.
  */
 / {
 	fan: pwm-fan {
@@ -212,7 +212,6 @@
 		/* off, then 30% to 100% in tens: one level per trip below */
 		cooling-levels = <0 77 102 128 153 179 204 230 255>;
 		#cooling-cells = <2>;
-		fan-shutdown-percent = <100>;
 	};
 
 	thermal-zones {
@@ -224,7 +223,7 @@
 			trips {
 				fan_on: fan-on {
 					temperature = <50000>;
-					hysteresis = <3000>;
+					hysteresis = <1000>;
 					type = "active";
 				};
 				fan_40: fan-40 {
@@ -264,14 +263,9 @@
 				};
 				/* Ends a manual hold (sysmond); no kernel action. */
 				heatsink-hot {
-					temperature = <75000>;
-					hysteresis = <2000>;
-					type = "hot";
-				};
-				heatsink-crit {
 					temperature = <80000>;
 					hysteresis = <0>;
-					type = "critical";
+					type = "hot";
 				};
 			};
 
