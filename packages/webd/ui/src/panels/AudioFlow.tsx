@@ -9,8 +9,8 @@ import {
   Play, Pause, SkipBack, SkipForward, Square, Folder, FileAudio, Search, Shuffle, Repeat, RefreshCw,
 } from 'lucide-react';
 import {
-  io, rest, audioCover, type AudioEndpoint, type AudioEndpoints, type AudioMap, type AudioMeta, type IoState,
-  type LibraryEntry, type LibraryState,
+  io, rest, audioCover, toneValue, type AudioEndpoint, type AudioEndpoints, type AudioMap, type AudioMeta,
+  type IoState, type LibraryEntry, type LibraryState, type ToneKnob,
 } from '../api';
 
 /* The audio switcher: the whole Audio page on boards with named outputs.
@@ -197,8 +197,8 @@ function OutputNode({ data, selected }: NodeProps<Node<OutputData>>) {
         <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted">{data.level === undefined ? '–' : `${data.level}%`}</span>
       </div>
       <NodeToolbar isVisible={selected} position={Position.Left} align="start" offset={16}>
-        <OutputInspector id={data.id} label={data.label} device={port?.device ?? ''} live={f.live} feeding={f.feeding(data.id)}
-          onClose={f.close} />
+        <OutputInspector id={data.id} label={data.label} device={port?.device ?? ''} knobs={port?.tone ?? []}
+          live={f.live} feeding={f.feeding(data.id)} onClose={f.close} />
       </NodeToolbar>
     </div>
   );
@@ -584,11 +584,14 @@ function SourceInspector({
 }
 
 function OutputInspector({
-  id, label, device, live, feeding, onClose,
+  id, label, device, knobs, live, feeding, onClose,
 }: {
   id: string;
   label: string;
   device: string;
+  /** The output's tone knobs, from the map: ungrouped ones are its tone, the
+   *  "eq" group its graphic equaliser (a DSP output). */
+  knobs: ToneKnob[];
   live: Live;
   feeding: SourceData[];
   onClose: () => void;
@@ -596,11 +599,8 @@ function OutputInspector({
   const level = live.level?.[id];
   const lastLevel = useRef(level && level > 0 ? level : 60);
   if (level && level > 0) lastLevel.current = level;
-  const hasTone = live.bass !== undefined;
-  const tone = { bass: live.bass?.[id] ?? 0, treble: live.treble?.[id] ?? 0, balance: live.balance?.[id] ?? 0 };
-  const flat = tone.bass === 0 && tone.treble === 0 && tone.balance === 0;
-  const db = (v: number) => (v > 0 ? `+${v}` : `${v}`);
-  const bal = (v: number) => (v === 0 ? 'C' : v < 0 ? `L${-v}` : `R${v}`);
+  const tone = knobs.filter((k) => !k.group);
+  const eq = knobs.filter((k) => k.group === 'eq');
   const announcing = !!live.announcing?.[id];
   const playing = feeding.filter((f) => f.playing).length;
   const muted = level === 0;
@@ -633,21 +633,8 @@ function OutputInspector({
         </div>
       </Section>
 
-      {hasTone && (
-        <Section title="Tone" action={
-          <button disabled={flat} title="Flat and centred" aria-label="Reset tone"
-            onClick={() => { try { (['bass', 'treble', 'balance'] as const).forEach((k) => io.setTone(id, k, 0)); } catch { /* not connected */ } }}
-            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:text-ink disabled:opacity-30">
-            <RotateCcw size={11} /> Reset
-          </button>
-        }>
-          <div className="space-y-1">
-            <ToneSlider id={id} knob="bass" label="Bass" value={tone.bass} min={-12} max={12} fmt={db} />
-            <ToneSlider id={id} knob="treble" label="Treble" value={tone.treble} min={-12} max={12} fmt={db} />
-            <ToneSlider id={id} knob="balance" label="Balance" value={tone.balance} min={-100} max={100} fmt={bal} />
-          </div>
-        </Section>
-      )}
+      <ToneSection title="Tone" output={id} knobs={tone} live={live} reset="Flat and centred" />
+      <ToneSection title="Equalizer" output={id} knobs={eq} live={live} reset="Flat" />
 
       <Section title="Sources">
         {feeding.length ? (
@@ -705,23 +692,47 @@ function LiveSlider({
   );
 }
 
-function ToneSlider({
-  id, knob, label, value, min, max, fmt,
+const fmtDb = (v: number) => (v > 0 ? `+${v}` : `${v}`);
+const fmtBalance = (v: number) => (v === 0 ? 'C' : v < 0 ? `L${-v}` : `R${v}`);
+
+/* A group of an output's tone knobs, with a reset to neutral. Nothing to draw
+   for an output without them. */
+function ToneSection({
+  title, output, knobs, live, reset,
 }: {
-  id: string;
-  knob: 'bass' | 'treble' | 'balance';
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  fmt: (v: number) => string;
+  title: string;
+  output: string;
+  knobs: ToneKnob[];
+  live: Live;
+  reset: string;
 }) {
+  if (!knobs.length) return null;
+  const flat = knobs.every((k) => toneValue(live, k.id, output) === 0);
   return (
-    <div className="flex items-center gap-2 text-xs" onDoubleClick={() => { try { io.setTone(id, knob, 0); } catch { /* not connected */ } }}
+    <Section title={title} action={
+      <button disabled={flat} title={reset} aria-label={`Reset ${title.toLowerCase()}`}
+        onClick={() => { try { knobs.forEach((k) => io.setTone(output, k.id, 0)); } catch { /* not connected */ } }}
+        className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:text-ink disabled:opacity-30">
+        <RotateCcw size={11} /> Reset
+      </button>
+    }>
+      <div className="space-y-1">
+        {knobs.map((k) => (
+          <ToneSlider key={k.id} output={output} knob={k} value={toneValue(live, k.id, output)} />
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+function ToneSlider({ output, knob, value }: { output: string; knob: ToneKnob; value: number }) {
+  return (
+    <div className="flex items-center gap-2 text-xs" onDoubleClick={() => { try { io.setTone(output, knob.id, 0); } catch { /* not connected */ } }}
       title="Double-click to reset">
-      <span className="w-14 shrink-0 text-muted">{label}</span>
+      <span className="w-14 shrink-0 text-muted">{knob.label}</span>
       <div className="min-w-0 flex-1">
-        <LiveSlider value={value} min={min} max={max} label={label} fmt={fmt} send={(v) => io.setTone(id, knob, v)} />
+        <LiveSlider value={value} min={knob.min} max={knob.max} label={knob.label}
+          fmt={knob.unit === 'balance' ? fmtBalance : fmtDb} send={(v) => io.setTone(output, knob.id, v)} />
       </div>
     </div>
   );

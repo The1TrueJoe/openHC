@@ -18,7 +18,10 @@
  * failure looks like a codec or routing bug somewhere else entirely.
  *
  * So the default is probe-only: bind, map, and read ONE register that is known
- * to answer.
+ * to answer. It still registers the CPU DAI, behind a component with no PCM
+ * ops and a startup that refuses: the board's simple-audio-card then forms the
+ * card, so the codec's DSP controls exist and can be tuned, while anything
+ * opening the PCM gets -ENODEV at once rather than reaching a TX register.
  *
  * CORRECTION, measured 2026-08-30: this file used to claim pcim_enable_device()
  * made a full register dump safe. It does not. With the device bound and
@@ -316,15 +319,40 @@ static const struct snd_soc_component_driver ce5300_component = {
  * worth setting: the codec is the I2S master, so we neither generate clocks nor
  * choose a direction. Keeping it equally empty is deliberate, not lazy.
  */
+#define CE5300_DAI_PLAYBACK {						\
+	.stream_name	= "Playback",					\
+	.channels_min	= 2,						\
+	.channels_max	= 2,						\
+	.rates		= SNDRV_PCM_RATE_48000,				\
+	.formats	= SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,	\
+}
+
 static struct snd_soc_dai_driver ce5300_dai = {
 	.name = "ce5300-i2s",
-	.playback = {
-		.stream_name	= "Playback",
-		.channels_min	= 2,
-		.channels_max	= 2,
-		.rates		= SNDRV_PCM_RATE_48000,
-		.formats	= SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,
-	},
+	.playback = CE5300_DAI_PLAYBACK,
+};
+
+/* ---- probe-only: the DAI without a PCM ---------------------------------- */
+
+static int ce5300_dai_startup_off(struct snd_pcm_substream *ss,
+				  struct snd_soc_dai *dai)
+{
+	dev_dbg(dai->dev, "PCM not registered (ce5300_i2s.enable_pcm=0)\n");
+	return -ENODEV;
+}
+
+static const struct snd_soc_dai_ops ce5300_dai_off_ops = {
+	.startup = ce5300_dai_startup_off,
+};
+
+static struct snd_soc_dai_driver ce5300_dai_off = {
+	.name = "ce5300-i2s",
+	.playback = CE5300_DAI_PLAYBACK,
+	.ops = &ce5300_dai_off_ops,
+};
+
+static const struct snd_soc_component_driver ce5300_component_off = {
+	.name = DRV_NAME,
 };
 
 /* ---- PCI --------------------------------------------------------------- */
@@ -361,9 +389,11 @@ static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id
 
 	if (!enable_pcm) {
 		dev_info(&pdev->dev,
-			 "probe-only (enable_pcm=0): mapped, not registering a PCM. "
+			 "probe-only (enable_pcm=0): mapped, DAI registered without a PCM. "
 			 "Several control fields are still inferred -- see ce5300-i2s.h\n");
-		return 0;
+		return devm_snd_soc_register_component(&pdev->dev,
+						       &ce5300_component_off,
+						       &ce5300_dai_off, 1);
 	}
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));

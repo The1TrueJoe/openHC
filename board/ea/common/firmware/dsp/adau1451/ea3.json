@@ -1,0 +1,74 @@
+{
+  "_doc": [
+    "openHC's configuration of the EA3's ADAU1451. See README.md in this directory.",
+    "",
+    "The DSP runs Control4's program, which it boots by itself from the board's",
+    "EEPROM (FirmwareVersion cell 0x0dd0 reads 10). That program reads every knob",
+    "as an INDEX 0..48 from a parameter cell and looks the setting up in a",
+    "49-entry table. Everything in this file is ours: the cell and table",
+    "addresses were read off a running unit, and the table CONTENTS are",
+    "computed by mkfw.py from the designs below. Nothing here comes from a",
+    "Control4 or Analog Devices file.",
+    "",
+    "Every knob is 49 steps with 24 as its neutral, because that is the size of",
+    "the program's tables: tone and EQ steps are step_db apart (0.5 dB gives",
+    "-12..+12 dB), balance steps are 100/24 percent (-100..+100).",
+    "Change a design here and rebuild; the web UI shows exactly these knobs."
+  ],
+  "rate": 48000,
+  "step_db": 0.5,
+  "knobs": [
+    {
+      "id": "bass", "label": "Bass", "control": "DSP Bass",
+      "cell": "0x0163", "table": "0x01dc",
+      "_design": "the HC-800's tone stage (alsa-ohceq): RBJ shelf, slope 1",
+      "filter": { "type": "lowshelf", "freq": 120, "slope": 1.0 }
+    },
+    {
+      "id": "treble", "label": "Treble", "control": "DSP Treble",
+      "cell": "0x0dc1", "table": "0x03d6",
+      "filter": { "type": "highshelf", "freq": 8000, "slope": 1.0 }
+    },
+    {
+      "id": "balance", "label": "Balance", "control": "DSP Balance",
+      "cell": "0x0dc2",
+      "_design": "linear, as alsa-ohceq: +100 silences the left channel. Which table is the left output is NOT yet confirmed by ear",
+      "balance": { "left": "0x0091", "right": "0x00c2" }
+    },
+    { "id": "eq31",  "label": "31 Hz",  "group": "eq", "control": "DSP EQ 31 Hz",
+      "cell": "0x0dc3", "table": "0x02d9", "filter": { "type": "peak", "freq": 31.5,  "q": 1.414 } },
+    { "id": "eq63",  "label": "63 Hz",  "group": "eq", "control": "DSP EQ 63 Hz",
+      "cell": "0x0dc4", "table": "0x04d3", "filter": { "type": "peak", "freq": 63,    "q": 1.414 } },
+    { "id": "eq125", "label": "125 Hz", "group": "eq", "control": "DSP EQ 125 Hz",
+      "cell": "0x0dc5", "table": "0x05d0", "filter": { "type": "peak", "freq": 125,   "q": 1.414 } },
+    { "id": "eq250", "label": "250 Hz", "group": "eq", "control": "DSP EQ 250 Hz",
+      "cell": "0x0dc6", "table": "0x06cd", "filter": { "type": "peak", "freq": 250,   "q": 1.414 } },
+    { "id": "eq500", "label": "500 Hz", "group": "eq", "control": "DSP EQ 500 Hz",
+      "cell": "0x0dc7", "table": "0x07ca", "filter": { "type": "peak", "freq": 500,   "q": 1.414 } },
+    { "id": "eq1k",  "label": "1 kHz",  "group": "eq", "control": "DSP EQ 1 kHz",
+      "cell": "0x0dc8", "table": "0x08c7", "filter": { "type": "peak", "freq": 1000,  "q": 1.414 } },
+    { "id": "eq2k",  "label": "2 kHz",  "group": "eq", "control": "DSP EQ 2 kHz",
+      "cell": "0x0dc9", "table": "0x09c4", "filter": { "type": "peak", "freq": 2000,  "q": 1.414 } },
+    { "id": "eq4k",  "label": "4 kHz",  "group": "eq", "control": "DSP EQ 4 kHz",
+      "cell": "0x0dca", "table": "0x0ac1", "filter": { "type": "peak", "freq": 4000,  "q": 1.414 } },
+    { "id": "eq8k",  "label": "8 kHz",  "group": "eq", "control": "DSP EQ 8 kHz",
+      "cell": "0x0dcb", "table": "0x0bbe", "filter": { "type": "peak", "freq": 8000,  "q": 1.414 } },
+    { "id": "eq16k", "label": "16 kHz", "group": "eq", "control": "DSP EQ 16 kHz",
+      "cell": "0x0dcc", "table": "0x0cbb", "filter": { "type": "peak", "freq": 16000, "q": 1.414 } }
+  ],
+  "cells": [
+    {
+      "control": "DSP Volume", "cell": "0x0dd1", "value": 100,
+      "_doc": "0..Max Volume through the program's volume curve. It boots at 0 (silent); openHC runs it full and sets each output's level in ALSA, as on the HC-800"
+    },
+    { "control": "DSP Max Volume", "cell": "0x0dd2", "value": 100 },
+    { "control": "DSP Volume Curve", "cell": "0x0dd3", "value": 0,
+      "_doc": "which of the program's two volume curves Volume indexes" },
+    { "control": "DSP Input Gain", "cell": "0x0dcd", "value": 24,
+      "_doc": "index into the program's -12..+12 dB gain table at 0x0060" },
+    { "control": "DSP Test Tone Level", "cell": "0x0dce", "value": 8,
+      "_doc": "the program's oscillator level, index into its -24..0 dB table at 0x002f; 8 is the program's own value" },
+    { "control": "ReadBack DSP Program", "cell": "0x0dd0",
+      "_doc": "the program's version cell. No value: never written, and the ReadBack prefix makes the kernel read it fresh every time" }
+  ]
+}

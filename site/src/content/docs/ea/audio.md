@@ -6,7 +6,7 @@ sidebar:
 ---
 
 **Status: kernel drivers written, not yet proven on hardware.** The userspace half
-is standard and should work the moment a card appears. Read
+is the HC-800's audio scheme and should work the moment the PCM does. Read
 [what is still unproven](#what-is-still-unproven) before trusting any of this.
 
 ## The thing that blocked everything
@@ -38,13 +38,16 @@ Fixed in `board/ea/common/patches/linux/0001-i2c-pxa-ce5300-dt.patch`.
 
 ```
 sound/soc/ce5300/ce5300-i2s.c    platform driver: I2S + scatter-gather DMA (PCI 8086:2e60)
-sound/soc/ce5300/ce5300-ea3.c    machine driver: ties CPU DAI + codec into a card
-sound/soc/codecs/adau1451-c4.c   codec driver
-board/ea/common/features/audio-dsp/linux.fragment  kernel config (EA3 DSP)
-board/common/features/audio/defconfig              userspace packages (EA + HC-800)
+sound/soc/codecs/adau1451-c4.c   codec driver, on the kernel's sigmadsp core
+arch/x86/boot/dts/ea-audio-dsp.dtsi  the codec, its firmware, and the card (simple-audio-card)
+board/ea/common/firmware/dsp/adau1451/  the DSP's configuration (ea3.json) and its builder
+board/ea/common/features/audio-dsp/     kernel config + the firmware package (EA3 DSP)
+board/common/features/audio/defconfig   userspace packages (EA + HC-800)
 ```
 
-Enable with `audio` in a board's `ohc.features`.
+Enable with `audio` and `audio-dsp` in a board's `ohc.features`. There is no
+board machine driver: the card is the kernel's `simple-audio-card`, described in
+the DTB.
 
 ## No vendor binaries are required
 
@@ -54,20 +57,39 @@ playback:
 - **The SoC audio DSPs** run 1.8 MB of signed firmware loaded through the security
   engine, but they only do decode and mix. The **I²S render path needs none of
   it**, which is what makes a mainline driver possible at all.
-- **The ADAU1451** requests `ea3-1451.bin`, but at 48 kHz nothing from it's ever
-  written: the vendor pre-seeds the DSP's current samplerate to 48000, its
-  reload returns immediately, and the data-chunk loader is `#if 0`'d dead code.
-  The codec self-boots its own program from EEPROM; Linux only pushes parameter
-  RAM. So `request_firmware` is dropped entirely.
+- **The ADAU1451** boots its own program from the board's EEPROM; Linux only
+  pushes parameter RAM. Stock requests `ea3-1451.bin`, but at 48 kHz nothing
+  from it is ever written. openHC loads a firmware file of **its own** instead,
+  built from `ea3.json`: the kernel's stock sigmadsp core writes its tables and
+  makes its knobs into ALSA controls. See [the DSP](#the-dsp-openhcs-configuration).
 
 :::caution[One header must never be committed]
 `ea3-dsp-params.h` is 10,410 `#define`s with an Analog Devices header stating it
-"may not be distributed whole or in any part to third parties". The vendor driver
-uses 41 of those symbols and **every one is a mixer control** — bass, balance,
-loudness, input gain, a 10-band EQ. None are in the audio datapath, so the port
-omits all of them. Restoring tone controls later needs exactly those 41
-addresses, not the file.
+"may not be distributed whole or in any part to third parties". openHC does not
+need it: the addresses its tone controls use were read off a running unit, and
+every table they index is computed by openHC.
 :::
+
+## The DSP: openHC's configuration
+
+The program in the EEPROM reads every knob as an **index 0..48** from a
+parameter cell and looks the setting up in a 49-entry table, 24 neutral. openHC
+fills those tables from its own designs and hands the cells to ALSA:
+
+| Knob | Design |
+|---|---|
+| Bass, Treble | RBJ shelves at 120 Hz / 8 kHz, ±12 dB — the HC-800's software tone stage |
+| Balance | linear, one side to silence — the HC-800's |
+| EQ 31 Hz … 16 kHz | ten RBJ peaking bands, Q 1.414, ±12 dB |
+
+`board/ea/common/firmware/dsp/adau1451/ea3.json` is the whole configuration —
+cells, tables, designs — and `mkfw.py` builds it into the kernel's SigmaDSP
+firmware format (`/lib/firmware/openhc/adau1451-ea3.bin`). The board DTB names
+the file and the program it belongs to (`control4,program-version`); on any
+other program the driver writes nothing. ohc-audiod reads the same profile for
+its knob list, so the web UI shows exactly those knobs, set over MQTT like the
+HC-800's tone. The [directory's README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)
+has the map and how it was proven.
 
 ## What the stock system exposes
 
@@ -123,7 +145,9 @@ Full extraction: the [CE5300 audio register map](/ea/audio-regmap/).
 ## What is still unproven
 
 The platform driver **does not register a PCM by default** (`enable_pcm=0`). It
-binds, maps BAR0 and dumps registers. That is deliberate: registering a PCM whose
+binds, maps BAR0 and dumps registers, and registers its DAI with a startup that
+refuses — so the card forms and the DSP controls can be tuned, while anything
+opening the PCM gets `-ENODEV` at once. That is deliberate: registering a PCM whose
 trigger cannot reliably move samples is worse than absent, because userspace
 opens it, gets silence, and the failure looks like a codec or routing problem
 somewhere else entirely.

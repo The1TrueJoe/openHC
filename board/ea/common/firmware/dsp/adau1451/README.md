@@ -1,51 +1,89 @@
-# ADAU1451 SigmaDSP (EA3 / EA5)
+# ADAU1451 SigmaDSP (EA3)
 
-The EA3 and EA5 route audio through an Analog Devices **ADAU1451** SigmaDSP.
-Confirmed on a live EA3: the part sits on **i2c-3 at 0x38**, driven by
-`snd_soc_adau1451` + `snd_soc_adau1451_common` + `snd_soc_sigmadsp_{i2c,new}`,
-with reset on `/dev/gpio/dsp_reset` (gpio101).
+The EA3 routes its analog audio through an Analog Devices **ADAU1451**
+SigmaDSP: CE5300 I²S1 → ADAU1451 → AK4621 → the analog jacks. It sits on
+**i2c-3 at 0x38**, with reset on `dsp_reset` (gpio101) and the DAC soft mute on
+`dac_mute` (gpio61).
 
-```
-adau1451 3-0038: sigmadsp_firmware_load: ### Load Firmware v2
-ninjago-smd-codec.1: adau1451-ch0 <-> ninjago-smd-dai.0 mapping ok
-```
+The part **boots its program by itself from the board's EEPROM** — Control4's
+"SamX rev 10" program, which reports `10` in its version cell. openHC never
+loads program memory. What openHC owns is the **parameter RAM** that program
+reads: the filter tables behind every tone and EQ knob, and the knob cells.
 
-It presents as its own ALSA card:
+## How openHC drives it — all stock Linux
 
-```
-card 1 [ninjagosmdadau1]  "ninjago-smd-adau1451"
-  device 0  SMD DAI PCM adau1451-ch0-0
-controls  Master Bass Treble Balance Loudness VolumeCurve InputGain Input
-          OutputMode OutputParams FirmwareRate
-          Filter31_5 63 125 250 500 1000 2000 4000 8000 16000
-```
+| Piece | What it is |
+|---|---|
+| `ea3.json` | **The configuration, in code.** Every knob: the cell it lives in, the table behind it, and the filter design that fills the table. |
+| `mkfw.py` | Builds `ea3.json` into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2). Standard library Python, run at build time by the `adau1451-fw` package. |
+| `/lib/firmware/openhc/adau1451-ea3.bin` | That file, on the box. |
+| the board DTB | `firmware-name` names the file; `control4,program-version = <0x0dd0 10>` is the check that the running program is the one the file describes. The card is a stock `simple-audio-card`. |
+| `adau1451-c4` | The codec driver. It hands the file to the kernel's **sigmadsp** core (the one the mainline ADAU1701/ADAU17x1 drivers use), which writes the tables at bind and turns each named cell into an **ALSA control**. |
+| ohc-audiod | Reads the knob list from the installed copy of `ea3.json` and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
 
-That control set — a 10-band graphic EQ plus tone and loudness — is the DSP
-program, not a generic codec. The SoC side (`card 0 IntelCE353xx`) carries
-`analog0` / `digital0` / `hdmi0`, and the SoC↔DSP link is I²S1
-(`i2s_audio_pref enabled=2` in `/etc/hdmi_hpd.cfg`).
-
-## Firmware blobs
-
-Per-board SigmaStudio program images live on the stock rootfs:
+So the DSP is tuned with ordinary ALSA tools:
 
 ```
-/lib/firmware/ea3-1451.bin    80,040 B
-/lib/firmware/ea5-1451.bin   152,392 B
-/lib/firmware/tr1-1451.bin    99,560 B
-loaders: /control4/bin/{ea3,ea5,tr1}_dsploader
+amixer -c openhcea contents                        # every DSP control
+amixer -c openhcea cset name='DSP Bass' 0,0,0,30   # bass +3 dB (index 24 + 3/0.5)
 ```
 
-**These are vendor firmware and are not redistributed here** — pull them off
-your own unit. Load tooling would live in this directory.
+Every control is 4 bytes, big-endian: an **index 0..48** into a 49-entry table,
+**24 neutral**. Tone and EQ steps are `step_db` apart (0.5 dB → ±12 dB);
+balance is 100/24 % a step. ohc-audiod does that arithmetic; the API and UI
+speak dB and −100..100.
 
-Not used on the EA1.
+## The knobs
 
-## Open question
+| Knob | Cell | Table | Design (`ea3.json`) |
+|---|---|---|---|
+| Bass | 0x0163 | 0x01dc | RBJ low shelf, 120 Hz, slope 1 — the HC-800's |
+| Treble | 0x0dc1 | 0x03d6 | RBJ high shelf, 8 kHz, slope 1 — the HC-800's |
+| Balance | 0x0dc2 | 0x0091 / 0x00c2 | linear, one side to silence — the HC-800's |
+| EQ 31 Hz … 16 kHz | 0x0dc3 … 0x0dcc | 0x02d9, 0x04d3 … 0x0cbb | RBJ peaking, Q 1.414 |
 
-The **AK4621EF** analog codec that sits between the DSP and the line/coax jacks
-has no kernel driver and no I²C client. Its control port is probably one of the
-two userspace-exposed `spidev` nodes (`/dev/spidev0.2`, `/dev/spidev0.3`) with
-`codec_reset` (gpio24) as reset — but nothing on the host names it, so which
-node, or whether it is strapped into a standalone mode instead, is unresolved.
-This is the biggest gap in the EA3 audio path.
+Plus cells written once at boot: **Volume 100** (it boots at 0, silent —
+openHC sets output levels in ALSA, as on the HC-800), Max Volume 100, the
+volume-curve select, Input Gain 24 (0 dB), the test oscillator's level, and a
+read-only `ReadBack DSP Program` (the version cell).
+
+To change a design, edit `ea3.json` and rebuild. The bass and treble shelves
+match the HC-800's software stage, so a setting sounds the same on both boxes.
+
+## Where the map came from
+
+Read off a running stock EA3 (2026-10-26) over I²C, read-only:
+
+* **Tables:** twelve 253-word blocks at `0x01d5 + k·0xfd` — a 7-word header,
+  then 49 biquads stored `B2 B1 B0 −A2 −A1` in 8.24 fixed point. With stock's
+  own designs, `mkfw.py` reproduces **all ten EQ tables bit for bit**, which is
+  what proves the layout. Stock's 0 dB entry is the identity biquad; ours too.
+* **Cells:** the program's named DC-input cells, from the control chunks of
+  the unit's `ea3-1451.bin`; the live values match (all 24, Volume 0,
+  SampleRate 48000, version 10).
+* **Balance tables:** two 49-word gain tables at 0x0091 and 0x00c2, mirror
+  images of each other.
+* **Program memory reads back as zeros**, so the program itself cannot be read
+  over I²C — it only exists in the EEPROM.
+
+No Control4 or Analog Devices file is in this tree, and none is needed: the
+addresses are facts about the unit, and every table is computed here.
+`ea3-1451.bin` and Analog Devices' `ea3-dsp-params.h` are never committed.
+
+## Still to confirm on hardware
+
+* **Cell → table pairing.** Every cell read 24 on the dump, so which cell
+  drives which block was taken from the cells' names, which match the blocks'
+  frequencies. To check one: set a cell (`amixer … cset name='DSP EQ 1 kHz'
+  0,0,0,30`) and read words `+5` and `+6` of each block header — the block
+  whose index follows is the one that cell drives.
+* **Which balance table is the left jack** (assumed 0x0091).
+* **Listening.** Nothing plays until the CE5300 I²S PCM is finished
+  (`ce5300_i2s.enable_pcm`); until then the card has the DSP controls and a
+  PCM that refuses to open.
+
+## Not used on the EA1, and the AK4621
+
+The EA1 has no DSP. The AK4621 between the DSP and the jacks has no control
+port in use — stock only releases `codec_reset` — so it is strapped into
+hardware mode and needs no driver.

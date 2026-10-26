@@ -76,7 +76,7 @@ They are gone. Each board's tree is now linked into the kernel:
 | `ea3.dtsi` | EA3 GPIO block (`setup_gpio_ea3()`) |
 | `ea-wifi.dtsi` | the `wifi` feature: `wlan_disable` |
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
-| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3, the card node, `codec_reset`/`dsp_reset` |
+| `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3 with its firmware and program check, the simple-audio-card, `codec_reset`/`dsp_reset` |
 | `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
 | `board/ea/<board>/<board>.dts` | the board: includes matching its `ohc.features` |
 

@@ -13,8 +13,10 @@
 //!   levels.rs and announce.rs); every Spotify/AirPlay endpoint's now-playing
 //!   on `audio/meta/<tag>` (meta.rs); the music-library player (mpd on the
 //!   drives under /media) on `audio/library` and `cmd/audio/library/<verb>`
-//!   (library.rs); with the tone plugin, each output's `audio/bass/<id>`,
-//!   `audio/treble/<id>`, `audio/balance/<id>` and the same under `cmd/`
+//!   (library.rs); each output's tone, one topic per knob it has —
+//!   `audio/bass/<id>`, `audio/treble/<id>`, `audio/balance/<id>` with the
+//!   tone plugin, those and the EQ bands (`audio/eq1k/<id>`, ...) on a DSP
+//!   output — and the same under `cmd/`; the map lists each output's knobs
 //!   (tone.rs). An input plays to its default routes only while triggered:
 //!   `cmd/audio/input/<id>` ON|OFF|TOGGLE, state `audio/input/<id>`.
 //! * **REST** (configuration, which changes rarely): `GET /api/audio` and
@@ -67,7 +69,7 @@ struct App {
     /// Inputs triggered on (cmd/audio/input/<id>): only these play to their
     /// default routes. Live state — every input starts off.
     live_inputs: Mutex<HashSet<String>>,
-    /// Output id → tone (bass, treble, balance), as last set.
+    /// Output id → tone (knob id → value), as last set.
     tones: Mutex<HashMap<String, tone::Tone>>,
     /// Outputs with an announcement playing.
     announcing: Mutex<HashSet<String>>,
@@ -89,12 +91,11 @@ impl App {
         if self.board.has_map() {
             runner::write_asound(&self.board);
             levels::prepare(&self.board, &self.levels.lock().unwrap());
-            if tone::available() {
-                let tones = self.tones.lock().unwrap();
-                for p in &self.board.outputs {
-                    tone::apply(p, &tones.get(&p.id).copied().unwrap_or_default());
-                }
+            let tones = self.tones.lock().unwrap();
+            for p in &self.board.outputs {
+                tone::apply(p, &tones.get(&p.id).cloned().unwrap_or_default());
             }
+            drop(tones);
             let live = self.live_inputs.lock().unwrap().clone();
             *inst = runner::start(&self.board, &e, &live, &self.up, old);
             // Every AirPlay receiver starts its sessions at its output's level,
@@ -139,15 +140,11 @@ impl App {
 
     fn set_tone(&self, id: &str, knob: &str, v: i32) -> Result<(), String> {
         let p = self.board.output(id).ok_or_else(|| format!("no output '{id}'"))?;
-        if !tone::available() {
-            return Err("this image has no tone stage".into());
-        }
+        let k = tone::knob(p, knob).ok_or_else(|| format!("output '{id}' has no tone control '{knob}'"))?;
+        let v = v.clamp(k.min, k.max);
         let mut tones = self.tones.lock().unwrap();
-        let t = tones.entry(id.to_string()).or_default();
-        if !t.set(knob, v) {
-            return Err(format!("unknown tone control '{knob}'"));
-        }
-        tone::apply_knob(p, knob, t.get(knob).unwrap_or(0));
+        tones.entry(id.to_string()).or_default().insert(knob.to_string(), v);
+        tone::apply_knob(p, k, v);
         tone::save(&tones);
         Ok(())
     }
@@ -373,13 +370,11 @@ async fn publish(app: &App, client: &AsyncClient, base: &Base, r: &mut Retained)
             r.set(client, base, &format!("audio/level/{}", p.id), &json!(level)).await;
             r.set(client, base, &format!("audio/announcing/{}", p.id), &json!(announcing.contains(&p.id))).await;
         }
-        if tone::available() {
-            let tones = app.tones.lock().unwrap().clone();
-            for p in &app.board.outputs {
-                let t = tones.get(&p.id).copied().unwrap_or_default();
-                for k in tone::KNOBS {
-                    r.set(client, base, &format!("audio/{k}/{}", p.id), &json!(t.get(k).unwrap_or(0))).await;
-                }
+        let tones = app.tones.lock().unwrap().clone();
+        for p in &app.board.outputs {
+            let t = tones.get(&p.id).cloned().unwrap_or_default();
+            for k in &p.tone {
+                r.set(client, base, &format!("audio/{}/{}", k.id, p.id), &json!(t.get(&k.id).copied().unwrap_or(0))).await;
             }
         }
         // Now playing, per endpoint. Null (an empty retained message) clears it.
@@ -432,7 +427,8 @@ async fn command(app: &Arc<App>, what: &str, body: &str) {
         app.changed.notify_one();
         return;
     }
-    if let Some((knob, id)) = what.split_once('/').filter(|(k, _)| tone::KNOBS.contains(k)) {
+    let is_knob = |k: &str, id: &str| app.board.output(id).is_some_and(|p| tone::knob(p, k).is_some());
+    if let Some((knob, id)) = what.split_once('/').filter(|(k, id)| is_knob(k, id)) {
         match body.parse::<i32>() {
             Ok(v) => {
                 if let Err(e) = app.set_tone(id, knob, v) {
@@ -553,7 +549,8 @@ fn main() {
         return;
     }
     let bind = std::env::var("AUDIOD_BIND").unwrap_or_else(|_| "127.0.0.1:7072".into());
-    let board = Board::from_env();
+    let mut board = Board::from_env();
+    tone::fill(&mut board);
     let endpoints = Endpoints::load();
     if board.has_map() {
         if let Err(e) = endpoints.validate(&board) {
