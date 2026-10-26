@@ -371,8 +371,8 @@ jobs:
 
       # Reuse a toolchain already built for this exact config across runs. Keyed
       # on everything that defines the EA toolchain — the Buildroot ref, both
-      # common defconfigs, the glibc patch, the Buildroot patch set, and build.sh
-      # itself (it composes the defconfig). A hit means the tarball is already on
+      # common defconfigs, the Buildroot patch set, and build.sh itself (it
+      # composes the defconfig). A hit means the tarball is already on
       # disk and the build below is skipped; a miss builds it from cold. On a hit
       # the artifact upload still runs, so the image jobs always get their SDK.
       - name: Restore cached EA SDK
@@ -878,6 +878,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # A push that rebuilt no board (select picked nothing, or every build
+          # failed) uploads no openhc-* artifact, so there is nothing to publish
+          # and the dev release keeps the images it has.
+          if ! ls bundles/openhc-*.zip >/dev/null 2>&1; then
+            echo "no images built in this run — dev release unchanged"
+            exit 0
+          fi
           ls -l bundles
           # The tag first (create, or move it here), then the release on it.
           if gh api "repos/$GH_REPO/git/refs/tags/dev" >/dev/null 2>&1; then
