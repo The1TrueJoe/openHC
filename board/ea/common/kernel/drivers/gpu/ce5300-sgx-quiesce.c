@@ -25,8 +25,10 @@
  * It is NOT enough once the GPU has rendered (the panel web view ran). Then even
  * the reset plus every safely accessible SGX register back at its power-on value
  * (events cleared, BIF_CTRL 0xff00 = MMU bypass, CLKGATECTL 0) still leaves the
- * next kernel broken, with garbled bus-1 reads on top. So the product never
- * kexecs out of this kernel: ohc-restore reboots through CEFDK instead.
+ * next kernel broken, with garbled bus-1 reads on top. A warm reboot through
+ * CEFDK does not clear that state either; only a power-cycle does. So the
+ * product never kexecs out of this kernel: ohc-restore reboots through CEFDK
+ * into boot-init instead, which kexecs nothing.
  *
  * Why syscore_ops: kernel_kexec() and kernel_restart() run every device's
  * .shutdown first (PVR's D3 handshake with the microkernel needs the core out

@@ -236,7 +236,7 @@ never binds the GPU.
 
 How much can be saved depends on whether the GPU ever rendered:
 
-- **GPU bound but never used** (display off since boot): holding the SGX in soft
+- **GPU bound but never used** (display off since a *cold* boot): holding the SGX in soft
   reset (`EUR_CR_SOFT_RESET` = all units) after its driver shuts down gives a
   healthy next kernel. The real kernel does this itself at kexec and reboot
   (`board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c`). On an older kernel,
@@ -246,11 +246,17 @@ How much can be saved depends on whether the GPU ever rendered:
   its power-on value (events cleared, MMU back to bypass, clock gating off), still
   leave it with dead DMA and garbled bus-1 reads.
 
+A warm reboot does not clear the used state: CEFDK's reset leaves the SGX as it
+was, so after a GPU-used boot only a power-cycle gets back to "never used". That
+is harmless on the normal boot path. The bootstrap never binds the GPU, so its
+S00kexec handoff to the real kernel works after a warm reboot too, and boot-init
+(where `ohc-restore stock` does its reimage) kexecs nothing.
+
 So nothing in the product kexecs out of the real kernel. `ohc-restore stock`
 reboots through CEFDK into boot-init, and `ohc-restore recovery-kexec` refuses
-while the GPU driver is bound. To RAM-test an image on an installed box, boot
-with the display off (`OHC_DISPLAY_ENABLE=0`), then unbind + reset as above and
-kexec.
+while the GPU driver is bound. To RAM-test an image on an installed box, set
+`OHC_DISPLAY_ENABLE=0`, **power-cycle** (a `reboot` is not enough), then unbind +
+reset as above and kexec.
 
 Don't poke other SGX registers by hand: on an uninitialised core, reading e.g.
 `EUR_CR_USE_CODE_BASE_0` (0xa0c) hangs the bus.
