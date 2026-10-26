@@ -692,6 +692,24 @@ function LiveSlider({
   );
 }
 
+/* A DSP selector (its output mode, loudness): one button per choice. */
+function ToneChoice({ output, knob, value }: { output: string; knob: ToneKnob; value: number }) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-14 shrink-0 text-muted">{knob.label}</span>
+      <div role="radiogroup" aria-label={knob.label} className="flex min-w-0 flex-1 flex-wrap gap-1">
+        {(knob.choices ?? []).map((c, i) => (
+          <button key={c} role="radio" aria-checked={value === i}
+            onClick={() => { try { io.setTone(output, knob.id, i); } catch { /* not connected */ } }}
+            className={`rounded-md px-2 py-0.5 ${value === i ? 'bg-accent/15 text-ink' : 'text-muted hover:bg-raised hover:text-ink'}`}>
+            {c}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const fmtDb = (v: number) => (v > 0 ? `+${v}` : `${v}`);
 const fmtBalance = (v: number) => (v === 0 ? 'C' : v < 0 ? `L${-v}` : `R${v}`);
 
@@ -726,6 +744,7 @@ function ToneSection({
 }
 
 function ToneSlider({ output, knob, value }: { output: string; knob: ToneKnob; value: number }) {
+  if (knob.unit === 'choice') return <ToneChoice output={output} knob={knob} value={value} />;
   return (
     <div className="flex items-center gap-2 text-xs" onDoubleClick={() => { try { io.setTone(output, knob.id, 0); } catch { /* not connected */ } }}
       title="Double-click to reset">

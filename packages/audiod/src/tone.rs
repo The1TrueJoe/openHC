@@ -19,7 +19,10 @@
 //!   (board/ea/common/firmware/dsp/adau1451/), and its knobs are ALSA controls
 //!   the kernel's sigmadsp core made from that firmware: 4 bytes, big-endian,
 //!   an index 0..48 into a table the DSP looks the setting up in, 24 neutral.
-//!   Tone steps are the profile's `step_db`; balance is 100/24 % a step. No
+//!   Tone steps are the profile's `step_db`; balance is 100/24 % a step. A
+//!   knob with `choices` (the DSP's output mode, its loudness) is a selector:
+//!   its value is the choice's index, 0 the first, and the choice's words are
+//!   what is written. No
 //!   software stage sits in front of such a port. The DSP boots silent (its
 //!   Volume cell at 0); once the saved level and tone are back, `run` sets the
 //!   profile's run values, which is what lets it play.
@@ -55,8 +58,11 @@ pub struct Knob {
     pub group: Option<String>,
     pub min: i32,
     pub max: i32,
-    /// "dB", or "balance": -100 (left only) .. 100 (right only).
+    /// "dB"; "balance": -100 (left only) .. 100 (right only); or "choice":
+    /// an index into `choices`.
     pub unit: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
     #[serde(skip)]
     how: How,
 }
@@ -67,6 +73,8 @@ enum How {
     Plugin(&'static str),
     /// A DSP control: index = 24 + value / per_index.
     Dsp { control: String, per_index: f64 },
+    /// A DSP selector: each choice's bytes, for amixer.
+    DspChoice { control: String, bytes: Vec<String> },
 }
 
 /// Output id's knob id → value. Every knob is 0 when neutral.
@@ -74,7 +82,7 @@ pub type Tone = HashMap<String, i32>;
 
 pub(crate) fn plugin_knobs() -> Vec<Knob> {
     let k = |id: &str, label: &str, suffix, min, max, unit| Knob {
-        id: id.into(), label: label.into(), group: None, min, max, unit, how: How::Plugin(suffix),
+        id: id.into(), label: label.into(), group: None, min, max, unit, choices: Vec::new(), how: How::Plugin(suffix),
     };
     vec![
         k("bass", "Bass", "Bass", -TONE_MAX, TONE_MAX, "dB"),
@@ -109,22 +117,50 @@ struct ProfileKnob {
     group: Option<String>,
     #[serde(default)]
     balance: Option<serde_json::Value>,
+    #[serde(default)]
+    choices: Vec<ProfileChoice>,
+}
+
+#[derive(Deserialize)]
+struct ProfileChoice {
+    label: String,
+    words: Vec<serde_json::Value>,
+}
+
+/// A profile word as it goes on the wire: an 8.24 number, or "0x..." raw.
+fn word(v: &serde_json::Value) -> Result<u32, String> {
+    match v {
+        serde_json::Value::String(s) => {
+            u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| format!("word {s}: {e}"))
+        }
+        v => v.as_f64().map(|x| (x * f64::from(1u32 << 24)).round() as i32 as u32).ok_or_else(|| format!("word {v}")),
+    }
 }
 
 fn dsp_knobs(profile: &str) -> Result<Vec<Knob>, String> {
     let p: Profile = serde_json::from_str(profile).map_err(|e| e.to_string())?;
     let half = DSP_FLAT as f64;
-    Ok(p.knobs
+    p.knobs
         .into_iter()
         .map(|k| {
+            if !k.choices.is_empty() {
+                let bytes = k.choices.iter()
+                    .map(|c| c.words.iter().map(word).collect::<Result<Vec<_>, _>>().map(|w| w.iter().map(|x| be_bytes(*x)).collect::<Vec<_>>().join(",")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok(Knob {
+                    id: k.id, label: k.label, group: k.group, min: 0, max: bytes.len() as i32 - 1, unit: "choice",
+                    choices: k.choices.into_iter().map(|c| c.label).collect(),
+                    how: How::DspChoice { control: k.control, bytes },
+                });
+            }
             let (max, unit, per_index) = if k.balance.is_some() {
                 (BALANCE_MAX, "balance", BALANCE_MAX as f64 / half)
             } else {
                 ((half * p.step_db) as i32, "dB", p.step_db)
             };
-            Knob { id: k.id, label: k.label, group: k.group, min: -max, max, unit, how: How::Dsp { control: k.control, per_index } }
+            Ok(Knob { id: k.id, label: k.label, group: k.group, min: -max, max, unit, choices: Vec::new(), how: How::Dsp { control: k.control, per_index } })
         })
-        .collect())
+        .collect()
 }
 
 /// The knobs a port has: its DSP profile's, else the plugin's when the image
@@ -193,6 +229,7 @@ fn control(p: &Port, k: &Knob, v: i32) -> (String, String) {
             let i = (f64::from(DSP_FLAT) + f64::from(v) / per_index).round().clamp(0.0, f64::from(DSP_STEPS - 1)) as u32;
             (control.clone(), be_bytes(i))
         }
+        How::DspChoice { control, bytes } => (control.clone(), bytes[v.clamp(0, bytes.len() as i32 - 1) as usize].clone()),
     }
 }
 
@@ -257,10 +294,12 @@ mod tests {
     fn the_ea3_profile_has_tone_balance_and_ten_bands() {
         let k = dsp_knobs(EA3).unwrap();
         let ids: Vec<&str> = k.iter().map(|k| k.id.as_str()).collect();
-        assert_eq!(&ids[..3], ["bass", "treble", "balance"]);
+        assert_eq!(&ids[..5], ["mode", "loudness", "bass", "treble", "balance"]);
         assert_eq!(k.iter().filter(|k| k.group.as_deref() == Some("eq")).count(), 10);
-        assert_eq!((k[0].min, k[0].max, k[0].unit), (-12, 12, "dB"));
-        assert_eq!((k[2].min, k[2].max, k[2].unit), (-100, 100, "balance"));
+        assert_eq!((k[0].min, k[0].max, k[0].unit), (0, 3, "choice"));
+        assert_eq!(k[0].choices, ["Tone", "EQ", "Flat", "Test tone"]);
+        assert_eq!((k[2].min, k[2].max, k[2].unit), (-12, 12, "dB"));
+        assert_eq!((k[4].min, k[4].max, k[4].unit), (-100, 100, "balance"));
         assert!(!plugin_stage(&port(k)));
     }
     #[test]
@@ -275,6 +314,17 @@ mod tests {
         assert_eq!(control(&p, bal, 100).1, "0,0,0,48");
         assert_eq!(control(&p, bal, -50).1, "0,0,0,12");
         assert_eq!(control(&p, knob(&p, "eq1k").unwrap(), 3), ("DSP EQ 1 kHz".into(), "0,0,0,30".into()));
+    }
+    #[test]
+    fn dsp_selectors_write_their_choice_words() {
+        let p = port(dsp_knobs(EA3).unwrap());
+        let mode = knob(&p, "mode").unwrap();
+        // EQ: one-hot index 2 on both channels, 1.0 in 8.24.
+        assert_eq!(control(&p, mode, 1).1, "0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0");
+        assert_eq!(control(&p, mode, 9).1, control(&p, mode, 3).1);
+        assert_eq!(control(&p, knob(&p, "loudness").unwrap(), 1), ("DSP Loudness".into(), "0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0".into()));
+        assert_eq!(word(&serde_json::json!("0x00fffe20")).unwrap(), 0x00fffe20);
+        assert_eq!(word(&serde_json::json!(-0.5)).unwrap(), 0xff800000);
     }
     #[test]
     fn the_ea3_dsp_boots_silent_and_audiod_raises_its_volume() {

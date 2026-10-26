@@ -258,8 +258,10 @@ export interface ToneKnob {
   group?: string;
   min: number;
   max: number;
-  /** "dB", or "balance": -100 (left only) .. 100 (right only). */
-  unit: 'dB' | 'balance';
+  /** "dB"; "balance": -100 (left only) .. 100 (right only); or "choice": an
+   *  index into `choices` (a DSP selector such as its output mode). */
+  unit: 'dB' | 'balance' | 'choice';
+  choices?: string[];
 }
 
 export interface AudioPort {

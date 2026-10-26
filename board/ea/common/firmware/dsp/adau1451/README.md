@@ -15,7 +15,8 @@ reads: the filter tables behind every tone and EQ knob, and the knob cells.
 | Piece | What it is |
 |---|---|
 | `ea3.json` | **The configuration, in code.** Every knob: the cell it lives in, the table behind it, and the filter design that fills the table. |
-| `mkfw.py` | Builds `ea3.json` into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2). Standard library Python, run at build time by the `adau1451-fw` package. |
+| `mkfw.py` | Builds `ea3.json` into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2). Standard library Python. |
+| `adau1451-fw.mk`, `Config.in` | The build rule: runs `mkfw.py` at image build and installs the file and the profile. Selected by the `audio-dsp` feature (`BR2_PACKAGE_ADAU1451_FW`). |
 | `/lib/firmware/openhc/adau1451-ea3.bin` | That file, on the box. |
 | the board DTB | `firmware-name` names the file; `control4,program-version = <0x0dd0 10>` is the check that the running program is the one the file describes. The card is a stock `simple-audio-card`. |
 | `adau1451-c4` | The codec driver. It hands the file to the kernel's **sigmadsp** core (the one the mainline ADAU1701/ADAU17x1 drivers use), which writes the tables at bind and turns each named cell into an **ALSA control**. |
@@ -37,14 +38,23 @@ speak dB and −100..100.
 
 | Knob | Cell | Table | Design (`ea3.json`) |
 |---|---|---|---|
+| Mode | 0x0db5 (8 words) | — | selector: **Tone** (boot) / EQ / Flat / Test tone |
+| Loudness | 0x0db1 (4 words) | — | selector: Off (boot) / On |
 | Bass | 0x0163 | 0x01dc | RBJ low shelf, 120 Hz, slope 1 — the HC-800's |
 | Treble | 0x0dc1 | 0x03d6 | RBJ high shelf, 8 kHz, slope 1 — the HC-800's |
 | Balance | 0x0dc2 | 0x0091 / 0x00c2 | linear, one side to silence — the HC-800's |
 | EQ 31 Hz … 16 kHz | 0x0dc3 … 0x0dcc | 0x02d9, 0x04d3 … 0x0cbb | RBJ peaking, Q 1.414 |
 
 Plus cells written once at boot: **Volume 0**, Max Volume 100, the
-volume-curve select, Input Gain 24 (0 dB), the test oscillator's level, and a
-read-only `ReadBack DSP Program` (the version cell).
+volume-curve select, Input Gain 24 (0 dB), the test oscillator's level, the
+program's mute (released — stock's own "on" words), and a read-only
+`ReadBack DSP Program` (the version cell).
+
+**The mode decides which knobs act.** The program's output selector has four
+paths, one per channel: Tone (bass and treble), EQ (the ten bands), Flat (stock's
+"Bypass", what stock idles on), and Test tone (the program's oscillator). They
+are alternatives, not a chain. The program boots its right-channel selectors and
+its mute half set, which is why the firmware writes all three.
 
 ## Silent unless something plays
 
@@ -78,14 +88,18 @@ No Control4 or Analog Devices file is in this tree, and none is needed: the
 addresses are facts about the unit, and every table is computed here.
 `ea3-1451.bin` and Analog Devices' `ea3-dsp-params.h` are never committed.
 
+**Cell → table pairing: confirmed on a stock unit.** Moving each of stock's own
+controls one at a time (its driver wrote the cell) moved exactly that cell and
+the header of exactly the block `ea3.json` pairs it with. The same diffs found
+the mode and loudness selectors (written through the safeload registers at
+0x18–0x1e) and the mute pair; stock's master volume is the Volume cell, which
+the program turns into a gain through its log table at 0x0164.
+
 ## Still to confirm on hardware
 
-* **Cell → table pairing.** Every cell read 24 on the dump, so which cell
-  drives which block was taken from the cells' names, which match the blocks'
-  frequencies. To check one: set a cell (`amixer … cset name='DSP EQ 1 kHz'
-  0,0,0,30`) and read words `+5` and `+6` of each block header — the block
-  whose index follows is the one that cell drives.
 * **Which balance table is the left jack** (assumed 0x0091).
+* **What each mode sounds like** — the names are stock's; whether Tone also
+  carries the EQ is for the ears.
 * **Listening.** Nothing plays until the CE5300 I²S PCM is finished
   (`ce5300_i2s.enable_pcm`); until then the card has the DSP controls and a
   PCM that refuses to open.

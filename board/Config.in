@@ -99,4 +99,5 @@ source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
 # on-screen browser every display board runs, is in packages/.
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-um/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/wpebackend-pvr/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/adau1451-fw/Config.in"
+# Built firmware (not a package): its rule lives with its source in firmware/.
+source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/firmware/dsp/adau1451/Config.in"

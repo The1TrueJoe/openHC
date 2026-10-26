@@ -1,4 +1,5 @@
 # audio-dsp: the EA3's ADAU1451. The kernel half (I2S, codec, simple-audio-card,
 # the sigmadsp core) is linux.fragment; this is the DSP's parameter file, which
-# the codec driver loads from /lib/firmware/openhc/.
+# the codec driver loads from /lib/firmware/openhc/ — built from
+# board/ea/common/firmware/dsp/adau1451/.
 BR2_PACKAGE_ADAU1451_FW=y

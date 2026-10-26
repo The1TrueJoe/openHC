@@ -35,6 +35,17 @@ def addr(s):
     return int(s, 0)
 
 
+def word(x):
+    """A profile word: an 8.24 number, or a "0x..." string taken as raw bits."""
+    if isinstance(x, str):
+        return struct.pack(">I", int(x, 16))
+    return fixed(x)
+
+
+def words(xs):
+    return b"".join(word(x) for x in xs)
+
+
 def fixed(x):
     """A parameter word: signed 8.24 fixed point, big-endian."""
     v = round(x * (1 << 24))
@@ -102,14 +113,20 @@ def data(at, words):
     return chunk(TAG_DATA, struct.pack("<H", at) + words)
 
 
-def control(name, at):
-    return chunk(TAG_CONTROL, struct.pack("<HHH", 0, at, 4) + name.encode("ascii"))
+def control(name, at, nbytes=4):
+    return chunk(TAG_CONTROL, struct.pack("<HHH", 0, at, nbytes) + name.encode("ascii"))
 
 
 def build(profile):
     fs = profile["rate"]
     out = []
     for k in profile["knobs"]:
+        if "choices" in k:
+            # A selector: its first choice at boot, the control as wide as a choice.
+            boot = words(k["choices"][0]["words"])
+            out.append(data(addr(k["cell"]), boot))
+            out.append(control(k["control"], addr(k["cell"]), len(boot)))
+            continue
         if "filter" in k:
             out.append(data(addr(k["table"]), filter_table(k["filter"], fs, profile["step_db"])))
         if "balance" in k:
@@ -119,6 +136,11 @@ def build(profile):
         out.append(data(addr(k["cell"]), struct.pack(">I", FLAT)))
         out.append(control(k["control"], addr(k["cell"])))
     for c in profile["cells"]:
+        if "words" in c:
+            w = words(c["words"])
+            out.append(data(addr(c["cell"]), w))
+            out.append(control(c["control"], addr(c["cell"]), len(w)))
+            continue
         if "value" in c:
             out.append(data(addr(c["cell"]), struct.pack(">I", c["value"])))
         out.append(control(c["control"], addr(c["cell"])))
@@ -141,6 +163,9 @@ def check(profile):
     ids = [k["id"] for k in profile["knobs"]]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate knob id")
+    for k in profile["knobs"]:
+        if "choices" in k and len({len(c["words"]) for c in k["choices"]}) != 1:
+            raise ValueError(f"{k['id']}: choices of different widths")
 
 
 def main():

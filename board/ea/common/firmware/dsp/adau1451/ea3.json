@@ -10,10 +10,13 @@
     "computed by mkfw.py from the designs below. Nothing here comes from a",
     "Control4 or Analog Devices file.",
     "",
-    "A cell's value is written at boot; a run value, if it has one, is what",
+    "A cell's value (an integer) or words (8.24 numbers, or \"0x...\" raw) are",
+    "written at boot; a run value, if it has one, is what",
     "ohc-audiod sets once it is up.",
     "",
-    "Every knob is 49 steps with 24 as its neutral, because that is the size of",
+    "A knob with choices is a selector: the choice's words are written, the",
+    "first one at boot. Every other knob is 49 steps with 24 as its neutral,",
+    "because that is the size of",
     "the program's tables: tone and EQ steps are step_db apart (0.5 dB gives",
     "-12..+12 dB), balance steps are 100/24 percent (-100..+100).",
     "Change a design here and rebuild; the web UI shows exactly these knobs."
@@ -21,6 +24,24 @@
   "rate": 48000,
   "step_db": 0.5,
   "knobs": [
+    {
+      "id": "mode", "label": "Mode", "control": "DSP Output Mode", "cell": "0x0db5",
+      "_design": "the program's output selector, one-hot per channel (left 0x0db5..8, right 0x0db9..c), mapped off a stock unit. Tone shapes with bass and treble, EQ with the ten bands, Flat bypasses both, Test tone plays the program's oscillator. The first choice is the boot one",
+      "choices": [
+        { "id": "tone", "label": "Tone",      "words": [1, 0, 0, 0, 1, 0, 0, 0] },
+        { "id": "eq",   "label": "EQ",        "words": [0, 0, 1, 0, 0, 0, 1, 0] },
+        { "id": "flat", "label": "Flat",      "words": [0, 1, 0, 0, 0, 1, 0, 0] },
+        { "id": "test", "label": "Test tone", "words": [0, 0, 0, 1, 0, 0, 0, 1] }
+      ]
+    },
+    {
+      "id": "loudness", "label": "Loudness", "control": "DSP Loudness", "cell": "0x0db1",
+      "_design": "the program's loudness selector, two-way per channel (left 0x0db1..2, right 0x0db3..4)",
+      "choices": [
+        { "id": "off", "label": "Off", "words": [1, 0, 1, 0] },
+        { "id": "on",  "label": "On",  "words": [0, 1, 0, 1] }
+      ]
+    },
     {
       "id": "bass", "label": "Bass", "control": "DSP Bass",
       "cell": "0x0163", "table": "0x01dc",
@@ -65,6 +86,8 @@
       "_doc": "0..Max Volume through the program's volume curve. Written 0 at boot so nothing plays while the box comes up; ohc-audiod sets the run value once it has restored the output's saved level and tone. openHC sets each output's level in ALSA, as on the HC-800, so the DSP runs it full"
     },
     { "control": "DSP Max Volume", "cell": "0x0dd2", "value": 100 },
+    { "control": "DSP Mute", "cell": "0x0dbd", "words": ["0x00fffe20", "0x01000000"],
+      "_doc": "the program's mute: these words are stock's 'on' (its Master switch writes 0, 0 for off). The program boots it half set, so it is written; silence at boot is Volume's job" },
     { "control": "DSP Volume Curve", "cell": "0x0dd3", "value": 0,
       "_doc": "which of the program's two volume curves Volume indexes" },
     { "control": "DSP Input Gain", "cell": "0x0dcd", "value": 24,

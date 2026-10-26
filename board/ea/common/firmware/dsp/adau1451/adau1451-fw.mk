@@ -2,7 +2,9 @@
 #
 # adau1451-fw — openHC's SigmaDSP parameter file for the EA3's ADAU1451
 #
-# Built from the profile in board/ea/common/firmware/dsp/adau1451/ by mkfw.py
+# The build rule for THIS folder: firmware generated into the image from its
+# source here, not a package (external.mk includes firmware/*/*/*.mk). Built
+# from ea3.json by mkfw.py
 # (the build host's python3, standard library only). The file is the kernel's
 # own SigmaDSP firmware format: adau1451-c4 hands it to the stock sigmadsp core,
 # which writes its tables at bind and turns its controls into ALSA controls.

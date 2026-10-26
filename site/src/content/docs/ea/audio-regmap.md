@@ -166,6 +166,73 @@ The 2-bit pin fields take `AUDIO_HAL_I2S_PIN_ENABLE` and `dsm` takes
 `AUDIO_HAL_DATA_STORAGE_MODE`. **For plain stereo out: `dsm = 1`, `pin[0] =
 ENABLE`, the rest `DISABLE`.**
 
+## Measured on a stock unit while it plays
+
+Read off a running stock EA3 (2026-10-26) through `/dev/mem`, with stock's own
+`ismdaudio` driving the hardware and `aplay` playing silence at 48 kHz/16-bit
+into card 0's `analog0`. Stock keeps this pipeline running even when nothing
+plays, so the block is clocked and reads are safe there; on openHC it is not
+(see the warning below). Read-only throughout.
+
+**The base is right.** Stock maps `AUD_IO` as **64 KB at 0xdfa80000** — the
+`8086:2e60` function's BAR0 (01:06.2), the same base `ce5300-i2s` maps. The two
+`8086:2e5f` functions get only 8 KB each; they are the audio DSP cores, not the
+I²S path.
+
+Static values while playing:
+
+| Register | Value | Reading |
+|---|---|---|
+| `+0x0000` | `0x00000007` | global |
+| `+0x000c` | `0x00000008` | global |
+| `+0x002c` | `0x00000180` | global |
+| `+0x0064` | `0x00000001` | global |
+| `+0x2000` TX0 | `0x00000021` | bit 0 set while running — the likely **stream enable** |
+| `+0x2004` TX0 ctrl | `0x0000f1e0` | pin0 ENABLE, pins 1–3 DISABLE, dsm STEREO — as decoded — but **bit 0 is 0 while playing**, so it is not the run bit |
+| `+0x2008` | `0x00000005` | |
+| `+0x2010` | `0x00000100` | |
+| `+0x2014` | `0x00000008` | DMA0's `interrupt_mask` value — the likely **interrupt mask register** |
+| `+0x201c` | `0x0000003f` | |
+| `+0x2020` | moving, `0x42..0x7f` | FIFO level |
+| `+0x2104/2204` | `0x000e0000` | TX1/TX2, idle |
+| `+0x3004` RX0 | `0x001e0000` | |
+| `+0x1014` DMA0 | `0xdfa82018` | destination = `AUD_IO + 0x2018`, the TX0 FIFO port (`txSATRAddr`) |
+| `+0x101c` DMA0 ctrl | `0xc0006696` | the descriptor's mode word with bit 31 (active) set |
+
+Moving while it plays — **the DMA position**:
+
+| Register | Reading |
+|---|---|
+| `+0x1008` / `+0x100c` | descriptor addresses, stepping in 32-byte units |
+| `+0x1010` (= `+0x1020`) | **current source address** inside the buffer — what `.pointer` needs |
+| `+0x1018` | bytes left in the current descriptor |
+
+The descriptors themselves, read from RAM (32 bytes each, a ring):
+
+```
++0x00 next descriptor       +0x10 mode   0x40006696
++0x04 source size  0x00000f00  +0x14 per-buffer word (varies)
++0x08 source buffer         +0x18 size again 0x00000f00
++0x0c destination 0xdfa82018 +0x1c this descriptor's own address
+```
+
+So a period here is 3840 bytes (960 stereo 16-bit frames, 20 ms at 48 kHz).
+
+**Clock and reset.** `01:0c.1` (`8086:2e6f`, `ismdclock`, 0xdffe1000) is
+timestamp counters, not gating. The SoC's Clock and Reset Unit, `00:00.2`
+(`8086:2e52`), has a 256-byte register block at **0xbfffef00** that stock's
+OSAL maps; its values on a playing stock unit are the reference for finding the
+bits that ungate audio — read the same block on openHC and compare:
+
+```
++00 000003fc  +04 00020283  +08 000001e3  +0c 0000f843  +10 00000017  +14 0000e7e3
++18 000000f1  +1c 0fe1030f  +20 00000023  +24 00000003  +28 00000007  +2c 00000041
++30 000001ff  +34 00000001  +38 00000099  +3c 0000003f  +40 000000e3  +44 00000003
++48 00000063  +4c 00000022  +50 00000003  +58 00000003  +5c 0000000f  +60 8000a222
++64 28f42180  +68 00018269  +80 0929e3ff  +84 009f12a7  +8c 00000047  +90 00000047
++94 000007fc  +98 000007fe   (all others 0)
+```
+
 ## What a driver has to do
 
 From `audio_hal_render_start`:
