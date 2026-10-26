@@ -4,7 +4,7 @@
 //! application upload never touches. It talks plain text at 115200 8N1:
 //!
 //! ```text
-//! EM357 Serial Btl v…
+//! EM357 Serial Bootloader v43 b27
 //! 1. upload ebl
 //! 2. run
 //! 3. ebl info
@@ -54,7 +54,7 @@ pub fn at_prompt(fd: RawFd) -> bool {
     read_until(fd, 2000, PROMPT).0
 }
 
-/// The bootloader's banner line ("EM357 Serial Btl v…"), for the log.
+/// The bootloader's banner line ("EM357 Serial Bootloader v…"), for the log.
 pub fn banner(fd: RawFd) -> Option<String> {
     unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
     crate::write_all(fd, b"\r\n");
