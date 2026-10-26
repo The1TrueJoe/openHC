@@ -276,11 +276,15 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
     let on_disk = ssh
         .read_file(&menu)
         .with_context(|| format!("{menu} is unreadable — refusing to write a bootloader blind"))?;
-    // A spent factory-restore-once entry from `restore` would otherwise sit at
+    // The spent one-shot entries from `restore` would otherwise sit at
     // ENTRY_OPENHC and push our entry past it. See hc::drop_entry.
-    let no_once = hc::drop_entry(&on_disk, hc::FACTORY_ONCE_TITLE);
-    if no_once != on_disk {
-        p.emit(Event::detail(format!("dropped the spent `{}` entry", hc::FACTORY_ONCE_TITLE)));
+    let mut no_once = on_disk.clone();
+    for t in hc::RESTORE_ONCE_TITLES {
+        let dropped = hc::drop_entry(&no_once, t);
+        if dropped != no_once {
+            p.emit(Event::detail(format!("dropped the spent `{t}` entry")));
+            no_once = dropped;
+        }
     }
     // An existing openHC entry is rebuilt, not kept: the mode lives in it (a
     // boot-once entry carries `savedefault`), so keeping it meant a reinstall
@@ -543,8 +547,10 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
         return Err(bail_umount("menu.lst read back differently than written — restored the backup".into()));
     }
     p.emit(Event::detail(format!(
-        "menu.lst verified, {} bytes: entry {once} restores once and saves entry {} as the default",
+        "menu.lst verified, {} bytes: entry {once} restores once, entry {} is stock's first boot \
+         (creates the /tmp the restore leaves out), then entry {} is the default",
         out.len(),
+        once + 1,
         hc::ENTRY_VENDOR
     )));
     ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -553,8 +559,9 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     let _ = ssh.run("sync; reboot", false);
     p.emit(Event::resolved(
         "on its way. The box runs Control4's own restore off the untouched recovery partition, \
-         same as the ID button, then reboots into the freshly restored stock image. Allow ~5 minutes; \
-         it comes back on a new DHCP lease, so find it by MAC"
+         same as the ID button, then reboots into the freshly restored stock image, whose first boot \
+         creates the /tmp the restore leaves out. Allow ~5 minutes; it comes back on a new DHCP lease, \
+         so find it by MAC"
             .into(),
     ));
     Ok(())
@@ -589,8 +596,9 @@ pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     let _ = ssh.run("sync; reboot", false);
     p.emit(Event::resolved(
         "on its way. The box runs Control4's own restore off the untouched recovery partition, \
-         same as the ID button, then reboots into the freshly restored stock image. Allow ~5 minutes; \
-         it comes back on a new DHCP lease, so find it by MAC"
+         same as the ID button, then reboots into the freshly restored stock image, whose first boot \
+         creates the /tmp the restore leaves out. Allow ~5 minutes; it comes back on a new DHCP lease, \
+         so find it by MAC"
             .into(),
     ));
     Ok(())

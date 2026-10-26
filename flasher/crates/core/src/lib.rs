@@ -164,14 +164,61 @@ mod tests {
         assert!(m.contains("default\t\tsaved\n"));
         assert!(!m.lines().any(|l| l.starts_with("default") && l.contains('0')));
         assert_eq!(idx, 2);
-        let once = &m[m.find(hc800::FACTORY_ONCE_TITLE).unwrap()..];
-        let sd = once.find(&format!("savedefault\t{}", hc800::ENTRY_VENDOR)).expect("must hand back");
+        assert_eq!(
+            hc800::titles(&m)[2..],
+            [hc800::FACTORY_ONCE_TITLE.to_string(), hc800::STOCK_FIRSTBOOT_TITLE.to_string()]
+        );
+        let once = &m[m.find(hc800::FACTORY_ONCE_TITLE).unwrap()..m.find(hc800::STOCK_FIRSTBOOT_TITLE).unwrap()];
+        // The restore hands over to the first-boot entry, which hands back.
+        let sd = once.find("savedefault\t3").expect("restore must hand over to the first boot");
         assert!(sd < once.find("\nboot").unwrap(), "savedefault must precede boot:\n{once}");
         assert!(once.contains("root=restore_fs_hc800"), "must be entry 0's restore:\n{once}");
         // The button's lines and both vendor entries are byte-identical.
         let stock_entries = &HC800_STOCK_MENU[HC800_STOCK_MENU.find("title").unwrap()..];
         assert!(m.contains(stock_entries));
         assert!(m.contains("support_factorydefault\t1\nfactorydefault\t\t0\n"));
+    }
+
+    #[test]
+    fn stocks_first_boot_after_a_restore_creates_tmp_then_hands_back() {
+        let (m, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
+        let fb = &m[m.find(hc800::STOCK_FIRSTBOOT_TITLE).unwrap()..];
+        // Entry 1's own root and kernel line, byte for byte, then the init.
+        assert!(fb.contains("root\t\t(hd0,2)\n"), "must boot stock's sda3:\n{fb}");
+        let k = fb.lines().find(|l| l.starts_with("kernel")).unwrap();
+        assert_eq!(
+            k,
+            format!(
+                "kernel\t\t/boot/bzImage root=root_fs_hc800 type=ext4 ro console=ttyS0,115200 quiet \
+                 consoleblank=0 vt.cur_default=1 {}",
+                hc800::STOCK_FIRSTBOOT_INIT
+            )
+        );
+        // Back to plain stock, saved before the kernel runs.
+        let sd = fb.find(&format!("savedefault\t{}", hc800::ENTRY_VENDOR)).expect("must hand back");
+        assert!(sd < fb.find("\nboot").unwrap(), "savedefault must precede boot:\n{fb}");
+        assert!(fb.trim_end().ends_with("boot"), "the last entry in the file:\n{fb}");
+    }
+
+    #[test]
+    fn the_first_boot_init_parses_into_sh_c_and_one_script() {
+        // What the kernel does with it: after `--` every argument goes to init,
+        // a double-quoted one whole. One quoted pair, nothing nested.
+        let init = hc800::STOCK_FIRSTBOOT_INIT;
+        let (head, script) = init.split_once(" -- -c ").unwrap();
+        assert_eq!(head, "init=/bin/sh");
+        assert!(script.starts_with('"') && script.ends_with('"'), "{script}");
+        let body = &script[1..script.len() - 1];
+        assert!(!body.contains('"'), "a nested quote would split the script: {body}");
+        // Every step runs even if one fails, and stock's init always starts last.
+        assert!(body.ends_with("exec /sbin/init"), "{body}");
+        assert!(!body.contains("&&"), "{body}");
+        for step in ["mount -t proc proc /proc", "mount -o remount,rw /", "mkdir -p /tmp", "chmod 1777 /tmp",
+                     "mount -o remount,ro /", "umount /proc"] {
+            assert!(body.split("; ").any(|s| s == step), "missing `{step}` in {body}");
+        }
+        // The root goes back to read-only before init, as a normal boot hands it over.
+        assert!(body.find("remount,ro").unwrap() < body.find("exec").unwrap());
     }
 
     #[test]
@@ -191,7 +238,7 @@ mod tests {
         // it before appending is what keeps openHC at ENTRY_OPENHC; otherwise
         // "boot openHC" would boot the factory restore.
         let (after_restore, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
-        let cleaned = hc800::drop_entry(&after_restore, hc800::FACTORY_ONCE_TITLE);
+        let cleaned = hc800::RESTORE_ONCE_TITLES.iter().fold(after_restore, |m, t| hc800::drop_entry(&m, t));
         assert_eq!(hc800::titles(&cleaned), hc800::titles(HC800_STOCK_MENU));
         let installed = format!("{cleaned}{}", hc800::menu_entry(true));
         assert_eq!(hc800::titles(&installed)[hc800::ENTRY_OPENHC as usize], "openHC");

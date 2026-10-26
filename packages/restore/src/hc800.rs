@@ -126,8 +126,10 @@ pub fn stock(reboot: bool) -> io::Result<()> {
         return Err(io::Error::other("menu.lst read back differently than written — restored the backup"));
     }
     println!(
-        "stock: menu.lst verified ({} bytes): entry {once} restores once, then entry {} boots",
+        "stock: menu.lst verified ({} bytes): entry {once} restores once, entry {} is stock's first boot \
+         (creates the /tmp the restore leaves out), then entry {} boots",
         out.len(),
+        once + 1,
         hc::ENTRY_VENDOR
     );
     drop(g);
