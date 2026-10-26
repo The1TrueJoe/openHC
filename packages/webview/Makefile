@@ -15,18 +15,22 @@ WPE_PC   ?= $(shell pkg-config --exists wpe-webkit-2.0 \
 PLATFORM_PC ?= $(shell pkg-config --exists wpe-platform-2.0 && echo wpe-platform-2.0)
 PREFIX   ?= /usr
 CC       ?= cc
+# The libwpe path reads /dev/input itself (src/input.c), keymapped by xkbcommon;
+# the platform does its own input.
 ifneq ($(PLATFORM_PC),)
 PKGS      = $(WPE_PC) $(PLATFORM_PC) glib-2.0 gobject-2.0
 CPPFLAGS += -DOHC_WPE_PLATFORM
+SRCS      = src/webview.c
 else
-PKGS      = $(WPE_PC) wpe-1.0 glib-2.0 gobject-2.0
+PKGS      = $(WPE_PC) wpe-1.0 glib-2.0 gobject-2.0 xkbcommon
+SRCS      = src/webview.c src/input.c
 endif
 CFLAGS   ?= -O2 -g -Wall -Wextra
 LDLIBS   += $(shell pkg-config --libs $(PKGS))
 CPPFLAGS += $(shell pkg-config --cflags $(PKGS))
 
-webview: src/webview.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
+webview: $(SRCS) src/input.h
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(SRCS) $(LDFLAGS) $(LDLIBS)
 
 install: webview
 	install -D -m 0755 webview $(DESTDIR)$(PREFIX)/bin/webview
