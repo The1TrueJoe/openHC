@@ -75,6 +75,13 @@ jobs:
             if (-not (Get-Content logs/adau145x.txt -ErrorAction SilentlyContinue)) {
               "::warning::nothing named for ADAU145x/146x under $env:SSPLUS_HOME; see logs/tree.txt"
             }
+            # Processor support may be DLLs beside the host, or downloadable add-ins
+            # kept outside the install folder.
+            Get-ChildItem -Path "$env:SSPLUS_HOME\Host" -File -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty Name | Out-File logs/host-files.txt
+            Get-ChildItem -Path $env:SSPLUS_HOME, $env:ProgramData, $env:APPDATA, $env:LOCALAPPDATA -Directory -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'SigmaStudio|Analog Devices' -and $_.Name -match 'add-?in|plugin|processor|platform|device' } |
+              Select-Object -ExpandProperty FullName | Out-File logs/addin-dirs.txt
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
