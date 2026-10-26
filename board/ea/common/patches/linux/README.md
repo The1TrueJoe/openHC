@@ -269,6 +269,11 @@ The switch burned the most time of anything here, so the traps stay recorded:
    (`spi92`), and DSA's platform_data needed `netdev[cpu_port]` set by hand.
    Neither matters with a device tree: the switch is a child of the SSP node and
    the conduit is `ethernet = <&gbe>`.
+5. **The CE5300 SSP has Quark's register layout but not Quark's clock** (0009).
+   It has no DDS: routing it through Quark's DDS_RATE path wedges the SSP
+   (`b53-switch spi92.1: Flush failed / SPI transfer failed: -5`). It is clocked
+   like a CE4100/PXA25x part, a /2 SCR divisor off a 10 MHz input clock, and
+   skips pxa2xx's flush-first, which times out on a stopped SSP.
 
 Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.
