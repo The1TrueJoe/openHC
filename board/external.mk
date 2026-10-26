@@ -64,8 +64,9 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
 #                     BR2_OHC_EA_KERNEL_DRIVERS is set by ea/common/common_defconfig
 #                     and by nothing else.
 #
-# arch/ carries the EA board device trees (arch/x86/boot/dts/, linked in by
-# patches/linux/0015's BUILTIN_DTB), so .dts/.dtsi are mirrored too.
+# arch/ carries the EA family's shared .dtsi files (arch/x86/boot/dts/, linked
+# in by common/x86/patches/linux/0015's BUILTIN_DTB), so .dts/.dtsi are
+# mirrored too.
 OHC_KERNEL_SUBTREES = arch drivers sound
 # NOT unconditional, despite living under common/. The only thing in that mirror
 # is the IO-MCU gpiochip driver, and two boards have no IO microcontroller —
@@ -77,9 +78,6 @@ OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/common/kernel
 endif
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/kernel
-endif
-ifeq ($(BR2_OHC_HC800_KERNEL_DRIVERS),y)
-OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/hc800/kernel
 endif
 ifeq ($(BR2_OHC_IOXV1_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/kernel
@@ -112,17 +110,18 @@ define OHC_KERNEL_MIRROR_HOOK
 endef
 LINUX_POST_PATCH_HOOKS += OHC_KERNEL_MIRROR_HOOK
 
-# The EA board's own device tree sits at the root of its board folder
-# (board/ea/<board>/<board>.dts), beside the ohc.features its includes follow,
-# not in a kernel mirror. Copy it next to the shared .dtsi files the family
-# mirror just installed; the board fragment names it in CONFIG_BUILTIN_DTB_NAME.
-# BR2_OHC_EA_BOARD is written by build/build.sh.
-OHC_EA_BOARD = $(call qstrip,$(BR2_OHC_EA_BOARD))
-ifneq ($(OHC_EA_BOARD),)
-define OHC_EA_BOARD_DTS_HOOK
-	install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/ea/$(OHC_EA_BOARD)/$(OHC_EA_BOARD).dts \
-		$(LINUX_DIR)/arch/x86/boot/dts/$(OHC_EA_BOARD).dts
-	echo "openHC: installed arch/x86/boot/dts/$(OHC_EA_BOARD).dts (ea/$(OHC_EA_BOARD))"
+# A board's own device tree sits at the root of its board folder
+# (board/ea/<board>/<board>.dts, board/hc800/hc800.dts), beside the
+# ohc.features its includes follow, not in a kernel mirror. Copy it next to the
+# shared .dtsi files a mirror just installed; the board fragment names it in
+# CONFIG_BUILTIN_DTB_NAME. BR2_OHC_BOARD_DTS is written by build/build.sh for
+# the EA family and set in the defconfig of a standalone board.
+OHC_BOARD_DTS = $(call qstrip,$(BR2_OHC_BOARD_DTS))
+ifneq ($(OHC_BOARD_DTS),)
+define OHC_BOARD_DTS_HOOK
+	install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/$(OHC_BOARD_DTS) \
+		$(LINUX_DIR)/arch/x86/boot/dts/$(notdir $(OHC_BOARD_DTS))
+	echo "openHC: installed arch/x86/boot/dts/$(notdir $(OHC_BOARD_DTS)) ($(OHC_BOARD_DTS))"
 endef
-LINUX_POST_PATCH_HOOKS += OHC_EA_BOARD_DTS_HOOK
+LINUX_POST_PATCH_HOOKS += OHC_BOARD_DTS_HOOK
 endif

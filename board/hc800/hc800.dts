@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Control4 HC-800 (Lite-On AE100: Atom D525 + NM10/ICH7): the front panel and
+ * the ICH GPIO line names, which no firmware on this PC describes. Linked into
+ * the kernel by BUILTIN_DTB (board/common/x86/patches/linux/0015); GRUB 0.97
+ * passes no tree of its own.
+ *
+ * ACPI still owns the platform -- CPUs, interrupts, PCI routing, the UARTs
+ * and every other PNP device under LPCB -- because arch/x86/kernel/devicetree.c
+ * only takes those from a tree when ACPI is disabled. The tree exists to give
+ * gpio_ich a node that gpio-leds and gpio-keys-polled can point at.
+ *
+ * Every offset below was read out of the vendor kernel's own gpio_led and
+ * gpio_keys_button arrays and confirmed on live hardware against an EBUSY probe
+ * of every line and the ICH's GPIO_USE_SEL register (0x1f40f7cd), which has all
+ * of them muxed as GPIO. board/hc800/rootfs-overlay/opt/ohc/board.env has the
+ * evidence line by line.
+ */
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "Control4 HC-800";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	chosen {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+	};
+
+	/*
+	 * The root bus. pcibios_get_phb_of_node() finds it by device_type +
+	 * bus-range and pci_set_of_node() finds each device by the devfn in
+	 * reg[0] (bits 15:8). No compatible, so of_platform_default_populate()
+	 * creates no stray platform device for it; the PCI ids bind the drivers.
+	 * Only 00:1f.0 is described: a described device gives up its ACPI
+	 * companion, and nothing else here needs a node.
+	 */
+	pci@80000000 {
+		#address-cells = <3>;
+		#size-cells = <2>;
+		device_type = "pci";
+		bus-range = <0 0>;
+		/* 32-bit memory space, identity-mapped. Informational: ACPI assigns
+		 * the windows and nothing translates through these nodes. */
+		ranges = <0x02000000 0 0x80000000 0x80000000 0 0x80000000>;
+
+		/* The LPC bridge (8086:27bc). lpc_ich is the MFD that spawns
+		 * gpio_ich and iTCO_wdt from it. */
+		lpc@1f {
+			reg = <0xf800 0 0 0 0>;
+
+			/* mfd-core hands this node to the gpio_ich cell by its
+			 * compatible (board/hc800/patches/linux/0002). 50 lines;
+			 * the ones not named are not wired, or not known. */
+			gpio: gpio {
+				compatible = "intel,ich-gpio";
+				gpio-controller;
+				#gpio-cells = <2>;
+				/* The vendor's own names (its /etc/init.d/gpio), and
+				 * id_button as on the EA family. The LEDs are not
+				 * named: leds-gpio labels them as their consumer. */
+				gpio-line-names =
+					/*  0 */ "zigbee_reset", "", "id_button", "", "", "", "", "",
+					/*  8 */ "", "", "", "", "", "", "wlan_disable", "lan_disable",
+					/* 16 */ "", "", "", "", "", "", "", "",
+					/* 24 */ "reset_button", "", "", "", "", "", "", "",
+					/* 32 */ "", "io_reset", "board_id0", "", "", "", "board_id1", "board_id2";
+			};
+		};
+	};
+
+	/*
+	 * Four physical LEDs, six channels, all active-high. {8,9,10} are the
+	 * three dies of ONE tri-colour wifi indicator; {26,27,28} are three
+	 * separate status LEDs. The labels are ABI (/sys/class/leds). Power keeps
+	 * the vendor's default-on: on stock it is a power indicator, not a
+	 * software LED.
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		led-wifi-red {
+			label = "hc800:red:wifi";
+			gpios = <&gpio 8 GPIO_ACTIVE_HIGH>;
+		};
+		led-wifi-yellow {
+			label = "hc800:yellow:wifi";
+			gpios = <&gpio 9 GPIO_ACTIVE_HIGH>;
+		};
+		led-wifi-blue {
+			label = "hc800:blue:wifi";
+			gpios = <&gpio 10 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "timer";
+		};
+		led-data {
+			label = "hc800:green:data";
+			gpios = <&gpio 26 GPIO_ACTIVE_HIGH>;
+		};
+		led-network {
+			label = "hc800:green:network";
+			gpios = <&gpio 27 GPIO_ACTIVE_HIGH>;
+		};
+		led-power {
+			label = "hc800:green:power";
+			gpios = <&gpio 28 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "default-on";
+		};
+	};
+
+	/*
+	 * The ID button: the HC-800's FACTORY-RESET button, read by GRUB and the
+	 * stock firmware at boot. Exposed here only as the input device the vendor
+	 * kernel has (KEY_F5, code 63, from its /proc/bus/input/devices), so
+	 * anything written for a stock unit still works. Never give it a runtime
+	 * job. Polled, because the ICH line has no usable interrupt; 40 ms poll
+	 * and 20 ms debounce are the vendor's figures.
+	 */
+	id-button {
+		compatible = "gpio-keys-polled";
+		label = "hc800-id-button";
+		poll-interval = <40>;
+
+		key-id {
+			label = "id_button";
+			gpios = <&gpio 2 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_F5>;
+			debounce-interval = <20>;
+		};
+	};
+};
