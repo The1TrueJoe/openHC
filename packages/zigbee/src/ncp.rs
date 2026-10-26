@@ -225,6 +225,9 @@ mod tests {
     fn fake_ncp(mut s: UnixStream, received: Arc<Mutex<Vec<u8>>>, stuck_in_bootloader: bool) {
         let _ = s.set_read_timeout(Some(Duration::from_millis(50)));
         let mut mode = if stuck_in_bootloader { Mode::Bootloader } else { Mode::App { protocol: 4, stack: 0x4720 } };
+        // Like a real v8 NCP: once it has announced protocol 8 it parses every
+        // later frame with the extended header, the version command included.
+        let mut announced = false;
         let (mut de, mut tx, mut buf, mut xm) = (Deframer::default(), 0u8, [0u8; 512], Vec::<u8>::new());
         let menu = b"\r\nEM357 Serial Btl v5.4.1\r\n1. upload ebl\r\n2. run\r\n3. ebl info\r\nBL > ";
         let mut deadline = std::time::Instant::now() + Duration::from_secs(60);
@@ -241,6 +244,7 @@ mod tests {
                     for f in de.push(&bytes) {
                         if f[0] == 0xc0 {
                             tx = 0;
+                            announced = false;
                             s.write_all(&frame(0xc1, &[0x02, 0x0b])).unwrap();
                             continue;
                         }
@@ -249,14 +253,20 @@ mod tests {
                         }
                         let ack = ((f[0] >> 4) + 1) & 7;
                         let d = randomize(&f[1..]);
-                        let extended = d.len() >= 5 && d[2] == 0x01 && *protocol >= 8;
+                        let extended = *protocol >= 8 && announced;
                         let (seq, id, params) = if extended {
                             (d[0], u16::from_le_bytes([d[3], d[4]]), &d[5..])
                         } else {
                             (d[0], d[2] as u16, &d[3..])
                         };
+                        if extended && (d.len() < 5 || d[2] != 0x01) {
+                            continue; // a legacy header after v8: not understood
+                        }
                         let resp: Vec<u8> = match id {
-                            0x0000 => vec![*protocol, 2, *stack as u8, (*stack >> 8) as u8],
+                            0x0000 => {
+                                announced = true;
+                                vec![*protocol, 2, *stack as u8, (*stack >> 8) as u8]
+                            }
                             0x008f => vec![0x00],
                             _ => vec![],
                         };
@@ -282,6 +292,7 @@ mod tests {
                     } else if bytes.contains(&b'2') && !received.lock().unwrap().is_empty() {
                         mode = Mode::App { protocol: 8, stack: 0x6780 };
                         de = Deframer::default();
+                        announced = false;
                     }
                 }
                 Mode::Upload => {

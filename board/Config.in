@@ -92,8 +92,10 @@ source "$BR2_EXTERNAL_OPENHC_PATH/../packages/splash/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/iomcu-attach/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/alsa-ohceq/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/webview/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/../packages/em357-ncp-firmware/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
+# Firmware for the boards' own co-processors lives with the boards, under
+# <board>/firmware/: the EM357 Zigbee NCP image every Zigbee board flashes.
+source "$BR2_EXTERNAL_OPENHC_PATH/common/firmware/zigbee/em357-ncp-firmware/Config.in"
 # sgx545-ce (the SGX545 KERNEL driver) is no longer a package — it is an in-tree
 # driver mirrored from board/ea/common/kernel/drivers/gpu/drm/sgx545ce. Only its
 # userspace (sgx545-um) and its libwpe backend remain packages here; webview, the

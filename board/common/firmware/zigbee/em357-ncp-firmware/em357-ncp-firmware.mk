@@ -1,6 +1,7 @@
 ################################################################################
 #
 # em357-ncp-firmware — the EmberZNet NCP image ohc-zigbee keeps the EM357 on
+# (board/common/firmware: the boards' co-processor firmware lives with the boards)
 #
 # Every openHC board with Zigbee (CA-1, the EA family, the HC-800) carries an
 # EM357 network co-processor. Control4 reflashes it from images on its rootfs;

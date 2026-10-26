@@ -15,6 +15,9 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 # the board tree that owns it, and lands here.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
+# ...and co-processor firmware packaged with its board: <board>/firmware/<radio>/<pkg>/
+# (board/common/firmware/zigbee/em357-ncp-firmware — the EM357 NCP image).
+include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/firmware/*/*/*.mk))
 
 # ── openHC's own kernel drivers: copied in, not patched in ─────────────────
 #

@@ -6,8 +6,10 @@
 //! pseudo-random sequence, every frame carries a CRC-CCITT, and DATA frames carry
 //! 3-bit sequence and acknowledge numbers. EZSP (UG100) rides inside DATA frames:
 //! `[seq, frameControl, frameId, params…]` up to protocol 7, and from protocol 8
-//! the extended `[seq, fcLo, fcHi, idLo, idHi, params…]` — except the version
-//! command, which is always sent in the legacy form so any NCP can answer it.
+//! the extended `[seq, fcLo, fcHi, idLo, idHi, params…]`. The first version
+//! command goes out in the legacy form so any NCP can answer it; an NCP that
+//! answers 8+ is then asked again in the extended form (seen on an EM357 running
+//! 6.7.8: a second legacy-form version request is misread).
 //!
 //! Not a radio stack: no callbacks, no retransmission beyond a resend on silence.
 //! Whatever owns the radio afterwards (zigpy, zigbee2mqtt) resets ASH itself.
@@ -159,6 +161,11 @@ pub fn parse_stack(s: &str) -> Option<u16> {
     Some(parts.iter().chain(std::iter::repeat(&0)).take(4).fold(0, |a, &p| (a << 4) | p))
 }
 
+/// OHC_ZIGBEE_DEBUG=1: log every byte the ASH layer sends and receives.
+fn debug() -> bool {
+    std::env::var("OHC_ZIGBEE_DEBUG").map(|v| v == "1").unwrap_or(false)
+}
+
 /// An ASH session on an already-open, raw, non-blocking tty.
 pub struct Ash {
     fd: RawFd,
@@ -176,6 +183,9 @@ impl Ash {
     }
 
     fn write(&self, b: &[u8]) {
+        if debug() {
+            eprintln!("ash tx {:02x?}", b);
+        }
         crate::write_all(self.fd, b);
     }
 
@@ -187,6 +197,9 @@ impl Ash {
         while Instant::now() < end {
             let n = unsafe { libc::read(self.fd, b.as_mut_ptr() as *mut libc::c_void, b.len()) };
             if n > 0 {
+                if debug() {
+                    eprintln!("ash rx {:02x?}", &b[..n as usize]);
+                }
                 for f in self.de.push(&b[..n as usize]) {
                     let stop = done(&f);
                     out.push(f);
@@ -223,7 +236,7 @@ impl Ash {
 
     /// Send an EZSP command and return the matching response's parameters.
     pub fn ezsp(&mut self, id: u16, params: &[u8]) -> Option<Vec<u8>> {
-        let legacy = id == EZSP_VERSION || self.protocol < 8;
+        let legacy = self.protocol < 8;
         let seq = self.seq;
         self.seq = self.seq.wrapping_add(1);
         let mut p = if legacy {
@@ -272,6 +285,7 @@ impl Ash {
     /// version; ask again with that, as every EZSP host does, so later commands
     /// use the header format it expects.
     pub fn version(&mut self) -> Option<NcpVersion> {
+        self.protocol = 4; // legacy header until the NCP says otherwise
         let mut want = 4u8;
         for _ in 0..2 {
             let r = self.ezsp(EZSP_VERSION, &[want])?;

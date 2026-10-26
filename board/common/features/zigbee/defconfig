@@ -19,7 +19,7 @@ BR2_PACKAGE_NODEJS_NPM=y
 # The NCP firmware ohc-zigbee keeps the EM357 on (EmberZNet 6.7.8, EZSP v8 —
 # the last line for the EM35x, and new enough for zigbee2mqtt's `ezsp` driver).
 # Flashed at boot when the radio runs something older, the way Control4 does;
-# see packages/em357-ncp-firmware and packages/zigbee/src/ncp.rs.
+# see board/common/firmware/zigbee/em357-ncp-firmware and packages/zigbee/src/ncp.rs.
 BR2_PACKAGE_EM357_NCP_FIRMWARE=y
 
 # Node's V8 needs the C++ runtime. Harmless where the toolchain already has it.
