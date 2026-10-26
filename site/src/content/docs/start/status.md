@@ -90,8 +90,9 @@ EA5, but neither board has been in hand.
 - **The Zigbee NCP on the CA-1**, which answers nothing at any baud. (The EA1's
   NCP now does answer; this caveat is CA-1-specific.)
 - **The full `stock` return-to-Control4 round-trip on the EA, end to end.** The
-  `mtd0` write path that it rests on is proven, but reverting the MFH *and*
-  recovery-kexec'ing p2 to reimage p1 has not yet been run through on hardware.
+  `mtd0` write path that it rests on is proven, but the reboot into boot-init
+  that reimages p1 from p2 and reverts the MFH has not yet been run through on
+  hardware.
 - **The return-to-stock button on the EA3.** The software path ships there too, but
   that board's GPIO line and polarity are not hardware-confirmed yet, so the
   fail-safe keeps the watcher inert until they are.

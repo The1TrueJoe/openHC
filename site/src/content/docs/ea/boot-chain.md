@@ -224,25 +224,33 @@ those are the legacy ports, they enumerate with `irq = 0`, and a port with no
 IRQ transmits fine but never receives. `SERIAL_8250_NR_UARTS` is raised from 4
 to 8.
 
-**A kexec out of a kernel whose GPU driver has probed breaks the next kernel**
-unless the SGX is put back in reset first. Once `pvrsrvkm` has bound the SGX545
+**A kexec out of a kernel whose GPU driver has probed breaks the next kernel.** Once `pvrsrvkm` has bound the SGX545
 (01:02.0), the core stays live after the driver lets go: its shutdown hook, and
 even a full unbind, leave it out of reset. The kernel kexec'd next then gets
 reads from the HPET and IOAPIC that return the *previous* read's value, so the
 HPET looks frozen (`clocksource: Watchdog hpet interval: 0ns`) and interrupt
 routing breaks. DMA dies with it: SDHCI `Timeout waiting for hardware interrupt`,
 e1000 `Detected Tx Unit Hang`, EHCI `-110`. Which kernel comes next does not
-matter, nor does whether anything ever rendered. The bootstrap → real-kernel
-handoff is unaffected, because the bootstrap never binds the GPU. The real kernel
-holds the SGX in soft reset (`EUR_CR_SOFT_RESET` = all units) at kexec and
-reboot, after the GPU driver has shut down. That's
-`board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c`, so a test or recovery
-kexec from a running box works. On a kernel built before it, run this first:
+matter. The bootstrap → real-kernel handoff is unaffected, because the bootstrap
+never binds the GPU.
 
-```
-echo 0000:01:02.0 > /sys/bus/pci/drivers/pvrsrvkm/unbind
-devmem 0xdc000080 32 0x3f
-```
+How much can be saved depends on whether the GPU ever rendered:
+
+- **GPU bound but never used** (display off since boot): holding the SGX in soft
+  reset (`EUR_CR_SOFT_RESET` = all units) after its driver shuts down gives a
+  healthy next kernel. The real kernel does this itself at kexec and reboot
+  (`board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c`). On an older kernel,
+  first run `echo 0000:01:02.0 > /sys/bus/pci/drivers/pvrsrvkm/unbind; devmem 0xdc000080 32 0x3f`.
+- **GPU used** (the panel web view ran): nothing found so far saves the next
+  kernel. Unbind plus soft reset, and even every safe SGX register put back to
+  its power-on value (events cleared, MMU back to bypass, clock gating off), still
+  leave it with dead DMA and garbled bus-1 reads.
+
+So nothing in the product kexecs out of the real kernel. `ohc-restore stock`
+reboots through CEFDK into boot-init, and `ohc-restore recovery-kexec` refuses
+while the GPU driver is bound. To RAM-test an image on an installed box, boot
+with the display off (`OHC_DISPLAY_ENABLE=0`), then unbind + reset as above and
+kexec.
 
 Don't poke other SGX registers by hand: on an uninitialised core, reading e.g.
 `EUR_CR_USE_CODE_BASE_0` (0xa0c) hangs the bus.

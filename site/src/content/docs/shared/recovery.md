@@ -103,7 +103,8 @@ known-stock SHA against the real 16 MB backup. Its subcommands:
 | `status` | parse and print the MFH table | no |
 | `revert` | remove openHC's item (stock boot); reversible with `install` while p1 is still openHC | yes — erase + write + read-back verify |
 | `install` | re-append openHC's item (undo `revert`) | yes |
-| `stock` | `revert`, then recovery-kexec p2's kernel to reimage p1 — the full return to Control4 | yes |
+| `stock [--no-reboot]` | stage a one-shot flag on p1 and reboot; boot-init reimages p1 from p2 before it pivots, then `revert`s the MFH — the full return to Control4 | yes (from boot-init) |
+| `recovery-kexec` | kexec p2's recovery kernel to reimage p1 (legacy). Refuses while the GPU driver is bound: a kexec out of a kernel whose GPU driver has run leaves the next kernel without working DMA ([boot chain](/ea/boot-chain/)) | no |
 | `restore-mfh <backup.bin> [--compensate]` | rewrite the MFH block from a full-flash backup (repair a corrupted MFH) | yes |
 | `erasetest` | erase the MFH block and report how much read back `0xff` (diagnostic) | erase only |
 
@@ -139,9 +140,9 @@ fail-safe keeps the watcher inert until they are.
 The `mtd0` **write path is proven**: it rewrote the MFH on a corrupted live EA1
 and read it back verified (the recovery was possible because `kexec` is a soft
 load that never reads the MFH, so a fixed kernel could be kexec'd in to repair the
-flash). The **full `stock` round-trip** — `revert` the MFH *and* recovery-kexec p2
-to reimage p1, all the way back to Control4 — has **not** yet been run end to end
-on hardware.
+flash). The **full `stock` round-trip** — the one-shot flag, the reboot, boot-init
+reimaging p1 from p2 and reverting the MFH, all the way back to Control4 — has
+**not** yet been run end to end on hardware.
 :::
 
 ### Three boot modes, chosen at power-on

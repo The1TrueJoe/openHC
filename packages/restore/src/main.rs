@@ -14,8 +14,8 @@
 //!   1. REMOVE that MFH item  (this tool, over /dev/mtd0) — CEFDK then boots the
 //!      stock kernel item again, exactly as it did from the factory;
 //!   2. REIMAGE p1 from p2    — the stock rootfs. p1 is the running root, so this
-//!      cannot be done in place; it is handed to CEFDK's own recovery kernel,
-//!      which is what the recessed button triggers and what `stock` kexecs.
+//!      cannot be done in place: `stock` drops a one-shot flag and reboots, and
+//!      boot-init reimages p1 before it pivots, while p1 is free.
 //!
 //! The MFH is SHA-256 protected and a bad write bricks past the button (recovery
 //! needs an external programmer), so every write here is read-modify-ERASE-write
@@ -28,8 +28,9 @@
 //!   revert        remove openHC's MFH item (stock boot). Writes mtd0. REVERSIBLE
 //!                 with `install` as long as p1 still holds openHC.
 //!   install       re-append openHC's MFH item (undo `revert`). Writes mtd0.
-//!   stock         revert, then kexec p2's recovery kernel to reimage p1. The
-//!                 complete, one-way return to stock.
+//!   stock         stage the one-shot flag and reboot; boot-init reimages p1 from
+//!                 p2 and reverts the MFH. The complete, one-way return to stock.
+//!                 `--no-reboot` stages without rebooting.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -305,7 +306,7 @@ fn cmd_install() -> io::Result<()> {
     Ok(())
 }
 
-fn cmd_stock() -> io::Result<()> {
+fn cmd_stock(reboot: bool) -> io::Result<()> {
     // Restoring stock means two things: p1 must hold the factory rootfs again, and
     // the MFH autoscript (which boots openHC) must be cleared. The catch is that p1
     // cannot be reformatted while it is the running root, and clearing the autoscript
@@ -317,16 +318,23 @@ fn cmd_stock() -> io::Result<()> {
     //     `cmd_reimage_finalize`.
     //
     //   * p1 IS root (a normal durable openHC boot) — we can neither reformat p1 nor
-    //     kexec the recovery kernel (the EA3 fat kernel's RAM-reclaim memmap starves
-    //     kexec's segment placement: "locate_hole failed"). Instead drop a one-shot
-    //     flag on p1 and reboot with the autoscript still enabled; boot-init finds
-    //     the flag before it pivots — where p1 is free — and runs the finalize there.
+    //     kexec the recovery kernel. The EA3 fat kernel's RAM-reclaim memmap starves
+    //     kexec's segment placement ("locate_hole failed"), and on every EA a kexec
+    //     out of a kernel whose GPU driver has run leaves the next kernel with dead
+    //     DMA and timers (see `recovery_reimage_p1`). Instead drop a one-shot flag on
+    //     p1 and reboot through CEFDK with the autoscript still enabled; boot-init
+    //     finds the flag before it pivots — where p1 is free — and runs the finalize
+    //     there.
     if p1_is_root() {
         stage_stock_flag()?;
         println!(
-            "stock: staged a one-shot restore on p1. Reboot: boot-init will reimage p1 to \
+            "stock: staged a one-shot restore on p1. On reboot boot-init will reimage p1 to \
              Control4 and clear the autoscript, then boot stock."
         );
+        if reboot {
+            println!("stock: rebooting");
+            run("reboot", &[])?;
+        }
         Ok(())
     } else {
         println!("stock: p1 is free — reimaging it directly from p2 and clearing the autoscript...");
@@ -442,6 +450,18 @@ fn reimage_p1_direct() -> io::Result<()> {
 /// tar, find the bzImage inside (unwrapping the EA3's CEFDK container), and kexec
 /// it.
 fn recovery_reimage_p1() -> io::Result<()> {
+    // A kexec out of a kernel whose SGX driver has bound the GPU leaves the next
+    // kernel broken: HPET/IOAPIC reads come back one read late and SDHCI, e1000 and
+    // EHCI DMA stall, so the recovery kernel could not reimage p1. Holding the SGX in
+    // reset (drivers/gpu/ce5300-sgx-quiesce.c) only saves the case where the GPU
+    // never rendered. Refuse rather than strand the box; `stock` gets there by a
+    // reboot instead.
+    if std::path::Path::new(SGX_DRIVER_LINK).exists() {
+        return Err(io::Error::other(
+            "the SGX GPU driver is bound: a kexec from this kernel would leave the recovery \
+             kernel without working DMA. Use `ohc-restore stock` (one-shot flag + reboot) instead",
+        ));
+    }
     let p2 = "/mnt/ohc-recovery";
     std::fs::create_dir_all(p2)?;
     run("mount", &["-o", "ro", "/dev/mmcblk0p2", p2])
@@ -490,6 +510,9 @@ fn recovery_reimage_p1() -> io::Result<()> {
     run("kexec", &["-e"])?; // does not return
     Ok(())
 }
+
+/// Present while a driver (pvrsrvkm) is bound to the CE5300's SGX545, 01:02.0.
+const SGX_DRIVER_LINK: &str = "/sys/bus/pci/devices/0000:01:02.0/driver";
 
 /// Walk `dir` and find the Linux bzImage in the recovery payload, returning the
 /// file and the byte offset where the real bzImage begins. The setup header's
@@ -652,13 +675,13 @@ fn main() {
         "erasetest" => cmd_erasetest(),
         "revert" => cmd_revert(),
         "install" => cmd_install(),
-        "stock" => cmd_stock(),
+        "stock" => cmd_stock(!args.iter().any(|a| a == "--no-reboot")),
         // Reimage p1 + clear the autoscript, in place. boot-init runs this pre-pivot
         // (p1 free) after seeing the one-shot flag; refuses if p1 is the running root.
         "reimage-finalize" => cmd_reimage_finalize(),
-        // Reimage p1 by kexec-ing p2's stock recovery kernel. Works where kexec can
-        // place its segments (EA1); defeated on the EA3 by the fat kernel's reclaim
-        // memmap — there, use `stock` (flag + boot-init finalize) instead.
+        // Reimage p1 by kexec-ing p2's stock recovery kernel. Only from a kernel
+        // whose GPU driver never bound (refuses otherwise), and defeated on the EA3
+        // by the fat kernel's reclaim memmap; `stock` (flag + reboot) is the path.
         "recovery-kexec" => recovery_reimage_p1(),
         "restore-mfh" => {
             let file = args.get(2).map(String::as_str).unwrap_or("");
@@ -670,7 +693,7 @@ fn main() {
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: ohc-restore {{status|revert|install|stock|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: ohc-restore {{status|revert|install|stock [--no-reboot]|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };

@@ -16,11 +16,17 @@
  *   - DMA stalls: SDHCI "Timeout waiting for hardware interrupt", e1000
  *     "Detected Tx Unit Hang" (TDH stuck at 0), EHCI -110.
  *
- * It does not matter which kernel or initrd comes next, or whether the GPU
- * ever rendered. The same kexec from a kernel where PVR never probed is clean,
- * and so is one where EUR_CR_SOFT_RESET was set to hold every unit (BIF, DPM,
- * TA, USE, ISP, TSP) in reset after PVR shut down. That write is what this
- * file does.
+ * It does not matter which kernel or initrd comes next. The same kexec from a
+ * kernel where PVR never probed is clean, and so is one where the GPU never
+ * rendered and EUR_CR_SOFT_RESET was then set to hold every unit (BIF, DPM, TA,
+ * USE, ISP, TSP) in reset after PVR shut down. That write is what this file
+ * does.
+ *
+ * It is NOT enough once the GPU has rendered (the panel web view ran). Then even
+ * the reset plus every safely accessible SGX register back at its power-on value
+ * (events cleared, BIF_CTRL 0xff00 = MMU bypass, CLKGATECTL 0) still leaves the
+ * next kernel broken, with garbled bus-1 reads on top. So the product never
+ * kexecs out of this kernel: ohc-restore reboots through CEFDK instead.
  *
  * Why syscore_ops: kernel_kexec() and kernel_restart() run every device's
  * .shutdown first (PVR's D3 handshake with the microkernel needs the core out
