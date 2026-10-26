@@ -152,19 +152,22 @@ trigger cannot reliably move samples is worse than absent, because userspace
 opens it, gets silence, and the failure looks like a codec or routing problem
 somewhere else entirely.
 
-Four things are still inferred:
+A stock unit was read while it played (2026-10-26; the
+[register map](/ea/audio-regmap/#measured-on-a-stock-unit-while-it-plays) has
+the capture), and the driver now follows it: the base, the descriptor format and
+its mode word, the DMA context's registers — and with them **the playback
+position** (`+0x1010`, the current source address), which `.pointer` reads — and
+TX0's configuration. Periods are paced by a timer from that position, so no
+interrupt is needed. Two things are still inferred:
 
-1. **Which three DMA registers `render_start` writes.** `__regparm3` stripped the
-   arguments. Head → `0x1010`, tail → `0x1038`, control → `0x101c` is the only fit
-   matching the two descriptor addresses the render context carries.
-2. **Which bit of `TX_CTRL` is the stream enable.** Bit 0 is the only 1-bit field
-   ever written there and channel-config clears it, so "cleared to reconfigure,
-   set to run" is the natural reading, but no site proves it.
-3. **The interrupt mask register offset.** The read-modify-write is visible; the
-   offset isn't.
-4. **The DMA position register**, which is why `.pointer` currently returns 0.
-   ALSA needs a real byte position; fabricating one makes playback appear to work
-   while drifting.
+1. **Which writes start the engine.** The vendor's three ("descriptor base,
+   size, mode") are taken as the head descriptor into `NEXT_DESC`, 0 into the
+   bytes-left register, and the mode word with bit 31 (set while stock plays,
+   never in a descriptor) into the control register; the TX run bit as bit 0 of
+   TX0 `+0x00`, the register that reads `0x21` while stock plays (bit 0 of
+   `TX_CTRL`, the old guess, reads 0 there).
+2. **The ungate** — why the TX and DMA blocks hang on access under openHC when
+   stock reads them freely. The plan is below.
 
 Master/slave couldn't be determined either, but it matters less than it sounds:
 the render path exposes **no** clock-direction control at all, consistent with the
@@ -182,13 +185,33 @@ with the device already enabled.
 
 1. Flash a kernel with the i2c patch; confirm `i2cdetect -y -r 3` shows `0x38`.
    **Nothing below matters until this passes.**
-2. Load the codec alone and read its samplerate register, it should report
-   48000, proving the DSP is alive and running its own program.
-3. Bring up the card so `aplay -l` lists it and `amixer` works.
-4. Confirm the four inferred fields against the register dump, set
-   `enable_pcm=1`, and finish `.pointer`.
-5. `speaker-test -c2 -twav`. This is what distinguishes "no card" from "no
-   sound".
+2. With the card up (`aplay -l` shows `openhcea`), `amixer -c openhcea contents`
+   lists the DSP controls and `ReadBack DSP Program` reads 10: the DSP is alive
+   and running openHC's parameters.
+3. **Find the ungate** — reads first, then one write at a time. Every write
+   below is a test: do it on a **RAM-booted** openHC (`ohc.ramboot=1`), never a
+   flashed kernel, and expect to power-cycle if a read hangs.
+   1. Read the Clock and Reset Unit (`00:00.2`, registers at `0xbfffef00`) and
+      compare with stock's values in the register map:
+
+      ```sh
+      for o in $(seq 0 4 156); do printf '%02x %s\n' $o $(devmem $((0xbfffef00 + o)) 32); done
+      ```
+
+      Every register that differs is a candidate clock-enable or reset bit.
+   2. Read `AUD_IO +0x00` (`devmem 0xdfa80000 32`, proven safe): `0x1` here,
+      `0x7` on stock. Its bits 1–2 are the first suspects — the block's own
+      sub-block enables.
+   3. Try the cheapest first: set `AUD_IO +0x00` to `0x7`, then read one TX
+      register (`devmem 0xdfa82000 32`). If that hangs or answers nothing, set
+      the CRU candidates one register at a time, re-testing the same read.
+   4. Whatever turns out to ungate it goes into the driver's probe (or into the
+      board DT if it is a clock the kernel can name), and `dump_regs=1` then
+      shows the TX/DMA blocks the way the stock capture does.
+4. `ce5300_i2s.enable_pcm=1`, then `speaker-test -c2 -twav`. The position should
+   advance (`/proc/asound/openhcea/pcm0p/sub0/status`), the DAC unmutes while it
+   plays, and the DSP's Mode → Test tone is the way to tell a dead I²S from a
+   dead analog path.
 
 ## AirPlay and Spotify Connect
 

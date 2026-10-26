@@ -183,15 +183,15 @@ Static values while playing:
 
 | Register | Value | Reading |
 |---|---|---|
-| `+0x0000` | `0x00000007` | global |
-| `+0x000c` | `0x00000008` | global |
+| `+0x0000` | `0x00000007` | global — reads `0x1` under openHC; bits 1–2 are the first suspects for the sub-block enables |
+| `+0x000c` | `0x00000008` | global — exactly DMA0's per-stream `interrupt_mask` bit, the likely **interrupt mask register** (`imrx`) |
 | `+0x002c` | `0x00000180` | global |
 | `+0x0064` | `0x00000001` | global |
 | `+0x2000` TX0 | `0x00000021` | bit 0 set while running — the likely **stream enable** |
 | `+0x2004` TX0 ctrl | `0x0000f1e0` | pin0 ENABLE, pins 1–3 DISABLE, dsm STEREO — as decoded — but **bit 0 is 0 while playing**, so it is not the run bit |
 | `+0x2008` | `0x00000005` | |
 | `+0x2010` | `0x00000100` | |
-| `+0x2014` | `0x00000008` | DMA0's `interrupt_mask` value — the likely **interrupt mask register** |
+| `+0x2014` | `0x00000008` | per-context config (TX1/TX2 hold `6` at `+0x14`), not the mask |
 | `+0x201c` | `0x0000003f` | |
 | `+0x2020` | moving, `0x42..0x7f` | FIFO level |
 | `+0x2104/2204` | `0x000e0000` | TX1/TX2, idle |
