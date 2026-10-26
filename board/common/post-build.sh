@@ -112,3 +112,14 @@ for spec in "${OHC_SGX_WPE_SYSROOT:-}|/opt/sgx-i386-wpe" \
         rm -rf "$TARGET$dest"
     fi
 done
+
+# ---- EM357 Zigbee NCP image -------------------------------------------------
+# zigbee reflashes the radio to this image at boot when it runs anything
+# older (see board/common/firmware/zigbee/em357). Only where the zigbee feature
+# staged zigbee; target/ is cached between builds, so clear it otherwise.
+EM357="${BR2_EXTERNAL_OPENHC_PATH:-$(dirname "$0")/..}/common/firmware/zigbee/em357"
+if [ -x "$TARGET/opt/ohc/bin/zigbee" ]; then
+    sh "$EM357/install.sh" "$TARGET" "${BR2_DL_DIR:-${BASE_DIR:-$TARGET/..}/dl}"
+else
+    rm -rf "$TARGET/usr/share/ohc/zigbee"
+fi

@@ -218,7 +218,7 @@ system cannot tell those apart** — the fd map looks identical either way.
 `ttyS4` was sitting at 9600 when read, but nothing had it open — that's the
 untouched 8250 default, not a measurement of the NCP's rate.
 
-## Zigbee: an EM357 on EmberZNet 4.7.2, served as a network radio
+## Zigbee: an EM357, reflashed to EmberZNet 6.7.8 and served as a network radio
 
 The NCP runs at **115200** (a bare ASH RST is answered with RSTACK at that rate
 and no other) and needs no bootloader dance. An EZSP version query returns
@@ -226,12 +226,21 @@ and no other) and needs no bootloader dance. An EZSP version query returns
 It also comes up as a coordinator on a formed network, channel 19, PAN 0x48B8.
 That is the Control4 mesh it was paired into, stored in the NCP's own flash.
 
-That firmware decides the stack. zigbee2mqtt cannot drive it: zigbee-herdsman's
-`ember` driver needs EZSP 13+ (EmberZNet 7.4), its deprecated `ezsp` driver
-needed 8+, and Silicon Labs dropped EM35x support well before either. zigpy's
-**bellows still speaks EZSP v4**. So `zigbee` serves the port over TCP
-(`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA drives the radio from
-there:
+That firmware decides the stack, and Control4 itself reflashes the NCP from
+images on its rootfs, so openHC does the same. The `zigbee` feature ships
+**EmberZNet 6.7.8** (EZSP 8), the last EmberZNet line for the EM35x, and at
+boot `zigbee` reads the running version over EZSP. When it's older, it asks
+the NCP to launch its standalone serial bootloader, uploads the image over
+XMODEM-CRC, runs it and checks the version again. Later boots only read it. An
+upload that dies part-way leaves the bootloader resident, and the next boot
+finishes the job (`packages/zigbee/src/ncp.rs`; `zigbee --info` and
+`--flash <image.ebl>` by hand).
+
+For the radio stack: zigbee-herdsman's current `ember` driver needs EZSP 13+
+(EmberZNet 7.4), which no EM35x runs; its deprecated `ezsp` driver needs 8+,
+which 6.7.8 meets. zigpy's **bellows speaks both 4 and 8**. So `zigbee`
+serves the port over TCP (`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA
+drives the radio from there:
 
 - ZHA → add integration → radio type **EZSP**, path
   `socket://<box>:6638`. Or just accept the discovered device: the box advertises
