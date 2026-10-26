@@ -6,7 +6,9 @@
 # the first EGL client after boot fails eglInitialize with "services not
 # reachable". So run it here, once, instead of leaving each client (the
 # on-screen view, a game, a test tool) to remember to do it first.
-# A no-op on a box without the i386 GPU stack.
+# SrvInit only loads the microkernel and sets up services; it draws nothing, so
+# the boot splash S01splash left on /dev/fb0 stays up (checked on an EA1: fb0's
+# md5 is identical before and after). A no-op without the i386 GPU stack.
 
 case "$1" in
 	start)
