@@ -16,6 +16,18 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
 
+# ── ffmpeg: no libv4l2 ─────────────────────────────────────────────────────
+#
+# The iomcu feature brings libv4l for ir-ctl, and Buildroot's ffmpeg turns on
+# --enable-libv4l2 whenever libv4l is present. On musl that does not build:
+# libavdevice/v4l2.c stores v4l2_ioctl (unsigned long request) where musl's
+# ioctl (int request) goes, and GCC rejects the incompatible function pointer
+# (seen on the hc800). ffmpeg's V4L2 device works on plain ioctls without it,
+# and nothing here captures video, so switch it back off. Appended here, after
+# package/ffmpeg/ffmpeg.mk, and read when its configure step runs, so this last
+# word wins.
+FFMPEG_CONF_OPTS += --disable-libv4l2
+
 # ── openHC's own kernel drivers: copied in, not patched in ─────────────────
 #
 # board/ea/common/kernel/drivers/ mirrors the kernel's drivers/ subtree, so a file at
