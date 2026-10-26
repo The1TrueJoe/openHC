@@ -306,6 +306,15 @@ struct ohc_iomcu {
 	const char **names;
 
 	/*
+	 * /sys/class/ohc/iomcu: what this part is declared to have, published at
+	 * attach — before it answers, so a silent part still says what it should
+	 * have been. See ohc_core_start.
+	 */
+	struct device *info;
+	u32 baud;
+	bool online;		/* answered FIRMWARE_VERSION */
+
+	/*
 	 * Latched at attach, from geo. Reading the module parameters on every
 	 * access would let a sysfs write shift the line map underneath a
 	 * gpiochip that has already told userspace what its lines are.
@@ -1607,6 +1616,7 @@ static void ohc_probe(struct work_struct *work)
 				       mcu->first_rx, mcu->first_rx_len, false);
 		return;
 	}
+	WRITE_ONCE(mcu->online, true);
 
 	lines = mcu->n_relays + mcu->n_contacts;
 	if (!lines) {
@@ -1708,9 +1718,77 @@ static struct ohc_iomcu *ohc_core_alloc(const struct ohc_geometry *geo)
 	return mcu;
 }
 
-/* The port is open and bytes reach ohc_feed: talk to the part. */
+/*
+ * The geometry, from the kernel rather than a second copy in userspace.
+ *
+ * Whatever described the part — the device tree node, or the module parameters
+ * S12iomcu wrote from board.env on a board with no tree — the driver latched
+ * it, and this is where iod reads it back:
+ *
+ *	/sys/class/ohc/iomcu/{relays,contacts,ir_out,ir_blaster,ir_in,uarts}
+ *	/sys/class/ohc/iomcu/{port,baud,online}
+ *
+ * It appears when the port is handed over, not when the part answers: a box
+ * whose microcontroller is silent should still say it has four relays, so the
+ * diagnosis is "not answering", not "this board has no IO". online says which.
+ */
+#define OHC_INFO_INT(field, expr)					\
+static ssize_t field##_show(struct device *d, struct device_attribute *a, \
+			    char *buf)					\
+{									\
+	struct ohc_iomcu *mcu = dev_get_drvdata(d);			\
+									\
+	return sysfs_emit(buf, "%d\n", (int)(expr));			\
+}									\
+static DEVICE_ATTR_RO(field)
+
+OHC_INFO_INT(relays, mcu->geo.relays);
+OHC_INFO_INT(contacts, mcu->geo.contacts);
+OHC_INFO_INT(ir_out, mcu->geo.ir_out);
+OHC_INFO_INT(ir_blaster, mcu->geo.ir_blaster);
+OHC_INFO_INT(ir_in, mcu->geo.ir_in);
+OHC_INFO_INT(uarts, mcu->geo.uarts);
+OHC_INFO_INT(baud, mcu->baud);
+OHC_INFO_INT(online, READ_ONCE(mcu->online));
+
+/* The port it is on: ttyS3 behind the line discipline, serial0-0 on serdev. */
+static ssize_t port_show(struct device *d, struct device_attribute *a, char *buf)
+{
+	struct ohc_iomcu *mcu = dev_get_drvdata(d);
+
+	return sysfs_emit(buf, "%s\n", mcu->name);
+}
+static DEVICE_ATTR_RO(port);
+
+static struct attribute *ohc_info_attrs[] = {
+	&dev_attr_relays.attr,
+	&dev_attr_contacts.attr,
+	&dev_attr_ir_out.attr,
+	&dev_attr_ir_blaster.attr,
+	&dev_attr_ir_in.attr,
+	&dev_attr_uarts.attr,
+	&dev_attr_port.attr,
+	&dev_attr_baud.attr,
+	&dev_attr_online.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(ohc_info);
+
+/* The port is open and bytes reach ohc_feed: publish, then talk to the part. */
 static void ohc_core_start(struct ohc_iomcu *mcu)
 {
+	/*
+	 * No dev_t, so no /dev node: this is a sysfs directory only. Not
+	 * fatal if it fails — the chip still works, iod just cannot see the
+	 * declaration (and says so).
+	 */
+	mcu->info = device_create_with_groups(&ohc_class, mcu->dev, 0, mcu,
+					      ohc_info_groups, "iomcu");
+	if (IS_ERR(mcu->info)) {
+		pr_warn("%s: cannot publish /sys/class/ohc/iomcu: %ld\n",
+			mcu->name, PTR_ERR(mcu->info));
+		mcu->info = NULL;
+	}
 	schedule_delayed_work(&mcu->probe_work, msecs_to_jiffies(50));
 }
 
@@ -1722,6 +1800,8 @@ static void ohc_core_teardown(struct ohc_iomcu *mcu)
 {
 	int i, lines;
 
+	if (mcu->info)
+		device_unregister(mcu->info);
 	cancel_delayed_work_sync(&mcu->probe_work);
 	cancel_delayed_work_sync(&mcu->poll_work);
 	ohc_unregister_serial(mcu);
@@ -1771,6 +1851,8 @@ static int ohc_ldisc_open(struct tty_struct *tty)
 
 	mcu->tty = tty;
 	mcu->name = tty->name;
+	/* iomcu-attach set the line rate before handing the port over. */
+	mcu->baud = tty_get_baud_rate(tty);
 	mcu->write = ohc_ldisc_xmit;
 	tty->disc_data = mcu;
 	/* See ohc_ldisc_receive_buf2: zero here means nothing is ever delivered. */
@@ -1947,6 +2029,7 @@ static int ohc_serdev_probe(struct serdev_device *serdev)
 		dev_warn(dev, "cannot clear parity: %d\n", ret);
 	if (got != speed)
 		dev_warn(dev, "asked for %u baud, the UART gave %u\n", speed, got);
+	mcu->baud = got;
 
 	ohc_core_start(mcu);
 	dev_info(dev, "IO microcontroller at %u baud\n", got);

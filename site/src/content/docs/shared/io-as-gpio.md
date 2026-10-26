@@ -164,10 +164,29 @@ attach and never a chip that has already told userspace what its lines are.
 | board.env key | what it does |
 |---|---|
 | `OHC_IO_BACKEND` | `mcu` — anything else and the script does nothing |
-| `OHC_IO_MCU_TTY` | which port the part is on (`/dev/ttyS3` on HC-800; on EA only for a tree without the node) |
-| `OHC_IO_MCU_BAUD` | 115200 on HC-800, **460800** on EA — see the [protocol page](/shared/io-mcu/) |
-| `OHC_RELAYS` / `OHC_CONTACTS` | how many lines to expose |
+| `OHC_IO_MCU_TTY` | which port the part is on (`/dev/ttyS3` on HC-800) |
+| `OHC_IO_MCU_BAUD` | 115200 on HC-800 (the EA family's 460800 is in its tree) — see the [protocol page](/shared/io-mcu/) |
+| `OHC_RELAYS` / `OHC_CONTACTS` / `OHC_IR_*` / `OHC_IO_UARTS` | what sits behind the part |
 | `OHC_IO_MCU_LDISC` | discipline number, default 29 |
+
+On the EA family none of these but `OHC_IO_BACKEND` exist: the device tree is
+the description.
+
+## Where iod gets the counts
+
+Whichever front end attached, the driver publishes what it latched, before the
+part has even answered:
+
+```
+/sys/class/ohc/iomcu/relays  contacts  ir_out  ir_blaster  ir_in  uarts
+/sys/class/ohc/iomcu/port    baud      online
+```
+
+iod reads its relay, contact, IR and serial counts from there, not from
+board.env, so on a device-tree board there is exactly one copy of them. `online`
+separates "this board has four relays and the part is not answering" from "this
+board has no relays". board.env's counts are only the fallback when the driver
+never attached at all, which on the HC-800 means S12iomcu did not run.
 
 ## What each board actually gets
 

@@ -18,9 +18,9 @@
 };
 
 /*
- * What sits behind the IO microcontroller (the node is in ea.dtsi). The same
- * counts as board.env's OHC_RELAYS, OHC_CONTACTS, OHC_IR_* and OHC_IO_UARTS,
- * which iod still reads: keep them in step.
+ * What sits behind the IO microcontroller (the node is in ea.dtsi). This is the
+ * only copy: the driver publishes it at /sys/class/ohc/iomcu and iod reads it
+ * from there, so board.env carries no counts.
  */
 &io_mcu {
 	control4,relays = <1>;
