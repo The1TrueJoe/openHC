@@ -99,17 +99,39 @@ jobs:
             Get-ChildItem -Path 'C:\Program Files', 'C:\Program Files (x86)', 'C:\Analog Devices' `
               -Recurse -Filter SStudioPlusConsole.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           }
+          # The files are in place within seconds; what can hang is the MSI's last
+          # step, which runs dpinst64 to install the Cypress USB driver for ADI's USBi
+          # programming dongle (CAInstallDriverCyUSB64x64, measured on a runner). Its
+          # /SW hides the wizard but not Windows' "install this device software?"
+          # prompt, so it waits forever. CI never talks to hardware: once the console
+          # app exists the installer gets 30 s to exit, then dpinst64 is stopped.
+          function Stop-Tree($id) {
+            Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $id } |
+              ForEach-Object { Stop-Tree $_.ProcessId }
+            Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+          }
           foreach ($a in $attempts) {
             "--- attempt: $a" | Tee-Object -Append logs/installer.txt
             $p = Start-Process -FilePath .\ssplus-setup.exe -ArgumentList $a -PassThru
-            if (-not $p.WaitForExit(10 * 60 * 1000)) {
-              "    still running after 10 min: killed (waiting on a dialog?)" | Tee-Object -Append logs/installer.txt
-              Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $p.Id } |
-                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-              continue
+            $deadline = (Get-Date).AddMinutes(10); $found = $null
+            while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
+              if (-not $found -and (Find-Console)) { $found = Get-Date; "    console app in place" | Tee-Object -Append logs/installer.txt }
+              if ($found -and ((Get-Date) - $found).TotalSeconds -gt 30) { break }
+              Start-Sleep -Seconds 5
             }
-            "    exit code: $($p.ExitCode)" | Tee-Object -Append logs/installer.txt
+            if (-not $p.HasExited) {
+              $dp = Get-Process dpinst64, dpinst -ErrorAction SilentlyContinue
+              if ($found -and $dp) {
+                "    installed; stuck in the USB-driver step (dpinst), not needed here: stopping it" | Tee-Object -Append logs/installer.txt
+                $dp | Stop-Process -Force -ErrorAction SilentlyContinue
+                if (-not $p.WaitForExit(120 * 1000)) { Stop-Tree $p.Id }
+              } else {
+                "    still running at the limit: killed (waiting on a dialog?)" | Tee-Object -Append logs/installer.txt
+                Stop-Tree $p.Id
+              }
+            } else {
+              "    exit code: $($p.ExitCode)" | Tee-Object -Append logs/installer.txt
+            }
             if (Find-Console) { "    installed" | Tee-Object -Append logs/installer.txt; break }
           }
 
