@@ -18,6 +18,11 @@
  * kernel/firmware/acpi/ssdt-iomcu.aml (CONFIG_ACPI_TABLE_UPGRADE). Nothing on
  * the box's firmware or disk changes.
  */
+/*
+ * The path is the BIOS's own, read off a live unit
+ * (/sys/bus/pnp/devices/00:03/firmware_node/path): all five UARTs are PNP0501
+ * under \_SB.PCI0.SBRG, and UAR4 is the one at 0x2E8 on IRQ 10.
+ */
 DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
 {
     External (\_SB.PCI0.SBRG.UAR4, DeviceObj)
