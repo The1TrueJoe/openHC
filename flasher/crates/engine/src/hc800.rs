@@ -573,6 +573,7 @@ const RESTORE_BIN: &str = "/opt/ohc/bin/ohc-restore";
 /// Control4 or an older openHC has no such tool and gets [`factory_restore`],
 /// the same rewrite done over SSH.
 pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
+    crate::radio::restore(ssh, p)?;
     if !ssh.test(&format!("-x {RESTORE_BIN}")) {
         return factory_restore(ssh, p);
     }
@@ -580,7 +581,7 @@ pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     p.emit(Event::detail(st.trim().to_string()));
     p.emit(Event::step("arming Control4's factory restore for one boot (on the box)".into()));
     let out = ssh
-        .run(&format!("{RESTORE_BIN} stock --no-reboot 2>&1"), true)
+        .run(&format!("{RESTORE_BIN} stock --no-reboot --keep-radio 2>&1"), true)
         .map_err(|e| anyhow::anyhow!("ohc-restore stock failed, nothing rebooted: {e}"))?;
     for l in out.lines().filter(|l| !l.trim().is_empty()) {
         p.emit(Event::detail(l.trim().to_string()));
@@ -615,6 +616,7 @@ fn chrono_like_stamp() -> u64 {
 /// The kernel and initramfs on the kernel partition are removed too. `sda2` was
 /// never written, so nothing there needs undoing.
 pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
+    crate::radio::restore(ssh, p)?;
     let gm = "/mnt/ohc-grub";
     ssh.run(&format!("mkdir -p {gm} && mount {} {gm}", hc::GRUB_PART), true)
         .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;

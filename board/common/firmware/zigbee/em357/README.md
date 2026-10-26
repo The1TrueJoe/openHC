@@ -53,11 +53,40 @@ itself sits in protected flash and an upload never touches it.
 By hand:
 
 ```sh
-ohc-zigbee --info          # what the radio runs now
-ohc-zigbee --flash <ebl>   # force a flash
+ohc-zigbee --info            # what the radio runs now
+ohc-zigbee --flash <ebl>     # force a flash
+ohc-zigbee --restore-stock   # put Control4's image back (below)
 ```
 
 Stop `S91ohczigbee` first. A second process on the tty steals the replies.
+
+## Returning to stock
+
+A box handed back to Control4 gets its radio back as it shipped. Every return to
+stock (`ohc-restore stock`, used by the web UI and the EA restore button, and
+the flasher's `restore`/`uninstall`) first runs `ohc-zigbee --restore-stock`:
+
+1. A radio running something older than openHC's image was never reflashed, so
+   it's left alone.
+2. Otherwise Control4's image is unpacked from the board's recovery archive
+   (`OHC_ZIGBEE_STOCK_ARCHIVE=<partition>:<archive>` in `board.env`; the member
+   is `./control4/firmware/pro/em357-uart-*.ebl` unless
+   `OHC_ZIGBEE_STOCK_MEMBER` says otherwise). The partition is mounted read-only.
+   openHC never ships Control4's image.
+3. It's flashed the same way as above, and the version is read back.
+
+If that fails, the restore stops before anything else changes and the zigbee
+service starts again. `ohc-restore stock --keep-radio` skips it, and `ohc-restore
+radio` runs only this step.
+
+| Board | Archive | Status |
+|---|---|---|
+| HC-800 | `/dev/sda2:/restore_images/root-fs-sherman.tgz` | proven, 6.7.8 → 4.7.2 → 6.7.8 three times |
+| CA-1 | not mapped yet | a radio openHC reflashed is refused, one it didn't is left alone |
+
+Control4 would also put its image back by itself, but only once its `zap`
+service runs, i.e. when the box is made a Zigbee server again (proven on an
+HC-800, about 43 s).
 
 ## Protocol notes (measured on an HC-800)
 
@@ -71,8 +100,18 @@ Stop `S91ohczigbee` first. A second process on the tty steals the replies.
   Once the NCP says v8, the renegotiating `version` **must** use the extended
   header `[seq, fcLo, 0x01, idLo, idHi]`. The NCP misparses a legacy one and the
   radio looks dead.
-- **The HC-800 radio comes out of reset in its bootloader**, so it needs `2`
-  before the app answers. Control4's `zap` also parks it there when it stops.
+- **Leaving 6.7.8 for the bootloader**: the app acknowledges
+  `launchStandaloneBootloader`, keeps running for about 5 s, goes quiet, and only
+  jumps when the next frame arrives. A frame sent while it still runs is taken
+  as an ASH reset and cancels the launch, so `ohc-zigbee` waits 7 s and then
+  sends an ASH RST. Polling for the menu without that nudge sees nothing, or a
+  bootloader whose bytes arrive rotated two bits left. 4.7.2 jumps straight
+  away.
+- **A reset runs the app.** Pulsing `zigbee_reset` brings a radio with a valid
+  app straight back into it, whatever RTS and DTR say. The only way into the
+  bootloader is the EZSP launch, or an app that's missing. Control4's `zap`
+  parks the radio in its bootloader when it stops, which is why a radio can be
+  found there after stock ran.
 
 ## Control4's side, for reference
 
