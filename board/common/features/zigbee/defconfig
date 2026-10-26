@@ -16,6 +16,12 @@
 BR2_PACKAGE_NODEJS=y
 BR2_PACKAGE_NODEJS_NPM=y
 
+# The NCP firmware ohc-zigbee keeps the EM357 on (EmberZNet 6.7.8, EZSP v8 —
+# the last line for the EM35x, and new enough for zigbee2mqtt's `ezsp` driver).
+# Flashed at boot when the radio runs something older, the way Control4 does;
+# see packages/em357-ncp-firmware and packages/zigbee/src/ncp.rs.
+BR2_PACKAGE_EM357_NCP_FIRMWARE=y
+
 # Node's V8 needs the C++ runtime. Harmless where the toolchain already has it.
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INSTALL_LIBSTDCPP=y
@@ -23,5 +29,5 @@ BR2_INSTALL_LIBSTDCPP=y
 # NOTE on the broker: openHC's IO already speaks MQTT (iod, a rumqttc client), and
 # zigbee2mqtt publishes to a broker too. The broker is per board, not here: the
 # CA-1 enables mosquitto (fixed by the move to Buildroot 2026.02.3). The HC-800's
-# EM357 runs EmberZNet 4.7.2 (EZSP v4), which zigbee2mqtt's drivers cannot speak,
-# so it has no use for one.
+# EM357 shipped on EmberZNet 4.7.2 (EZSP v4), which zigbee2mqtt's drivers cannot
+# speak; the boot-time reflash to 6.7.8 above is what changes that.

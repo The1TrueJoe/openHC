@@ -1,0 +1,8 @@
+config BR2_PACKAGE_EM357_NCP_FIRMWARE
+	bool "em357-ncp-firmware"
+	help
+	  EmberZNet 6.7.8 NCP image for the on-board EM357 Zigbee
+	  radio (UART, software flow control). ohc-zigbee flashes it at
+	  boot when the radio runs an older EmberZNet, the way Control4
+	  reflashes it from its own images. Selected by the zigbee
+	  feature.
