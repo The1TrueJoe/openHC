@@ -14,7 +14,7 @@
 //! * one supervised process per endpoint: librespot per Spotify endpoint,
 //!   shairport-sync per AirPlay endpoint, alsaloop per route, plus any board
 //!   helpers (the HC-800's ADV7513 keeper). With nqptp in the image the
-//!   receivers are AirPlay 2 (packages/ohc-shairport-sync): each on its own
+//!   receivers are AirPlay 2 (shairport-sync 5.x): each on its own
 //!   port, 7000+n, its device id and nqptp shared memory derived from its name,
 //!   and ONE nqptp for them all, planned first. Without it they are classic
 //!   AirPlay on 5000+n.

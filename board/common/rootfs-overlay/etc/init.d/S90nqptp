@@ -1,0 +1,9 @@
+#!/bin/sh
+# nqptp — replaces Buildroot's S90nqptp (this overlay file is copied over it).
+#
+# openHC starts nqptp alongside the AirPlay 2 receivers that need it: audiod
+# runs (and restarts) the one nqptp its receivers share, and S99shairport-sync
+# starts it for the single receiver on a board without named outputs. A copy
+# started here first would hold PTP ports 319/320 and theirs would fail. So this
+# does nothing.
+exit 0

@@ -171,12 +171,11 @@ with the device already enabled.
 Both are plain ALSA clients and need no special kernel support beyond a working
 card.
 
-**AirPlay** is `shairport-sync` 4.3.7, announced via Avahi over D-Bus. It is
-built as classic AirPlay (AirPlay 1). Buildroot 2026.02 can build AirPlay 2
-(nqptp), but AirPlay 2 wants one receiver per host, and the HC-800 runs several
-named AirPlay endpoints on one box, each with its own device ID. Classic
-AirPlay works from every Apple device; it just can't join AirPlay-2 multi-room
-groups.
+**AirPlay** is Buildroot's `shairport-sync` 5.6, built for AirPlay 2 and
+announced via Avahi over D-Bus. Each named AirPlay endpoint is its own receiver
+on its own port with its own device ID, all sharing one `nqptp` (1.2.9, which
+serves several receivers; 1.2.4 served one). It also takes classic AirPlay
+senders.
 
 **Spotify Connect** is `librespot`, packaged here because Buildroot has none. It
 is built with Buildroot's cargo infrastructure rather than the host-side route

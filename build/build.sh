@@ -695,7 +695,7 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     _sumf="$OUT/build/.ohc-pkg-$_pkg.sum"
     # A changed recipe or patch set needs the source RE-EXTRACTED and
     # re-patched, which -rebuild never does (it keeps the patched tree): a
-    # fixed patch for ohc-shairport-sync was ignored that way and the build kept
+    # fixed patch for our old shairport-sync package was ignored that way and the build kept
     # failing on the old one. So when the package's directory changed since this
     # tree last built it, dirclean it (and its host- variant) first.
     if [ "$(cat "$_sumf" 2>/dev/null)" != "$_want_sum" ]; then

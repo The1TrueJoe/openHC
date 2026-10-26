@@ -38,7 +38,8 @@ on:
       - build/build.sh
 
 env:
-  BUILDROOT_REF: 2026.02.3
+  # Same Buildroot as ci.yml; keep the two in step.
+  BUILDROOT_REF: 3736eda341337a2ddd824111a5f065c84d44c584
 
 jobs:
   i386-wpe-sysroot:
@@ -112,8 +113,10 @@ jobs:
       - name: Fetch Buildroot + apply openHC's buildroot patches
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           # Same set images.yml / sgx-module.yml apply — notably
           # 0001-wpewebkit-do-not-require-wpebackend-fdo, without which wpewebkit
           # drags in Wayland/fdo and is unbuildable on the SGX545 DDK's EGL.

@@ -98,7 +98,11 @@ permissions:
 
 env:
   # Consumed only by the image jobs' cache keys and Buildroot fetch.
-  BUILDROOT_REF: 2026.02.3
+  # Buildroot master at 3736eda341 (2026-10-26), ahead of the 2026.11 release:
+  # it is the first Buildroot with shairport-sync 5.x and host-libplist. Switch
+  # to the 2026.11 tag once it is out. A commit or a tag both work here: the
+  # fetch below takes either.
+  BUILDROOT_REF: 3736eda341337a2ddd824111a5f065c84d44c584
 
 jobs:
   # STAGE TOGGLE — the master switch for the two-stage rollout (see the header).
@@ -376,14 +380,16 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ea-sdk.tar
-          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'build/buildroot-patches/**', 'build/build.sh') }}
 
       - name: Fetch Buildroot
         if: steps.sdkcache.outputs.cache-hit != 'true'
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
@@ -395,8 +401,7 @@ jobs:
       # into the compiler stays valid and no SDK relocation is needed ($GITHUB_
       # WORKSPACE is identical across GitHub-hosted jobs). BOARD is any EA board:
       # the toolchain config lives entirely in the shared common defconfigs, so
-      # all five resolve to the same toolchain. The glibc BZ33367 patch applies
-      # here (BR2_GLOBAL_PATCH_DIR is set in common_defconfig), baking it in.
+      # all five resolve to the same toolchain.
       - name: Build the EA toolchain (once)
         if: steps.sdkcache.outputs.cache-hit != 'true'
         env:
@@ -416,7 +421,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ea-sdk.tar
-          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'board/ea/common/patches/glibc/**', 'build/buildroot-patches/**', 'build/build.sh') }}
+          key: ea-sdk-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/ea/common/common_defconfig', 'board/common/common_defconfig', 'build/buildroot-patches/**', 'build/build.sh') }}
 
       # Reliable same-run handoff to the image jobs (they `needs: toolchain` and
       # download this). Short retention — it is scratch, rebuilt whenever needed.
@@ -536,7 +541,7 @@ jobs:
       # kernel is safe (linux-dirclean runs every build), but packages are not:
       # r2 forced one clean rebuild after round 2 added dbus, so avahi rebuilt
       # with libavahi-client (shairport-sync needs it) instead of riding the
-      # pre-round-2 dbus-less avahi in the cache. r3 goes with the move to
+      # pre-round-2 dbus-less avahi in the cache. r3 went with the move to
       # Buildroot 2026.02.3 (the ref is in the key too, so this is belt and braces).
       - name: Restore Buildroot output tree
         id: outcache
@@ -582,8 +587,10 @@ jobs:
       - name: Fetch Buildroot
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
