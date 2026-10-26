@@ -97,6 +97,7 @@ udev turns what the kernel reports into `/dev/ohc`, one directory per class:
 /dev/ohc/serial/1 … N          user RS-232, in the order board.env declares
 /dev/ohc/radio/zigbee          the NCP, wherever the SoC happens to wire it
 /dev/ohc/radio/zwave
+/dev/ohc/input/id-button       a front-panel button, named by its device-tree label
 ```
 
 so the same command works on any board in the fleet:
@@ -213,8 +214,9 @@ The EA lines used to look named and not be. The old `gpio-ea-board.c` called
 The EA boards now carry a device tree linked into the kernel
 (`board/ea/common/kernel/arch/x86/boot/dts/`), so the gpiochip's node has a real
 `gpio-line-names`, and the reset/enable lines are `gpio-hog`s. Inputs (the
-board-id straps, the ID button) are named but not claimed, so `gpiofind id_button`
-and `gpioget` work on them.
+board-id straps, status flags) are named but not claimed, so `gpiofind board_id0`
+and `gpioget` work on them. The ID button is a `gpio-keys-polled` key instead,
+so it is an input device (`/dev/ohc/input/id-button`) rather than a line to poll.
 
 ### The HC-800
 
