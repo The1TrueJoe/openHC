@@ -117,22 +117,23 @@ here ever claims success without the flash reading back exactly what was intende
    `{confirm:true}`.
 2. **The web UI System panel**, a two-step "Reset to stock" confirm, shown only
    when `status.available`.
-3. **The front ID button.** Holding it runs `restore stock`. The button is a
-   bare SoC GPIO (`gpiochip0` line 32, active-low — released reads `1`, pressed
-   `0`, confirmed on an EA1) that the board device tree names `id_button` but deliberately leaves unclaimed. A
-   watcher (`/opt/ohc/bin/ohc-restore-button`, polling with libgpiod, launched by
-   init `S96ohc-restore-button`) fires after `OHC_RESTORE_BUTTON_HOLD` seconds
-   (default 10). It is **fail-safe**: it arms only after one clean "released"
-   reading, so a wrong line or polarity stays inert rather than wiping a box at
-   boot — verified on hardware. Each board configures it in `board.env`
-   (`OHC_RESTORE_BUTTON="gpiochip0 32"`, etc.).
+3. **The front ID button.** Holding it for `OHC_RESTORE_BUTTON_HOLD` seconds
+   (default 10) and letting go runs `restore stock`; the warning LED blinks
+   while it is held and goes solid once it has been held long enough. The
+   button (SoC GPIO 32, active-low, confirmed on an EA1) is a `gpio-keys-polled`
+   node in the board device tree, which udev links as `/dev/ohc/input/id-button`.
+   A watcher (`/opt/ohc/bin/ohc-restore-button`, launched by init
+   `S96ohc-restore-button`) reads its input events and measures the hold between
+   the kernel's press and release timestamps. It is **fail-safe**: only a press
+   it saw both start and end counts, so a button stuck down at boot stays inert
+   rather than wiping a box. `board.env` sets only the hold time and the LED.
 
 :::caution[Why the software path is the reliable one on a fuse-blown EA1]
 The native recessed CEFDK button does **not** rewrite the SPI-NOR MFH on a
 fuse-blown EA1, so the native button alone won't undo openHC's one change. The
 software path is the dependable way back there. On the EA3 the button's GPIO line
 and polarity are not yet hardware-confirmed (the `board.env` notes this); the
-fail-safe keeps the watcher inert until they are.
+fail-safe keeps a wrong polarity inert until they are.
 :::
 
 :::note[Proven, and not-yet-proven]

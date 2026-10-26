@@ -23,7 +23,9 @@
  * (c) 2011-2013 Intel) rewritten against the spi-mem exec_op interface so that
  * the in-tree spi-nor driver detects and drives the chip by JEDEC id and openHC
  * gets a /dev/mtd0 — the prerequisite for rewriting its own boot autoscript and
- * for a software restore of the stock firmware. The register map, the big-endian
+ * for a software restore of the stock firmware. The chip and its partitions are
+ * the flash@0 child of this function's node in the board device tree
+ * (ce5300.dtsi, spi@17,0); the SPI core instantiates it from there. The register map, the big-endian
  * unit packing and the clock/mode setup are taken verbatim from that driver; the
  * legacy per-message workqueue and the companion nmyx25 MTD chip driver are
  * dropped (spi-mem provides the message pump, spi-nor provides the chip).
@@ -38,6 +40,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/property.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-mem.h>
 
@@ -356,18 +359,10 @@ static void ce5xx_hw_init(struct ce5xx_spi *c)
 	writel((0x8u << CS0_CMP), c->regs + ADDR_SPLIT_REG);
 }
 
-static struct spi_board_info ce5xx_flash_info = {
-	.modalias	= "spi-nor",
-	.chip_select	= 0,
-	.max_speed_hz	= 16670000,
-	.mode		= SPI_MODE_0,
-};
-
 static int ce5xx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct spi_controller *ctlr;
 	struct ce5xx_spi *c;
-	struct spi_device *flash;
 	resource_size_t r0, l0, r1, l1;
 	int ret;
 
@@ -412,6 +407,9 @@ static int ce5xx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ce5xx_hw_init(c);
 
 	ctlr->dev.parent	= &pdev->dev;
+	/* The flash is this node's child; registering the controller with it
+	 * is what creates the spi-nor device on CS0. */
+	device_set_node(&ctlr->dev, dev_fwnode(&pdev->dev));
 	ctlr->bus_num		= -1;		/* dynamic */
 	ctlr->num_chipselect	= 2;
 	ctlr->mode_bits		= SPI_MODE_0;
@@ -424,11 +422,8 @@ static int ce5xx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		return ret;
 
-	/* No device tree on this machine (CEFDK passes no DTB), so instantiate
-	 * the flash by hand on CS0; spi-nor then autodetects it by JEDEC id. */
-	flash = spi_new_device(ctlr, &ce5xx_flash_info);
-	if (!flash)
-		dev_warn(&pdev->dev, "could not add spi-nor device on CS0\n");
+	if (!dev_fwnode(&pdev->dev))
+		dev_warn(&pdev->dev, "no device-tree node; no flash on CS0\n");
 
 	dev_info(&pdev->dev, "CE5300 boot SPI-NOR controller ready (CSR %pR, win %pR)\n",
 		 &pdev->resource[0], &pdev->resource[1]);
@@ -451,8 +446,9 @@ static int __init ce5xx_init(void)
 {
 	return pci_register_driver(&ce5xx_driver);
 }
-/* subsys_initcall so the master (and the spi-nor child it spawns) are up before
- * the MTD users that want /dev/mtd0, mirroring the other EA board drivers. */
+/* subsys_initcall so the master (and the spi-nor child the tree gives it) are
+ * up before the MTD users that want /dev/mtd0, mirroring the other EA board
+ * drivers. */
 subsys_initcall(ce5xx_init);
 
 MODULE_DESCRIPTION("Intel CE5300/CE2600 boot SPI-NOR controller (Control4 EA)");

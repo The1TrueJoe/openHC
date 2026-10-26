@@ -55,7 +55,15 @@ Under openHC it is a **writable `/dev/mtd0`** via the in-tree `spi-ea-ce5xx`
 controller driver — confirmed on this EA1, `/proc/mtd` shows a 16 MB `mtd0` on
 `spi0.0`. That is what makes an in-place install and a software return-to-stock
 possible without serial; see [the boot chain](/ea/boot-chain/) and
-[recovery](/shared/recovery/).
+[recovery](/shared/recovery/). The board device tree also names the regions
+CEFDK's mask ROM fixes, as read-only partitions beside the whole-chip `mtd0`:
+
+```
+mtd0: 01000000 00010000 "spi0.0"      whole chip, the one writes go through
+mtd1: 00080000 00010000 "cefdk"       0x000000  cefdk_s1/s2/s1h/s2h
+mtd2: 00000800 00010000 "mfh"         0x080000  MFH item table (+ banks)
+mtd3: 00f7f800 00010000 "mfh-items"   0x080800  the items' contents
+```
 
 ### RAM: CEFDK withholds most of it
 
@@ -186,10 +194,10 @@ anything.
 Because `/dev/mtd0` is writable (above), the EA1 has a **software** return-to-stock
 that needs no serial: openHC's install adds exactly one `script` item to the
 SPI-NOR MFH, and `restore` removes it. It can be triggered from iod (REST/MQTT),
-the web UI System panel, or by **holding the front ID button** — a bare SoC GPIO
-(`gpiochip0` line 32, active-low: released `1`, pressed `0`, confirmed on this
-EA1) that the board device tree leaves unclaimed. The watcher is fail-safe: it arms only
-after one clean released reading, so a wrong polarity stays inert.
+the web UI System panel, or by **holding the front ID button** — SoC GPIO 32
+(active-low, confirmed on this EA1), a `gpio-keys-polled` node in the board
+device tree. The watcher times the hold from the button's input events and is
+fail-safe: a press already down when it starts never counts.
 
 This matters on the EA1 specifically: with the boot fuse blown, the native
 recessed CEFDK button does **not** rewrite the SPI-NOR MFH, so it alone won't undo

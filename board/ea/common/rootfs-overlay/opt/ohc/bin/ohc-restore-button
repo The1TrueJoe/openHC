@@ -1,34 +1,31 @@
 #!/bin/sh
 # openHC — hardware "return to stock" button watcher (EA / CEFDK boards).
 #
-# Holding the front ID button for OHC_RESTORE_BUTTON_HOLD seconds runs
-# `restore stock` — openHC's software return-to-stock. This exists because
-# the native CEFDK button recovery is not dependable on every EA unit: an EA1
-# with the boot fuse blown does not rewrite mtd0 from the button, so the physical
-# gesture is offered in software instead. The front ID button is a bare SoC GPIO
-# (the board DTB names line 32 id_button but deliberately leaves it unclaimed), so this polls it
-# with libgpiod rather than reading an input device.
+# Holding the front ID button for OHC_RESTORE_BUTTON_HOLD seconds and letting go
+# runs `restore stock` — openHC's software return-to-stock. This exists
+# because the native CEFDK button recovery is not dependable on every EA unit: an
+# EA1 with the boot fuse blown does not rewrite mtd0 from the button, so the
+# physical gesture is offered in software instead.
 #
-# FAIL-SAFE: the watcher only ARMS after it has seen the line in its released
-# state at least once. A stuck or mis-polarised line therefore reads "pressed"
-# forever and never arms — it can never wipe a box at boot. Get the polarity
-# wrong and the button simply does nothing; it never does the wrong thing.
+# The button is a gpio-keys-polled node in the board device tree (ea.dtsi), which
+# udev links as /dev/ohc/input/id-button; polarity and debounce live there. This
+# reads its input events and measures the hold between the kernel's press and
+# release timestamps, so the hold is exact however late this shell gets to run.
+# OHC_RESTORE_BUTTON_LED blinks while the button is held and goes solid once it
+# has been held long enough: let go then.
+#
+# FAIL-SAFE: only a press the watcher saw both start and end counts. A stuck or
+# shorted button reads pressed from the first poll, which the kernel reports the
+# moment the device is opened; that press is never armed. It can never wipe a
+# box at boot.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 
 RESTORE=/opt/ohc/bin/restore
+DEV=/dev/ohc/input/id-button
 : "${OHC_RESTORE_BUTTON_HOLD:=10}"
-: "${OHC_RESTORE_BUTTON_ACTIVE:=low}"
 
-# OHC_RESTORE_BUTTON is "chip offset", e.g. "gpiochip0 32". Empty = no button.
-# shellcheck disable=SC2086
-set -- $OHC_RESTORE_BUTTON
-CHIP=$1; OFFSET=$2
-[ -n "$CHIP" ] && [ -n "$OFFSET" ] || { echo "restore-button: no OHC_RESTORE_BUTTON configured"; exit 0; }
+[ -c "$DEV" ] || { echo "restore-button: no $DEV"; exit 0; }
 [ -x "$RESTORE" ] || { echo "restore-button: $RESTORE not installed"; exit 0; }
-command -v gpioget >/dev/null 2>&1 || { echo "restore-button: gpioget (libgpiod) missing"; exit 0; }
-
-# active-low (the EA default: pull-up, pressed pulls to 0) vs active-high.
-if [ "$OHC_RESTORE_BUTTON_ACTIVE" = high ]; then PRESSED=1; else PRESSED=0; fi
 
 # Best-effort arming feedback on a /sys/class/leds entry (OHC_RESTORE_BUTTON_LED).
 led() {
@@ -44,35 +41,74 @@ led() {
     fi
 }
 
-echo "restore-button: watching $CHIP line $OFFSET (hold ${OHC_RESTORE_BUTTON_HOLD}s, active-${OHC_RESTORE_BUTTON_ACTIVE})"
-armed=0
-held=0
-warned=0
+blink() {
+    i=0
+    while [ "$i" -lt "$OHC_RESTORE_BUTTON_HOLD" ]; do
+        led $(((i + 1) % 2)); sleep 1; i=$((i + 1))
+    done
+    led 1
+}
+blinker=
+stop_blink() {
+    [ -n "$blinker" ] && kill "$blinker" 2>/dev/null
+    blinker=
+    led 0
+}
+
+# Monotonic milliseconds. The event timestamps are wall-clock (evdev's default),
+# so a clock step mid-hold (ntpd at boot) would fake a long hold; the hold only
+# counts if this clock, read as each event arrives, agrees with them.
+uptime_ms() {
+    awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime
+}
+
+# One fd for the watcher's lifetime, so no event falls between reads. Each read
+# is one struct input_event (24 bytes on this x86_64 userspace): tv_sec, tv_usec
+# (u64 each, read as low/high u32 words), type|code<<16, value.
+exec 3< "$DEV" || exit 1
+opened=$(date +%s)
+echo "restore-button: watching $DEV (hold ${OHC_RESTORE_BUTTON_HOLD}s, then release)"
+
+armed=1
+down_ms=; down_up=
 while :; do
-    v=$(gpioget "$CHIP" "$OFFSET" 2>/dev/null)
-    if [ -z "$v" ]; then
-        # Read failed (line busy, chip gone) — treat as not-pressed, keep calm.
-        [ "$held" -gt 0 ] && led 0
-        held=0
-    elif [ "$v" != "$PRESSED" ]; then
-        armed=1                         # a clean released reading: safe to watch
-        [ "$held" -gt 0 ] && led 0
-        held=0
-    elif [ "$armed" = 1 ]; then
-        held=$((held + 1))
-        if [ $((held % 2)) -eq 0 ]; then led 1; else led 0; fi   # blink while arming
-        if [ "$held" -ge "$OHC_RESTORE_BUTTON_HOLD" ]; then
-            led 1
-            echo "restore-button: held ${held}s — returning to stock"
-            logger -t ohc-restore-button "button held ${held}s; running restore stock" 2>/dev/null
-            "$RESTORE" stock            # reverts the MFH and recovery-kexecs; reboots
-            held=0; armed=0; led 0      # if it returns, require a fresh release
+    ev=$(dd bs=24 count=1 <&3 2>/dev/null | od -An -v -tu4)
+    # shellcheck disable=SC2086
+    set -- $ev
+    [ $# -eq 6 ] || { echo "restore-button: $DEV went away"; stop_blink; exit 1; }
+    [ $(($5 & 0xffff)) -eq 1 ] || continue          # EV_KEY only (skip EV_SYN)
+    t=$(($1 * 1000 + $3 / 1000))
+    case $6 in
+    1)  if [ "$1" -le $((opened + 1)) ]; then
+            # Reported as the device opened: held since before we started.
+            echo "restore-button: button reads pressed at startup — not arming until it is released"
+            armed=0
+            continue
         fi
-    elif [ "$warned" = 0 ]; then
-        # Pressed before we ever saw it released: stuck button or wrong polarity.
-        # Refuse to arm and say why, once.
-        echo "restore-button: line reads pressed at startup — not arming (check polarity/OHC_RESTORE_BUTTON_ACTIVE)"
-        warned=1
-    fi
-    sleep 1
+        [ "$armed" = 1 ] || continue
+        down_ms=$t; down_up=$(uptime_ms)
+        blink & blinker=$!
+        ;;
+    0)  stop_blink
+        if [ "$armed" = 0 ]; then
+            armed=1                                 # a clean release: safe to watch
+            continue
+        fi
+        [ -n "$down_ms" ] || continue
+        held=$((t - down_ms)); seen=$(($(uptime_ms) - down_up))
+        down_ms=
+        if [ "$held" -lt $((OHC_RESTORE_BUTTON_HOLD * 1000)) ]; then
+            continue
+        fi
+        if [ $((held - seen)) -gt 1000 ] || [ $((seen - held)) -gt 1000 ]; then
+            echo "restore-button: held ${held}ms by the event clock but ${seen}ms by uptime — clock stepped, ignoring"
+            continue
+        fi
+        led 1
+        echo "restore-button: held ${held}ms — returning to stock"
+        logger -t ohc-restore-button "button held ${held}ms; running restore stock" 2>/dev/null
+        "$RESTORE" stock                            # reverts the MFH and recovery-kexecs; reboots
+        led 0
+        ;;
+    esac
 done

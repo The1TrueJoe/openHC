@@ -1,5 +1,6 @@
 #!/bin/sh
-# EA-family hardware bring-up: the lm75 heatsink sensor + the PWM fan daemon.
+# EA-family hardware bring-up: report what bound, then start the PWM fan daemon
+# (it reads the lm75 the board DTB puts on i2c-0).
 # The universal identity layer (mDNS, timezone) is the fleet S50ohc, which runs
 # right after this. S49 so the hardware is up before S50 reports state.
 BIN=/opt/ohc/bin
