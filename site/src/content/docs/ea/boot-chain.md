@@ -198,7 +198,7 @@ be built in. If a genuinely large kernel is ever unavoidable, the escape hatch i
 a small bootstrap kernel that `kexec`s the real one from p1, kexec has no such
 limit.
 
-## Two board quirks you will hit
+## Three board quirks you will hit
 
 **The UART is at 921600, not 115200.** The CE5310's legacy `0x3f8` UART clock is
 **8× standard** (14.7456 MHz), so a mainline kernel asked for 115200 drives the
@@ -223,6 +223,29 @@ This is why every hunt for the Zigbee radio on `ttyS1..3` came back empty —
 those are the legacy ports, they enumerate with `irq = 0`, and a port with no
 IRQ transmits fine but never receives. `SERIAL_8250_NR_UARTS` is raised from 4
 to 8.
+
+**A kexec out of a kernel whose GPU driver has probed breaks the next kernel**
+unless the SGX is put back in reset first. Once `pvrsrvkm` has bound the SGX545
+(01:02.0), the core stays live after the driver lets go: its shutdown hook, and
+even a full unbind, leave it out of reset. The kernel kexec'd next then gets
+reads from the HPET and IOAPIC that return the *previous* read's value, so the
+HPET looks frozen (`clocksource: Watchdog hpet interval: 0ns`) and interrupt
+routing breaks. DMA dies with it: SDHCI `Timeout waiting for hardware interrupt`,
+e1000 `Detected Tx Unit Hang`, EHCI `-110`. Which kernel comes next does not
+matter, nor does whether anything ever rendered. The bootstrap → real-kernel
+handoff is unaffected, because the bootstrap never binds the GPU. The real kernel
+holds the SGX in soft reset (`EUR_CR_SOFT_RESET` = all units) at kexec and
+reboot, after the GPU driver has shut down. That's
+`board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c`, so a test or recovery
+kexec from a running box works. On a kernel built before it, run this first:
+
+```
+echo 0000:01:02.0 > /sys/bus/pci/drivers/pvrsrvkm/unbind
+devmem 0xdc000080 32 0x3f
+```
+
+Don't poke other SGX registers by hand: on an uninitialised core, reading e.g.
+`EUR_CR_USE_CODE_BASE_0` (0xa0c) hangs the bus.
 
 ## Recovery nets, all proven on hardware
 
