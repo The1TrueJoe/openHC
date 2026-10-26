@@ -15,6 +15,12 @@
 BR2_x86_64=y
 BR2_x86_bonnell=y
 
+# Userspace built for speed (-O2), not the fleet-wide -Os: this board boots off
+# a hard disk, so image size costs nothing, and a slow Atom is where the speed
+# shows. The kernel has its own CONFIG_CC_OPTIMIZE_FOR_SIZE and is unaffected.
+# BR2_OPTIMIZE_S is not set
+BR2_OPTIMIZE_2=y
+
 # x86_64 pulls in objtool, which #includes <gelf.h>. Without this the kernel
 # build dies on a missing HOST header while naming only itself:
 #   tools/objtool/include/objtool/elf.h:10:10: fatal error: gelf.h
