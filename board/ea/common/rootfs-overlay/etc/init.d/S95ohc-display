@@ -117,7 +117,10 @@ stop() {
 # Give the panel back to the splash. fb0 keeps whatever the view last presented
 # until something overdraws it, so turning the view off redraws the splash; a
 # restart does not, so the panel goes straight from the old view to the new one.
+# The pause lets a killed view finish dying, so its last frame cannot land on
+# top of the splash.
 splash() {
+	sleep 1
 	[ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash start >/dev/null 2>&1
 }
 
