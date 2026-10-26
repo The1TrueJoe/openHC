@@ -17,7 +17,7 @@
 # With either secret missing the job says so and stops, green.
 #
 # Stage 1 (this file today) proves the toolchain: install, the console app
-# headless, ADAU145x support. Stage 2 adds the design script and the export,
+# headless, ADAU145x (Sigma 300) support. Stage 2 adds the design script and the export,
 # handed to the EA image build as an artifact — the exported program never
 # enters git (ADI's license restricts distributing generated code outside the
 # products it runs on).
@@ -64,32 +64,16 @@ jobs:
             New-Item -ItemType Directory -Force logs | Out-Null
             & $env:SSPLUS_CONSOLE --help *>&1 | Tee-Object logs/console.txt
             if ($LASTEXITCODE) { "::error::console app exit $LASTEXITCODE"; exit 1 }
-            # Where SigmaStudio+ keeps its per-processor support is not documented,
-            # so record the install tree and every name that mentions the family
-            # before asserting anything about it.
-            Get-ChildItem -Path $env:SSPLUS_HOME -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-              Select-Object -ExpandProperty FullName | Out-File logs/tree.txt
-            Get-ChildItem -Path $env:SSPLUS_HOME -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -match '145[0-2]|146[0-7]|ADAU|Sigma ?3[05]0|SigmaDSP' } |
-              Select-Object -First 200 -ExpandProperty FullName | Tee-Object logs/adau145x.txt
-            if (-not (Get-Content logs/adau145x.txt -ErrorAction SilentlyContinue)) {
-              "::warning::nothing named for ADAU145x/146x under $env:SSPLUS_HOME; see logs/tree.txt"
+            # ADAU145x support is a set of plugins the installer drops in
+            # ProgramData (not under the install folder): the family's compiler and
+            # the Sigma 300 core the ADAU1451 is built on.
+            $plugins = "$env:ProgramData\Analog Devices\SigmaStudio 3.4\Plugins"
+            Get-ChildItem $plugins -File | Select-Object Name, Length |
+              Format-Table -AutoSize | Out-String -Width 200 | Out-File logs/plugins.txt
+            foreach ($dll in 'ADAU145x.dll', 'ADAU145XCompiler.dll', 'Sigma300Core.dll') {
+              if (-not (Test-Path "$plugins\$dll")) { "::error::no $dll in $plugins"; exit 1 }
             }
-            # Processor support may be DLLs beside the host, or downloadable add-ins
-            # kept outside the install folder.
-            Get-ChildItem -Path "$env:SSPLUS_HOME\Host" -File -ErrorAction SilentlyContinue |
-              Select-Object -ExpandProperty Name | Out-File logs/host-files.txt
-            Get-ChildItem -Path $env:SSPLUS_HOME, $env:ProgramData, $env:APPDATA, $env:LOCALAPPDATA -Directory -Recurse -Depth 4 -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match 'SigmaStudio|Analog Devices' -and $_.Name -match 'add-?in|plugin|processor|platform|device' } |
-              Select-Object -ExpandProperty FullName | Out-File logs/addin-dirs.txt
-            # The host ships NuGet.Core and an UpdateManager, and the install makes
-            # ProgramData\Analog Devices\SigmaStudio 3.4\Plugins: processor support
-            # looks like NuGet add-ins. Record what is there and where they come from.
-            Get-ChildItem -Path "$env:ProgramData\Analog Devices" -Recurse -ErrorAction SilentlyContinue |
-              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 400 | Out-File logs/plugins.txt
-            Get-ChildItem -Path "$env:SSPLUS_HOME\Setup" -Recurse -File -ErrorAction SilentlyContinue |
-              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 400 | Out-File logs/setup.txt
-            Copy-Item "$env:SSPLUS_HOME\Host\*.exe.config" logs/ -ErrorAction SilentlyContinue
+            "ADAU145x/Sigma 300 support present in $plugins"
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
