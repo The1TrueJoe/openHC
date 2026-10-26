@@ -65,12 +65,13 @@ jobs:
           "installer: $($f.Length) bytes, sha256 $((Get-FileHash $f).Hash)" | Tee-Object logs/installer.txt
 
       # The installer technology is not documented, so read it off the binary
-      # and use that technology's own silent switch. SigmaStudio+ 3.4.0 is an
-      # InstallShield Suite (Advanced UI) bootstrapper (ISSetupStream,
-      # BillboardType): its switch is /silent. The MSI-style /s /v"/qn" of an
-      # older InstallShield setup.exe is not understood there and leaves it at a
-      # dialog nobody can see, so every attempt is bounded and killed if it
-      # hangs, and the next one is tried.
+      # and use that technology's own silent switch. SigmaStudio+ 3.4.0 is a
+      # classic InstallShield setup.exe around an MSI (NGSS_3.4.0.msi, 32-bit):
+      # measured on a runner, it relaunches from temp, skips its .NET 4.7.2
+      # prerequisite (present) and runs `msiexec /i` -- with full UI unless
+      # /v passes /qn. So /s /v"/qn" goes first; /silent (a Suite switch) left
+      # the MSI at a dialog nobody can see. Every attempt is bounded and killed
+      # if it hangs, and the next one is tried.
       - name: Silent install
         if: steps.staged.outputs.ok == 'true'
         timeout-minutes: 25
@@ -90,8 +91,8 @@ jobs:
             'inno'          { ,"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG=`"$logs\setup.log`"" }
             'nsis'          { ,'/S' }
             'burn'          { ,"/quiet /norestart /log `"$logs\setup.log`"" }
-            'installshield' { "/silent /debuglog`"$logs\suite.log`"",
-                              "/s /v`"/qn /l*v \`"$logs\msi.log\`"`"" }
+            'installshield' { "/s /v`"/qn REBOOT=ReallySuppress /l*v \`"$logs\msi.log\`"`"",
+                              "/silent /debuglog`"$logs\suite.log`"" }
             default         { '/silent', '/S', '/quiet /norestart', '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' }
           }
           function Find-Console {
