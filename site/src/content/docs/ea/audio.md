@@ -1,13 +1,69 @@
 ---
 title: Audio
-description: CE5300 I2S into an ADAU1451 SigmaDSP — the I2C bus mainline never creates, and what is still inferred.
+description: HDMI audio from the CE5300's HDMI transmitter on every EA, and the EA3's I2S into an ADAU1451 SigmaDSP — what runs and what is still inferred.
 sidebar:
   order: 8
 ---
 
-**Status: kernel drivers written, not yet proven on hardware.** The userspace half
-is the HC-800's audio scheme and should work the moment the PCM does. Read
-[what is still unproven](#what-is-still-unproven) before trusting any of this.
+**Status.** [HDMI out](#hdmi-out-every-ea) (every EA): the engine runs on an EA1
+under openHC; not yet heard through a TV. The EA3's analog path through the DSP:
+drivers written, not yet proven on hardware. The userspace half is the HC-800's
+audio scheme. Read [what is still unproven](#what-is-still-unproven) before
+trusting the DSP half.
+
+## HDMI out (every EA)
+
+The HDMI transmitter (`01:08.2`, `8086:2e63`) carries its **own** audio DMA
+engine, which reads PCM from memory straight into its audio FIFO. HDMI audio
+never touches the I²S block below, the one that hangs on access. Stock drives
+it from Intel's closed `pd_hdmi.ko`; its HAL's function names survive, and the
+map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
+(`hw:HDMI`), loaded by udev off the PCI id, from the `audio-hdmi` feature
+(every EA).
+
+| BAR0 offset | Register |
+|---|---|
+| `+0x0c` / `+0x10` / `+0x14` / `+0x18` / `+0x1c` | DMA: next descriptor, current source (the position), destination, bytes left, mode word. The same layout as the I²S DMA contexts |
+| `+0x20` bit 0 | DMA stop |
+| `+0x1000` bit 2 | audio clock enable |
+| `+0x3000` bit 0 | **HDMI mode**; clear is DVI, which carries no audio |
+| `+0x4000` | audio config: bit 0 enable; layout, format, channels, high rate, B/flat/valid bits above it (all 0 = 2-ch LPCM) |
+| `+0x4004` | CTS as the transmitter measures it |
+| `+0x4008` / `+0x400c` | N; CTS override (0 = measure) |
+| `+0x4010` | MCLK divider: MCLK ÷ it = 128·fs |
+| `+0x4014` / `+0x4018` | FIFO threshold / level |
+| `+0x4050` / `+0x4054` / `+0x4058` | IEC 60958 channel status bytes 0–3, byte 4, send |
+| `+0x4100 + 0x20n` | infoframe slot *n*: header, then 7 payload words (checksum first). AVI is slot 0, audio slot 1 |
+| `+0x4180 + 4n` | slot *n* control: bit 0 enable, bit 1 send once |
+
+Descriptors are 24 bytes: next, size, source, destination (`0x10101010`, a
+placeholder: the FIFO is the engine's own), mode word `0x40006096`, tag. Start
+is pd_hdmi's `hdmi_dma_custom_start`: head descriptor into `+0x0c`, 0 into
+`+0x18`, the placeholder into `+0x14`, the mode word into `+0x1c`, then audio
+enable.
+
+**The clock.** MCLK is the SoC's audio PLL, IOSF sideband port `0x8b`, eight
+registers (`apll_cr[0..7]`). Stock's `ismdaudio` programs it per mode; CEFDK
+already leaves it at stock's mode 17, **24.576 MHz** (`00002800 00090020
+00063309 000000d0 00000048 0 0 00004000`, read on an EA1). ÷4 is 128 × 48 kHz,
+so 48 kHz is the one rate the driver offers; it reads the PLL back at probe and
+refuses to load if it is anything else. Sideband reads go through the host
+bridge's mailbox (config `0xd0` command, `0xd4` data, `0xd8` extended offset;
+CR read opcode `0x06`), as in Intel's GPL `_ce5300_iosf.c`.
+
+**DVI mode.** With no HDMI sink seen at boot, CEFDK leaves the link in DVI
+mode with no infoframes. The first playback switches it to HDMI mode and sends
+an AVI infoframe (RGB, full range: what a sink assumes of DVI), so the picture
+does not change when sound starts. A box that never plays sound keeps CEFDK's
+link untouched.
+
+**Proven** (EA1, 2026-10-27, from userspace with `devmem`): the DMA walks a
+looping descriptor, the FIFO drains, and the transmitter measures CTS = 27000
+at 480p — 27 MHz with N = 6144, exactly 48 kHz. In DVI mode the FIFO fills and
+stops, as it should. **Not yet heard**: no TV was attached. The one thing the
+hardware cannot tell us is where a sample sits in its 32-bit FIFO word. The
+driver assumes MSB-aligned (`S32_LE`, stock's DSP output convention); if a TV
+plays a clean but very quiet tone, load it with `lsb_aligned=1` (`S24_LE`).
 
 ## The thing that blocked everything
 
@@ -261,9 +317,9 @@ alsa-lib. It **requires a Spotify Premium account**, with a free account the
 device is discovered and then refuses to play, which looks like a bug and isn't
 one.
 
-## What still blocks sound
+## What still blocks sound (EA3 DSP path)
 
-The `audio` and `audio-dsp` features are on for both EA3 boards and the drivers
+HDMI is [above](#hdmi-out-every-ea). The `audio` and `audio-dsp` features are on for both EA3 boards and the drivers
 build for x86_64 (modules, loaded by `S45ea-audio`). Two things stand between
 that and sound:
 

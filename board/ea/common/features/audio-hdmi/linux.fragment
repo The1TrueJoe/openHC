@@ -1,0 +1,19 @@
+# --- audio: HDMI out, the CE5300 HDMI transmitter's own audio DMA ------------
+#
+# Every EA has HDMI, so this is in ea/common/ohc.features; the EA3 adds the
+# ADAU1451 analog path on top (audio-dsp). The driver, sound/x86/ce5300-hdmi.c,
+# is copied in through objs.mk with no Kconfig symbol of its own: it builds
+# whenever CONFIG_SND is set, because sound/Makefile descends into sound/x86
+# under CONFIG_SND. Modules, like audio-dsp, so the bzImage stays inside
+# CEFDK's bootlinux window; udev loads ce5300-hdmi off PCI 8086:2e63.
+CONFIG_SOUND=m
+CONFIG_SND=m
+
+# SND_PCM has no prompt: something has to select it, and on a board without
+# ASoC nothing else does. The loopback card selects it and is useful in its own
+# right (a capture of what is playing), so it is the one asked for.
+CONFIG_SND_DRIVERS=y
+CONFIG_SND_ALOOP=m
+
+# sound/x86 is gated by this menu (default y, but say so).
+CONFIG_SND_X86=y

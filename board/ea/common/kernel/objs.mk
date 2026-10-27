@@ -34,6 +34,10 @@ drivers/spi/Makefile|obj-y += spi-ea-ce5xx.o
 # features/audio-dsp/linux.fragment.
 sound/soc/codecs/Makefile|obj-m += adau1451-c4.o
 sound/soc/Makefile|obj-m += ce5300/
+# HDMI audio is the HDMI transmitter's own DMA, not the I2S block, and is a plain
+# ALSA card rather than ASoC, so it sits in sound/x86 (descended whenever
+# CONFIG_SND is set). Every EA has HDMI; features/audio-hdmi turns ALSA on.
+sound/x86/Makefile|obj-m += ce5300-hdmi.o
 
 # --- GPU: PowerVR SGX545 (the sgx545ce submodule mirrored in beside it) ---
 # Unlike the drivers above (openHC's own single .c files, obj-y), this is a large
