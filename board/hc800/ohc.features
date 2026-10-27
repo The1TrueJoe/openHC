@@ -14,3 +14,5 @@ wpe         # on-screen web surface (Mesa i915 + WPE WebKit's DRM platform),
             # on the component output, opt-in from the web UI (S95ohc-display)
 update      # software updates from the web UI (updated): stable releases or
             # the dev channel, installed onto sda3 and rebooted
+usb-input   # USB keyboards, mice, game controllers (front USB, hubs too) for the
+            # on-screen UI
