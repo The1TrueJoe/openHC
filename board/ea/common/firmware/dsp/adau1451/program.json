@@ -28,6 +28,5 @@
   ["GetAllShapes"],
   ["SaveProject", "${env:DSP_OUT}\\openhc-ea3.ssprj"],
   ["LinkCompileConnect"],
-  ["Export", "openhc-ea3", "${env:DSP_OUT}\\export"],
-  {"call": "GetOutputViewEntries", "allow-fail": true}
+  ["Export", "openhc-ea3", "${env:DSP_OUT}\\export"]
 ]
