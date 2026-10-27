@@ -9,9 +9,10 @@
  * pd_hdmi.ko; the register map here was read out of that module's HAL (its
  * function names survive: hdmi_dma_config, hdmi_audio_set_clock_recovery_n,
  * hdmi_infoframe_set_audio, ...) and every value was then checked on an EA-1
- * under openHC, where the engine ran from this exact sequence: the DMA walked
- * the ring, the FIFO drained, and the transmitter measured CTS = 27000 at
- * 480p (27 MHz, N = 6144 -- exactly 48 kHz).
+ * under openHC, where this exact sequence played a test tone through an HDMI
+ * monitor's speakers: the DMA walked the ring, the FIFO never ran dry, and the
+ * transmitter measured CTS = 27000 at 480p (27 MHz, N = 6144 -- exactly
+ * 48 kHz).
  *
  * WHAT THE HARDWARE NEEDS
  * -----------------------
@@ -19,20 +20,22 @@
  *    128 x fs. MCLK is the SoC's audio PLL (IOSF sideband port 0x8b), which
  *    CEFDK programs at boot to stock's "mode 17", 24.576 MHz; /4 is 48 kHz.
  *    The probe reads the PLL back and refuses to guess if it is anything else.
- *  - HDMI mode. CEFDK leaves the link in DVI mode when it finds no HDMI sink at
- *    boot, and DVI carries no audio. The first playback switches it (+0x3000
- *    bit 0) and sends an AVI infoframe that keeps the picture as it was (RGB,
- *    full range).
+ *  - HDMI mode. CEFDK leaves the link in DVI mode, and DVI carries no audio.
+ *    The first playback switches it (+0x3000 bit 0), and first does what stock
+ *    does for an HDMI sink and CEFDK never did:
+ *      - the line timing at +0x3100 (active width, horizontal blanking), where
+ *        the transmitter puts data islands. CEFDK leaves it 0; switched to HDMI
+ *        mode that way, a monitor drops the signal outright (measured). It is
+ *        read off the VDC's pipe A, which CEFDK set to the mode it drives;
+ *      - an AVI infoframe that keeps the picture as it was (RGB, full range);
+ *      - a GCP clearing AV mute.
  *  - Channel status and an audio infoframe, both 2-channel LPCM at 48 kHz.
  *
  * Periods are paced by a timer from the DMA position, as in ce5300-i2s: no
  * interrupt is needed and none is routed reliably on the kernels openHC boots.
  *
- * NOT YET HEARD: the engine is proven to run, but the box it was proven on had
- * no TV attached. The one thing that cannot be read off the hardware is where
- * a sample sits in its 32-bit FIFO word; stock's DSP output convention is
- * MSB-aligned, which is the default here. If a TV plays the tone quietly but
- * cleanly the alignment is wrong: load with lsb_aligned=1.
+ * Samples are MSB-aligned in their 32-bit FIFO word (S32_LE; bits 7:0 are not
+ * sent). Heard: the same tone LSB-aligned is ~60 dB down, inaudible.
  */
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
@@ -69,6 +72,7 @@
 #define   HDMI_CLK_AUDIO	BIT(2)	/* hdmi_general_audio_clock_enable */
 #define HDMI_OPMODE		0x3000
 #define   HDMI_OPMODE_HDMI	BIT(0)	/* clear = DVI */
+#define HDMI_LINE_TIMING	0x3100	/* hdmi_video_set_tv_timings: active << 16 | hblank */
 
 /* ---- Audio ------------------------------------------------------------- */
 #define HDMI_AUD_CONFIG		0x4000
@@ -94,6 +98,16 @@
 #define   HDMI_IF_ONCE		BIT(1)
 #define HDMI_IF_SLOT_AVI	0
 #define HDMI_IF_SLOT_AUDIO	1
+#define HDMI_GCP		0x428c	/* hdmi_hal_gcp_avmute_set */
+#define   HDMI_GCP_SET_AVMUTE	BIT(15)
+#define   HDMI_GCP_CLEAR_AVMUTE	BIT(16)
+#define   HDMI_GCP_SEND		BIT(5)
+
+/* The display controller (VDC, 8086:2e61): pipe A's timing, i9xx layout --
+ * (total - 1) << 16 | (active - 1), and blank (end - 1) << 16 | (start - 1). */
+#define VDC_PCI_DEVICE		0x2e61
+#define VDC_HTOTAL_A		0x60000
+#define VDC_HBLANK_A		0x60004
 
 /* 48 kHz from a 24.576 MHz MCLK; N from pd_hdmi's table (6144 at every pixel
  * clock CEFDK sets except the /1.001 ones, and the CTS is measured anyway). */
@@ -127,11 +141,6 @@ struct hdmi_dma_desc {
 
 #define HDMI_PERIODS_MAX	32
 #define HDMI_BUFFER_BYTES_MAX	(256 * 1024)
-
-static bool lsb_aligned;
-module_param(lsb_aligned, bool, 0444);
-MODULE_PARM_DESC(lsb_aligned,
-		 "Samples sit in bits 23:0 of the FIFO word (S24_LE) rather than 31:8 (S32_LE). Unconfirmed either way, see the file header");
 
 static int index = SNDRV_DEFAULT_IDX1;
 module_param(index, int, 0444);
@@ -219,29 +228,68 @@ static void hdmi_infoframe(struct ce5300_hdmi *h, unsigned int slot,
 		    HDMI_IF_ENABLE);
 }
 
+/* Pipe A's active width and horizontal blanking, as CEFDK set the VDC up. */
+static int ce5300_hdmi_line_timing(struct ce5300_hdmi *h, u32 *timing)
+{
+	struct pci_dev *vdc = pci_get_device(PCI_VENDOR_ID_INTEL, VDC_PCI_DEVICE, NULL);
+	void __iomem *regs;
+	u32 htotal, hblank, active, blank;
+
+	if (!vdc)
+		return -ENODEV;
+	/* Read-only, and not ours to claim: map the two registers, no request. */
+	regs = ioremap(pci_resource_start(vdc, 0) + VDC_HTOTAL_A, 8);
+	pci_dev_put(vdc);
+	if (!regs)
+		return -ENOMEM;
+	htotal = readl(regs);
+	hblank = readl(regs + VDC_HBLANK_A - VDC_HTOTAL_A);
+	iounmap(regs);
+
+	active = (htotal & 0xfff) + 1;
+	blank = ((hblank >> 16) & 0xfff) - (hblank & 0xfff);
+	if (!active || active > 0xfff || !blank || blank > 0x3ff) {
+		dev_err(&h->pdev->dev, "VDC timing unreadable (htotal %#x hblank %#x)\n",
+			htotal, hblank);
+		return -EINVAL;
+	}
+	*timing = active << 16 | blank;
+	return 0;
+}
+
 /*
  * DVI -> HDMI. Done on first playback, not at probe, so a box that never plays
  * sound keeps the link exactly as CEFDK left it. The AVI infoframe says RGB,
  * full range -- what a sink assumes of a DVI source -- so the picture does not
  * change when audio starts.
  */
-static void ce5300_hdmi_link_to_hdmi(struct ce5300_hdmi *h)
+static int ce5300_hdmi_link_to_hdmi(struct ce5300_hdmi *h)
 {
 	static const u8 avi[13] = { 0x00, 0x08, 0x08 };	/* RGB; aspect as coded; Q full */
+	u32 timing;
+	int ret;
 
 	if (hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI)
-		return;
+		return 0;
+	ret = ce5300_hdmi_line_timing(h, &timing);
+	if (ret)
+		return ret;
+	hdmi_write(h, HDMI_LINE_TIMING, timing);
 	hdmi_infoframe(h, HDMI_IF_SLOT_AVI, 0x82, 2, avi, sizeof(avi));
+	hdmi_update(h, HDMI_GCP, HDMI_GCP_SET_AVMUTE | HDMI_GCP_CLEAR_AVMUTE | HDMI_GCP_SEND,
+		    HDMI_GCP_CLEAR_AVMUTE | HDMI_GCP_SEND);
 	hdmi_update(h, HDMI_OPMODE, HDMI_OPMODE_HDMI, HDMI_OPMODE_HDMI);
-	dev_info(&h->pdev->dev, "link switched from DVI to HDMI mode for audio\n");
+	dev_info(&h->pdev->dev, "link switched from DVI to HDMI mode for audio (line %u + %u)\n",
+		 timing >> 16, timing & 0xffff);
+	return 0;
 }
 
 /* ---- PCM ---------------------------------------------------------------- */
 
-static struct snd_pcm_hardware ce5300_hdmi_pcm_hw = {
+static const struct snd_pcm_hardware ce5300_hdmi_pcm_hw = {
 	.info			= SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
 				  SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
-	.formats		= SNDRV_PCM_FMTBIT_S32_LE,	/* S24_LE with lsb_aligned */
+	.formats		= SNDRV_PCM_FMTBIT_S32_LE,
 	.rates			= SNDRV_PCM_RATE_48000,
 	.rate_min		= HDMI_RATE,
 	.rate_max		= HDMI_RATE,
@@ -284,6 +332,7 @@ static int ce5300_hdmi_pcm_prepare(struct snd_pcm_substream *ss)
 	unsigned int period_bytes = snd_pcm_lib_period_bytes(ss);
 	static const u8 audio_if[10] = { 0x01 };	/* 2 channels, rest from the stream */
 	unsigned int i;
+	int ret;
 
 	if (rt->periods > HDMI_PERIODS_MAX)
 		return -EINVAL;
@@ -304,7 +353,9 @@ static int ce5300_hdmi_pcm_prepare(struct snd_pcm_substream *ss)
 
 	h->period = ns_to_ktime(div_u64((u64)rt->period_size * NSEC_PER_SEC, rt->rate));
 
-	ce5300_hdmi_link_to_hdmi(h);
+	ret = ce5300_hdmi_link_to_hdmi(h);
+	if (ret)
+		return ret;
 	hdmi_update(h, HDMI_CLOCKS, HDMI_CLK_AUDIO, HDMI_CLK_AUDIO);
 
 	hdmi_write(h, HDMI_AUD_CONFIG, 0);
@@ -455,9 +506,6 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	hrtimer_setup(&h->tick, ce5300_hdmi_tick, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 	card->private_free = ce5300_hdmi_free;
 
-	if (lsb_aligned)
-		ce5300_hdmi_pcm_hw.formats = SNDRV_PCM_FMTBIT_S24_LE;
-
 	ret = snd_pcm_new(card, "HDMI", 0, 1, 0, &pcm);
 	if (ret)
 		return ret;
@@ -476,8 +524,7 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	if (ret)
 		return ret;
 
-	dev_info(&pdev->dev, "HDMI audio: 2ch LPCM 48 kHz, %s samples, link in %s mode\n",
-		 lsb_aligned ? "LSB-aligned" : "MSB-aligned",
+	dev_info(&pdev->dev, "HDMI audio: 2ch LPCM 48 kHz, link in %s mode\n",
 		 hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI ? "HDMI" : "DVI");
 	return 0;
 }
