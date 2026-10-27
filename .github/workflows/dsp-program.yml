@@ -115,18 +115,29 @@ jobs:
       - name: Probe the algorithm library
         if: steps.staged.outputs.ok == 'true'
         continue-on-error: true
-        shell: powershell
+        shell: python
         run: |
-          $plugins = Get-ChildItem "$env:ProgramData\Analog Devices" -Recurse -Directory -Filter Plugins | Select-Object -First 1
-          $pat = 'Index|Mux|Loud|Lookup|LookUp|Biquad|2ndOrder|Shelv|Sine|Tone|Volume|DCInput|Balance|Gain|Mixer|Parametric|EQ|Switch|Select|Mute|Osc'
-          $out = foreach ($dll in Get-ChildItem $plugins.FullName -Recurse -Filter *.dll) {
-            try { $a = [Reflection.Assembly]::ReflectionOnlyLoadFrom($dll.FullName) } catch { continue }
-            try { $ts = $a.GetTypes() } catch [Reflection.ReflectionTypeLoadException] { $ts = $_.Exception.Types | Where-Object { $_ } } catch { continue }
-            foreach ($t in $ts) { if ($t.FullName -match 'Sigma300|ADAU145' -and $t.Name -match '_v\d' -and $t.Name -match $pat) { "$($dll.Name)`t$($t.FullName)" } }
-          }
-          New-Item -ItemType Directory -Force logs | Out-Null
-          $out | Sort-Object -Unique | Tee-Object logs/algorithms.txt
-          "count: $(@($out).Count)"
+          import os, re, collections
+          root = os.path.join(os.environ["ProgramData"], "Analog Devices")
+          pat = re.compile(r"AnalogDevices\.Plugins\.Algorithms\.[A-Za-z0-9_.]+?_v\d+\.\d+\.\d+\.\d+")
+          ids = collections.defaultdict(set)
+          os.makedirs("logs", exist_ok=True)
+          with open("logs/plugin-files.txt", "w") as tree:
+              for d, _, fs in os.walk(root):
+                  for f in fs:
+                      p = os.path.join(d, f)
+                      n = os.path.getsize(p)
+                      tree.write(f"{n}\t{p}\n")
+                      if n > 64 << 20:
+                          continue
+                      b = open(p, "rb").read()
+                      for text in (b.decode("latin-1"), b.decode("utf-16-le", "ignore"), b[1:].decode("utf-16-le", "ignore")):
+                          for m in pat.findall(text):
+                              ids[m].add(f)
+          with open("logs/algorithms.txt", "w") as o:
+              for k in sorted(ids):
+                  o.write(f"{k}\t{' '.join(sorted(ids[k]))[:200]}\n")
+          print("ids:", len(ids))
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
