@@ -1,0 +1,106 @@
+From 690f90aa80e82546506664bf16a05cd15cf44198 Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <joseph@telaak.dev>
+Date: Tue, 27 Oct 2026 15:21:10 -0400
+Subject: [PATCH 2/2] package/wpewebkit: add WPE Platform options
+
+WPE Platform is the newer embedding API of WPE WebKit: the application
+creates a WPEDisplay and WebKit renders through it, without libwpe or
+a WPE backend. In 2.50 it is only enabled by default in developer
+mode, so add an option for it, with sub-options for the DRM and
+Wayland platforms. The headless platform has no dependencies and is
+always built.
+
+The DRM platform needs libinput and libudev. It also needs GBM and
+libdrm, which the existing USE_GBM and USE_LIBDRM blocks handle.
+
+Every WPE Platform display compiles an XKB keymap with libxkbcommon.
+Without the xkeyboard-config data this fails and the application
+crashes, so select xkeyboard-config.
+
+Pass ENABLE_WPE_PLATFORM explicitly in both cases, as upstream
+enables it by default starting with 2.54.
+---
+ package/wpewebkit/Config.in    | 35 ++++++++++++++++++++++++++++++++++
+ package/wpewebkit/wpewebkit.mk | 20 +++++++++++++++++++
+ 2 files changed, 55 insertions(+)
+
+diff --git a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
+index c624c697a5..14984d97ae 100644
+--- a/package/wpewebkit/Config.in
++++ b/package/wpewebkit/Config.in
+@@ -86,6 +86,41 @@ comment "sandboxing supports needs a toolchain w/ headers >= 3.17"
+ 	depends on BR2_PACKAGE_LIBSECCOMP_ARCH_SUPPORTS
+ 	depends on !BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_17
+ 
++config BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM
++	bool "WPE Platform API"
++	select BR2_PACKAGE_XKEYBOARD_CONFIG # runtime
++	help
++	  Build the WPE Platform API, an alternative to libwpe and WPE
++	  backends: the application creates a WPEDisplay (DRM, headless
++	  or Wayland) and WebKit renders through it. The headless
++	  platform is always included.
++
++	  The libwpe API remains available.
++
++if BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM
++
++config BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM
++	bool "DRM platform"
++	depends on BR2_PACKAGE_HAS_LIBGBM
++	depends on BR2_PACKAGE_HAS_LIBUDEV # libinput
++	select BR2_PACKAGE_LIBDRM
++	select BR2_PACKAGE_LIBINPUT
++	help
++	  Display directly through kernel mode-setting (KMS), without
++	  a compositor, with input from libinput.
++
++comment "DRM platform needs GBM and libudev"
++	depends on !BR2_PACKAGE_HAS_LIBGBM || !BR2_PACKAGE_HAS_LIBUDEV
++
++config BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_WAYLAND
++	bool "Wayland platform"
++	select BR2_PACKAGE_WAYLAND
++	select BR2_PACKAGE_WAYLAND_PROTOCOLS
++	help
++	  Display as a client of a Wayland compositor.
++
++endif
++
+ config BR2_PACKAGE_WPEWEBKIT_MULTIMEDIA
+ 	bool "multimedia support"
+ 	depends on BR2_PACKAGE_FFMPEG_ARCH_SUPPORTS # gst1-libav
+diff --git a/package/wpewebkit/wpewebkit.mk b/package/wpewebkit/wpewebkit.mk
+index ce4d1ad973..dacb859d6e 100644
+--- a/package/wpewebkit/wpewebkit.mk
++++ b/package/wpewebkit/wpewebkit.mk
+@@ -94,6 +94,26 @@ else
+ WPEWEBKIT_CONF_OPTS += -DENABLE_WEBDRIVER=OFF
+ endif
+ 
++ifeq ($(BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM),y)
++WPEWEBKIT_CONF_OPTS += \
++	-DENABLE_WPE_PLATFORM=ON \
++	-DENABLE_WPE_PLATFORM_HEADLESS=ON
++ifeq ($(BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM),y)
++WPEWEBKIT_CONF_OPTS += -DENABLE_WPE_PLATFORM_DRM=ON
++WPEWEBKIT_DEPENDENCIES += libinput libudev
++else
++WPEWEBKIT_CONF_OPTS += -DENABLE_WPE_PLATFORM_DRM=OFF
++endif
++ifeq ($(BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_WAYLAND),y)
++WPEWEBKIT_CONF_OPTS += -DENABLE_WPE_PLATFORM_WAYLAND=ON
++WPEWEBKIT_DEPENDENCIES += wayland wayland-protocols
++else
++WPEWEBKIT_CONF_OPTS += -DENABLE_WPE_PLATFORM_WAYLAND=OFF
++endif
++else
++WPEWEBKIT_CONF_OPTS += -DENABLE_WPE_PLATFORM=OFF
++endif
++
+ ifeq ($(BR2_PACKAGE_FLITE),y)
+ WPEWEBKIT_CONF_OPTS += -DENABLE_SPEECH_SYNTHESIS=ON
+ WPEWEBKIT_DEPENDENCIES += flite
+-- 
+2.50.1 (Apple Git-155)
+

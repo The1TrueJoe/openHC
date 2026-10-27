@@ -1,0 +1,42 @@
+From 21237fed60266e8ed4fca89c8ada17cdeae435cd Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <joseph@telaak.dev>
+Date: Tue, 27 Oct 2026 15:20:28 -0400
+Subject: [PATCH 1/2] package/wpewebkit: add missing libxkbcommon dependency
+
+WPE WebKit always needs libxkbcommon: OptionsWPE.cmake has an
+unconditional find_package(Libxkbcommon 0.4.0 REQUIRED). It is only
+pulled in indirectly today, through libwpe, which wpebackend-fdo
+selects. Select it and add it to the dependencies directly.
+---
+ package/wpewebkit/Config.in    | 1 +
+ package/wpewebkit/wpewebkit.mk | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
+index 91de3868bb..c624c697a5 100644
+--- a/package/wpewebkit/Config.in
++++ b/package/wpewebkit/Config.in
+@@ -54,6 +54,7 @@ config BR2_PACKAGE_WPEWEBKIT
+ 	select BR2_PACKAGE_LIBPNG
+ 	select BR2_PACKAGE_LIBSOUP3
+ 	select BR2_PACKAGE_LIBTASN1
++	select BR2_PACKAGE_LIBXKBCOMMON
+ 	select BR2_PACKAGE_LIBXSLT
+ 	select BR2_PACKAGE_WAYLAND
+ 	select BR2_PACKAGE_WAYLAND_PROTOCOLS
+diff --git a/package/wpewebkit/wpewebkit.mk b/package/wpewebkit/wpewebkit.mk
+index c424a3c4b9..ce4d1ad973 100644
+--- a/package/wpewebkit/wpewebkit.mk
++++ b/package/wpewebkit/wpewebkit.mk
+@@ -17,7 +17,7 @@ WPEWEBKIT_CPE_ID_VENDOR = wpewebkit
+ WPEWEBKIT_CPE_ID_PRODUCT = wpe_webkit
+ WPEWEBKIT_DEPENDENCIES = host-gperf host-python3 host-ruby host-unifdef \
+ 	harfbuzz icu jpeg libepoxy libgcrypt libgles libsoup3 libtasn1 \
+-	libpng libxslt wayland-protocols webp wpebackend-fdo
++	libpng libxkbcommon libxslt wayland-protocols webp wpebackend-fdo
+ 
+ WPEWEBKIT_CMAKE_BACKEND = ninja
+ 
+-- 
+2.50.1 (Apple Git-155)
+
