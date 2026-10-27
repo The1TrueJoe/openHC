@@ -1,4 +1,4 @@
-From 690f90aa80e82546506664bf16a05cd15cf44198 Mon Sep 17 00:00:00 2001
+From c75be026342645c59917402df8f06ddf47299660 Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
 Date: Tue, 27 Oct 2026 15:21:10 -0400
 Subject: [PATCH 2/2] package/wpewebkit: add WPE Platform options
@@ -9,6 +9,9 @@ a WPE backend. In 2.50 it is only enabled by default in developer
 mode, so add an option for it, with sub-options for the DRM and
 Wayland platforms. The headless platform has no dependencies and is
 always built.
+
+WPE Platform uses libmanette for gamepads when it finds it, so build
+libmanette first when it is enabled.
 
 The DRM platform needs libinput and libudev. It also needs GBM and
 libdrm, which the existing USE_GBM and USE_LIBDRM blocks handle.
@@ -21,8 +24,8 @@ Pass ENABLE_WPE_PLATFORM explicitly in both cases, as upstream
 enables it by default starting with 2.54.
 ---
  package/wpewebkit/Config.in    | 35 ++++++++++++++++++++++++++++++++++
- package/wpewebkit/wpewebkit.mk | 20 +++++++++++++++++++
- 2 files changed, 55 insertions(+)
+ package/wpewebkit/wpewebkit.mk | 24 +++++++++++++++++++++++
+ 2 files changed, 59 insertions(+)
 
 diff --git a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
 index c624c697a5..14984d97ae 100644
@@ -71,10 +74,10 @@ index c624c697a5..14984d97ae 100644
  	bool "multimedia support"
  	depends on BR2_PACKAGE_FFMPEG_ARCH_SUPPORTS # gst1-libav
 diff --git a/package/wpewebkit/wpewebkit.mk b/package/wpewebkit/wpewebkit.mk
-index ce4d1ad973..dacb859d6e 100644
+index ce4d1ad973..f9266d1ad2 100644
 --- a/package/wpewebkit/wpewebkit.mk
 +++ b/package/wpewebkit/wpewebkit.mk
-@@ -94,6 +94,26 @@ else
+@@ -94,6 +94,30 @@ else
  WPEWEBKIT_CONF_OPTS += -DENABLE_WEBDRIVER=OFF
  endif
  
@@ -82,6 +85,10 @@ index ce4d1ad973..dacb859d6e 100644
 +WPEWEBKIT_CONF_OPTS += \
 +	-DENABLE_WPE_PLATFORM=ON \
 +	-DENABLE_WPE_PLATFORM_HEADLESS=ON
++# Gamepad support uses libmanette when it is found
++ifeq ($(BR2_PACKAGE_LIBMANETTE),y)
++WPEWEBKIT_DEPENDENCIES += libmanette
++endif
 +ifeq ($(BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM),y)
 +WPEWEBKIT_CONF_OPTS += -DENABLE_WPE_PLATFORM_DRM=ON
 +WPEWEBKIT_DEPENDENCIES += libinput libudev
