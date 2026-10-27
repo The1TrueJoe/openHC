@@ -111,28 +111,36 @@ jobs:
             python board/ea/common/firmware/dsp/adau1451/export2program.py "$env:DSP_OUT\export" "$env:DSP_OUT\program.txt" --params "$env:DSP_OUT\params.json"
             if ($LASTEXITCODE) { "::error::export2program.py failed"; exit 1 }
 
-      # PROBE (stage 3, temporary): the scripting calls' parameters.
-      - name: Probe the scripting calls
+      # PROBE (stage 3, temporary): the design's parameter map (names and
+      # addresses only) and the boot words of its DC cells, to fix the formats.
+      - name: Probe the parameter map
         if: steps.staged.outputs.ok == 'true'
         continue-on-error: true
-        shell: powershell
+        shell: python
         run: |
-          $dir = "$env:ProgramData\Analog Devices\SigmaStudio 3.4\Plugins"
-          [AppDomain]::CurrentDomain.add_ReflectionOnlyAssemblyResolve({ param($s, $e)
-            $n = (New-Object Reflection.AssemblyName $e.Name).Name
-            foreach ($d in @($dir, "$env:SSPLUS_HOME\Host", "$env:SSPLUS_HOME")) { $f = Join-Path $d "$n.dll"; if (Test-Path $f) { return [Reflection.Assembly]::ReflectionOnlyLoadFrom($f) } }
-            return [Reflection.Assembly]::ReflectionOnlyLoad($e.Name) })
-          $a = [Reflection.Assembly]::ReflectionOnlyLoadFrom("$dir\ScriptingAPISS+.dll")
-          New-Item -ItemType Directory -Force logs | Out-Null
-          $out = foreach ($t in $a.GetExportedTypes()) {
-            if ($t.Name -notmatch 'Class$') { continue }
-            foreach ($m in $t.GetMethods([Reflection.BindingFlags]'Public,Instance,DeclaredOnly')) {
-              if ($m.IsSpecialName -or $m.Name -in 'ProcessFunction','RegisterProcess','MsgToAdd') { continue }
-              try { $ps = ($m.GetParameters() | ForEach-Object { "$($_.ParameterType.Name) $($_.Name)" }) -join ', ' } catch { $ps = "?" }
-              "$($t.Name).$($m.Name)($ps)"
-            }
-          }
-          $out | Tee-Object logs/scripting-signatures.txt
+          import json, os
+          os.makedirs("logs", exist_ok=True)
+          params = json.load(open("dsp/params.json"))
+          dm = {}
+          at = None
+          for line in open("dsp/program.txt"):
+              line = line.split("#")[0].strip()
+              if line.startswith("@"):
+                  at = int(line[1:], 16)
+              elif line and at is not None:
+                  dm[at] = line
+                  at += 1
+          with open("logs/param-map.txt", "w") as o:
+              for mod in sorted(params):
+                  names = sorted(params[mod], key=lambda n: params[mod][n]["address"])
+                  o.write(f"{mod}: {len(names)} params\n")
+                  for n in names[:12] + (["..."] + names[-6:] if len(names) > 18 else names[12:]):
+                      if n == "...":
+                          o.write("    ...\n"); continue
+                      e = params[mod][n]
+                      word = dm.get(e["address"], "") if mod.endswith("Index") or mod in ("Version",) else ""
+                      o.write(f"    {n} @{e['address']} {e['memory']} {word}\n")
+          print(open("logs/param-map.txt").read())
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
