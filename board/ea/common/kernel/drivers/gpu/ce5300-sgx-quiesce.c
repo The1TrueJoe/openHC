@@ -54,7 +54,7 @@
 #define EUR_CR_SOFT_RESET		0x0080
 #define EUR_CR_SOFT_RESET_ALL		0x3f	/* BIF DPM TA USE ISP TSP */
 
-static void ce5300_sgx_quiesce(void)
+static void ce5300_sgx_quiesce(void *data)
 {
 	struct pci_dev *pdev;
 	void __iomem *regs;
@@ -83,13 +83,17 @@ out:
 	pci_dev_put(pdev);
 }
 
-static struct syscore_ops ce5300_sgx_syscore_ops = {
+static const struct syscore_ops ce5300_sgx_syscore_ops = {
 	.shutdown	= ce5300_sgx_quiesce,
+};
+
+static struct syscore ce5300_sgx_syscore = {
+	.ops		= &ce5300_sgx_syscore_ops,
 };
 
 static int __init ce5300_sgx_quiesce_init(void)
 {
-	register_syscore_ops(&ce5300_sgx_syscore_ops);
+	register_syscore(&ce5300_sgx_syscore);
 	return 0;
 }
 device_initcall(ce5300_sgx_quiesce_init);
