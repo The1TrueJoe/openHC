@@ -39,7 +39,7 @@ on:
 
 env:
   # Same Buildroot as ci.yml; keep the two in step.
-  BUILDROOT_REF: 3736eda341337a2ddd824111a5f065c84d44c584
+  BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 jobs:
   i386-wpe-sysroot:

@@ -98,11 +98,11 @@ permissions:
 
 env:
   # Consumed only by the image jobs' cache keys and Buildroot fetch.
-  # Buildroot master at 3736eda341 (2026-10-26), ahead of the 2026.11 release:
-  # it is the first Buildroot with shairport-sync 5.x and host-libplist. Switch
-  # to the 2026.11 tag once it is out. A commit or a tag both work here: the
-  # fetch below takes either.
-  BUILDROOT_REF: 3736eda341337a2ddd824111a5f065c84d44c584
+  # Buildroot master at 04b8e19efd (2026-10-26), ahead of the 2026.11 release:
+  # the first Buildroot with shairport-sync 5.x, host-libplist and nqptp 1.2.9.
+  # Switch to the 2026.11 tag once it is out. A commit or a tag both work here:
+  # the fetch below takes either.
+  BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 jobs:
   # STAGE TOGGLE — the master switch for the two-stage rollout (see the header).

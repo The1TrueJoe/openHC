@@ -31,7 +31,7 @@ FROM debian:bookworm-slim AS build-env
 # onward, not from first use. Declared here, changing the job count re-ran
 # apt-get and re-cloned Buildroot before reaching any of the real work.
 # Same Buildroot as .github/workflows/ci.yml (a commit or a tag).
-ARG BUILDROOT_REF=3736eda341337a2ddd824111a5f065c84d44c584
+ARG BUILDROOT_REF=04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential bc bison flex git rsync unzip wget cpio file figlet \
