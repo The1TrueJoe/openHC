@@ -27,6 +27,8 @@ byte for byte what it made before, and the driver writes nothing (see
 | Piece | What it is |
 |---|---|
 | `ea3.json` | **The configuration, in code.** Every knob: the cell it lives in, the table behind it, and the filter design that fills the table. |
+| `program.json` | **The program's design, in code**: SigmaStudio+ scripting calls, run in order by CI (`dsp-program.yml`) — see [Building the program](#building-the-program). |
+| `export2program.py` | Turns SigmaStudio+'s export into `mkfw.py`'s `--program` input, and its parameter map into `params.json`. Standard library Python. |
 | `mkfw.py` | Builds `ea3.json`, and the program if given (`--program`), into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2, mainline chunk tags). Standard library Python. |
 | `adau1451-fw.mk`, `Config.in` | The build rule: runs `mkfw.py` at image build and installs the file and the profile. Selected by the `audio-dsp` feature (`BR2_PACKAGE_ADAU1451_FW`); `BR2_PACKAGE_ADAU1451_FW_PROGRAM` is the path of the program, empty for none. |
 | `/lib/firmware/openhc/adau1451-ea3.bin` | That file, on the box. |
@@ -71,6 +73,43 @@ block, hex bytes follow (commas, `0x`, comments all fine) — the address and
 byte array of each memory write a SigmaStudio(+) export contains
 (`Program_Data`, `Param_Data`, `DM1_DATA_Data`). Memory only: control registers
 are `ea3.json`'s, and `mkfw.py` refuses them.
+
+## Building the program
+
+There is no open compiler for the ADAU145x (its instruction set is not public),
+so the program is built by Analog Devices' SigmaStudio+, on a GitHub-hosted
+Windows runner, with no GUI: `.github/workflows/dsp-program.yml` installs it
+through [sigmastudio-plus-action](https://github.com/The1TrueJoe/sigmastudio-plus-action)
+and runs `program.json` with the action's headless scripting host. The calls
+are SigmaStudio+'s own scripting API (`AddShapeV2`, `AddConnectionV2`,
+`UpdatePropertiesV2`, `LinkCompileConnect`, `Export`, …).
+
+The design starts from ADI's *ADAU1452 Filtering Compressed Input Signal*
+example, which ships with SigmaStudio+, because its PC → USBi → DSP link is the
+one part of a system the scripting API cannot add (the compiler refuses a
+processor with no host link; nothing is downloaded over it). It migrates the
+example's processor to the ADAU1451, removes the example's algorithms, and
+builds openHC's chain:
+
+| Block (label) | What |
+|---|---|
+| `ASRCInput_0` | ASRC 0's two channels: serial input 3, the CE5300's I²S1, converted to the core's rate |
+| `Volume` | a stereo volume (two gains in DM0) |
+| `Output_*` | left and right to the first two channels of **all four** serial outputs (channels 0/1, 16/17, 32/33, 40/41), until it is known which one feeds the AK4621 |
+| `Version` | a DC cell holding the program's version (1, as 8.24), for the driver's check |
+
+The export becomes two files in the run's `adau1451-program` artifact:
+
+* `program.txt`: the memory writes of the export's default download, which is
+  `mkfw.py --program`'s format; and
+* `params.json`: every parameter's address, by block label and parameter name
+  (`Volume.Gain_Channel0` → DM0 20), so the profile can name a cell instead of
+  hard-coding an address that moves whenever the design does.
+
+Both are generated code under ADI's license: the artifact is kept three days,
+and nothing exported is ever committed. **The image build does not use the
+program yet**, and `ea3.json` still describes stock's program; the next stage
+builds the knobs' blocks into the design and moves `ea3.json` to the labels.
 
 ### No program yet
 
