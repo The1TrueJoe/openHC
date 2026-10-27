@@ -1,0 +1,45 @@
+name: release-cache-selftest
+# Temporary: round-trips .github/scripts/release-cache.sh against the real
+# ci-cache release before ci.yml depends on it. Removed before merge.
+on:
+  push:
+    branches: [ci-prebuilt-retry]
+    paths: [.github/workflows/release-cache-selftest.yml, .github/scripts/release-cache.sh]
+permissions:
+  contents: write
+jobs:
+  roundtrip:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      N: selftest-${{ github.run_id }}
+      RELEASE_CACHE_PART: 20M
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make a tree (incompressible data, symlinks, a hardlink, modes)
+        run: |
+          set -e
+          mkdir -p src/a/b && head -c 60000000 /dev/urandom > src/a/big.bin
+          echo hi > src/a/b/x.txt && chmod 0750 src/a/b/x.txt
+          ln -s ../big.bin src/a/b/link && ln src/a/b/x.txt src/a/hard.txt
+          touch src/a/.stamp_built
+      - name: Restore before save (expect cold, no failure)
+        run: bash .github/scripts/release-cache.sh restore "$N" none && test ! -e none
+      - name: Save
+        run: bash .github/scripts/release-cache.sh save "$N" src
+      - name: Restore and compare
+        run: |
+          set -e
+          gh release download ci-cache -p "$N.manifest" -O - 
+          bash .github/scripts/release-cache.sh restore "$N" dst
+          diff -r --no-dereference src dst && echo IDENTICAL
+          stat -c '%a %h %N' dst/a/b/x.txt dst/a/b/link
+      - name: Save again (replaces, no stale parts)
+        run: |
+          set -e
+          rm src/a/big.bin && head -c 5000000 /dev/urandom > src/a/big.bin
+          bash .github/scripts/release-cache.sh save "$N" src
+          gh release view ci-cache --json assets -q '.assets[].name' | grep -F "$N"
+      - name: Clean up
+        if: always()
+        run: gh release view ci-cache --json assets -q '.assets[].name' | grep -F "$N" | while read -r a; do gh release delete-asset ci-cache "$a" -y; done || true

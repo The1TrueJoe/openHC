@@ -84,12 +84,17 @@ on:
     # week nobody touched a board. Monday 04:00 UTC.
     - cron: "0 4 * * 1"
 
-# A second push supersedes the first; no value finishing a run for a commit that
-# is already history. event_name is in the group so a release run (its own tag
-# ref + event) is never cancelled by branch pushes.
+# On a branch, a second push supersedes the first; no value finishing a run for a
+# commit that is already history. NOT on main: main's image builds are what save
+# the output trees every later build resumes from, a cancelled run saves nothing,
+# and main used to merge faster than an HC-800 build finishes, so 23 of 30 main
+# runs were cancelled and its tree never got past Node.js. There a new push
+# queues behind the running build instead (GitHub keeps only the newest one
+# pending). event_name is in the group so a release run (its own tag ref + event)
+# is never cancelled by branch pushes.
 concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Floor for jobs that do not override. Jobs that need more (release uploads,
 # Pages) widen it themselves, so nothing runs with more than it needs.
@@ -527,10 +532,7 @@ jobs:
       #     re-extracted, re-patched and re-injected with our drivers — an
       #     edit to board/*/kernel never rides on a stale stamp.
       #
-      # Rolling key: the run id makes every run save a fresh entry, and
-      # restore-keys picks up the newest previous one.
-      # restore/save split rather than actions/cache, because the plain action
-      # does NOT save when the job fails — and a failed build is exactly when
+      # Saved when the build fails too, because a failed build is exactly when
       # the toolchain is most worth keeping. A typo in a driver should cost one
       # kernel rebuild, not another 15 minutes of gcc.
       # CACHE EPOCH — bump this when a PACKAGE's config changes in a way
@@ -541,19 +543,21 @@ jobs:
       # with libavahi-client (shairport-sync needs it) instead of riding the
       # pre-round-2 dbus-less avahi in the cache. r3 goes with the move to
       # Buildroot 2026.02.3 (the ref is in the key too, so this is belt and braces).
+      #
+      # The tree lives on the `ci-cache` pre-release, not in the Actions cache
+      # (.github/scripts/release-cache.sh): eight boards' trees, the HC-800's with
+      # WebKit, LLVM and Node in it, do not fit the 10 GB cap, and the evicted
+      # HC-800 tree is why every PR compiled Node and WebKit cold. Main's newest
+      # tree, whether that build passed or ran out of time, is what every run
+      # starts from.
+      # EA is r4: those boards carry an EXTERNAL toolchain, so an r3 tree (its
+      # own internal glibc gcc) must never be restored into one. build.sh would
+      # wipe it anyway (BR2_TOOLCHAIN_EXTERNAL is in its toolchain-change
+      # detector), but a clean name is belt and braces.
       - name: Restore Buildroot output tree
-        id: outcache
-        uses: actions/cache/restore@v4
-        with:
-          path: output/build/${{ matrix.board }}
-          # EA jumps to r4: those boards now carry an EXTERNAL toolchain, so an
-          # r3 tree (its own internal glibc gcc) must never be restored into one.
-          # build.sh would wipe it anyway (BR2_TOOLCHAIN_EXTERNAL is in its
-          # toolchain-change detector), but a clean key is belt and braces and
-          # shrinks the EA caches at once; non-EA stay r3 and are untouched.
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
-          restore-keys: |
-            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh restore out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }} output/build/${{ matrix.board }}
 
       # ccache, for the boards that build WebKit: the EA family shares ONE,
       # keyed on the family rather than the board, so a translation unit
@@ -571,7 +575,12 @@ jobs:
       # This is what lets a PR finish a cold WebKit at all: PRs do not save the
       # output tree (below), so a build that runs out of time keeps nothing but
       # this ccache.
+      #
+      # Only a PR's own failed attempts are in the Actions cache; main's ccache is
+      # on the ci-cache release beside its tree, and the next step takes that when
+      # nothing here matched.
       - name: Restore ccache
+        id: ccache
         if: startsWith(matrix.board, 'ea') || matrix.board == 'hc800'
         uses: actions/cache/restore@v4
         with:
@@ -581,6 +590,11 @@ jobs:
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-
+      - name: Restore ccache (main's, from the ci-cache release)
+        if: (startsWith(matrix.board, 'ea') || matrix.board == 'hc800') && steps.ccache.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh restore ccache-${{ matrix.board }}-${{ env.BUILDROOT_REF }} .ccache
 
       - name: Fetch Buildroot
         run: |
@@ -683,9 +697,16 @@ jobs:
           # not (see "Save Buildroot output tree"), so a first build longer than
           # one job (LLVM + WebKit from scratch) would otherwise restart from
           # zero every time. SIGINT lets make remove the half-built target.
+          # Running out of time is marked with a `build-timeout` annotation: that
+          # is what ci-retry.yml looks for before it re-runs the job.
+          rc=0
           BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
             OHC_VERSION="${{ steps.ver.outputs.version }}" \
-            timeout --signal=INT --kill-after=2m 325m bash ./build/build.sh
+            timeout --signal=INT --kill-after=2m 325m bash ./build/build.sh || rc=$?
+          if [ "$rc" -eq 124 ]; then
+            echo "::error title=build-timeout::${{ matrix.board }} ran out of its 325 minutes; what it built is saved, a re-run resumes from it"
+          fi
+          exit "$rc"
 
       # The HC-800's first install starts openHC from the RUNNING Control4 image
       # with kexec (writes nothing). Control4 never shipped the userspace tool,
@@ -750,10 +771,10 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      # Carry-forward store (main only). A newer push to main cancels the older
-      # run (see `concurrency`), and `select` then rebuilds only the boards THIS
-      # push changed — so without this, the boards the cancelled run had already
-      # built would vanish from the newest run's output. Each successful main
+      # Carry-forward store (main only). A newer push to main replaces a run
+      # still queued behind a build (see `concurrency`), and `select` then
+      # rebuilds only the boards THIS push changed — so without this, the boards
+      # an earlier run had built would vanish from the newest run's output. Each successful main
       # build parks its bundle in a per-board cache under a stable `carry/` dir;
       # the `carry-forward` job below republishes it for any board the newest run
       # did not rebuild, so main always has a complete, current image set.
@@ -801,30 +822,32 @@ jobs:
           path: dl
           key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
 
-      # main only. A PR run RESTOREs (from main's newest tree, via restore-keys)
-      # but never saves: every PR would otherwise park its own 1-2 GB tree per
-      # board, and with the 10 GB repo cap that evicts the main trees every
-      # later run depends on. PR-scoped caches are not readable by other
-      # branches anyway. Release runs build from a tag ref, whose cache is
-      # likewise invisible to everyone else, so they do not save either.
+      # main only, to the ci-cache release (see the restore step). A PR run
+      # restores main's tree but never saves: a PR's tree is its own change on
+      # top of main's, and one writer means no two runs ever race on an entry
+      # (main's runs queue, see `concurrency`). Saved when the build ran out of
+      # time too: the re-run (ci-retry.yml) resumes from it. Release and
+      # scheduled runs do not save.
       - name: Save Buildroot output tree
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v4
-        with:
-          path: output/build/${{ matrix.board }}
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh save out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }} output/build/${{ matrix.board }}
 
-      # main saves the ccache on every run. A PR saves it only when the build
-      # FAILED: then the objects it compiled are what lets the re-attempt finish
-      # (a cold WebKit runs out of time on the first try), and a typo deep in
-      # WebKit should not cost that work. A PR whose build passed has nothing
-      # to re-attempt, and a PR's cache is readable by that PR alone, so saving
-      # it would only push main's ccache and output tree out of the 10 GB repo
-      # cap, which is what every PR's cold build then pays for. Whatever a PR
-      # does save is deleted when it closes (cache-cleanup.yml). ccache caps
-      # itself (--max-size in the board's defconfig).
-      - name: Save ccache
-        if: always() && (failure() || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
+      # main saves the ccache on every run, to the ci-cache release beside its
+      # tree. A PR saves it, to the Actions cache, only when the build FAILED:
+      # then the objects it compiled are what lets the re-attempt finish, and a
+      # typo deep in WebKit should not cost that work. A PR whose build passed
+      # has nothing to re-attempt. Whatever a PR saves is deleted when it closes
+      # (cache-cleanup.yml). ccache caps itself (--max-size in the board's
+      # defconfig).
+      - name: Save ccache (main, to the ci-cache release)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh save ccache-${{ matrix.board }}-${{ env.BUILDROOT_REF }} .ccache
+      - name: Save ccache (a PR's failed attempt)
+        if: failure() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.ccache
@@ -919,8 +942,8 @@ jobs:
 
   # Republish the latest image for every board the newest main run did NOT
   # rebuild, pulled from the per-board carry-forward cache the build job fills.
-  # This is what lets a newer push to main cancel the older run (see
-  # `concurrency`) without the boards that run had already built dropping out:
+  # This is what lets a newer push to main replace a queued run (see
+  # `concurrency`) without the boards earlier runs had built dropping out:
   # main ends every run with a complete, current image set.
   #
   # Best-effort, and deliberately NOT in images-ok's needs: a cold cache (no
