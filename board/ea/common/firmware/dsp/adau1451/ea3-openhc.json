@@ -1,0 +1,25 @@
+{
+  "_doc": [
+    "The parameter side of openHC's own program (program.json), for the firmware",
+    "file adau1451-ea3-openhc.bin. See README.md in this directory.",
+    "",
+    "The image build makes it only when CI built the program, and installs it",
+    "beside adau1451-ea3.bin; the device tree still names that one, so this",
+    "file is not loaded at boot yet. The register init is ea3.json's. Cells are",
+    "named by block label and parameter (params.json, from the same export), so",
+    "they follow the design wherever SigmaStudio+ puts them.",
+    "",
+    "Volume is the program's stereo gain, linear 8.24 per channel; it is written",
+    "0 at boot, so nothing plays until something raises it. Version is the",
+    "program's version cell, for the driver's check."
+  ],
+  "init": {"from": "ea3.json"},
+  "rate": 48000,
+  "step_db": 0.5,
+  "knobs": [],
+  "cells": [
+    {"control": "DSP Volume Left", "param": "Volume.Gain_Channel0", "words": [0]},
+    {"control": "DSP Volume Right", "param": "Volume.Gain_Channel1", "words": [0]},
+    {"control": "ReadBack DSP Program", "param": "Version.DCValue"}
+  ]
+}

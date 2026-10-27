@@ -9,9 +9,12 @@
 # own SigmaDSP firmware format: adau1451-c4 hands it to the stock sigmadsp core,
 # which writes its tables at bind and turns its controls into ALSA controls.
 #
-# With BR2_PACKAGE_ADAU1451_FW_PROGRAM set, the file also carries the part's
-# register init (from ea3.json) and that program: the driver loads both. The
-# program comes from CI, never from git.
+# With BR2_PACKAGE_ADAU1451_FW_PROGRAM set (a folder holding export2program.py's
+# program.txt and params.json, which CI builds in the same run and never
+# commits), a second file is made too: adau1451-ea3-openhc.bin, from
+# ea3-openhc.json, carrying the register init, openHC's own program and its
+# cells. The device tree still names adau1451-ea3.bin, so it is not loaded at
+# boot yet.
 #
 # The profile is installed too: ohc-audiod reads its knob list from it, so the
 # web UI shows exactly the knobs the firmware has.
@@ -27,8 +30,7 @@ ADAU1451_FW_INSTALL_STAGING = NO
 ADAU1451_FW_PROGRAM = $(call qstrip,$(BR2_PACKAGE_ADAU1451_FW_PROGRAM))
 
 define ADAU1451_FW_BUILD_CMDS
-	python3 $(@D)/mkfw.py $(@D)/ea3.json $(@D)/adau1451-ea3.bin \
-		$(if $(ADAU1451_FW_PROGRAM),--program $(ADAU1451_FW_PROGRAM))
+	python3 $(@D)/mkfw.py $(@D)/ea3.json $(@D)/adau1451-ea3.bin
 endef
 
 define ADAU1451_FW_INSTALL_TARGET_CMDS
@@ -37,5 +39,20 @@ define ADAU1451_FW_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0644 $(@D)/ea3.json \
 		$(TARGET_DIR)/usr/share/openhc/dsp/adau1451-ea3.json
 endef
+
+ifneq ($(ADAU1451_FW_PROGRAM),)
+define ADAU1451_FW_BUILD_OPENHC
+	python3 $(@D)/mkfw.py $(@D)/ea3-openhc.json $(@D)/adau1451-ea3-openhc.bin \
+		--program $(ADAU1451_FW_PROGRAM)/program.txt \
+		--params $(ADAU1451_FW_PROGRAM)/params.json
+endef
+ADAU1451_FW_POST_BUILD_HOOKS += ADAU1451_FW_BUILD_OPENHC
+
+define ADAU1451_FW_INSTALL_OPENHC
+	$(INSTALL) -D -m 0644 $(@D)/adau1451-ea3-openhc.bin \
+		$(TARGET_DIR)/lib/firmware/openhc/adau1451-ea3-openhc.bin
+endef
+ADAU1451_FW_POST_INSTALL_TARGET_HOOKS += ADAU1451_FW_INSTALL_OPENHC
+endif
 
 $(eval $(generic-package))

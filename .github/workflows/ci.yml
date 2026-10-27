@@ -69,6 +69,7 @@ on:
       - 'Makefile'
       - 'site/**'
       - '.github/workflows/ci.yml'
+      - '.github/workflows/dsp-program.yml'
   pull_request:
   workflow_dispatch:
     inputs:
@@ -307,6 +308,10 @@ jobs:
           if echo "$changed" | grep -qE '^board/ea/common/'; then
             sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
           fi
+          # The DSP program's workflow goes into the EA3 images (the `dsp` job).
+          if echo "$changed" | grep -qx '.github/workflows/dsp-program.yml'; then
+            sel+=(ea3-v1 ea3-v2)
+          fi
           # EA boards live under board/ea/<board>/; the others are top-level.
           for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2; do
             echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
@@ -428,8 +433,24 @@ jobs:
           if-no-files-found: error
 
 
+  # openHC's own ADAU1451 program for the EA3 images, built from its design
+  # (board/ea/common/firmware/dsp/adau1451/program.json) by SigmaStudio+ on a
+  # Windows runner, alongside the EA toolchain. It is ADI-generated code, which
+  # may go only into the product it programs: dsp-program.yml hands it over
+  # SEALED (readable only with this repo's secrets) and kept a day, and the EA3
+  # image jobs open it and build it into the image. Nowhere else.
+  # Without the SigmaStudio+ secrets (a fork) it reports program=false and the
+  # EA3 images build without it, as before there was one.
+  dsp:
+    needs: [select, config]
+    if: needs.config.outputs.heavy == 'true' && contains(needs.select.outputs.boards, 'ea3')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dsp-program.yml
+    secrets: inherit
+
   images-build:
-    needs: [select, images-toolchain, config]
+    needs: [select, images-toolchain, config, dsp]
     # always(), so a run that selected only non-EA boards (toolchain skipped)
     # still builds them, and a toolchain failure fails only the EA image jobs
     # (at their download step), not ioxv1/ca1/hc800. select must have succeeded
@@ -649,6 +670,35 @@ jobs:
           grab sgx-wpe.yml wpe-i386-sysroot wpe
           grab sgx-gpu.yml sgx-i386-sysroot i386
 
+      # The EA3's DSP program from the `dsp` job: opened here, built into the
+      # image's DSP firmware, and nowhere else. A design that failed fails the
+      # EA3 images rather than shipping them silently without it.
+      - name: Fetch the DSP program (EA3)
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.result == 'failure'
+        run: |
+          echo "::error::the dsp job failed: no DSP program for ${{ matrix.board }}"
+          exit 1
+      - name: Download the sealed DSP program (EA3)
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.outputs.program == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: adau1451-program-sealed
+          path: ${{ runner.temp }}/dsp-sealed
+      - name: Open the DSP program (EA3)
+        id: dsp
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.outputs.program == 'true'
+        env:
+          KEY: ${{ secrets.SIGMASTUDIO_TOKEN }}
+        run: |
+          set -euo pipefail
+          d="$HOME/adau1451-program"
+          rm -rf "$d"; mkdir -p "$d"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -pass env:KEY \
+            -in "$RUNNER_TEMP/dsp-sealed/adau1451-program.tar.enc" | tar -C "$d" -xf -
+          rm -rf "$RUNNER_TEMP/dsp-sealed"
+          ls -l "$d"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
+
       - name: Build ${{ matrix.board }}
         env:
           BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
@@ -657,6 +707,9 @@ jobs:
           # Consumed by board/common/post-build.sh (empty on non-EA / when absent).
           OHC_SGX_WPE_SYSROOT: ${{ steps.sgxsr.outputs.wpe }}
           OHC_SGX_I386_SYSROOT: ${{ steps.sgxsr.outputs.i386 }}
+          # The EA3's DSP program folder (empty: none); build.sh sets
+          # BR2_PACKAGE_ADAU1451_FW_PROGRAM from it.
+          OHC_DSP_PROGRAM: ${{ steps.dsp.outputs.dir }}
           # The ccache dir (see the restore/save steps; BR2_CCACHE in
           # board/ea/common/common_defconfig and board/hc800/hc800_defconfig).
           # build.sh forwards it to make only when set; a board whose defconfig
@@ -1563,6 +1616,7 @@ jobs:
       - changes
       - select
       - images-toolchain
+      - dsp
       - images-build
       - daemons-build
       - flasher-build

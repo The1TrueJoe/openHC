@@ -22,15 +22,27 @@
 # with SigmaStudio+, because its PC -> USBi -> DSP host link is the one part of a
 # system the scripting API cannot add; the design migrates it to the ADAU1451 and
 # replaces its algorithms with openHC's. The export becomes mkfw.py's --program
-# input (export2program.py), an artifact for the EA image build. The exported
-# program never enters git (ADI's license restricts distributing generated code
-# outside the products it runs on).
+# input and its parameter map (export2program.py).
+#
+# THE EXPORTED PROGRAM IS NEVER PUBLISHED. ADI's license lets generated code be
+# used only to program the products it runs on, and this repo is public, so its
+# artifacts are anyone's to download. The program goes only into the EA image:
+# ci.yml calls this workflow in the same run as the image build, and the hand-
+# over is sealed (AES-256, the key derived from SIGMASTUDIO_TOKEN, which only
+# this repo's own runs can read) and kept one day. Neither it, nor the export,
+# nor the saved project ever enters git or a readable artifact.
 name: dsp-program
 
 permissions:
   contents: read
 
 on:
+  # ci.yml, for the EA image build.
+  workflow_call:
+    outputs:
+      program:
+        description: "'true' when the sealed program was uploaded (adau1451-program-sealed)"
+        value: ${{ jobs.toolchain.outputs.program }}
   workflow_dispatch:
   # workflow_dispatch only registers from the default branch, so until this lands
   # on main, a path-filtered push trigger is how it runs on a feature branch.
@@ -43,6 +55,8 @@ on:
 jobs:
   toolchain:
     runs-on: windows-latest
+    outputs:
+      program: ${{ steps.seal.outputs.program }}
     steps:
       - name: Staged installer?
         id: staged
@@ -104,14 +118,26 @@ jobs:
           path: logs/
           if-no-files-found: ignore
 
-      # The exported program: for the EA image build only, kept briefly.
-      - uses: actions/upload-artifact@v4
+      # The program, for the EA image build only: sealed, so the artifact is
+      # unreadable to anyone but this repo's own runs, and kept one day. ci.yml's
+      # image job opens it with the same key. Git Bash's openssl here, Ubuntu's
+      # there; both OpenSSL 3.
+      - name: Seal the program for the image build
+        id: seal
         if: steps.staged.outputs.ok == 'true'
+        shell: bash
+        env:
+          KEY: ${{ secrets.SIGMASTUDIO_TOKEN }}
+        run: |
+          set -euo pipefail
+          tar -C dsp -cf - program.txt params.json |
+            openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:KEY -out adau1451-program.tar.enc
+          echo "program=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.seal.outputs.program == 'true'
         with:
-          name: adau1451-program
-          path: |
-            dsp/program.txt
-            dsp/params.json
-            dsp/openhc-ea3.ssprj
-          retention-days: 3
+          name: adau1451-program-sealed
+          path: adau1451-program.tar.enc
+          retention-days: 1
           if-no-files-found: error
