@@ -45,19 +45,24 @@ The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
 rather than by the SSP function's own id, which it shares with the CE4100, so
 genuine CE4100 hardware is unaffected.
 
-Finally, CE5X00 skips the flush at the top of pxa2xx_spi_transfer_one(). That
-flush polls the SSP for BSY to clear, but the CE5300's bit clock comes up only
-when CEFDK configured it and the port is otherwise stopped at this point, so the
-poll times out ("b53-switch: Flush failed / SPI transfer failed: -5 / probe
--22") before any transfer runs. It is intermittent on a cold boot (it depends on
-whether the clock happens to be live) and reliable after a kexec (the SSP is
-inherited stopped), which matters because an installed EA boots its real kernel
-via kexec. Control4's vendor driver never flushes a stopped SSP; it stops,
-reloads SSCR1/SSCR0 and restarts the port, and the SSE off->on there empties the
-FIFOs (mainline's own MMP2 comment confirms flipping SSE drains the FIFO on
-non-MMP2 parts). So for CE5X00 the pre-flush is skipped and that restart, a few
-lines down in transfer_one(), does the clearing — with the clock live by the
-time data is shifted.
+CE5X00 is also PXA25x-compatible in the sense spi-pxa2xx.h means it, and the
+CS select in SSSR must survive status writes. Control4's driver lists CE5X00 in
+pxa25x_ssp_comp() and in write_SSSR_CS(); both helpers live in spi-pxa2xx.h,
+and missing them leaves CE5X00 on the PXA27x path:
+
+  - pxa25x_ssp_comp() false: transfer_one() writes SSTO = 1000 before every
+    transfer and probe writes SSTO = 0. SSTO is offset 0x28, the same offset
+    as Quark's DDS_RATE, which the CE5300 does not have and which wedges its
+    SSP when written. It also arms TINTE/TINT, a receive-timeout interrupt the
+    vendor never uses on this part. The result is the SSP stuck with BSY set
+    and a full TX FIFO (SSSR = 0x1F14), surviving any register restore, and
+    b53 failing its chip-id read with -EINVAL.
+  - write_SSSR_CS() not preserving SSSR[1:0]: the status clear before every
+    transfer (and the one at the end of pxa2xx_spi_flush()) writes the chip
+    select back to 0, so a transfer meant for CS1 goes out on CS0.
+
+So CE5X00 joins CE4100 and Quark in both helpers. The flush at the top of
+transfer_one() is left as mainline has it; it was never the problem.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
@@ -71,6 +76,24 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	MMP2_SSP,
  	MRFLD_SSP,
  	QUARK_X1000_SSP,
+--- a/drivers/spi/spi-pxa2xx.h
++++ b/drivers/spi/spi-pxa2xx.h
+@@ -93,6 +93,7 @@
+ 	switch (drv_data->ssp_type) {
+ 	case PXA25x_SSP:
+ 	case CE4100_SSP:
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		return 1;
+ 	default:
+@@ -113,6 +114,7 @@
+ static inline void write_SSSR_CS(const struct driver_data *drv_data, u32 val)
+ {
+ 	if (drv_data->ssp_type == CE4100_SSP ||
++	    drv_data->ssp_type == CE5X00_SSP ||
+ 	    drv_data->ssp_type == QUARK_X1000_SSP)
+ 		val |= read_SSSR_bits(drv_data, SSSR_ALT_FRM_MASK);
+ 
 --- a/drivers/spi/spi-pxa2xx.c
 +++ b/drivers/spi/spi-pxa2xx.c
 @@ -213,6 +213,7 @@
@@ -126,7 +149,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		spi_controller_get_devdata(spi->controller);
  
 -	if (drv_data->ssp_type == CE4100_SSP) {
-+	if ((drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP)) {
++	if (drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP) {
  		pxa2xx_spi_write(drv_data, SSSR, spi_get_chipselect(spi, 0));
  		return;
  	}
@@ -135,7 +158,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	unsigned long timeout;
  
 -	if (drv_data->ssp_type == CE4100_SSP)
-+	if ((drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP))
++	if (drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP)
  		return;
  
  	/* Wait until SSP becomes idle before deasserting the CS */
@@ -157,25 +180,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		return (DIV_ROUND_UP(ssp_clk, 2 * rate) - 1) & 0xff;
  	else
  		return (DIV_ROUND_UP(ssp_clk, rate) - 1)  & 0xfff;
-@@ -955,7 +963,16 @@
- 	}
- 
- 	/* Setup the transfer state based on the type of transfer */
--	if (pxa2xx_spi_flush(drv_data) == 0) {
-+	/*
-+	 * CE5X00 comes up LIVE from CEFDK with a stale RX FIFO (pre-kexec
-+	 * SSSR RFL=31, BSY clear). The earlier "skip the flush" was wrong:
-+	 * not draining that stale FIFO wedges the first transfer (BSY stuck).
-+	 * So flush, but do NOT bail for CE5X00 — ignore the result, since on
-+	 * a (rare) genuinely stopped SSP the poll just times out harmlessly.
-+	 */
-+	if (drv_data->ssp_type == CE5X00_SSP) {
-+		pxa2xx_spi_flush(drv_data);
-+	} else if (pxa2xx_spi_flush(drv_data) == 0) {
- 		dev_err(&spi->dev, "Flush failed\n");
- 		return -EIO;
- 	}
-@@ -1135,6 +1154,7 @@
+@@ -1135,6 +1143,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -183,16 +188,16 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1193,7 @@
+@@ -1173,7 +1182,7 @@
  		break;
  	}
  
 -	if (drv_data->ssp_type == CE4100_SSP) {
-+	if ((drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP)) {
++	if (drv_data->ssp_type == CE4100_SSP || drv_data->ssp_type == CE5X00_SSP) {
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1228,7 @@
+@@ -1208,6 +1217,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -200,17 +205,15 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1309,7 +1330,8 @@
+@@ -1309,6 +1319,7 @@
  
  	if (pxa25x_ssp_comp(drv_data)) {
  		switch (drv_data->ssp_type) {
--		case QUARK_X1000_SSP:
 +		case CE5X00_SSP:
-+	case QUARK_X1000_SSP:
+ 		case QUARK_X1000_SSP:
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
- 		default:
-@@ -1372,6 +1394,7 @@
+@@ -1372,6 +1383,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
