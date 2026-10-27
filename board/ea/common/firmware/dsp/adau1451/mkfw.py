@@ -1,26 +1,38 @@
 #!/usr/bin/env python3
 """Build openHC's SigmaDSP firmware file for an ADAU1451 from a profile.
 
-    mkfw.py ea3.json adau1451-ea3.bin
+    mkfw.py ea3.json adau1451-ea3.bin [--program program.txt]
 
 The output is the kernel's own SigmaDSP firmware format (sound/soc/codecs/
-sigmadsp.c, "ADISIGM" version 2), so the stock sigmadsp core loads it and turns
-it into ALSA controls; there is no openHC loader. It holds three kinds of chunk:
+sigmadsp.c, "ADISIGM" version 2, mainline chunk tags), so the stock sigmadsp
+core loads it and turns it into ALSA controls; there is no openHC loader. It
+holds three kinds of chunk:
 
-  data      parameter RAM to write once at boot: every knob's 49-entry table,
-            computed here from the profile's designs, and the cells' values
+  data      bytes to write at an address, in file order: with a program, first
+            the profile's control-register init (one 16-bit register a chunk),
+            then the program memory and the data memory that came with it;
+            then every knob's 49-entry table, computed here from the
+            profile's designs, and the cells' values
   control   one ALSA control per knob and cell, 4 bytes at the cell's address
   rates     the one sample rate the program runs at
 
-No program memory: the DSP boots its program from the board's EEPROM, and this
-file only fills in the parameters that program reads.
+Without --program the file holds only the parameters, exactly as before a
+program existed: no register init, no program memory.
+
+The program file is plain text: a line "@<address>" starts a block, and the
+hex bytes after it (whitespace or commas between them, "0x" optional, "#"
+comments) are written there, 4 bytes a word, big-endian, as the part takes
+them. That is the address and byte array of each memory write in a
+SigmaStudio(+) export (Program_Data, Param_Data, DM1_DATA_Data). Only memory:
+program (0xc000..), DM0 (0x0000..) and DM1 (0x6000..); control registers are
+the profile's init.
 
 Standard library only; the build host's python3 runs it.
 """
+import argparse
 import json
 import math
 import struct
-import sys
 import zlib
 
 # The program's tables are 49 entries, the middle one neutral; only the step
@@ -29,6 +41,14 @@ STEPS = 49
 FLAT = 24
 
 TAG_DATA, TAG_CONTROL, TAG_RATES = 0, 1, 2
+
+# The ADAU1451's memory map (datasheet Table 62), in 32-bit words, in the order
+# the part is loaded: program, then the data memories it runs on.
+MEMORY = (("program", 0xC000, 8192), ("DM0", 0x0000, 16384), ("DM1", 0x6000, 16384))
+CTRL = range(0xF000, 0xF900)
+# Sequencing registers: the driver writes these itself, around the init.
+DRIVER_OWNS = {0xF400: "HIBERNATE", 0xF402: "START_CORE", 0xF403: "KILL_CORE",
+               0xF890: "SOFT_RESET"}
 
 
 def addr(s):
@@ -117,9 +137,63 @@ def control(name, at, nbytes=4):
     return chunk(TAG_CONTROL, struct.pack("<HHH", 0, at, nbytes) + name.encode("ascii"))
 
 
-def build(profile):
+def init_writes(profile):
+    """The profile's control-register init as (register, value) pairs, in order."""
+    out = []
+    for w in profile["init"]["writes"]:
+        reg, value = addr(w["reg"]), int(w["value"], 0)
+        for r in range(reg, reg + w.get("count", 1)):
+            if r not in CTRL or r in DRIVER_OWNS:
+                raise ValueError(f"init: 0x{r:04x} is not a register the init may write")
+            if not 0 <= value <= 0xFFFF:
+                raise ValueError(f"init: 0x{r:04x} = {w['value']} does not fit 16 bits")
+            out.append((r, value))
+    return out
+
+
+def load_program(path):
+    """The program file's memory blocks as (address, bytes), program memory
+    first, then DM0, then DM1, each in file order."""
+    blocks = []
+    with open(path) as f:
+        for n, line in enumerate(f, 1):
+            line = line.split("#", 1)[0].strip()
+            if line.startswith("@"):
+                blocks.append((addr(line[1:]), bytearray()))
+            elif line:
+                if not blocks:
+                    raise ValueError(f"{path}:{n}: data before the first @address")
+                for t in line.replace(",", " ").split():
+                    h = t[2:] if t.lower().startswith("0x") else t
+                    if not 1 <= len(h) <= 2:
+                        raise ValueError(f"{path}:{n}: {t!r} is not one byte")
+                    blocks[-1][1].append(int(h, 16))
+
+    def region(at, data):
+        for rank, (_, base, words) in enumerate(MEMORY):
+            if base <= at and at + len(data) // 4 <= base + words:
+                return rank
+        raise ValueError(f"{path}: block at 0x{at:04x} ({len(data)} bytes) is not inside "
+                         "program, DM0 or DM1 memory")
+
+    for at, data in blocks:
+        if not data or len(data) % 4:
+            raise ValueError(f"{path}: block at 0x{at:04x} is not whole 32-bit words")
+    blocks.sort(key=lambda b: region(*b))
+    if not blocks or region(*blocks[0]) != 0:
+        raise ValueError(f"{path}: no program memory")
+    return [(at, bytes(data)) for at, data in blocks]
+
+
+def build(profile, program=None):
     fs = profile["rate"]
     out = []
+    if program:
+        # The order the part needs: clocks and ports (the driver waits for the
+        # PLL to lock part-way), then the program and its data. The parameters
+        # below then land on top of that data.
+        out += [data(r, struct.pack(">H", v)) for r, v in init_writes(profile)]
+        out += [data(at, d) for at, d in program]
     for k in profile["knobs"]:
         if "choices" in k:
             # A selector: its first choice at boot, the control as wide as a choice.
@@ -169,13 +243,18 @@ def check(profile):
 
 
 def main():
-    if len(sys.argv) != 3:
-        sys.exit("usage: mkfw.py <profile.json> <out.bin>")
-    with open(sys.argv[1]) as f:
+    ap = argparse.ArgumentParser(description="Build an ADAU1451 SigmaDSP firmware file.")
+    ap.add_argument("profile")
+    ap.add_argument("out")
+    ap.add_argument("--program", help="the DSP program to load (see above); none: parameters only")
+    args = ap.parse_args()
+    with open(args.profile) as f:
         profile = json.load(f)
     check(profile)
-    fw = build(profile)
-    with open(sys.argv[2], "wb") as f:
+    init_writes(profile)
+    program = load_program(args.program) if args.program else None
+    fw = build(profile, program)
+    with open(args.out, "wb") as f:
         f.write(fw)
 
 

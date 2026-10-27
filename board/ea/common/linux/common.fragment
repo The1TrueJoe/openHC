@@ -175,9 +175,8 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_VGA_CONSOLE is not set
 # CONFIG_AGP is not set
 
-# No thermal framework / watchdog / power for bring-up. (I2C + HWMON are turned
-# ON in the SoC bring-up section below, for the LM75 fan temp sensor.)
-# CONFIG_THERMAL is not set
+# No watchdog / power-supply class for bring-up. (The thermal framework is ON,
+# in the SoC bring-up section below: it runs the fan.)
 # CONFIG_WATCHDOG is not set
 # CONFIG_POWER_SUPPLY is not set
 
@@ -212,6 +211,11 @@ CONFIG_LEDS_GPIO=y
 CONFIG_LEDS_TRIGGERS=y
 CONFIG_LEDS_TRIGGER_HEARTBEAT=y
 CONFIG_LEDS_TRIGGER_NETDEV=y
+# The front ID button (gpio-keys-polled in ea.dtsi; ohc-restore-button reads its
+# events). A module, per the size budget below: udev loads it off the node's
+# modalias.
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_GPIO_POLLED=m
 # CONFIG_GPIO_SODAVILLE is not set
 # GPIO from userspace: libgpiod 1.6.4 (Buildroot 2024.02.9) speaks the v1 chardev
 # ABI, which 7.1.8 gates behind CONFIG_GPIO_CDEV_V1 (deprecated, default off).
@@ -248,6 +252,19 @@ CONFIG_SENSORS_LM75=y
 # word. Same class of bug as CONFIG_NET_DSA_B53*.
 CONFIG_PWM=y
 CONFIG_PWM_SYSFS=y
+
+# The fan (pwm-fan + a thermal zone on the LM75, both in ea.dtsi): the kernel
+# runs the fan curve, no daemon. In BOTH kernels, so the fan is never left
+# without a controller. THERMAL_OF reads the zone from the board tree; step_wise
+# (the default governor) runs the curve; user_space is the policy sysmond
+# switches the zone to while the web UI holds the fan manually. pwm-fan needs no
+# regulator core (it treats the fan supply as optional), so the bootstrap kernel,
+# which has none, runs the fan too.
+CONFIG_THERMAL=y
+CONFIG_THERMAL_OF=y
+CONFIG_THERMAL_GOV_STEP_WISE=y
+CONFIG_THERMAL_GOV_USER_SPACE=y
+CONFIG_SENSORS_PWM_FAN=y
 
 # ── KERNEL SIZE BUDGET — READ BEFORE ADDING ANYTHING ──────────────────────
 #
@@ -292,8 +309,9 @@ CONFIG_PWM_SYSFS=y
 #
 # The boot flash is NOT on the pxa2xx SSP (8086:2e6a) the BCM switch rides — once
 # assumed, proven wrong on an EA1 ("SPI transfer failed: -5"). It is on its own
-# block, PCI 01:17.0 8086:08a0 ("FLASH memory"), driven by spi-ea-ce5xx.c, which
-# instantiates the chip so spi-nor below autodetects the S25FL127S.
+# block, PCI 01:17.0 8086:08a0 ("FLASH memory"), driven by spi-ea-ce5xx.c; the
+# chip is its flash@0 child in the board DTB, so spi-nor below autodetects the
+# S25FL127S.
 #
 # BACK UP mtd0 BEFORE WRITING TO IT. A bad MFH/autoscript costs the button and
 # the CEFDK shell to recover.
@@ -309,7 +327,12 @@ CONFIG_MTD=y
 CONFIG_MTD_BLOCK=y
 CONFIG_MTD_SPI_NOR=y
 CONFIG_SPI_MEM=y
-# CONFIG_MTD_OF_PARTS is not set
+# Named, read-only partitions from the DTB's fixed-partitions (cefdk, mfh,
+# mfh-items: ce5300.dtsi). PARTITIONED_MASTER keeps the whole chip as mtd0
+# beside them -- every offset ohc-restore, boot-init and the flasher write at is
+# a whole-chip offset into /dev/mtd0, and without it mtd0 would become "cefdk".
+CONFIG_MTD_OF_PARTS=y
+CONFIG_MTD_PARTITIONED_MASTER=y
 
 # --- warnings are not errors ---
 # The mainline x86 defconfigs set WERROR. Buildroot used to force it off (its

@@ -9,12 +9,15 @@
  * The codec sits at 0x38 on the FOURTH I2C controller (vendor i2c-3); the DAC
  * soft mute is vendor GPIO 61, active high = muted.
  *
- * The DSP boots Control4's program from the board's EEPROM. firmware-name is
- * openHC's parameter file for that program (built from
- * board/ea/common/firmware/dsp/adau1451/ea3.json): the sigmadsp core loads it
- * and makes its controls. control4,program-version is the program's version
- * cell and the value it holds; on a part reporting anything else the codec
- * driver writes nothing and leaves the DSP as it booted.
+ * The DSP has no program of its own; the codec driver loads it. firmware-name
+ * is openHC's firmware file (built from
+ * board/ea/common/firmware/dsp/adau1451/ea3.json): the part's register init,
+ * the program and its parameters, which the sigmadsp core writes and turns into
+ * controls. control4,program-version is the program's version cell and the
+ * value it holds: checked after a load, and a program that does not hold it is
+ * stopped. A file with no program holds only parameters; then the check comes
+ * first, and on a part not already running that program the driver writes
+ * nothing. A new program brings its own cell and value here.
  *
  * The DSP and codec resets are released here, not in ea.dtsi, so a board
  * without the DSP never drives them.

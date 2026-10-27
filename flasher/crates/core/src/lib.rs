@@ -147,6 +147,17 @@ mod tests {
         assert!(f.len() > 32, "needs padding for savedefault to rewrite in place");
     }
 
+    #[test]
+    fn a_default_file_reads_as_grub_reads_it() {
+        // GRUB's savedefault leaves `N\0\n…`; busybox sed keeps the NUL.
+        assert_eq!(hc800::default_entry("2\0"), Some(2));
+        assert_eq!(hc800::default_entry("2\0\n\n\n file is used"), Some(2));
+        assert_eq!(hc800::default_entry(&hc800::default_file(3)), Some(3));
+        assert_eq!(hc800::default_entry("12\n"), Some(12));
+        assert_eq!(hc800::default_entry("\0"), None);
+        assert_eq!(hc800::default_entry(""), None);
+    }
+
     /// The stock HC-800 menu.lst, as read off sda1 (backups/hc800/hc800-sda1.img).
     const HC800_STOCK_MENU: &str = "serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1\n\
         terminal serial\n\nsupport_factorydefault\t1\nfactorydefault\t\t0\ndefault\t\t\t1\n\
@@ -164,14 +175,122 @@ mod tests {
         assert!(m.contains("default\t\tsaved\n"));
         assert!(!m.lines().any(|l| l.starts_with("default") && l.contains('0')));
         assert_eq!(idx, 2);
-        let once = &m[m.find(hc800::FACTORY_ONCE_TITLE).unwrap()..];
-        let sd = once.find(&format!("savedefault\t{}", hc800::ENTRY_VENDOR)).expect("must hand back");
+        assert_eq!(
+            hc800::titles(&m)[2..],
+            [hc800::FACTORY_ONCE_TITLE.to_string(), hc800::STOCK_FIRSTBOOT_TITLE.to_string()]
+        );
+        let once = &m[m.find(hc800::FACTORY_ONCE_TITLE).unwrap()..m.find(hc800::STOCK_FIRSTBOOT_TITLE).unwrap()];
+        // The restore hands over to the first-boot entry, which hands back.
+        let sd = once.find("savedefault\t3").expect("restore must hand over to the first boot");
         assert!(sd < once.find("\nboot").unwrap(), "savedefault must precede boot:\n{once}");
         assert!(once.contains("root=restore_fs_hc800"), "must be entry 0's restore:\n{once}");
         // The button's lines and both vendor entries are byte-identical.
         let stock_entries = &HC800_STOCK_MENU[HC800_STOCK_MENU.find("title").unwrap()..];
         assert!(m.contains(stock_entries));
         assert!(m.contains("support_factorydefault\t1\nfactorydefault\t\t0\n"));
+    }
+
+    #[test]
+    fn stocks_first_boot_after_a_restore_creates_tmp_then_hands_back() {
+        let (m, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
+        let fb = &m[m.find(hc800::STOCK_FIRSTBOOT_TITLE).unwrap()..];
+        // Entry 1's own root and kernel line, byte for byte, then the init.
+        assert!(fb.contains("root\t\t(hd0,2)\n"), "must boot stock's sda3:\n{fb}");
+        let k = fb.lines().find(|l| l.starts_with("kernel")).unwrap();
+        assert_eq!(
+            k,
+            format!(
+                "kernel\t\t/boot/bzImage root=root_fs_hc800 type=ext4 ro console=ttyS0,115200 quiet \
+                 consoleblank=0 vt.cur_default=1 {}",
+                hc800::STOCK_FIRSTBOOT_INIT
+            )
+        );
+        // Back to plain stock, saved before the kernel runs.
+        let sd = fb.find(&format!("savedefault\t{}", hc800::ENTRY_VENDOR)).expect("must hand back");
+        assert!(sd < fb.find("\nboot").unwrap(), "savedefault must precede boot:\n{fb}");
+        assert!(fb.trim_end().ends_with("boot"), "the last entry in the file:\n{fb}");
+    }
+
+    /// Linux 3.16's `next_arg` (kernel/params.c) over the arguments after `--`,
+    /// as stock's kernel hands them to the rdinit program: spaces inside quotes
+    /// don't split, an opening `"` is dropped, and the closing `"` only when the
+    /// argument is `name=value`.
+    fn linux_3_16_init_args(mut s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(t) = Some(s.trim_start()).filter(|t| !t.is_empty()) {
+            let quoted = t.starts_with('"');
+            let t = if quoted { &t[1..] } else { t };
+            let (mut in_quote, mut end) = (quoted, t.len());
+            for (i, c) in t.char_indices() {
+                if c.is_ascii_whitespace() && !in_quote {
+                    end = i;
+                    break;
+                }
+                if c == '"' {
+                    in_quote = !in_quote;
+                }
+            }
+            let mut arg = t[..end].to_string();
+            if let Some(eq) = arg.find('=') {
+                let val_quoted = arg[eq + 1..].starts_with('"');
+                if val_quoted {
+                    arg.remove(eq + 1);
+                }
+                if (val_quoted || quoted) && arg.ends_with('"') {
+                    arg.pop();
+                }
+            }
+            out.push(arg);
+            s = &t[end..];
+        }
+        out
+    }
+
+    #[test]
+    fn the_first_boot_init_reaches_sh_as_c_and_one_whole_script() {
+        // The model reproduces what the unit and QEMU showed: a bare quoted
+        // script keeps its closing quote, and sh refuses it.
+        assert_eq!(linux_3_16_init_args(r#"-c "echo a;echo b""#), ["-c", "echo a;echo b\""]);
+        assert_eq!(linux_3_16_init_args(r#"-c "x=1;echo b""#), ["-c", "x=1;echo b"]);
+
+        let init = hc800::STOCK_FIRSTBOOT_INIT;
+        let (head, rest) = init.split_once(" -- ").unwrap();
+        assert_eq!(head, "panic=10 rdinit=/bin/sh", "rdinit, as stock's /init ignores init=; panic= bounds a failure");
+        let argv = linux_3_16_init_args(rest);
+        assert_eq!(argv.len(), 2, "{argv:?}");
+        assert_eq!(argv[0], "-c");
+        // The leftover quote sits in a trailing comment; there is no other.
+        let body = argv[1].strip_suffix(" #\"").expect("the stray closing quote must be commented out");
+        assert!(!body.contains('"') && !body.contains('#'), "{body}");
+        // Control4's /init reads these words from /proc/cmdline, script included.
+        for w in ["root=", "type=", "debug=", "init="] {
+            assert!(!body.contains(w), "`{w}` in the script would reach Control4's /init: {body}");
+        }
+        // Every step runs even if one fails, and Control4's /init always starts last.
+        assert!(body.ends_with("exec /init"), "{body}");
+        assert!(!body.contains("&&"), "{body}");
+        let steps: Vec<&str> = body.split(';').collect();
+        let root = format!("mount -t ext4 {} /r", hc800::VENDOR_ROOT_PART);
+        let mkdir = format!("mkdir -m{} /r/tmp", hc800::VENDOR_TMP_MODE);
+        for step in ["mount -t devtmpfs d /dev", "mkdir /r", root.as_str(), mkdir.as_str(), "umount /r",
+                     "umount /dev"] {
+            assert!(steps.contains(&step), "missing `{step}` in {body}");
+        }
+        // Its mounts are undone before /init, which mounts /dev itself.
+        let pos = |s: &str| steps.iter().position(|x| *x == s).unwrap();
+        assert!(pos("umount /r") > pos(&mkdir) && pos("umount /dev") > pos("umount /r"));
+    }
+
+    #[test]
+    fn the_first_boot_kernel_line_fits_the_255_byte_buffer() {
+        // GRUB 0.97 passes at most 255 bytes of arguments to Linux.
+        // Everything after the kernel's path counts.
+        let (m, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
+        let fb = &m[m.find(hc800::STOCK_FIRSTBOOT_TITLE).unwrap()..];
+        let k = fb.lines().find(|l| l.starts_with("kernel")).unwrap();
+        let args = k["kernel".len()..].trim_start().split_once(' ').unwrap().1;
+        assert!(args.len() <= hc800::MAX_KERNEL_ARGS, "{} chars: {args}", args.len());
+        const { assert!(hc800::MAX_KERNEL_ARGS < 255) };
     }
 
     #[test]
@@ -191,7 +310,7 @@ mod tests {
         // it before appending is what keeps openHC at ENTRY_OPENHC; otherwise
         // "boot openHC" would boot the factory restore.
         let (after_restore, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
-        let cleaned = hc800::drop_entry(&after_restore, hc800::FACTORY_ONCE_TITLE);
+        let cleaned = hc800::RESTORE_ONCE_TITLES.iter().fold(after_restore, |m, t| hc800::drop_entry(&m, t));
         assert_eq!(hc800::titles(&cleaned), hc800::titles(HC800_STOCK_MENU));
         let installed = format!("{cleaned}{}", hc800::menu_entry(true));
         assert_eq!(hc800::titles(&installed)[hc800::ENTRY_OPENHC as usize], "openHC");

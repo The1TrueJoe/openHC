@@ -5,9 +5,11 @@ config BR2_PACKAGE_IOMCU_ATTACH
 	  turns the IO microcontroller's relays and contacts into a standard
 	  gpiochip.
 
-	  On x86 there is no device tree or ACPI node describing a Control4
-	  co-processor, so serdev has nothing to bind to and the attachment has
-	  to come from userspace. This sets the line speed and issues TIOCSETD,
+	  Only for a board whose device tree does not describe the part (the
+	  HC-800 has no tree at all); where a "control4,io-mcu" node exists the
+	  kernel binds it as a serdev device and this is never run. Without a
+	  node serdev has nothing to bind to, so the attachment has to come
+	  from userspace. This sets the line speed and issues TIOCSETD,
 	  then holds the descriptor — a line discipline lasts only as long as
 	  the fd that set it.
 

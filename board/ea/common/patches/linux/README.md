@@ -1,6 +1,9 @@
 # EA-family kernel patches (Buildroot `BR2_GLOBAL_PATCH_DIR`)
 
-Applied to vanilla Linux 7.1.8 for every `ea*` board.
+Applied to vanilla Linux 7.1.8 for every `ea*` board, after the x86 patches
+the EA family shares with the HC-800 in `board/common/patches/linux/`
+(today one: **0015**, the built-in device tree). Both directories are in
+`BR2_GLOBAL_PATCH_DIR` (`common_defconfig`).
 
 There are three kinds of EA kernel source, and each has one home:
 
@@ -23,7 +26,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
-| 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB` |
+| 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
 
@@ -131,7 +134,8 @@ What the move changed, beyond deleting C:
   address as upstream did: with `pci=realloc` a BAR can move, its index cannot.
   A BAR with no node still registers, bare, so a device-tree mistake never takes
   the box's i2c — and with it the LM75 the fan is driven from — away.
-  (`ohc-ea-hw` still instantiates the LM75 by hand if `0-0048` is missing.)
+  (`ohc-ea-hw` still instantiates the LM75 by hand if `0-0048` is missing; that
+  one has no thermal zone, so the fan stays at the full speed pwm-fan probes at.)
 * **`"intel,ce4100-i2c"` compatible in i2c-pxa.** Upstream's CE4100 DT path has
   rotted: a DT-probed adapter matched no compatible and fell back to
   `REGS_PXA2XX`, the wrong register offsets.
@@ -145,7 +149,10 @@ What the move changed, beyond deleting C:
 ### 0015 — x86: built-in device tree
 
 **Necessary as a patch: yes** — it adds Kconfig symbols and an early-boot hook
-to `arch/x86`. See "The board device tree" above.
+to `arch/x86`, plus the `arch/x86/boot/dts/Makefile` every other DT
+architecture has. See "The board device tree" above. It lives in
+`board/common/patches/linux/` because the HC-800 links its tree the same
+way; there is one copy.
 
 
 ### 0016 — ehci-pci: board VBUS supply follows root-hub port power

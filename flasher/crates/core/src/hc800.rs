@@ -28,8 +28,16 @@ pub const RESTORE_PART: &str = "/dev/sda2";
 pub const KERNEL_PART: &str = "/dev/sda3";
 pub const KERNEL_LABEL: &str = "kernel_fs_hc800";
 
-/// The stock Control4 root. Untouched: openHC runs from an initramfs.
+/// The stock Control4 root. openHC runs from an initramfs and keeps only its
+/// `/openhc` data directory here (S08ohcdata); `uninstall` also makes sure the
+/// `/tmp` mount point stock's fstab needs is present (see [`VENDOR_TMP_MODE`]).
 pub const VENDOR_ROOT_PART: &str = "/dev/sda4";
+
+/// Stock mounts a tmpfs on `/tmp`, so the root needs the directory itself, and
+/// without it Director crash-loops every ~20 s. Control4's own factory restore
+/// never creates it: `root-fs-sherman.tgz` on sda2 has no `tmp` entry, and
+/// neither `restore.sh` nor stock's `rcS` makes one (checked 2026-10-26).
+pub const VENDOR_TMP_MODE: &str = "1777";
 
 /// GRUB's name for [`KERNEL_PART`]. GRUB counts partitions from zero, so sda3
 /// is `(hd0,2)` — the same value the vendor's own entry uses.
@@ -100,6 +108,58 @@ pub fn menu_entry(boot_once: bool) -> String {
 /// for it.
 pub const FACTORY_ONCE_TITLE: &str = "HC-800 Factory Default Image (once)";
 
+/// Title of the one-shot first stock boot [`factory_once_menu`] appends after
+/// the restore entry. Not starting with "openHC", for the same reason.
+pub const STOCK_FIRSTBOOT_TITLE: &str = "HC-800 Image (first boot after restore, once)";
+
+/// Both one-shot entries a restore leaves in `menu.lst`. Spent once the box is
+/// back on stock; the install drops them so openHC lands at [`ENTRY_OPENHC`].
+pub const RESTORE_ONCE_TITLES: &[&str] = &[FACTORY_ONCE_TITLE, STOCK_FIRSTBOOT_TITLE];
+
+/// What the first stock boot after a restore runs first, inside Control4's
+/// kernel-embedded initramfs, before that initramfs's own `/init`.
+///
+/// Control4's restore never creates `/tmp`: `root-fs-sherman.tgz` on sda2 has
+/// no `tmp` entry, and neither `restore.sh` nor stock's `rcS` makes one, so
+/// `mount -a` cannot put fstab's tmpfs there and Director restarts every ~20 s.
+///
+/// **`rdinit=`, not `init=`.** Stock's kernel carries its own initramfs, whose
+/// `/init` mounts sda4 and `switch_root`s to `/sbin/init`. With an initramfs the
+/// kernel runs `/init` and leaves `init=` to it, and that `/init` parses `init=`
+/// into a variable it never uses (it reads `$init`, switches to `$INIT`), so an
+/// `init=` here was ignored on hardware (2026-10-26). `rdinit=` is the kernel's
+/// own choice of that first program, so the shell below runs instead, makes
+/// `/tmp` (1777: `mkdir -m`, since the restore never leaves one to chmod) on
+/// sda4 with the initramfs's busybox, undoes its mounts, and execs
+/// Control4's `/init`, which then boots exactly as it always does. Every step is
+/// `;`-joined so a failure still reaches `exec /init`.
+///
+/// The kernel hands everything after `--` to that program as arguments, and its
+/// command-line parser keeps a double-quoted argument whole, so `/bin/sh` gets
+/// `-c` and the script. **Hence the trailing ` #`:** this 3.16 kernel's
+/// `next_arg` drops a bare quoted argument's opening `"` but keeps its closing
+/// one (it strips both only for a `name="value"` argument), so sh is handed
+/// `…exec /init #"`, and the `#` makes that stray quote a comment. Without it
+/// sh refused the script ("unterminated quoted string"), PID 1 exited and the
+/// kernel panicked, on the unit and with stock's own bzImage under QEMU
+/// (2026-10-26). A kernel that strips both quotes leaves an empty comment.
+/// The script must hold no other double quote, and no `root=`, `type=` or
+/// `debug=`: Control4's `/init` reads those words from `/proc/cmdline`, script
+/// included. `mount` names `ext4` because nothing has mounted `/proc` for
+/// busybox to probe filesystem types from.
+///
+/// **It is terse on purpose.** GRUB 0.97 copies at most 255 bytes of a kernel
+/// line's arguments to Linux, so [`MAX_KERNEL_ARGS`] keeps a margin under that.
+/// `panic=10` is why a failure costs one reboot rather than a hung box: stock's
+/// kernel has no panic timeout of its own, and GRUB has already saved entry
+/// [`ENTRY_VENDOR`], so the reboot is plain stock.
+pub const STOCK_FIRSTBOOT_INIT: &str = "panic=10 rdinit=/bin/sh -- -c \"mount -t devtmpfs d /dev;\
+     mkdir /r;mount -t ext4 /dev/sda4 /r;mkdir -m1777 /r/tmp;umount /r;umount /dev;exec /init #\"";
+
+/// The longest argument string (everything after the kernel's path) a stock
+/// entry may carry: under the 255 bytes GRUB 0.97 passes on, with room to spare.
+pub const MAX_KERNEL_ARGS: usize = 240;
+
 /// Rewrite a `menu.lst` so the next boot runs Control4's factory restore
 /// EXACTLY ONCE, returning the new text and the index of the entry to save as
 /// the default.
@@ -113,16 +173,25 @@ pub const FACTORY_ONCE_TITLE: &str = "HC-800 Factory Default Image (once)";
 ///
 /// **What this does instead.** It appends a copy of entry 0 — same root, same
 /// kernel line, so the restore is the button's restore byte for byte — with
-/// `savedefault {ENTRY_VENDOR}` before its `boot`, and switches the file to
-/// `default saved`. GRUB runs `savedefault` before handing over, so the restore
-/// kernel starts with the default already pointing back at Control4's normal
-/// image, and the reboot `restore.sh` ends with lands on stock. The same
-/// mechanism the openHC boot-once entry already relies on.
+/// `savedefault` before its `boot`, and switches the file to `default saved`.
+/// GRUB runs `savedefault` before handing over, so the restore kernel starts
+/// with the default already pointing at the next entry, and the reboot
+/// `restore.sh` ends with lands there. The same mechanism the openHC boot-once
+/// entry already relies on.
+///
+/// **The next entry is stock's first boot.** A copy of entry 1, Control4's own
+/// kernel on the freshly restored sda3, with [`STOCK_FIRSTBOOT_INIT`] on its
+/// kernel line and `savedefault {ENTRY_VENDOR}`. It creates the `/tmp` the
+/// restore never makes and then runs stock's normal boot, so the box comes back
+/// healthy with no extra reboot and nothing logging in to it. Every later boot
+/// is plain entry 1. If that boot ever failed, the default is already back on
+/// entry 1, so the next power cycle is the plain stock boot a restore gave
+/// before this entry existed.
 ///
 /// Entries 0 and 1, `support_factorydefault` and `factorydefault` are left as
 /// they were. Any openHC kernel entry is dropped — the restore reformats sda3,
-/// so it would name files that no longer exist — as is any earlier copy of this
-/// entry, so running it twice does not stack them up.
+/// so it would name files that no longer exist — as are earlier copies of both
+/// one-shot entries, so running it twice does not stack them up.
 pub fn factory_once_menu(menu: &str) -> Result<(String, u8), String> {
     for g in GUARDED_LINES {
         if !menu.lines().any(|l| l.trim_start().starts_with(g)) {
@@ -146,7 +215,7 @@ pub fn factory_once_menu(menu: &str) -> Result<(String, u8), String> {
     let title_of = |e: &Vec<&str>| e[0].trim_start()["title".len()..].trim().to_string();
     entries.retain(|e| {
         let t = title_of(e);
-        !t.starts_with("openHC") && t != FACTORY_ONCE_TITLE
+        !t.starts_with("openHC") && !RESTORE_ONCE_TITLES.contains(&t.as_str())
     });
     if entries.len() <= ENTRY_VENDOR as usize {
         return Err(format!("menu.lst has {} vendor entries, expected at least {}", entries.len(), ENTRY_VENDOR + 1));
@@ -154,6 +223,13 @@ pub fn factory_once_menu(menu: &str) -> Result<(String, u8), String> {
     let factory = &entries[ENTRY_FACTORY as usize];
     if !factory.iter().any(|l| l.contains("restore_fs")) {
         return Err(format!("entry {ENTRY_FACTORY} does not boot restore_fs — not the menu.lst this tool expects"));
+    }
+    let vendor = &entries[ENTRY_VENDOR as usize];
+    if !vendor.iter().any(|l| l.trim_start().starts_with("kernel") && l.contains("root=root_fs")) {
+        return Err(format!("entry {ENTRY_VENDOR} does not boot root_fs — not the menu.lst this tool expects"));
+    }
+    if vendor.iter().any(|l| l.contains("init=")) {
+        return Err(format!("entry {ENTRY_VENDOR} already sets init= or rdinit= — not the menu.lst this tool expects"));
     }
 
     let mut seen_default = false;
@@ -177,22 +253,37 @@ pub fn factory_once_menu(menu: &str) -> Result<(String, u8), String> {
         }
     }
 
-    // The copy: entry 0's lines minus its title, trailing blanks and `boot`,
-    // then savedefault and boot in the only order that works.
-    let mut body: Vec<&str> = factory[1..].to_vec();
-    while body.last().is_some_and(|l| l.trim().is_empty() || l.trim() == "boot") {
-        body.pop();
-    }
+    // The copies: an entry's lines minus its title, trailing blanks and
+    // `boot`, then savedefault and boot in the only order that works.
+    let body = |e: &Vec<&str>| -> Vec<String> {
+        let mut b: Vec<String> = e[1..].iter().map(|l| l.to_string()).collect();
+        while b.last().is_some_and(|l| l.trim().is_empty() || l.trim() == "boot") {
+            b.pop();
+        }
+        b
+    };
+    let once = entries.len() as u8;
+    let firstboot = once + 1;
     if !out.ends_with("\n\n") {
         out.push('\n');
     }
     out.push_str(&format!("title\t\t{FACTORY_ONCE_TITLE}\n"));
-    for l in body {
-        out.push_str(l);
+    for l in body(factory) {
+        out.push_str(&l);
         out.push('\n');
     }
+    out.push_str(&format!("savedefault\t{firstboot}\nboot\n\n"));
+    out.push_str(&format!("title\t\t{STOCK_FIRSTBOOT_TITLE}\n"));
+    for l in body(vendor) {
+        if l.trim_start().starts_with("kernel") {
+            out.push_str(&format!("{} {STOCK_FIRSTBOOT_INIT}\n", l.trim_end()));
+        } else {
+            out.push_str(&l);
+            out.push('\n');
+        }
+    }
     out.push_str(&format!("savedefault\t{ENTRY_VENDOR}\nboot\n"));
-    Ok((out, entries.len() as u8))
+    Ok((out, once))
 }
 
 /// The `title` of every entry in `menu`, in GRUB's order (index = entry number).
@@ -235,6 +326,22 @@ pub fn drop_entry(menu: &str, title: &str) -> String {
 /// which is what the padding comment below is for, and why it must be created
 /// once and then left alone rather than rewritten on every install.
 pub fn default_file(entry: u8) -> String {
+    default_file_body(entry)
+}
+
+/// The entry number a `default` file names, as GRUB reads it: the leading
+/// digits of the first line.
+///
+/// GRUB's `savedefault` writes the number and then a NUL (`1\0\n\n…` on the
+/// unit), and busybox `sed`'s `.*` stops at that NUL, so a first line rewritten
+/// on the box reads back as `2\0`. GRUB stops at the first non-digit, and this
+/// does the same, so a read-back check agrees with what GRUB will boot.
+pub fn default_entry(text: &str) -> Option<u8> {
+    let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+fn default_file_body(entry: u8) -> String {
     format!(
         "{entry}\n#\n# This file is used by the grub-set-default command.\n\
          # openHC writes it so `default saved` has something to read.\n\

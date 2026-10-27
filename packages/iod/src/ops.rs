@@ -424,7 +424,7 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
 }
 
 /// What is carrying this board's IO. iod cannot ask the part who it is — the
-/// driver owns the link — so this reports the chip and what board.env declares.
+/// driver owns the link — so this reports the chip and what the driver declares.
 async fn mcu_info(c: &Arc<Config>) -> Out {
     Ok(json!({
         "via": "gpio",
@@ -433,6 +433,8 @@ async fn mcu_info(c: &Arc<Config>) -> Out {
         "part": c.board.io.mcu_part,
         "tty": c.board.io.mcu_tty,
         "baud": c.board.io.mcu_baud,
+        "online": c.board.io.mcu_online,
+        "declared_by": c.board.io.declared_by,
         "note": "the kernel driver owns the link; identify is not reachable from here",
     }))
 }
@@ -446,10 +448,17 @@ fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
     match c.board.io.backend {
         _ if c.gpio_io => Ok(()),
         Backend::None => Err(Fault::NoSuch("no IO on this board".into())),
-        Backend::Mcu => Err(Fault::NoChip(format!(
-            "the {} line discipline is not attached, or the microcontroller did not answer it (S12iomcu)",
-            crate::gpio_io::CHIP_LABEL
-        ))),
+        Backend::Mcu => Err(Fault::NoChip(match c.board.io.mcu_online {
+            Some(false) => format!(
+                "{} is attached on {} but the microcontroller is not answering it",
+                crate::gpio_io::CHIP_LABEL,
+                c.board.io.mcu_tty.as_deref().unwrap_or("its port")
+            ),
+            _ => format!(
+                "{} is not attached — no device tree node bound it, and S12iomcu did not attach it",
+                crate::gpio_io::CHIP_LABEL
+            ),
+        })),
         Backend::Gpio => Err(Fault::NoChip(
             "this board names them in its device tree — check gpio-line-names, and that the pin-mux ran".into(),
         )),

@@ -13,6 +13,7 @@ pub mod iox;
 pub mod mfgmode;
 pub mod netboot;
 pub mod network;
+pub mod radio;
 pub mod updates;
 pub mod release;
 

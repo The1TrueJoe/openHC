@@ -34,6 +34,10 @@ pxa2xx SSP the BCM switch rides. The in-tree `spi-ea-ce5xx` controller driver
 (a mainline-API port of Intel's out-of-tree `ce5xx_spi_flash.c`) lets the in-tree
 `spi-nor` driver detect the chip by JEDEC id, so openHC gets a writable
 `/dev/mtd0`. Confirmed on an EA1: `/proc/mtd` shows a 16 MB `mtd0` on `spi0.0`.
+The chip is the controller's `flash@0` child in the board device tree, whose
+`fixed-partitions` add read-only `cefdk` (0x0), `mfh` (0x80000) and `mfh-items`
+(0x80800) as `mtd1`–`mtd3`; `mtd0` stays the whole chip, so every offset on this
+page is still an `mtd0` offset.
 
 This is the prerequisite for two things that otherwise need a serial console or an
 external programmer: an **in-place install**, and a **software return-to-stock**.

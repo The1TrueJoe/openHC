@@ -10,11 +10,12 @@
  * the name says the hardware is there. Names are the stock c4_gpio_config's
  * where it has one; the few that are ours say so where they are defined.
  *
- * Inputs (board-id straps, the ID button, status and fault flags) are named
- * but never hogged, so gpioget/gpiofind can read them; 32 (id_button) must stay
- * free for ohc-restore-button. 17-23 are the seven straps the stock kernel's
- * id_straps() reads (revision = bits 0-3, board type = bits 4-6), so 23 is
- * board_id6; the script's src_reset on 23 is commented out in stock.
+ * Inputs (board-id straps, status and fault flags) are named but never hogged,
+ * so gpioget/gpiofind can read them. 32 (id_button) is the exception: the
+ * gpio-keys-polled node in ea.dtsi holds it. 17-23 are the seven straps the
+ * stock kernel's id_straps() reads (revision = bits 0-3, board type = bits
+ * 4-6), so 23 is board_id6; the script's src_reset on 23 is commented out in
+ * stock.
  */
 #ifndef EA_LINE_5
 #define EA_LINE_5 ""
