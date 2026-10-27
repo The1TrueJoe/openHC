@@ -1,0 +1,83 @@
+# Build openHC's own ADAU1451 program (the EA3's DSP) with SigmaStudio+.
+#
+# There is no open toolchain for the ADAU145x — its instruction set is not
+# public — so the program is built by Analog Devices' SigmaStudio+, driven from
+# a script rather than its GUI, through The1TrueJoe/sigmastudio-plus-action:
+# a silent install on a Windows runner and SigmaStudio+'s headless console app
+# (SStudioPlusConsole.exe: createproject, update*, lcd, export).
+#
+# THE INSTALLER IS NOT IN THIS REPO AND IS NOT DOWNLOADED FROM ANALOG DEVICES
+# HERE. Its download needs a myAnalog sign-in and acceptance of ADI's software
+# license, which only a person can give. The repo owner downloaded it once and
+# staged it in a private repo; this workflow fetches that copy with two secrets:
+#
+#   SIGMASTUDIO_INSTALLER_URL  the release-asset API URL in the private repo
+#   SIGMASTUDIO_TOKEN          a fine-grained token, Contents: read on that repo
+#
+# With either secret missing the job says so and stops, green.
+#
+# Stage 1 (this file today) proves the toolchain: install, the console app
+# headless, ADAU145x (Sigma 300) support. Stage 2 adds the design script and the export,
+# handed to the EA image build as an artifact — the exported program never
+# enters git (ADI's license restricts distributing generated code outside the
+# products it runs on).
+name: dsp-program
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  # workflow_dispatch only registers from the default branch, so until this lands
+  # on main, a path-filtered push trigger is how it runs on a feature branch.
+  push:
+    paths:
+      - .github/workflows/dsp-program.yml
+
+jobs:
+  toolchain:
+    runs-on: windows-latest
+    steps:
+      - name: Staged installer?
+        id: staged
+        shell: pwsh
+        env:
+          INSTALLER_URL: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
+          TOKEN: ${{ secrets.SIGMASTUDIO_TOKEN }}
+        run: |
+          if (-not $env:INSTALLER_URL -or -not $env:TOKEN) {
+            "::notice::SigmaStudio+ is not staged (SIGMASTUDIO_INSTALLER_URL / SIGMASTUDIO_TOKEN unset) - nothing to do"
+            "ok=false" >> $env:GITHUB_OUTPUT
+          } else {
+            "ok=true" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: SigmaStudio+
+        if: steps.staged.outputs.ok == 'true'
+        uses: The1TrueJoe/sigmastudio-plus-action@v1
+        with:
+          installer-url: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
+          token: ${{ secrets.SIGMASTUDIO_TOKEN }}
+          # SigmaStudio+ 3.4.0, as staged in the private repo.
+          installer-sha256: 47814f9691d6a0f334b341caa6a49db2a03f6549b62db3cc82530845c1268640
+          run: |
+            New-Item -ItemType Directory -Force logs | Out-Null
+            & $env:SSPLUS_CONSOLE --help *>&1 | Tee-Object logs/console.txt
+            if ($LASTEXITCODE) { "::error::console app exit $LASTEXITCODE"; exit 1 }
+            # ADAU145x support is a set of plugins the installer drops in
+            # ProgramData (not under the install folder): the family's compiler and
+            # the Sigma 300 core the ADAU1451 is built on.
+            $plugins = "$env:ProgramData\Analog Devices\SigmaStudio 3.4\Plugins"
+            Get-ChildItem $plugins -File | Select-Object Name, Length |
+              Format-Table -AutoSize | Out-String -Width 200 | Out-File logs/plugins.txt
+            foreach ($dll in 'ADAU145x.dll', 'ADAU145XCompiler.dll', 'Sigma300Core.dll') {
+              if (-not (Test-Path "$plugins\$dll")) { "::error::no $dll in $plugins"; exit 1 }
+            }
+            "ADAU145x/Sigma 300 support present in $plugins"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.staged.outputs.ok == 'true'
+        with:
+          name: sigmastudio-toolchain-logs
+          path: logs/
+          if-no-files-found: ignore
