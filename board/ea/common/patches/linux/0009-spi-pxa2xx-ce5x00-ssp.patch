@@ -1,68 +1,43 @@
 spi: pxa2xx: add CE5X00_SSP for the Intel CE5300's SSP
 
 The CE5300 (Control4 EA) exposes an SSP behind the same PCI id as the CE4100
-(8086:2e6a), so spi-pxa2xx-pci treats it as a CE4100. It is not one. Control4's
-CE5300 kernel (GPL linux-3.12.74, kernel/intel_kernel_patches) carries a
-separate SSP type for it, and the two parts disagree on the SSCR1/SSSR field
-layout, the FIFO depth, AND the input clock:
+(8086:2e6a), so spi-pxa2xx-pci treats it as a CE4100. It is not one. It is
+Quark X1000's SSP: the same register layout and the same DDS clock.
 
-                  mainline CE4100      CE5300
+                  mainline CE4100      CE5300 (= Quark X1000)
     SSCR1 TFT         bits  7:6  (2 bits)  bits 10:6  (5 bits)
     SSCR1 RFT         bits 11:10 (2 bits)  bits 15:11 (5 bits)
     SSSR  TFL         bits  9:8  (2 bits)  bits 12:8  (5 bits)
     FIFO depth        4                    32
-    SSP input clock   3.6864 MHz           10 MHz
+    bit clock         3.6864 MHz / 2(SCR+1)  100 MHz * DDS_RATE / 2^24 / (SCR+1)
 
-The register LAYOUT the CE5300 wants is Quark X1000's (SSCR0 Motorola at 6:5,
-DataSize(x)=x-1, 5-bit thresholds, 32-deep FIFO, SSSR TFL/RFL). mainline's
-QUARK_X1000_SSP already encodes exactly that, so CE5X00_SSP is defined as a new
-enum value that falls through to `case QUARK_X1000_SSP:` at every site that
-selects a register layout, and that joins CE4100_SSP at the three sites that
-select a device by writing the chip-select into SSSR.
+So CE5X00_SSP falls through to `case QUARK_X1000_SSP:` at every site that
+selects a register layout or the clock divider, and DDS_RATE (+0x28) is written
+for it as for Quark. The clock was measured on an EA3: with DDS_RATE = 1000,
+1024 bits take 1.74 s at SCR = 9 and 0.88 s at SCR = 4, and DDS_RATE = 2000 at
+SCR = 9 takes 0.88 s, which is Quark's 100 MHz reference to within 2%. With
+DDS_RATE = 0 the SSP does not shift at all. The port is registered at 50 MHz,
+Quark's ceiling.
 
-THE CLOCK IS NOT QUARK'S, AND MUST NOT BE ALIASED TO IT. Quark derives the bit
-clock from a 24-bit DDS_RATE register plus an SCR divisor, and writes DDS_RATE
-under an exact is_quark_x1000_ssp() test. THE CE5300 HAS NO DDS. Control4's
-vendor driver clocks it like a CE4100/PXA25x part: ssp_get_clk_div() returns a
-plain SCR for CE5X00 (divide by 2*(SCR+1), 8-bit field), and nothing ever
-touches DDS_RATE. On the CE5300 the register at the DDS_RATE offset is not a
-clock register at all, and writing it wedges the SSP (the bit clock dies, SSSR
-stays BSY, pxa2xx_spi_flush() times out: "b53-switch spi92.1: Flush failed / SPI
-transfer failed: -5 / probe -22"). So CE5X00_SSP deliberately stays OUT of the
-Quark branch of pxa2xx_ssp_get_clk_div() -- it falls through to ssp_get_clk_div()
--- and is added to that function's PXA25x/CE4100 case so it gets the /2 SCR
-divisor the hardware actually uses. transfer_one's DDS_RATE write remains gated
-by is_quark_x1000_ssp(), so it never fires for CE5X00.
+Unlike Quark, the chip select is the CE4100 one: the CS number is written into
+SSSR[1:0]. CE5X00 joins CE4100 in cs_assert()/cs_deassert()/setup(), and in
+write_SSSR_CS() so that the status clears before every transfer don't reset
+the CS to 0.
 
-The second half is the input clock. spi-pxa2xx-pci registers the 8086:2e6a port
-at the CE4100's 3.6864 MHz; the CE5300's SSP clock is 10 MHz (vendor
-spi_clk_get_rate(): `case CE5X00_SSP: return 10000000;`). ssp_get_clk_div()
-computes the SCR from this rate, so the wrong input clock produces the wrong bit
-rate even once the divider is right. ce4100_spi_setup() therefore registers
-10 MHz when it has identified a CE5300, 3.6864 MHz otherwise.
+CE5X00 is pxa25x_ssp_comp(), as in Control4's driver. If it isn't, spi-pxa2xx
+treats it as a PXA27x and writes SSTO, also at +0x28, i.e. DDS_RATE: 1000 at
+the start of every transfer (a ~2 kHz bit clock) and 0 at the end (clock
+stopped mid-shift). That is the "wedge" seen on every kexec boot: BSY set, the
+TX FIFO full (SSSR = 0x1F14), b53's chip-id read garbage, probe -EINVAL.
+
+Finally, CEFDK leaves the SSP with DDS_RATE = 0 and up to 25 stale words in the
+TX FIFO (SSSR TFL = 25 just before the kexec), and toggling SSE does not empty
+it. Probe clocks those out once, or the first transfer would shift them ahead
+of its own data and every read after it would be misaligned.
 
 The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
 rather than by the SSP function's own id, which it shares with the CE4100, so
 genuine CE4100 hardware is unaffected.
-
-CE5X00 is also PXA25x-compatible in the sense spi-pxa2xx.h means it, and the
-CS select in SSSR must survive status writes. Control4's driver lists CE5X00 in
-pxa25x_ssp_comp() and in write_SSSR_CS(); both helpers live in spi-pxa2xx.h,
-and missing them leaves CE5X00 on the PXA27x path:
-
-  - pxa25x_ssp_comp() false: transfer_one() writes SSTO = 1000 before every
-    transfer and probe writes SSTO = 0. SSTO is offset 0x28, the same offset
-    as Quark's DDS_RATE, which the CE5300 does not have and which wedges its
-    SSP when written. It also arms TINTE/TINT, a receive-timeout interrupt the
-    vendor never uses on this part. The result is the SSP stuck with BSY set
-    and a full TX FIFO (SSSR = 0x1F14), surviving any register restore, and
-    b53 failing its chip-id read with -EINVAL.
-  - write_SSSR_CS() not preserving SSSR[1:0]: the status clear before every
-    transfer (and the one at the end of pxa2xx_spi_flush()) writes the chip
-    select back to 0, so a transfer meant for CS1 goes out on CS0.
-
-So CE5X00 joins CE4100 and Quark in both helpers. The flush at the top of
-transfer_one() is left as mainline has it; it was never the problem.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
@@ -162,7 +137,39 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		return;
  
  	/* Wait until SSP becomes idle before deasserting the CS */
-@@ -583,6 +589,7 @@
+@@ -467,6 +473,31 @@
+ 	write_SSSR_CS(drv_data, SSSR_ROR);
+ 
+ 	return limit;
++}
++
++/*
++ * CEFDK leaves the CE5300's SSP with its DDS clock stopped and stale words in
++ * the TX FIFO, and toggling SSE does not empty it. Clock them out once, or the
++ * first transfer shifts them out ahead of its own data.
++ */
++static void ce5x00_drain_tx_fifo(struct driver_data *drv_data)
++{
++	unsigned int i;
++
++	/* 100 MHz * 0x40000 / 2^24 = 1.5625 MHz with SCR = 0 */
++	pxa2xx_spi_write(drv_data, DDS_RATE, 0x40000);
++	pxa_ssp_enable(drv_data->ssp);
++	for (i = 0; i < 1000; i++) {
++		while (read_SSSR_bits(drv_data, SSSR_RNE))
++			pxa2xx_spi_read(drv_data, SSDR);
++		if (!read_SSSR_bits(drv_data, QUARK_X1000_SSSR_TFL_MASK | SSSR_BSY))
++			break;
++		udelay(10);
++	}
++	while (read_SSSR_bits(drv_data, SSSR_RNE))
++		pxa2xx_spi_read(drv_data, SSDR);
++	pxa_ssp_disable(drv_data->ssp);
++	write_SSSR_CS(drv_data, SSSR_ROR);
+ }
+ 
+ static void pxa2xx_spi_off(struct driver_data *drv_data)
+@@ -583,6 +614,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -170,17 +177,24 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		mask |= QUARK_X1000_SSCR1_RFT;
  		break;
-@@ -896,7 +903,8 @@
- 	 * Calculate the divisor for the SCR (Serial Clock Rate), avoiding
- 	 * that the SSP transmission rate can be greater than the device rate.
- 	 */
--	if (ssp->type == PXA25x_SSP || ssp->type == CE4100_SSP)
-+	if (ssp->type == PXA25x_SSP || ssp->type == CE4100_SSP ||
-+	    ssp->type == CE5X00_SSP)
- 		return (DIV_ROUND_UP(ssp_clk, 2 * rate) - 1) & 0xff;
- 	else
- 		return (DIV_ROUND_UP(ssp_clk, rate) - 1)  & 0xfff;
-@@ -1135,6 +1143,7 @@
+@@ -909,6 +941,7 @@
+ 	unsigned int clk_div;
+ 
+ 	switch (drv_data->ssp_type) {
++	case CE5X00_SSP:
+ 	case QUARK_X1000_SSP:
+ 		clk_div = quark_x1000_get_clk_div(rate, &chip->dds_rate);
+ 		break;
+@@ -1036,7 +1069,7 @@
+ 		pxa2xx_spi_update(drv_data, SFIFOTT, mask, thresh);
+ 	}
+ 
+-	if (is_quark_x1000_ssp(drv_data))
++	if (is_quark_x1000_ssp(drv_data) || drv_data->ssp_type == CE5X00_SSP)
+ 		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), chip->dds_rate);
+ 
+ 	/* Stop the SSP */
+@@ -1135,6 +1168,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -188,7 +202,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1182,7 @@
+@@ -1173,7 +1207,7 @@
  		break;
  	}
  
@@ -197,7 +211,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1217,7 @@
+@@ -1208,6 +1242,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -205,7 +219,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1309,6 +1319,7 @@
+@@ -1309,6 +1344,7 @@
  
  	if (pxa25x_ssp_comp(drv_data)) {
  		switch (drv_data->ssp_type) {
@@ -213,7 +227,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		case QUARK_X1000_SSP:
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
-@@ -1372,6 +1383,7 @@
+@@ -1372,6 +1408,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
@@ -221,9 +235,19 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tmp = QUARK_X1000_SSCR1_RxTresh(RX_THRESH_QUARK_X1000_DFLT) |
  		      QUARK_X1000_SSCR1_TxTresh(TX_THRESH_QUARK_X1000_DFLT);
+@@ -1409,6 +1446,9 @@
+ 		break;
+ 	}
+ 
++	if (drv_data->ssp_type == CE5X00_SSP)
++		ce5x00_drain_tx_fifo(drv_data);
++
+ 	if (!pxa25x_ssp_comp(drv_data))
+ 		pxa2xx_spi_write(drv_data, SSTO, 0);
+ 
 --- a/drivers/spi/spi-pxa2xx-pci.c
 +++ b/drivers/spi/spi-pxa2xx-pci.c
-@@ -177,12 +177,31 @@
+@@ -177,12 +177,30 @@
  static int ce4100_spi_setup(struct pci_dev *dev, struct pxa2xx_spi_controller *c)
  {
  	struct ssp_device *ssp = &c->ssp;
@@ -248,12 +272,11 @@ Author: Joseph Telaak <joseph@telaak.dev>
  
 -	return pxa2xx_spi_pci_clk_register(dev, ssp, 3686400);
 +	/*
-+	 * The CE4100's SSP clock is 3.6864 MHz; the CE5300's is 10 MHz (from
-+	 * Control4's vendor spi_clk_get_rate()). The divider in ssp_get_clk_div()
-+	 * is computed from this rate, so a wrong input clock clocks the bus wrong.
++	 * The CE5300's SSP is clocked like Quark's: 100 MHz through a DDS
++	 * and the SCR divider, so it tops out at 50 MHz, as Quark's does.
 +	 */
 +	return pxa2xx_spi_pci_clk_register(dev, ssp,
-+					   ssp->type == CE5X00_SSP ? 10000000 : 3686400);
++					   ssp->type == CE5X00_SSP ? 50000000 : 3686400);
  }
  
  static const struct pxa_spi_info ce4100_info_config = {
