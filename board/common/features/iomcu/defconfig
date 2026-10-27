@@ -14,3 +14,12 @@ BR2_PACKAGE_IOMCU_ATTACH=y
 # feature, so a board cannot end up with the driver but not the daemon, or the
 # driver but not the rc-core it links against.
 BR2_OHC_IOMCU_KERNEL_DRIVER=y
+
+# ir-ctl and ir-keytable, so an emitter can be driven and a receiver read with
+# the stock Linux tools, by hand, with nothing of openHC's in the way:
+#   ir-ctl -d /dev/ohc/ir/out1 -S nec:0x04
+#   ir-ctl -d /dev/ohc/ir/front-receiver -r
+# They come only as part of v4l-utils, which also brings the v4l2/DVB tools;
+# the upstream package beats a hand-rolled build of two of its programs.
+BR2_PACKAGE_LIBV4L=y
+BR2_PACKAGE_LIBV4L_UTILS=y

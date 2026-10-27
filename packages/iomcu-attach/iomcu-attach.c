@@ -18,9 +18,11 @@
  *
  *   2. ATTACH. The kernel driver gpio-ohc-iomcu presents the relays, contacts
  *      and IR as standard kernel devices, but it has to be given a port first.
- *      On x86 there is no device tree or ACPI node describing a Control4
- *      co-processor, so serdev has nothing to enumerate and the attachment has
- *      to come from userspace: set the line speed, then TIOCSETD. util-linux's
+ *      Where the device tree describes the part (the EA family) the kernel
+ *      binds it as serdev and runs the bring-up itself, and this tool is not
+ *      used. Where nothing does (the HC-800) serdev has nothing to enumerate
+ *      and the attachment has to come from userspace: set the line speed, then
+ *      TIOCSETD. util-linux's
  *      ldattach does the ioctl but drags in fifty other binaries; this is that
  *      ioctl, plus the bring-up that has to happen first.
  *
@@ -29,15 +31,17 @@
  * back through that same lock — so the handshake has to happen while the port
  * is still plain N_TTY and this process owns the byte stream.
  *
- * Bring-up is idempotent and best-effort: it checks for a running application
- * first and skips the handshake if one answers (a warm reboot that did not
- * reset the part, or a board whose MCU auto-runs), and if the handshake fails
+ * Bring-up is idempotent and best-effort: one autobaud knock says whether the
+ * bootloader or an application is listening, and the handshake only runs for
+ * the bootloader (a warm reboot that did not reset the part, or a board whose
+ * MCU auto-runs, is left alone); if the handshake fails
  * it still attaches — a driver that reports "no reply" is a better diagnosis
  * than a tool that refused to attach.
  *
  * The process must stay alive after TIOCSETD: a line discipline lasts only as
  * long as the fd that set it is open. Closing this would drop the gpiochip.
  */
+#define _GNU_SOURCE	/* memmem */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -174,22 +178,30 @@ static int iomcu_bringup(int fd)
 	static const unsigned char run[]    = { 0x07, 0x32, 0x22, 0x00, 0x00, 0x10, 0x00 };
 	static const unsigned char dstx[]   = { 0x10, 0x02 };
 	unsigned char buf[128];
+	size_t got = 0;
 
-	if (app_alive(fd)) {
-		fprintf(stderr, "iomcu-attach: application already running\n");
-		return 0;
-	}
-
-	fprintf(stderr, "iomcu-attach: no application — running TI bootloader bring-up\n");
-
-	/* autobaud the bootloader: it measures our rate from 0x55 0x55. */
+	/*
+	 * KNOCK FIRST, before any DLE/STX: the bootloader autobauds on the first
+	 * bytes it hears, and a FIRMWARE_VERSION frame sent ahead of the 55 55
+	 * spoils that, so the knock then gets no ACK at all (measured on an
+	 * HC-800 held in its bootloader by io_reset). A running application
+	 * answers the same knock with an AUTO_BAUD_RESP frame instead, so one
+	 * knock says which of the two is listening.
+	 */
 	tcflush(fd, TCIOFLUSH);
 	if (write_all(fd, knock, sizeof(knock)) < 0)
 		return -1;
-	if (!read_contains(fd, ack, sizeof(ack), 400, buf, sizeof(buf), NULL)) {
-		fprintf(stderr, "iomcu-attach: bootloader did not ACK autobaud (55 55)\n");
+	(void)read_contains(fd, NULL, 0, 400, buf, sizeof(buf), &got);
+	if (!memmem(buf, got, ack, sizeof(ack))) {
+		if (app_alive(fd)) {
+			fprintf(stderr, "iomcu-attach: application already running\n");
+			return 0;
+		}
+		fprintf(stderr, "iomcu-attach: neither the bootloader nor an application answered\n");
 		return -1;
 	}
+
+	fprintf(stderr, "iomcu-attach: TI bootloader answered — starting the application\n");
 
 	/* PING, mostly to confirm the link before the un-ACKed RUN. */
 	if (write_all(fd, ping, sizeof(ping)) < 0)
