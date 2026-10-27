@@ -17,11 +17,13 @@ pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
         }
         bail!("this openHC has no /opt/ohc/bin/restore; install a newer image first");
     };
+    crate::radio::restore(ssh, p)?;
     let st = ssh.run(&format!("{bin} status"), true).map_err(|e| anyhow!("{e}"))?;
     p.emit(Event::detail(st.trim().to_string()));
     p.emit(Event::step("removing openHC's MFH item and handing over to Control4's recovery".into()));
     // Detached: the recovery kexec takes the box (and this connection) down.
-    let _ = ssh.run(&format!("(nohup {bin} stock >/dev/null 2>&1 &)"), false);
+    // The radio was done above, in the foreground; an older restore ignores the flag.
+    let _ = ssh.run(&format!("(nohup {bin} stock --keep-radio >/dev/null 2>&1 &)"), false);
     p.emit(Event::detail("the box re-images p1 from p2 and comes back as stock Control4".into()));
     Ok(())
 }

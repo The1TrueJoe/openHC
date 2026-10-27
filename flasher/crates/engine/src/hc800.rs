@@ -276,11 +276,15 @@ pub fn install_grub(ssh: &Ssh, rel: &Release, boot_once: bool, p: &Progress) -> 
     let on_disk = ssh
         .read_file(&menu)
         .with_context(|| format!("{menu} is unreadable — refusing to write a bootloader blind"))?;
-    // A spent factory-restore-once entry from `restore` would otherwise sit at
+    // The spent one-shot entries from `restore` would otherwise sit at
     // ENTRY_OPENHC and push our entry past it. See hc::drop_entry.
-    let no_once = hc::drop_entry(&on_disk, hc::FACTORY_ONCE_TITLE);
-    if no_once != on_disk {
-        p.emit(Event::detail(format!("dropped the spent `{}` entry", hc::FACTORY_ONCE_TITLE)));
+    let mut no_once = on_disk.clone();
+    for t in hc::RESTORE_ONCE_TITLES {
+        let dropped = hc::drop_entry(&no_once, t);
+        if dropped != no_once {
+            p.emit(Event::detail(format!("dropped the spent `{t}` entry")));
+            no_once = dropped;
+        }
     }
     // An existing openHC entry is rebuilt, not kept: the mode lives in it (a
     // boot-once entry carries `savedefault`), so keeping it meant a reinstall
@@ -530,7 +534,7 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
             .map_err(|e| bail_umount(format!("{e}")))?;
     }
     let first = ssh.run(&format!("sync; head -n 1 {dflt}"), true).map_err(|e| bail_umount(format!("{e}")))?;
-    if first.trim() != once.to_string() {
+    if hc::default_entry(&first) != Some(once) {
         return Err(bail_umount(format!("{dflt} reads back {:?}, expected {once} — menu.lst NOT changed", first.trim())));
     }
     p.emit(Event::detail(format!("saved default -> entry {once} ({})", hc::FACTORY_ONCE_TITLE)));
@@ -543,8 +547,10 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
         return Err(bail_umount("menu.lst read back differently than written — restored the backup".into()));
     }
     p.emit(Event::detail(format!(
-        "menu.lst verified, {} bytes: entry {once} restores once and saves entry {} as the default",
+        "menu.lst verified, {} bytes: entry {once} restores once, entry {} is stock's first boot \
+         (creates the /tmp the restore leaves out), then entry {} is the default",
         out.len(),
+        once + 1,
         hc::ENTRY_VENDOR
     )));
     ssh.run(&format!("sync; umount {gm}"), true).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -553,8 +559,9 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     let _ = ssh.run("sync; reboot", false);
     p.emit(Event::resolved(
         "on its way. The box runs Control4's own restore off the untouched recovery partition, \
-         same as the ID button, then reboots into the freshly restored stock image. Allow ~5 minutes; \
-         it comes back on a new DHCP lease, so find it by MAC"
+         same as the ID button, then reboots into the freshly restored stock image, whose first boot \
+         creates the /tmp the restore leaves out. Allow ~5 minutes; it comes back on a new DHCP lease, \
+         so find it by MAC"
             .into(),
     ));
     Ok(())
@@ -569,6 +576,7 @@ pub fn factory_restore(ssh: &Ssh, p: &Progress) -> Result<()> {
 /// Control4 or an older openHC has no such tool and gets [`factory_restore`],
 /// the same rewrite done over SSH.
 pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
+    crate::radio::restore(ssh, p)?;
     let Some(bin) = crate::restore_bin(ssh) else {
         return factory_restore(ssh, p);
     };
@@ -576,7 +584,7 @@ pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     p.emit(Event::detail(st.trim().to_string()));
     p.emit(Event::step("arming Control4's factory restore for one boot (on the box)".into()));
     let out = ssh
-        .run(&format!("{bin} stock --no-reboot 2>&1"), true)
+        .run(&format!("{bin} stock --no-reboot --keep-radio 2>&1"), true)
         .map_err(|e| anyhow::anyhow!("restore stock failed, nothing rebooted: {e}"))?;
     for l in out.lines().filter(|l| !l.trim().is_empty()) {
         p.emit(Event::detail(l.trim().to_string()));
@@ -585,8 +593,9 @@ pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
     let _ = ssh.run("sync; reboot", false);
     p.emit(Event::resolved(
         "on its way. The box runs Control4's own restore off the untouched recovery partition, \
-         same as the ID button, then reboots into the freshly restored stock image. Allow ~5 minutes; \
-         it comes back on a new DHCP lease, so find it by MAC"
+         same as the ID button, then reboots into the freshly restored stock image, whose first boot \
+         creates the /tmp the restore leaves out. Allow ~5 minutes; it comes back on a new DHCP lease, \
+         so find it by MAC"
             .into(),
     ));
     Ok(())
@@ -611,6 +620,7 @@ fn chrono_like_stamp() -> u64 {
 /// The kernel and initramfs on the kernel partition are removed too. `sda2` was
 /// never written, so nothing there needs undoing.
 pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
+    crate::radio::restore(ssh, p)?;
     let gm = "/mnt/ohc-grub";
     ssh.run(&format!("mkdir -p {gm} && mount {} {gm}", hc::GRUB_PART), true)
         .map_err(|e| anyhow::anyhow!("cannot mount {}: {e}", hc::GRUB_PART))?;
@@ -644,6 +654,7 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
         if out == before {
             let _ = ssh.run(&format!("umount {gm}"), false);
             p.emit(Event::warn("no openHC entry in menu.lst; nothing to remove".into()));
+            vendor_tmp(ssh, p);
             return Ok(());
         }
         ssh.put_stream(out.as_bytes(), &format!("cat > {menu}"))
@@ -697,10 +708,65 @@ pub fn uninstall(ssh: &Ssh, p: &Progress) -> Result<()> {
         ),
         false,
     );
+
+    // Stock is only healthy if its root has the /tmp mount point.
+    vendor_tmp(ssh, p);
     p.emit(Event::resolved(
-        "removed. The boot chain is back to what Control4 shipped; nothing on this board was ever \
-         written outside menu.lst and the spare kernel partition"
+        "removed. The boot chain is back to what Control4 shipped; outside menu.lst and the spare \
+         kernel partition, openHC only ever wrote its /openhc data directory on the stock root"
             .into(),
     ));
     Ok(())
+}
+
+/// Make sure the stock root (sda4) has `/tmp` with mode 1777 before the box is
+/// handed back to Control4.
+///
+/// Stock's fstab mounts a tmpfs there, so the directory is only a mount point,
+/// but without it rcS cannot write `/tmp/startup.log` and Director restarts
+/// every ~20 s. Control4's factory restore never creates it (no `tmp` in its
+/// tarball, no `mkdir` in `restore.sh` or `rcS`), so any box that has been
+/// through one, via the ID button or `ohc-flash restore`, lacks it. sda4 is mounted again at a mount point of our
+/// own, which works whether it is already mounted (as `/` on stock, or as
+/// `/mnt/ohc-datadev` on openHC) or not, and shows the on-disk directory
+/// rather than the tmpfs over it.
+///
+/// A warning, not an error: the boot chain is already restored by now, and the
+/// fix by hand is one `mkdir`.
+fn vendor_tmp(ssh: &Ssh, p: &Progress) {
+    let vm = "/mnt/ohc-vroot";
+    let mode = hc::VENDOR_TMP_MODE;
+    // `ls -ld`'s permission string rather than `stat -c`, which is a busybox
+    // build option stock may not have. 1777 reads `drwxrwxrwt`.
+    let cmd = format!(
+        "mkdir -p {vm} && mount {part} {vm} || exit 1; \
+         if [ -d {vm}/tmp ]; then was=$(ls -ld {vm}/tmp | cut -c1-10); else was=missing; mkdir {vm}/tmp; fi; \
+         chmod {mode} {vm}/tmp; now=$(ls -ld {vm}/tmp | cut -c1-10); sync; umount {vm}; echo \"$was $now\"",
+        part = hc::VENDOR_ROOT_PART
+    );
+    let out = ssh.run(&cmd, true).map(|s| s.trim().to_string());
+    let (was, now) = match out.as_deref().ok().and_then(|o| o.split_once(' ')) {
+        Some((w, n)) => (w.to_string(), n.to_string()),
+        None => {
+            let _ = ssh.run(&format!("umount {vm} 2>/dev/null"), false);
+            p.emit(Event::warn(format!(
+                "could not check /tmp on the stock root ({}). If Control4's Director keeps \
+                 restarting, run `mkdir -p /tmp && chmod {mode} /tmp && mount /tmp` on the box",
+                hc::VENDOR_ROOT_PART
+            )));
+            return;
+        }
+    };
+    const WANT: &str = "drwxrwxrwt";
+    if now != WANT {
+        p.emit(Event::warn(format!("stock /tmp reads {now} after chmod {mode}; Director may not start")));
+    } else if was == "missing" {
+        p.emit(Event::warn(format!(
+            "the stock root had no /tmp (Director would crash-loop); created it, mode {mode}"
+        )));
+    } else if was != WANT {
+        p.emit(Event::step(format!("stock /tmp was {was}; set to {mode}")));
+    } else {
+        p.emit(Event::detail(format!("stock /tmp present, mode {mode}")));
+    }
 }

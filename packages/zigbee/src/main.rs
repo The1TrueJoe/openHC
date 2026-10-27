@@ -45,15 +45,18 @@
 //! OHC_ZIGBEE_TCP_PORT (unset => hold only), OHC_ZIGBEE_TCP_BIND (default
 //! 0.0.0.0), OHC_ZIGBEE_NCP_IMAGE (default /usr/share/ohc/zigbee/em357-ncp.ebl),
 //! OHC_ZIGBEE_NCP_UPDATE (0 = never flash; default 1), OHC_ZIGBEE_BTL_BAUD (the
-//! serial bootloader's baud; default 115200).
+//! serial bootloader's baud; default 115200), OHC_ZIGBEE_STOCK_ARCHIVE and
+//! OHC_ZIGBEE_STOCK_MEMBER (where Control4's own image is; see stock.rs).
 //!
 //! By hand (stop S91ohczigbee first; nothing else may hold the port):
 //!   zigbee --info             find the NCP, print its version
 //!   zigbee --flash <img.ebl>  flash an image regardless of version
+//!   zigbee --restore-stock    put Control4's firmware back (return to stock)
 
 mod ash;
 mod bootloader;
 mod ncp;
+mod stock;
 
 use std::io;
 use std::os::unix::io::RawFd;
@@ -199,6 +202,18 @@ fn main() {
         match ncp::find_app(fd, &cfg) {
             Some((b, v)) => println!("{dev}: EmberZNet {} EZSP v{} stack type {} at {b} baud", ash::stack_str(v.stack), v.protocol, v.stack_type),
             None => println!("{dev}: no NCP app answers{}", if bootloader::at_prompt(fd) { " (the serial bootloader does)" } else { "" }),
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("--restore-stock") {
+        let archive = std::env::var("OHC_ZIGBEE_STOCK_ARCHIVE").ok().filter(|s| !s.is_empty());
+        let member = std::env::var("OHC_ZIGBEE_STOCK_MEMBER").ok().filter(|s| !s.is_empty());
+        match stock::restore(fd, &cfg, archive.as_deref(), member.as_deref().unwrap_or(stock::DEFAULT_MEMBER)) {
+            Ok(m) => println!("zigbee: {m}"),
+            Err(e) => {
+                eprintln!("zigbee: cannot put Control4's firmware back: {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }

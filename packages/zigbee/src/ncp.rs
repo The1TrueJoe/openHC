@@ -21,7 +21,7 @@ use std::time::Duration;
 
 /// Where the zigbee feature installs the image, and its version alongside.
 pub const DEFAULT_IMAGE: &str = "/usr/share/ohc/zigbee/em357-ncp.ebl";
-const STATUS: &str = "/run/zigbee.ncp";
+pub const STATUS: &str = "/run/zigbee.ncp";
 
 pub struct Image {
     pub path: String,
@@ -87,10 +87,17 @@ pub fn flash(fd: RawFd, img: &Image, btl_baud: u32, running: Option<&mut Ash>) -
             }
             None => return Err("no answer to launchStandaloneBootloader".into()),
         }
+        // EmberZNet 6.7.8 acknowledges the launch, keeps running for a few
+        // seconds, then goes quiet and only jumps to its bootloader when the next
+        // frame arrives (seen on an HC-800). A frame sent while it still runs is
+        // taken as an ASH reset and cancels the launch, so wait it out first.
+        // 4.7.2 has already gone, and its bootloader only reprints the menu.
+        std::thread::sleep(Duration::from_secs(7));
+        write_all(fd, &ash::RST);
         std::thread::sleep(Duration::from_millis(1500));
     }
     set_baud(fd, btl_baud);
-    if !bootloader::at_prompt(fd) {
+    if !(0..3).any(|_| bootloader::at_prompt(fd)) {
         return Err(format!("no bootloader prompt at {btl_baud} baud"));
     }
     if let Some(b) = bootloader::banner(fd) {
