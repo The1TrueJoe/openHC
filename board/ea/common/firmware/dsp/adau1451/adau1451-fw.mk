@@ -55,4 +55,8 @@ endef
 ADAU1451_FW_POST_INSTALL_TARGET_HOOKS += ADAU1451_FW_INSTALL_OPENHC
 endif
 
-$(eval $(generic-package))
+# generic-package names a package after its FOLDER (pkg-utils.mk: pkgname is
+# the last component of the .mk's directory), and this folder is the part,
+# adau1451, not the rule. Through generic-package these ADAU1451_FW_* settings
+# were never read and the firmware never built into an image; name it here.
+$(eval $(call inner-generic-package,adau1451-fw,ADAU1451_FW,ADAU1451_FW,target))
