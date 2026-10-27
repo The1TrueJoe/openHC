@@ -92,9 +92,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: output/build/gpu-wpe-i386
-          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-${{ github.run_id }}
+          key: out-gpu-wpe-i386-nofdo-test-${{ env.BUILDROOT_REF }}-r4-${{ github.run_id }}
           restore-keys: |
-            out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-
+            out-gpu-wpe-i386-nofdo-test-${{ env.BUILDROOT_REF }}-r4-
 
       # WebKit's compiled objects, kept OUTSIDE the output tree so they survive
       # a patch-triggered re-extract and an evicted/reset output cache. Its own
@@ -223,6 +223,30 @@ jobs:
             | grep -E 'usr/bin/webview$|libWPEBackend|libWPEWebKit|libwpe-1.0|libEGL|libGLESv2|libIMGegl|libsrv_um|ld-linux' \
             | sort
 
+      # TEST BRANCH ONLY (wpe-patch-necessity): what does keeping Buildroot's
+      # forced wpebackend-fdo cost this tree, and does it change the default backend?
+      - name: "Test: fdo / Wayland in the tree without 0001"
+        if: always()
+        run: |
+          set +e
+          C=output/build/gpu-wpe-i386/.config
+          T=output/build/gpu-wpe-i386/target
+          echo "=== kconfig ==="
+          grep -E '^(# )?BR2_PACKAGE_(WPEBACKEND_FDO|WAYLAND|WAYLAND_PROTOCOLS|LIBWPE|LIBEPOXY)[= ]' "$C"
+          echo "=== packages built ==="
+          ls -d output/build/gpu-wpe-i386/build/{wpebackend-fdo,wayland,wayland-protocols,libwpe,libepoxy}-* 2>&1
+          echo "=== fdo / wayland files in target ==="
+          find "$T" \( -name 'libWPEBackend*' -o -name 'libwayland*' \) -exec ls -l {} \;
+          echo "=== default backend points at ==="
+          readlink -f "$T/usr/lib/libWPEBackend-default.so.1" "$T/usr/lib/libWPEBackend-default.so"
+          echo "=== size of what fdo + wayland add ==="
+          du -ch $(find "$T" \( -name 'libWPEBackend-fdo*' -o -name 'libwayland*' \) -type f) 2>/dev/null | tail -1
+          echo "=== webview / WebKit link against wayland or fdo? ==="
+          for f in "$T/usr/bin/webview" $(ls "$T"/usr/lib/libWPEWebKit*.so.* | head -1); do
+            echo "-- $f"; readelf -d "$f" | grep NEEDED
+          done
+          true
+
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -244,11 +268,13 @@ jobs:
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
       - name: Save Buildroot output tree
-        if: always()
+        # TEST BRANCH: never cache this tree (it is built without 0001 and would
+        # only take room under the repo's 10 GB cache cap).
+        if: false
         uses: actions/cache/save@v4
         with:
           path: output/build/gpu-wpe-i386
-          key: out-gpu-wpe-i386-${{ env.BUILDROOT_REF }}-r4-${{ github.run_id }}
+          key: out-gpu-wpe-i386-nofdo-test-${{ env.BUILDROOT_REF }}-r4-${{ github.run_id }}
 
       - name: Save the WPE ccache
         if: always()

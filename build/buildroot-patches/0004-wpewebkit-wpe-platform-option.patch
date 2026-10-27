@@ -9,8 +9,7 @@ backend. It is where upstream puts new work: the libwpe path is now WebKit's
 
 In 2.50 the switch, ENABLE_WPE_PLATFORM, defaults to ENABLE_DEVELOPER_MODE, so
 a release build -- Buildroot's -- leaves it off, and Buildroot has no option to
-turn it on. 0001 in this series sets it OFF explicitly; this replaces that with
-BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM (off by default, so nothing changes for a
+turn it on. This adds BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM (off by default, so nothing changes for a
 config that does not ask), plus BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM for the
 KMS platform, which needs libinput (>= 1.19) and udev at build time
 (OptionsWPE.cmake) and GBM/libdrm to allocate and scan out buffers.
@@ -21,15 +20,16 @@ the application segfaults inside libxkbcommon as the display connects (seen on a
 musl/eudev target with no X). So the option selects it.
 
 The headless platform is built with it (no dependencies). The Wayland platform
-is left off: it is for running under a compositor, and would bring wayland and
-wayland-protocols back, which 0001 took out.
+is left off: it is for running under a compositor.
 
-Applies on top of 0001. A candidate to send upstream to Buildroot.
+Stands alone (no other patch in this directory is needed). A candidate to send
+upstream to Buildroot.
 
 diff --git a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
+index 91de386..bde00ea 100644
 --- a/package/wpewebkit/Config.in
 +++ b/package/wpewebkit/Config.in
-@@ -83,6 +83,37 @@ comment "sandboxing supports needs a toolchain w/ headers >= 3.17"
+@@ -85,6 +85,37 @@ comment "sandboxing supports needs a toolchain w/ headers >= 3.17"
  	depends on BR2_PACKAGE_LIBSECCOMP_ARCH_SUPPORTS
  	depends on !BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_17
  
@@ -68,17 +68,10 @@ diff --git a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
  	bool "multimedia support"
  	depends on BR2_PACKAGE_FFMPEG_ARCH_SUPPORTS # gst1-libav
 diff --git a/package/wpewebkit/wpewebkit.mk b/package/wpewebkit/wpewebkit.mk
+index c424a3c..182fc58 100644
 --- a/package/wpewebkit/wpewebkit.mk
 +++ b/package/wpewebkit/wpewebkit.mk
-@@ -33,7 +33,6 @@ WPEWEBKIT_CONF_OPTS = \
- 	-DENABLE_INTROSPECTION=OFF \
- 	-DENABLE_MINIBROWSER=OFF \
- 	-DENABLE_WEB_RTC=OFF \
--	-DENABLE_WPE_PLATFORM=OFF \
- 	-DUSE_ATK=OFF
- 
- # WPE WebKit uses a bundled copy of Skia since 2.46.0 for
-@@ -116,6 +115,22 @@ else
+@@ -115,6 +115,22 @@ else
  WPEWEBKIT_CONF_OPTS += -DUSE_LIBBACKTRACE=OFF
  endif
  
