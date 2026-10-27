@@ -146,7 +146,7 @@ jobs:
                       if n == "...":
                           o.write("    ...\n"); continue
                       e = params[mod][n]
-                      word = dm.get(e["address"], "") if mod.endswith("Index") or mod in ("Version",) else ""
+                      word = dm.get(e["address"], "") if mod.endswith("Index") or mod in ("Version", "Volume") else ""
                       o.write(f"    {n} @{e['address']} {e['memory']} {word}\n")
           print(open("logs/param-map.txt").read())
 

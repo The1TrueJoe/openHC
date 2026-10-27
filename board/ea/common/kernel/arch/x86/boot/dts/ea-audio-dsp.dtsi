@@ -10,14 +10,13 @@
  * soft mute is vendor GPIO 61, active high = muted.
  *
  * The DSP has no program of its own; the codec driver loads it. firmware-name
- * is openHC's firmware file (built from
- * board/ea/common/firmware/dsp/adau1451/ea3.json): the part's register init,
- * the program and its parameters, which the sigmadsp core writes and turns into
- * controls. control4,program-version is the program's version cell and the
- * value it holds: checked after a load, and a program that does not hold it is
- * stopped. A file with no program holds only parameters; then the check comes
- * first, and on a part not already running that program the driver writes
- * nothing. A new program brings its own cell and value here.
+ * is openHC's firmware file (built from board/ea/common/firmware/dsp/adau1451/:
+ * program.json, the design, and ea3-openhc.json): the part's register init,
+ * openHC's program and its parameters, which the sigmadsp core writes and turns
+ * into controls. control4,program-version is the program's version cell (its
+ * `Version` DC input) and the value it holds: checked after a load, and a
+ * program that does not hold it is stopped. Both move when the design does;
+ * the firmware build fails until they match the export here.
  *
  * The DSP and codec resets are released here, not in ea.dtsi, so a board
  * without the DSP never drives them.
@@ -60,8 +59,8 @@
 		reg = <0x38>;
 		#sound-dai-cells = <0>;
 		mute-gpios = <&gpio 61 GPIO_ACTIVE_HIGH>;
-		firmware-name = "openhc/adau1451-ea3.bin";
-		control4,program-version = <0x0dd0 10>;
+		firmware-name = "openhc/adau1451-ea3-openhc.bin";
+		control4,program-version = <0x0dfd 2>;
 	};
 };
 
