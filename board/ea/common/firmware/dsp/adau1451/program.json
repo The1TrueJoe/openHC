@@ -1,5 +1,5 @@
 [
-  ["CreateNewProject", "openhc-ea3"],
+  {"call": "CreateNewProject", "args": ["openhc-ea3"], "allow-fail": true},
   ["GetAvailableCanvas"],
   ["GetAllShapes"],
   {"call": "AddShapeV2", "args": ["diagram", "ADAU1451", [0, 0]], "as": "dsp"},
