@@ -1,28 +1,36 @@
 #!/bin/sh
-# Wait for the CE5300 DSP sound card (the `audio-dsp` feature, EA3) so
-# S92ohcaudiod finds the DSP controls it sets and S95librespot and shairport
-# find a PCM device when they open /dev/snd/*.
+# Wait for the EA's sound cards so S92ohcaudiod finds the controls it sets and
+# S95librespot and shairport find a PCM device when they open /dev/snd/*:
+#   HDMI      every EA: ce5300-hdmi, the HDMI transmitter's audio (audio-hdmi)
+#   openhcea  the EA3's DSP card (audio-dsp)
 #
 # Nothing to load: udev's coldplug modprobes each driver off its device's
 # modalias, and deferred probe sorts out the order --
+#   ce5300-hdmi          the HDMI card, by its PCI id (8086:2e63)
 #   ce5300-i2s           CPU DAI (+ the PCM once enable_pcm=1), by its PCI id
 #   adau1451-c4          codec, by the "adi,adau1451" node on i2c-3; loads
 #                        /lib/firmware/openhc/adau1451-ea3.bin (the DSP parameters)
 #   snd-soc-simple-card  the card, by the "simple-audio-card" node
-# (both nodes are in ea-audio-dsp.dtsi; each driver has a
-# MODULE_DEVICE_TABLE(of, ...)). A board without the DSP has no card node, so
-# there is nothing to wait for.
+# (both DSP nodes are in ea-audio-dsp.dtsi; each driver has a
+# MODULE_DEVICE_TABLE(of, ...)). A board without the DSP has no card node, and an
+# image without ce5300-hdmi.ko has no HDMI card to wait for.
 
-start() {
-    [ -e /sys/firmware/devicetree/base/sound ] || return 0
-    # By id, not number: "openhcea" is the simple-audio-card's name with the
-    # dash dropped.
+wait_card() { # <id> <what>
     i=0
     while [ $i -lt 10 ]; do
-        [ -e /proc/asound/openhcea ] && { echo "ea-audio: card ready"; return 0; }
+        [ -e "/proc/asound/$1" ] && { echo "ea-audio: $2 card ready"; return 0; }
         sleep 1; i=$((i + 1))
     done
-    echo "ea-audio: card not up yet"
+    echo "ea-audio: $2 card not up yet"
+}
+
+start() {
+    # By id, not number. "HDMI" is ce5300-hdmi's card; "openhcea" is the
+    # simple-audio-card's name with the dash dropped.
+    grep -q "ce5300-hdmi.ko" "/lib/modules/$(uname -r)/modules.dep" 2>/dev/null &&
+        wait_card HDMI HDMI
+    [ -e /sys/firmware/devicetree/base/sound ] && wait_card openhcea DSP
+    return 0
 }
 
 case "$1" in

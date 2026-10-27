@@ -11,6 +11,9 @@
 //! driven from the ALC888's headphone pin, measured end to end).
 //! `dsp=<profile>` says the port's tone is done by the board's DSP, whose knobs
 //! the profile lists (the EA3's ADAU1451; tone.rs).
+//! `format=<ALSA format>` is the sample format the port's dmix/dsnoop opens the
+//! hardware with, for a device that cannot take the S16_LE default (the EA's
+//! HDMI, whose FIFO takes 32-bit words only: `format=S32_LE`).
 //!   OHC_AUDIO_INPUTS="linein"
 //!   OHC_AUDIO_IN_linein="hw:CARD=Intel,DEV=0|Line in"
 //!   OHC_AUDIO_RATE=44100
@@ -36,6 +39,9 @@ pub struct Port {
     /// The DSP profile behind this port's tone (`dsp=` in board.env).
     #[serde(skip)]
     pub dsp: Option<String>,
+    /// The hardware sample format (`format=` in board.env); None is S16_LE.
+    #[serde(skip)]
+    pub format: Option<String>,
     /// The tone knobs this port has, in the order the UI shows them; empty
     /// when it has no tone stage. Filled in once the board is read (tone.rs).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -65,6 +71,7 @@ fn ports(list_var: &str, item_prefix: &str, pcm_prefix: &str) -> Vec<Port> {
             let opts: Vec<&str> = f.map(str::trim).collect();
             let swap = opts.contains(&"swap");
             let dsp = opts.iter().find_map(|o| o.strip_prefix("dsp=")).map(str::to_string);
+            let format = opts.iter().find_map(|o| o.strip_prefix("format=")).map(str::to_string);
             (!device.is_empty()).then(|| Port {
                 id: id.to_string(),
                 label: label.to_string(),
@@ -72,6 +79,7 @@ fn ports(list_var: &str, item_prefix: &str, pcm_prefix: &str) -> Vec<Port> {
                 pcm: format!("{pcm_prefix}{id}"),
                 swap,
                 dsp,
+                format,
                 tone: Vec::new(),
             })
         })
@@ -137,11 +145,12 @@ mod tests {
     fn port_options_after_the_label() {
         std::env::set_var("OHC_TEST_OUTS", "a b");
         std::env::set_var("OHC_TEST_OUT_a", "hw:1,0|A|swap");
-        std::env::set_var("OHC_TEST_OUT_b", "hw:CARD=openhcea,DEV=0|B|dsp=/usr/share/openhc/dsp/x.json");
+        std::env::set_var("OHC_TEST_OUT_b", "hw:CARD=openhcea,DEV=0|B|dsp=/usr/share/openhc/dsp/x.json|format=S32_LE");
         let ps = ports("OHC_TEST_OUTS", "OHC_TEST_OUT_", "ohc_");
-        assert!(ps[0].swap && ps[0].dsp.is_none());
+        assert!(ps[0].swap && ps[0].dsp.is_none() && ps[0].format.is_none());
         assert!(!ps[1].swap);
         assert_eq!(ps[1].dsp.as_deref(), Some("/usr/share/openhc/dsp/x.json"));
+        assert_eq!(ps[1].format.as_deref(), Some("S32_LE"));
     }
     #[test]
     fn lists_split_on_the_last_at() {
