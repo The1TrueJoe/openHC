@@ -136,23 +136,28 @@ pub const RESTORE_ONCE_TITLES: &[&str] = &[FACTORY_ONCE_TITLE, STOCK_FIRSTBOOT_T
 ///
 /// The kernel hands everything after `--` to that program as arguments, and its
 /// command-line parser keeps a double-quoted argument whole, so `/bin/sh` gets
-/// `-c` and the script (seen intact in `/proc/cmdline` on the unit). The script
-/// must hold no double quote, and no `root=`, `type=` or `debug=`: Control4's
-/// `/init` reads those words from `/proc/cmdline`, script included.
+/// `-c` and the script. **Hence the trailing ` #`:** this 3.16 kernel's
+/// `next_arg` drops a bare quoted argument's opening `"` but keeps its closing
+/// one (it strips both only for a `name="value"` argument), so sh is handed
+/// `…exec /init #"`, and the `#` makes that stray quote a comment. Without it
+/// sh refused the script ("unterminated quoted string"), PID 1 exited and the
+/// kernel panicked, on the unit and with stock's own bzImage under QEMU
+/// (2026-10-26). A kernel that strips both quotes leaves an empty comment.
+/// The script must hold no other double quote, and no `root=`, `type=` or
+/// `debug=`: Control4's `/init` reads those words from `/proc/cmdline`, script
+/// included. `mount` names `ext4` because nothing has mounted `/proc` for
+/// busybox to probe filesystem types from.
 ///
-/// **It is terse on purpose.** This kernel line reaches Linux through a 255-byte
-/// buffer, NUL included: a 254-character line lost its closing quote on the
-/// unit, `/bin/sh` refused the script, and PID 1 exiting panicked the kernel
-/// (2026-10-26). [`MAX_KERNEL_ARGS`] keeps a margin under that. `panic=10` is
-/// why such a failure costs one reboot rather than a hung box: stock's kernel
-/// has no panic timeout of its own, and GRUB has already saved entry
+/// **It is terse on purpose.** GRUB 0.97 copies at most 255 bytes of a kernel
+/// line's arguments to Linux, so [`MAX_KERNEL_ARGS`] keeps a margin under that.
+/// `panic=10` is why a failure costs one reboot rather than a hung box: stock's
+/// kernel has no panic timeout of its own, and GRUB has already saved entry
 /// [`ENTRY_VENDOR`], so the reboot is plain stock.
-pub const STOCK_FIRSTBOOT_INIT: &str = "panic=10 rdinit=/bin/sh -- -c \"mount -t devtmpfs none /dev;\
-     mkdir /r;mount /dev/sda4 /r;mkdir -m1777 /r/tmp;umount /r;umount /dev;exec /init\"";
+pub const STOCK_FIRSTBOOT_INIT: &str = "panic=10 rdinit=/bin/sh -- -c \"mount -t devtmpfs d /dev;\
+     mkdir /r;mount -t ext4 /dev/sda4 /r;mkdir -m1777 /r/tmp;umount /r;umount /dev;exec /init #\"";
 
 /// The longest argument string (everything after the kernel's path) a stock
-/// entry may carry: under the 254 characters the 255-byte buffer actually
-/// delivers, with room to spare.
+/// entry may carry: under the 255 bytes GRUB 0.97 passes on, with room to spare.
 pub const MAX_KERNEL_ARGS: usize = 240;
 
 /// Rewrite a `menu.lst` so the next boot runs Control4's factory restore

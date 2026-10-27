@@ -172,7 +172,9 @@ the saved default at the first:
    `rdinit=/bin/sh -- -c "…"`. That shell runs inside Control4's kernel-embedded
    initramfs, creates `/tmp` (mode 1777) on `sda4`, and then hands over to
    Control4's own `/init`. (`init=` would not do: that `/init` reads it into a
-   variable it never uses.) Control4's restore never creates `/tmp`, and
+   variable it never uses. The script ends in ` #` because stock's 3.16 kernel
+   strips a quoted argument's opening quote but leaves the closing one, and the
+   `#` makes it a comment.) Control4's restore never creates `/tmp`, and
    without it Director restarts every 20 seconds. Its `savedefault` points back
    at the stock entry, so every later boot is plain stock.
 

@@ -211,17 +211,57 @@ mod tests {
         assert!(fb.trim_end().ends_with("boot"), "the last entry in the file:\n{fb}");
     }
 
+    /// Linux 3.16's `next_arg` (kernel/params.c) over the arguments after `--`,
+    /// as stock's kernel hands them to the rdinit program: spaces inside quotes
+    /// don't split, an opening `"` is dropped, and the closing `"` only when the
+    /// argument is `name=value`.
+    fn linux_3_16_init_args(mut s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(t) = Some(s.trim_start()).filter(|t| !t.is_empty()) {
+            let quoted = t.starts_with('"');
+            let t = if quoted { &t[1..] } else { t };
+            let (mut in_quote, mut end) = (quoted, t.len());
+            for (i, c) in t.char_indices() {
+                if c.is_ascii_whitespace() && !in_quote {
+                    end = i;
+                    break;
+                }
+                if c == '"' {
+                    in_quote = !in_quote;
+                }
+            }
+            let mut arg = t[..end].to_string();
+            if let Some(eq) = arg.find('=') {
+                let val_quoted = arg[eq + 1..].starts_with('"');
+                if val_quoted {
+                    arg.remove(eq + 1);
+                }
+                if (val_quoted || quoted) && arg.ends_with('"') {
+                    arg.pop();
+                }
+            }
+            out.push(arg);
+            s = &t[end..];
+        }
+        out
+    }
+
     #[test]
-    fn the_first_boot_init_parses_into_sh_c_and_one_script() {
-        // What the kernel does with it: after `--` every argument goes to the
-        // rdinit program, a double-quoted one whole. One quoted pair, nothing
-        // nested. rdinit, because stock's own initramfs /init ignores init=.
+    fn the_first_boot_init_reaches_sh_as_c_and_one_whole_script() {
+        // The model reproduces what the unit and QEMU showed: a bare quoted
+        // script keeps its closing quote, and sh refuses it.
+        assert_eq!(linux_3_16_init_args(r#"-c "echo a;echo b""#), ["-c", "echo a;echo b\""]);
+        assert_eq!(linux_3_16_init_args(r#"-c "x=1;echo b""#), ["-c", "x=1;echo b"]);
+
         let init = hc800::STOCK_FIRSTBOOT_INIT;
-        let (head, script) = init.split_once(" -- -c ").unwrap();
-        assert_eq!(head, "panic=10 rdinit=/bin/sh", "panic= bounds a failure to one reboot");
-        assert!(script.starts_with('"') && script.ends_with('"'), "{script}");
-        let body = &script[1..script.len() - 1];
-        assert!(!body.contains('"'), "a nested quote would split the script: {body}");
+        let (head, rest) = init.split_once(" -- ").unwrap();
+        assert_eq!(head, "panic=10 rdinit=/bin/sh", "rdinit, as stock's /init ignores init=; panic= bounds a failure");
+        let argv = linux_3_16_init_args(rest);
+        assert_eq!(argv.len(), 2, "{argv:?}");
+        assert_eq!(argv[0], "-c");
+        // The leftover quote sits in a trailing comment; there is no other.
+        let body = argv[1].strip_suffix(" #\"").expect("the stray closing quote must be commented out");
+        assert!(!body.contains('"') && !body.contains('#'), "{body}");
         // Control4's /init reads these words from /proc/cmdline, script included.
         for w in ["root=", "type=", "debug=", "init="] {
             assert!(!body.contains(w), "`{w}` in the script would reach Control4's /init: {body}");
@@ -230,9 +270,9 @@ mod tests {
         assert!(body.ends_with("exec /init"), "{body}");
         assert!(!body.contains("&&"), "{body}");
         let steps: Vec<&str> = body.split(';').collect();
-        let root = format!("mount {} /r", hc800::VENDOR_ROOT_PART);
+        let root = format!("mount -t ext4 {} /r", hc800::VENDOR_ROOT_PART);
         let mkdir = format!("mkdir -m{} /r/tmp", hc800::VENDOR_TMP_MODE);
-        for step in ["mount -t devtmpfs none /dev", "mkdir /r", root.as_str(), mkdir.as_str(), "umount /r",
+        for step in ["mount -t devtmpfs d /dev", "mkdir /r", root.as_str(), mkdir.as_str(), "umount /r",
                      "umount /dev"] {
             assert!(steps.contains(&step), "missing `{step}` in {body}");
         }
@@ -243,14 +283,14 @@ mod tests {
 
     #[test]
     fn the_first_boot_kernel_line_fits_the_255_byte_buffer() {
-        // A 254-character line lost its closing quote on the unit and the
-        // first boot panicked. Everything after the kernel's path counts.
+        // GRUB 0.97 passes at most 255 bytes of arguments to Linux.
+        // Everything after the kernel's path counts.
         let (m, _) = hc800::factory_once_menu(HC800_STOCK_MENU).unwrap();
         let fb = &m[m.find(hc800::STOCK_FIRSTBOOT_TITLE).unwrap()..];
         let k = fb.lines().find(|l| l.starts_with("kernel")).unwrap();
         let args = k["kernel".len()..].trim_start().split_once(' ').unwrap().1;
         assert!(args.len() <= hc800::MAX_KERNEL_ARGS, "{} chars: {args}", args.len());
-        assert!(hc800::MAX_KERNEL_ARGS < 254);
+        const { assert!(hc800::MAX_KERNEL_ARGS < 255) };
     }
 
     #[test]
