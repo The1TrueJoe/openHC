@@ -22,6 +22,14 @@ PIDFILE=/var/run/switchd.pid
 
 case "$1" in
     start)
+        # Switch is opt-in (ohc.switch=1): without it S39ea-switch never loads the
+        # b53 driver, so there is no managed switch to serve — and starting switchd
+        # anyway re-applies the br-lan topology and rewrites /run/ohc/net.conf,
+        # leaving a switch-off box on a dead bridge and unreachable. Gate to match.
+        case " $(cat /proc/cmdline 2>/dev/null) " in
+            *" ohc.switch=1 "*) ;;
+            *) echo "switchd: switch off (ohc.switch=1 not set)"; exit 0 ;;
+        esac
         [ -n "$OHC_DSA_PORTS" ] || exit 0          # no managed switch on this board
         [ -x "$BIN" ] || { echo "switchd: not built into this image"; exit 0; }
         printf "switchd: "

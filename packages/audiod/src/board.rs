@@ -9,17 +9,20 @@
 //! `swap` exchanges left and right on that port, for a jack the board wires
 //! the other way round from the codec channel feeding it (the HC-800's Analog 2,
 //! driven from the ALC888's headphone pin, measured end to end).
+//! `dsp=<profile>` says the port's tone is done by the board's DSP, whose knobs
+//! the profile lists (the EA3's ADAU1451; tone.rs).
 //!   OHC_AUDIO_INPUTS="linein"
 //!   OHC_AUDIO_IN_linein="hw:CARD=Intel,DEV=0|Line in"
 //!   OHC_AUDIO_RATE=44100
 //!   OHC_AUDIO_HELPERS="/opt/ohc/libexec/ohc-adv7513-audio"
 //!   OHC_SPOTIFY / OHC_AIRPLAY / OHC_AUDIO_ROUTES   default endpoints, "name@output;..."
 //!
-//! A board without OHC_AUDIO_OUTPUTS (the EA family today) has no endpoint map;
+//! A board without OHC_AUDIO_OUTPUTS (the EA1) has no endpoint map;
 //! the daemon then only reports the receivers and handles output/volume.
+use crate::tone::Knob;
 use serde::Serialize;
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct Port {
     pub id: String,
     pub label: String,
@@ -30,6 +33,13 @@ pub struct Port {
     /// Left and right exchanged between the PCM and the jack.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub swap: bool,
+    /// The DSP profile behind this port's tone (`dsp=` in board.env).
+    #[serde(skip)]
+    pub dsp: Option<String>,
+    /// The tone knobs this port has, in the order the UI shows them; empty
+    /// when it has no tone stage. Filled in once the board is read (tone.rs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tone: Vec<Knob>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -52,13 +62,17 @@ fn ports(list_var: &str, item_prefix: &str, pcm_prefix: &str) -> Vec<Port> {
             let mut f = raw.split('|');
             let device = f.next().unwrap_or("");
             let label = f.next().filter(|l| !l.is_empty()).unwrap_or(id);
-            let swap = f.any(|o| o.trim() == "swap");
+            let opts: Vec<&str> = f.map(str::trim).collect();
+            let swap = opts.contains(&"swap");
+            let dsp = opts.iter().find_map(|o| o.strip_prefix("dsp=")).map(str::to_string);
             (!device.is_empty()).then(|| Port {
                 id: id.to_string(),
                 label: label.to_string(),
                 device: device.to_string(),
                 pcm: format!("{pcm_prefix}{id}"),
                 swap,
+                dsp,
+                tone: Vec::new(),
             })
         })
         .collect()
@@ -113,11 +127,21 @@ mod tests {
     use super::*;
     #[test]
     fn card_of_a_device() {
-        let p = |d: &str| Port { id: "x".into(), label: "x".into(), device: d.into(), pcm: "ohc_x".into(), swap: false };
+        let p = |d: &str| Port { id: "x".into(), label: "x".into(), device: d.into(), pcm: "ohc_x".into(), ..Default::default() };
         assert_eq!(p("hw:CARD=Intel,DEV=2").card(), "Intel");
         assert_eq!(p("hw:1,0").card(), "1");
         assert_eq!(p("hw:DEV=3,CARD=PCH").card(), "PCH");
         assert_eq!(p("default").card(), "0");
+    }
+    #[test]
+    fn port_options_after_the_label() {
+        std::env::set_var("OHC_TEST_OUTS", "a b");
+        std::env::set_var("OHC_TEST_OUT_a", "hw:1,0|A|swap");
+        std::env::set_var("OHC_TEST_OUT_b", "hw:CARD=openhcea,DEV=0|B|dsp=/usr/share/openhc/dsp/x.json");
+        let ps = ports("OHC_TEST_OUTS", "OHC_TEST_OUT_", "ohc_");
+        assert!(ps[0].swap && ps[0].dsp.is_none());
+        assert!(!ps[1].swap);
+        assert_eq!(ps[1].dsp.as_deref(), Some("/usr/share/openhc/dsp/x.json"));
     }
     #[test]
     fn lists_split_on_the_last_at() {

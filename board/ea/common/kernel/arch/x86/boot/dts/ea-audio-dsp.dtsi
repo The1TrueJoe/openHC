@@ -2,10 +2,22 @@
 /*
  * ADAU1451 SigmaDSP analog audio -- the `audio-dsp` feature (EA3 only).
  *
+ * The card is the kernel's own simple-audio-card: the CE5300 I2S (the PCI
+ * function's node in ce5300.dtsi) into the ADAU1451, the codec the I2S bit-
+ * and frame-clock master. No board machine driver.
+ *
  * The codec sits at 0x38 on the FOURTH I2C controller (vendor i2c-3); the DAC
- * soft mute is vendor GPIO 61, active high = muted. The card node binds the
- * ce5300-ea3 machine driver, which links ce5300-i2s to "adau1451.3-0038" --
- * the i2c3 alias in ce5300.dtsi is what keeps that name stable.
+ * soft mute is vendor GPIO 61, active high = muted.
+ *
+ * The DSP has no program of its own; the codec driver loads it. firmware-name
+ * is openHC's firmware file (built from
+ * board/ea/common/firmware/dsp/adau1451/ea3.json): the part's register init,
+ * the program and its parameters, which the sigmadsp core writes and turns into
+ * controls. control4,program-version is the program's version cell and the
+ * value it holds: checked after a load, and a program that does not hold it is
+ * stopped. A file with no program holds only parameters; then the check comes
+ * first, and on a part not already running that program the driver writes
+ * nothing. A new program brings its own cell and value here.
  *
  * The DSP and codec resets are released here, not in ea.dtsi, so a board
  * without the DSP never drives them.
@@ -38,16 +50,35 @@
 	};
 };
 
-/ {
-	sound {
-		compatible = "control4,ea-audio";
-	};
+&audio {
+	#sound-dai-cells = <0>;
 };
 
 &i2c3 {
-	audio-codec@38 {
+	dsp: audio-codec@38 {
 		compatible = "adi,adau1451";
 		reg = <0x38>;
+		#sound-dai-cells = <0>;
 		mute-gpios = <&gpio 61 GPIO_ACTIVE_HIGH>;
+		firmware-name = "openhc/adau1451-ea3.bin";
+		control4,program-version = <0x0dd0 10>;
+	};
+};
+
+/ {
+	sound {
+		compatible = "simple-audio-card";
+		/* ALSA derives the card id from this: "openhcea". */
+		simple-audio-card,name = "openhc-ea";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&dsp_dai>;
+		simple-audio-card,frame-master = <&dsp_dai>;
+
+		simple-audio-card,cpu {
+			sound-dai = <&audio>;
+		};
+		dsp_dai: simple-audio-card,codec {
+			sound-dai = <&dsp>;
+		};
 	};
 };
