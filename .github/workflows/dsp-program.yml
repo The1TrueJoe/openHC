@@ -78,6 +78,12 @@ jobs:
             # The design: SigmaStudio+ scripting calls, run headless.
             $env:DSP_OUT = "$env:GITHUB_WORKSPACE\dsp"
             New-Item -ItemType Directory -Force "$env:DSP_OUT\export" | Out-Null
+            # The design starts from ADI's ADAU1452 example: its PC -> USBi -> DSP host
+            # link is the one part of a system the scripting API cannot add.
+            $tpl = Get-ChildItem "$env:ProgramData\Analog Devices" -Recurse -File -Filter '*ADAU1452 Filtering Compressed Input Signal Example.sspeg' | Select-Object -First 1
+            if (-not $tpl) { "::error::no ADAU1452 template under $env:ProgramData\Analog Devices"; exit 1 }
+            $env:DSP_TEMPLATE = "$env:RUNNER_TEMP\adau1452-template.ssprj"
+            Copy-Item -LiteralPath $tpl.FullName $env:DSP_TEMPLATE
             & $env:SSPLUS_SCRIPT board/ea/common/firmware/dsp/adau1451/program.json logs *>&1 | Tee-Object logs/script.txt
             $rc = $LASTEXITCODE
             Get-ChildItem "$env:DSP_OUT" -Recurse -File | Select-Object FullName, Length |
