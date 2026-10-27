@@ -5,8 +5,9 @@ sidebar:
   order: 8
 ---
 
-**Status.** [HDMI out](#hdmi-out-every-ea) (every EA): the engine runs on an EA1
-under openHC; not yet heard through a TV. The EA3's analog path through the DSP:
+**Status.** [HDMI out](#hdmi-out-every-ea) (every EA): a test tone played
+through an HDMI monitor's speakers on an EA1 under openHC, from the register
+sequence the driver uses; the driver itself is not yet run on hardware. The EA3's analog path through the DSP:
 drivers written, not yet proven on hardware. The userspace half is the HC-800's
 audio scheme. Read [what is still unproven](#what-is-still-unproven) before
 trusting the DSP half.
@@ -27,6 +28,7 @@ map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
 | `+0x20` bit 0 | DMA stop |
 | `+0x1000` bit 2 | audio clock enable |
 | `+0x3000` bit 0 | **HDMI mode**; clear is DVI, which carries no audio |
+| `+0x3100` | line timing: active width << 16 \| horizontal blanking (`hdmi_video_set_tv_timings`) |
 | `+0x4000` | audio config: bit 0 enable; layout, format, channels, high rate, B/flat/valid bits above it (all 0 = 2-ch LPCM) |
 | `+0x4004` | CTS as the transmitter measures it |
 | `+0x4008` / `+0x400c` | N; CTS override (0 = measure) |
@@ -35,6 +37,7 @@ map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
 | `+0x4050` / `+0x4054` / `+0x4058` | IEC 60958 channel status bytes 0–3, byte 4, send |
 | `+0x4100 + 0x20n` | infoframe slot *n*: header, then 7 payload words (checksum first). AVI is slot 0, audio slot 1 |
 | `+0x4180 + 4n` | slot *n* control: bit 0 enable, bit 1 send once |
+| `+0x428c` | GCP: bit 15 set AV mute, bit 16 clear it, bit 5 send |
 
 Descriptors are 24 bytes: next, size, source, destination (`0x10101010`, a
 placeholder: the FIFO is the engine's own), mode word `0x40006096`, tag. Start
@@ -58,19 +61,26 @@ refuses to load if it is anything else. Sideband reads go through the host
 bridge's mailbox (config `0xd0` command, `0xd4` data, `0xd8` extended offset;
 CR read opcode `0x06`), as in Intel's GPL `_ce5300_iosf.c`.
 
-**DVI mode.** With no HDMI sink seen at boot, CEFDK leaves the link in DVI
-mode with no infoframes. The first playback switches it to HDMI mode and sends
-an AVI infoframe (RGB, full range: what a sink assumes of DVI), so the picture
-does not change when sound starts. A box that never plays sound keeps CEFDK's
-link untouched.
+**DVI mode.** CEFDK leaves the link in DVI mode with no infoframes, and never
+programs the line timing at `+0x3100`. Setting the HDMI-mode bit alone made an
+HDMI monitor drop the signal outright: the transmitter then puts data islands
+into blanking it does not know the size of. So the first playback does what
+stock's `pd_set_mode`/`pd_post_set_mode` do for an HDMI sink: the line timing,
+read off the display controller's pipe A (VDC `01:08.0`, `+0x60000` HTOTAL and
+`+0x60004` HBLANK, i9xx layout; 720 + 138 at CEFDK's 480p), an AVI infoframe
+(RGB, full range: what a sink assumes of DVI, so the picture does not change),
+a GCP clearing AV mute, then HDMI mode. A box that never plays sound keeps
+CEFDK's link untouched.
 
-**Proven** (EA1, 2026-10-27, from userspace with `devmem`): the DMA walks a
-looping descriptor, the FIFO drains, and the transmitter measures CTS = 27000
-at 480p — 27 MHz with N = 6144, exactly 48 kHz. In DVI mode the FIFO fills and
-stops, as it should. **Not yet heard**: no TV was attached. The one thing the
-hardware cannot tell us is where a sample sits in its 32-bit FIFO word. The
-driver assumes MSB-aligned (`S32_LE`, stock's DSP output convention); if a TV
-plays a clean but very quiet tone, load it with `lsb_aligned=1` (`S24_LE`).
+**Heard** (EA1, 2026-10-27, from userspace with `devmem`, the driver's
+sequence): a 1 kHz tone out of an HDMI monitor's speakers, picture intact. The
+DMA walks a looping descriptor, the FIFO never drops below its refill
+threshold, and the transmitter measures CTS = 27000 at 480p — 27 MHz with
+N = 6144, exactly 48 kHz. Samples are **MSB-aligned** in the 32-bit word
+(`S32_LE`): the same tone LSB-aligned is ~60 dB down, inaudible. The tone
+sounded "a little warbly" on that monitor; whether that is the monitor, the
+room or the transmitter is not settled yet (real program material through the
+driver is the next test).
 
 ## The thing that blocked everything
 
