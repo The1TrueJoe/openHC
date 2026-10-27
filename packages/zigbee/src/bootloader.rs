@@ -51,7 +51,11 @@ pub fn read_until(fd: RawFd, ms: u64, want: &[u8]) -> (bool, Vec<u8>) {
 pub fn at_prompt(fd: RawFd) -> bool {
     unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
     crate::write_all(fd, b"\r\n");
-    read_until(fd, 2000, PROMPT).0
+    let (ok, got) = read_until(fd, 2000, PROMPT);
+    if crate::ash::debug() {
+        eprintln!("btl < {got:02x?}");
+    }
+    ok
 }
 
 /// The bootloader's banner line ("EM357 Serial Bootloader v…"), for the log.

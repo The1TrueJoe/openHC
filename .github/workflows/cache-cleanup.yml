@@ -1,0 +1,32 @@
+name: cache-cleanup
+
+# A PR's caches are readable by that PR alone, so once it closes they are dead
+# weight in the 10 GB repo cap, and the cap evicts oldest-first: main's output
+# trees and ccache, which every PR's build restores from. Drop them on close.
+#
+# pull_request_target, not pull_request: a Dependabot or fork PR gets a
+# read-only token on pull_request, and deleting caches needs actions: write.
+# Nothing here checks out or runs the PR's code.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete this PR's caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          gh cache list --ref "$REF" --limit 100 --json id,key,sizeInBytes \
+            --jq '.[] | "\(.id) \(.sizeInBytes) \(.key)"' |
+          while read -r id size key; do
+            echo ">> $key ($((size / 1048576)) MB)"
+            gh cache delete "$id"
+          done

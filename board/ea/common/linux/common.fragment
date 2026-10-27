@@ -175,9 +175,8 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_VGA_CONSOLE is not set
 # CONFIG_AGP is not set
 
-# No thermal framework / watchdog / power for bring-up. (I2C + HWMON are turned
-# ON in the SoC bring-up section below, for the LM75 fan temp sensor.)
-# CONFIG_THERMAL is not set
+# No watchdog / power-supply class for bring-up. (The thermal framework is ON,
+# in the SoC bring-up section below: it runs the fan.)
 # CONFIG_WATCHDOG is not set
 # CONFIG_POWER_SUPPLY is not set
 
@@ -253,6 +252,19 @@ CONFIG_SENSORS_LM75=y
 # word. Same class of bug as CONFIG_NET_DSA_B53*.
 CONFIG_PWM=y
 CONFIG_PWM_SYSFS=y
+
+# The fan (pwm-fan + a thermal zone on the LM75, both in ea.dtsi): the kernel
+# runs the fan curve, no daemon. In BOTH kernels, so the fan is never left
+# without a controller. THERMAL_OF reads the zone from the board tree; step_wise
+# (the default governor) runs the curve; user_space is the policy sysmond
+# switches the zone to while the web UI holds the fan manually. pwm-fan needs no
+# regulator core (it treats the fan supply as optional), so the bootstrap kernel,
+# which has none, runs the fan too.
+CONFIG_THERMAL=y
+CONFIG_THERMAL_OF=y
+CONFIG_THERMAL_GOV_STEP_WISE=y
+CONFIG_THERMAL_GOV_USER_SPACE=y
+CONFIG_SENSORS_PWM_FAN=y
 
 # ── KERNEL SIZE BUDGET — READ BEFORE ADDING ANYTHING ──────────────────────
 #

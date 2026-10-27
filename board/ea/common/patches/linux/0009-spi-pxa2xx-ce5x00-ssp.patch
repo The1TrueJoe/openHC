@@ -157,23 +157,21 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		return (DIV_ROUND_UP(ssp_clk, 2 * rate) - 1) & 0xff;
  	else
  		return (DIV_ROUND_UP(ssp_clk, rate) - 1)  & 0xfff;
-@@ -955,7 +963,18 @@
+@@ -955,7 +963,16 @@
  	}
  
  	/* Setup the transfer state based on the type of transfer */
 -	if (pxa2xx_spi_flush(drv_data) == 0) {
 +	/*
-+	 * CE5X00: do NOT flush-first. The flush polls the SSP for BSY to clear,
-+	 * but on the CE5300 the SSP's bit clock is set up by CEFDK and is not
-+	 * running yet at this point (the port is stopped, or left stale by a prior
-+	 * kernel across kexec), so the poll times out — "Flush failed", -EIO —
-+	 * before the transfer ever starts. Control4's vendor driver never flushes
-+	 * a stopped SSP; it stops/reloads/restarts the port in the config block
-+	 * below, and the SSE off->on there empties the FIFOs (as the MMP2 note
-+	 * confirms for non-MMP2 parts). So skip the pre-flush for CE5X00 and let
-+	 * that restart do the clearing — the clock is live by the time we transfer.
++	 * CE5X00 comes up LIVE from CEFDK with a stale RX FIFO (pre-kexec
++	 * SSSR RFL=31, BSY clear). The earlier "skip the flush" was wrong:
++	 * not draining that stale FIFO wedges the first transfer (BSY stuck).
++	 * So flush, but do NOT bail for CE5X00 — ignore the result, since on
++	 * a (rare) genuinely stopped SSP the poll just times out harmlessly.
 +	 */
-+	if (drv_data->ssp_type != CE5X00_SSP && pxa2xx_spi_flush(drv_data) == 0) {
++	if (drv_data->ssp_type == CE5X00_SSP) {
++		pxa2xx_spi_flush(drv_data);
++	} else if (pxa2xx_spi_flush(drv_data) == 0) {
  		dev_err(&spi->dev, "Flush failed\n");
  		return -EIO;
  	}
