@@ -626,19 +626,21 @@ jobs:
       # building their own. download-artifact errors if ea-sdk is missing (a
       # failed toolchain job), which correctly fails this EA image job while
       # leaving non-EA jobs alone. Extract to the SAME absolute path the
-      # toolchain was built at so its baked-in sysroot path stays valid.
+      # toolchain was built at so its baked-in sysroot path stays valid. The
+      # tarball itself lands in runner.temp, outside the checkout, so nothing in
+      # an artifact can overwrite a checked-out file (CodeQL artifact poisoning).
       - name: Fetch the shared EA toolchain
         if: startsWith(matrix.board, 'ea')
         uses: actions/download-artifact@v4
         with:
           name: ea-sdk
-          path: ${{ github.workspace }}
+          path: ${{ runner.temp }}/ea-sdk
       - name: Unpack the EA toolchain to its fixed path
         if: startsWith(matrix.board, 'ea')
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/output/ea-toolchain"
-          tar -C "$GITHUB_WORKSPACE/output/ea-toolchain" -xf ea-sdk.tar
+          tar -C "$GITHUB_WORKSPACE/output/ea-toolchain" -xf "$RUNNER_TEMP/ea-sdk/ea-sdk.tar"
           test -x "$GITHUB_WORKSPACE/output/ea-toolchain/host/bin/x86_64-buildroot-linux-gnu-gcc"
 
       # Bake the on-panel WPE/SGX sysroot into EA images. These are i386 trees (the
