@@ -497,11 +497,13 @@ async fn alive(c: &Arc<Config>) -> bool {
     // Copied out before the closure: the blocking task outlives this borrow of
     // `c`, so reaching through it inside would not compile.
     let low = c.board.io.contacts_active_low;
+    // A relay first: the driver reads it live, where a contact comes from its
+    // poller's cache and can still answer for a moment after the part stopped.
     tokio::task::spawn_blocking(move || {
-        if has_contact {
-            crate::gpio_io::contact_get(0, low).is_ok()
-        } else if has_relay {
+        if has_relay {
             crate::gpio_io::relay_get(0).is_ok()
+        } else if has_contact {
+            crate::gpio_io::contact_get(0, low).is_ok()
         } else {
             false
         }
@@ -557,8 +559,11 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         tokio::time::sleep(Duration::from_millis(600)).await;
 
         // Through the gpiochip: the same path every relay and contact read
-        // takes, so a pass means the thing callers use is working.
-        for _ in 0..6 {
+        // takes, so a pass means the thing callers use is working. Out of
+        // reset the part sits in the TI bootloader until the driver notices
+        // the silence and starts it again (ohc_lost), which takes a couple of
+        // seconds, so this waits for up to four.
+        for _ in 0..16 {
             if alive(c).await {
                 c.bus.set("mcu/link", json!(true));
                 return Ok(json!({

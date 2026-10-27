@@ -225,6 +225,9 @@ struct ohc_iomcu {
 	struct delayed_work poll_work;
 	/* Bring-up, identify, register: deferred from probe. See ohc_identify. */
 	struct delayed_work identify_work;
+	/* Bring-up again when a live part stops answering. See ohc_lost. */
+	struct delayed_work revive_work;
+	unsigned long revive_next;
 	bool chip_added;
 	const char **names;
 
@@ -348,6 +351,8 @@ static int ohc_send(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload, int len
 	return ret;
 }
 
+static void ohc_lost(struct ohc_iomcu *mcu);
+
 /* Ask, and wait for the answer with the matching sequence number. */
 static int ohc_request(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload,
 		       int len, struct ohc_frame *out)
@@ -383,6 +388,8 @@ out:
 	mcu->want_reply = false;
 	spin_unlock_irqrestore(&mcu->rx_lock, flags);
 	mutex_unlock(&mcu->io_lock);
+	if (ret == -ETIMEDOUT)
+		ohc_lost(mcu);
 	return ret;
 }
 
@@ -682,9 +689,13 @@ static void ohc_poll(struct work_struct *work)
 					     struct ohc_iomcu, poll_work);
 	u32 mask;
 
+	/* A failed poll drops the cache: a contact read from a part that has
+	 * stopped answering must fail, not repeat what it last said. */
 	if (!ohc_contacts_get(mcu, &mask)) {
 		mcu->contact_mask = mask;
 		mcu->contacts_valid = true;
+	} else {
+		mcu->contacts_valid = false;
 	}
 
 	if (poll_ms > 0)
@@ -1504,6 +1515,33 @@ static void ohc_bringup(struct ohc_iomcu *mcu)
 }
 
 /*
+ * A part that answered once and now times out has most likely been reset —
+ * iod's /api/io/mcu/reset pulses io_reset, and so does a brownout — and sits in
+ * the TI bootloader, where it will answer nothing until it is started again.
+ * Knock once more, from a worker (the caller may be anywhere) and at most every
+ * few seconds, so a part that is truly gone costs a knock now and then rather
+ * than one per request. A part that is up just answers the knock and carries
+ * on.
+ */
+#define OHC_REVIVE_MS	3000
+
+static void ohc_lost(struct ohc_iomcu *mcu)
+{
+	if (READ_ONCE(mcu->online) && time_after_eq(jiffies, mcu->revive_next))
+		schedule_delayed_work(&mcu->revive_work, 0);
+}
+
+static void ohc_revive(struct work_struct *work)
+{
+	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
+					     struct ohc_iomcu, revive_work);
+
+	mcu->revive_next = jiffies + msecs_to_jiffies(OHC_REVIVE_MS);
+	pr_warn("%s: not answering; knocking for the bootloader\n", mcu->name);
+	ohc_bringup(mcu);
+}
+
+/*
  * Start the application if it needs starting, identify it, then register the
  * chip. Deferred from probe: the bring-up can take a second, which has no
  * business in the boot-time probe, and a part that never answers gets no chip.
@@ -1714,6 +1752,8 @@ static void ohc_teardown(struct ohc_iomcu *mcu)
 	if (mcu->info)
 		device_unregister(mcu->info);
 	cancel_delayed_work_sync(&mcu->identify_work);
+	/* No more revivals; one already queued is cancelled at the end. */
+	WRITE_ONCE(mcu->online, false);
 	cancel_delayed_work_sync(&mcu->poll_work);
 	ohc_unregister_serial(mcu);
 	for (i = 0; i < mcu->n_emitters; i++) {
@@ -1735,6 +1775,7 @@ static void ohc_teardown(struct ohc_iomcu *mcu)
 			kfree(mcu->names[i]);
 		kfree(mcu->names);
 	}
+	cancel_delayed_work_sync(&mcu->revive_work);
 }
 
 static int ohc_iomcu_probe(struct serdev_device *serdev)
@@ -1780,6 +1821,8 @@ static int ohc_iomcu_probe(struct serdev_device *serdev)
 	init_waitqueue_head(&mcu->raw_wait);
 	INIT_DELAYED_WORK(&mcu->poll_work, ohc_poll);
 	INIT_DELAYED_WORK(&mcu->identify_work, ohc_identify);
+	INIT_DELAYED_WORK(&mcu->revive_work, ohc_revive);
+	mcu->revive_next = jiffies;
 
 	/* Before open: bytes can arrive the moment the port is up. */
 	serdev_device_set_drvdata(serdev, mcu);

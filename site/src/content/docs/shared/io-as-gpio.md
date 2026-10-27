@@ -143,6 +143,14 @@ has to (see the [protocol page](/shared/io-mcu/)), identifies it, and registers
 the gpiochip, one lirc device per emitter plus the receiver, and a
 `/dev/ttyOHC<n>` per MCU-routed serial port.
 
+It does the same later, on its own, when a part that answered starts timing
+out: a pulse on `io_reset` (iod's `POST /api/io/mcu/reset`) or a brownout
+leaves the MCU in the bootloader, answering nothing, so the first request to
+time out knocks again and starts the application. At most every three seconds,
+so a part that is really gone is not knocked on every request. While it is
+silent the contact cache is dropped, and reads fail rather than repeat the last
+answer.
+
 ## Where iod gets the counts
 
 The driver publishes what its firmware node declared at probe, before the part
@@ -209,7 +217,10 @@ from working hardware right up until somebody trusted a contact.
 A malformed IR payload has been observed to stop the part answering *anything* —
 relays, contacts, identify — and it does not recover on its own, through a
 detach and re-attach, or through a reboot. Pulsing the documented reset GPIO did
-not revive it either, at either polarity. The recovery is a power cycle. See the
+not revive it either, at either polarity. That was before the driver restarted
+the application after a reset, and a pulse leaves the part in its bootloader,
+so it is worth trying again before reaching for the power. The recovery that
+is known to work is a power cycle. See the
 [IO microcontroller page](/shared/io-mcu/) for what triggered it.
 :::
 
