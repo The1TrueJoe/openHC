@@ -63,8 +63,7 @@ jobs:
 
       - name: SigmaStudio+
         if: steps.staged.outputs.ok == 'true'
-        # script-host branch while the scripting host is proven; back to @v1 once tagged.
-        uses: The1TrueJoe/sigmastudio-plus-action@script-host
+        uses: The1TrueJoe/sigmastudio-plus-action@v1
         with:
           installer-url: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
           token: ${{ secrets.SIGMASTUDIO_TOKEN }}
