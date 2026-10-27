@@ -71,6 +71,8 @@ struct input {
 	uint32_t width, height;	/* the view, in its own pixels */
 	int x, y;		/* the pointer, in view pixels */
 	uint32_t buttons;	/* wpe_input_pointer_modifier_button* held */
+	int ifd;		/* inotify */
+	int dev_wd;		/* the watch on /dev, until /dev/input exists */
 };
 
 /*
@@ -423,8 +425,22 @@ static void scan(struct input *in)
  * Hotplug: watch /dev/input itself rather than talk to udev. A node appears
  * (IN_CREATE) as soon as the kernel registers the device; IN_ATTRIB follows
  * when udev has set it up, which is the retry if the first open was too early.
- * Removal needs no watch: the open fd reports ENODEV.
+ * Removal needs no watch: the open fd reports ENODEV. Where evdev is a module
+ * and nothing is plugged in yet, /dev/input itself does not exist; then /dev is
+ * watched until it appears.
  */
+static gboolean watch_input_dir(struct input *in)
+{
+	if (inotify_add_watch(in->ifd, INPUT_DIR, IN_CREATE | IN_ATTRIB) < 0)
+		return FALSE;
+	if (in->dev_wd >= 0) {
+		inotify_rm_watch(in->ifd, in->dev_wd);
+		in->dev_wd = -1;
+	}
+	scan(in);
+	return TRUE;
+}
+
 static gboolean on_inotify(gint fd, GIOCondition cond, gpointer data)
 {
 	struct input *in = data;
@@ -437,7 +453,10 @@ static gboolean on_inotify(gint fd, GIOCondition cond, gpointer data)
 			struct inotify_event *e = (struct inotify_event *)p;
 			if (e->mask & IN_Q_OVERFLOW)
 				scan(in);
-			else if (e->len)
+			else if (e->len && e->wd == in->dev_wd) {
+				if (strcmp(e->name, "input") == 0)
+					watch_input_dir(in);
+			} else if (e->len)
 				device_open(in, e->name);
 			p += sizeof *e + e->len;
 		}
@@ -448,7 +467,6 @@ static gboolean on_inotify(gint fd, GIOCondition cond, gpointer data)
 void input_start(struct wpe_view_backend *backend)
 {
 	struct input *in = g_new0(struct input, 1);
-	int ifd;
 
 	in->backend = backend;
 	in->devices = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
@@ -456,6 +474,7 @@ void input_start(struct wpe_view_backend *backend)
 	view_size(&in->width, &in->height);
 	in->x = (int)in->width / 2;
 	in->y = (int)in->height / 2;
+	in->dev_wd = -1;
 
 	in->xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 	if (in->xkb)
@@ -466,11 +485,18 @@ void input_start(struct wpe_view_backend *backend)
 		g_printerr("webview: input: no XKB keymap (is xkeyboard-config under "
 			   "XKB_CONFIG_ROOT?) -- keyboards are off, pointers still work\n");
 
-	ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-	if (ifd < 0 || inotify_add_watch(ifd, INPUT_DIR, IN_CREATE | IN_ATTRIB) < 0)
-		g_printerr("webview: input: cannot watch %s (%s) -- no hotplug\n",
-			   INPUT_DIR, g_strerror(errno));
-	else
-		g_unix_fd_add(ifd, G_IO_IN, on_inotify, in);
-	scan(in);
+	in->ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	if (in->ifd < 0) {
+		g_printerr("webview: input: no inotify (%s) -- no hotplug\n", g_strerror(errno));
+		scan(in);
+		return;
+	}
+	g_unix_fd_add(in->ifd, G_IO_IN, on_inotify, in);
+	if (!watch_input_dir(in)) {
+		in->dev_wd = inotify_add_watch(in->ifd, "/dev", IN_CREATE | IN_ONLYDIR);
+		/* Created between the two calls: */
+		if (!watch_input_dir(in) && in->dev_wd < 0)
+			g_printerr("webview: input: cannot watch /dev (%s) -- no hotplug\n",
+				   g_strerror(errno));
+	}
 }
