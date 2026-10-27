@@ -33,6 +33,7 @@ on:
   push:
     paths:
       - .github/workflows/dsp-program.yml
+      - board/ea/common/firmware/dsp/adau1451/program.json
 
 jobs:
   toolchain:
@@ -52,32 +53,49 @@ jobs:
             "ok=true" >> $env:GITHUB_OUTPUT
           }
 
+      - uses: actions/checkout@v4
+        if: steps.staged.outputs.ok == 'true'
+
       - name: SigmaStudio+
         if: steps.staged.outputs.ok == 'true'
-        uses: The1TrueJoe/sigmastudio-plus-action@v1
+        # script-host branch while the scripting host is proven; back to @v1 once tagged.
+        uses: The1TrueJoe/sigmastudio-plus-action@script-host
         with:
           installer-url: ${{ secrets.SIGMASTUDIO_INSTALLER_URL }}
           token: ${{ secrets.SIGMASTUDIO_TOKEN }}
           # SigmaStudio+ 3.4.0, as staged in the private repo.
           installer-sha256: 47814f9691d6a0f334b341caa6a49db2a03f6549b62db3cc82530845c1268640
+          script-host: 'true'
           run: |
             New-Item -ItemType Directory -Force logs | Out-Null
-            & $env:SSPLUS_CONSOLE --help *>&1 | Tee-Object logs/console.txt
-            if ($LASTEXITCODE) { "::error::console app exit $LASTEXITCODE"; exit 1 }
             # ADAU145x support is a set of plugins the installer drops in
             # ProgramData (not under the install folder): the family's compiler and
             # the Sigma 300 core the ADAU1451 is built on.
             $plugins = "$env:ProgramData\Analog Devices\SigmaStudio 3.4\Plugins"
-            Get-ChildItem $plugins -File | Select-Object Name, Length |
-              Format-Table -AutoSize | Out-String -Width 200 | Out-File logs/plugins.txt
             foreach ($dll in 'ADAU145x.dll', 'ADAU145XCompiler.dll', 'Sigma300Core.dll') {
               if (-not (Test-Path "$plugins\$dll")) { "::error::no $dll in $plugins"; exit 1 }
             }
-            "ADAU145x/Sigma 300 support present in $plugins"
+            # The design: SigmaStudio+ scripting calls, run headless.
+            $env:DSP_OUT = "$env:GITHUB_WORKSPACE\dsp"
+            New-Item -ItemType Directory -Force "$env:DSP_OUT\export" | Out-Null
+            & $env:SSPLUS_SCRIPT board/ea/common/firmware/dsp/adau1451/program.json logs *>&1 | Tee-Object logs/script.txt
+            $rc = $LASTEXITCODE
+            Get-ChildItem "$env:DSP_OUT" -Recurse -File | Select-Object FullName, Length |
+              Format-Table -AutoSize | Out-String -Width 300 | Tee-Object logs/export-files.txt
+            if ($rc) { "::error::the design script failed ($rc)"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
         with:
-          name: sigmastudio-toolchain-logs
+          name: sigmastudio-logs
           path: logs/
           if-no-files-found: ignore
+
+      # The exported program: for the EA image build only, kept briefly.
+      - uses: actions/upload-artifact@v4
+        if: steps.staged.outputs.ok == 'true'
+        with:
+          name: adau1451-program
+          path: dsp/
+          retention-days: 3
+          if-no-files-found: error

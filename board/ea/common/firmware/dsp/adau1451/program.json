@@ -1,0 +1,22 @@
+[
+  ["CreateNewProject", "openhc-ea3"],
+  ["GetAvailableCanvas"],
+  ["GetAllShapes"],
+  {"call": "AddShapeV2", "args": ["diagram", "ADAU1451", [0, 0]], "as": "dsp"},
+  ["GetAvailableCanvas"],
+  ["GetAllShapes"],
+  {"call": "GetAllPlugins", "args": ["Algorithm"], "allow-fail": true},
+  {"call": "AddShapeV2", "args": ["schematic_0", "Input0to15", [0, 0]], "as": "in"},
+  {"call": "AddShapeV2", "args": ["schematic_0", "Output", [0, 0]], "as": "outl"},
+  {"call": "AddShapeV2", "args": ["schematic_0", "Output", [0, 0]], "as": "outr"},
+  {"call": "GetPinCollections", "args": ["${in}"], "allow-fail": true},
+  {"call": "GetPinCollections", "args": ["${outl}"], "allow-fail": true},
+  {"call": "GetPluginProperties", "args": ["${outr}"], "allow-fail": true},
+  {"call": "AddConnectionV2", "args": ["${in}", "Ch0_out", "${outl}", "Input"], "allow-fail": true},
+  {"call": "AddConnectionV2", "args": ["${in}", "Ch1_out", "${outr}", "Input"], "allow-fail": true},
+  {"call": "UpdatePropertiesV2", "args": ["${outr}", "SelectedOPChannel", "Ch1"], "allow-fail": true},
+  ["SaveProject", "${env:DSP_OUT}\\openhc-ea3.ssprj"],
+  ["LinkCompileConnect"],
+  ["Export", "openhc-ea3", "${env:DSP_OUT}\\export"],
+  {"call": "GetOutputViewEntries", "allow-fail": true}
+]
