@@ -13,8 +13,10 @@
 # program.txt and params.json, which CI builds in the same run and never
 # commits), a second file is made too: adau1451-ea3-openhc.bin, from
 # ea3-openhc.json, carrying the register init, openHC's own program and its
-# cells. The device tree still names adau1451-ea3.bin, so it is not loaded at
-# boot yet.
+# knobs. That is the file the device tree names, and its profile is the one
+# board.env gives ohc-audiod. The build fails if the device tree's
+# control4,program-version is not the program's version cell, so a design
+# change that moves it cannot ship a program the driver would stop.
 #
 # The profile is installed too: ohc-audiod reads its knob list from it, so the
 # web UI shows exactly the knobs the firmware has.
@@ -41,16 +43,23 @@ define ADAU1451_FW_INSTALL_TARGET_CMDS
 endef
 
 ifneq ($(ADAU1451_FW_PROGRAM),)
+# "<cell> <value>" from the device tree's control4,program-version.
+ADAU1451_FW_DT_VERSION = $(shell sed -n 's/.*control4,program-version = <\(.*\)>;.*/\1/p' \
+	$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/kernel/arch/x86/boot/dts/ea-audio-dsp.dtsi)
+
 define ADAU1451_FW_BUILD_OPENHC
 	python3 $(@D)/mkfw.py $(@D)/ea3-openhc.json $(@D)/adau1451-ea3-openhc.bin \
 		--program $(ADAU1451_FW_PROGRAM)/program.txt \
-		--params $(ADAU1451_FW_PROGRAM)/params.json
+		--params $(ADAU1451_FW_PROGRAM)/params.json \
+		--expect-version "$(ADAU1451_FW_DT_VERSION)"
 endef
 ADAU1451_FW_POST_BUILD_HOOKS += ADAU1451_FW_BUILD_OPENHC
 
 define ADAU1451_FW_INSTALL_OPENHC
 	$(INSTALL) -D -m 0644 $(@D)/adau1451-ea3-openhc.bin \
 		$(TARGET_DIR)/lib/firmware/openhc/adau1451-ea3-openhc.bin
+	$(INSTALL) -D -m 0644 $(@D)/ea3-openhc.json \
+		$(TARGET_DIR)/usr/share/openhc/dsp/adau1451-ea3-openhc.json
 endef
 ADAU1451_FW_POST_INSTALL_TARGET_HOOKS += ADAU1451_FW_INSTALL_OPENHC
 endif
