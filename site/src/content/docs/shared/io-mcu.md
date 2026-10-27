@@ -79,6 +79,53 @@ Two gotchas, both confirmed by experiment:
   reply unacknowledged desyncs the bootloader and every subsequent command is
   silently ignored. This is what made an early big-endian RUN attempt look like a
   byte-order problem when it was a desync three steps earlier.
+- **The autobaud knock goes first, before any DLE/STX frame.** The bootloader
+  autobauds on the first bytes it hears. Ask "is the application up?" with a
+  FIRMWARE_VERSION frame first, and the `55 55` after it gets no ACK at all.
+  Measured on an HC-800 held in its bootloader by `io_reset`: frame first,
+  silence; knock first, `00 cc`. A running application answers the same knock
+  with an AUTO_BAUD_RESP frame (`10 02 d7 ...`), so one knock tells the two apart
+  and leaves a part that is already up alone.
+- **Reset with the driver unbound.** The same rule bites after a reset. Pulse
+  `io_reset` under a bound driver and the contact poll's next frame reaches the
+  fresh bootloader before any knock can, after which the part answers nothing
+  until it is reset again. iod's `mcu.reset` (MQTT `cmd/mcu/reset`, or
+  `POST /api/io/mcu/reset`) therefore unbinds the device from
+  `/sys/bus/serial/drivers/ohc-iomcu`, pulses the line at board.env's confirmed
+  polarity, binds it again and waits for a live relay read. The earlier version
+  pulsed under a bound driver and judged the result by a contact read, which
+  comes from the driver's cache: it reported `answering: true` for a part that
+  then timed out every IR send. The fixed sequence was run twice on an HC-800,
+  with IR, relays and contacts working afterwards each time.
+
+### Who runs it: the kernel, at bind
+
+`gpio-ohc-iomcu` is a serdev driver (`compatible = "control4,io-mcu"`). It runs
+this sequence itself when it binds, then identifies the part and registers the
+gpiochip, the lirc devices and the `/dev/ttyOHC<n>` ports. Nothing in userspace
+attaches it, and the UART has no `/dev/ttyS<n>` of its own any more.
+
+- **EA family:** a child of `uart1` (0x2F8, 460800) in the board device tree,
+  with the counts set per board in its `.dts` (`control4,relays`,
+  `control4,contacts`, `control4,ir-outputs`, `control4,ir-blaster`,
+  `control4,ir-receiver`, `control4,uarts`).
+- **HC-800:** a `PRP0001` device under the BIOS's ttyS3 UART
+  (`\_SB.PCI0.SBRG.UAR4`, 0x2E8, IRQ 10), from
+  `board/hc800/acpi/ssdt-iomcu.asl`. It carries the same compatible and
+  properties in `_DSD` and is loaded as an ACPI table upgrade from the front of
+  the initrd. ACPI rather than the board's device tree, because the UART belongs
+  to ACPI: described in a tree it would lose its interrupt and be polled every
+  ~8 ms, while a 16550A at 115200 fills its FIFO in under 2 ms.
+
+The driver publishes what was declared at `/sys/class/ohc/iomcu`, and iod takes
+its counts from there, not from board.env. See [IO as GPIO](/shared/io-as-gpio/).
+
+**What has not run on hardware yet:**
+- dropping the contact cache when a poll fails;
+- the bring-up at bind on an EA (the EA1's MCU was already running when it was
+  tested; the bootloader path was proven on the HC-800);
+- the IO Extender taking its counts from the lines and lirc devices its kernel
+  names.
 
 ### TI packet framing (bootloader)
 
