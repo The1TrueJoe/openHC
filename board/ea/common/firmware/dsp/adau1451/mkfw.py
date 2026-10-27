@@ -21,7 +21,13 @@ program existed: no register init, no program memory.
 
 A knob or cell names its address with "cell", or, for a program built in CI,
 with "param": "<block label>.<parameter>", looked up in the params.json that
-export2program.py writes beside the program (--params). A profile's init may
+export2program.py writes beside the program (--params). A knob's "table" and
+its balance tables may be {"param": ...} the same way.
+
+openHC's program does balance with the same 49-entry filter block as the tone
+knobs, a pure gain per entry ("balance": {..., "form": "biquad"}), and has
+fixed filters ("filters": a biquad's design and the block stage it goes in,
+"<block>.<stage>_", whose B2 B1 B0 A2 A1 are written once at boot). A profile's init may
 be {"from": "other.json"}: that profile's init, so two profiles for the same
 board share one register setup.
 
@@ -124,14 +130,17 @@ def filter_table(f, fs, step_db):
     return out
 
 
-def balance_tables():
+def balance_tables(biquad=False):
     """Per-channel gain for each balance index: one side fades to silence as the
-    balance moves away from it, as alsa-ohceq does."""
+    balance moves away from it, as alsa-ohceq does. As biquads, each gain is a
+    filter that only scales (B0 = gain), for a filter-table block."""
+    def entry(g):
+        return b"".join(fixed(x) for x in (0, 0, g, 0, 0)) if biquad else fixed(g)
     left = right = b""
     for i in range(STEPS):
         bal = (i - FLAT) / FLAT  # -1 .. 1
-        left += fixed(1 - bal if bal > 0 else 1)
-        right += fixed(1 + bal if bal < 0 else 1)
+        left += entry(1 - bal if bal > 0 else 1)
+        right += entry(1 + bal if bal < 0 else 1)
     return left, right
 
 
@@ -206,19 +215,33 @@ def load_profile(path, params=None):
     if src:
         with open(os.path.join(os.path.dirname(path), src)) as f:
             profile["init"] = json.load(f)["init"]
+    def resolve(name, who):
+        if params is None:
+            raise ValueError(f"{who}: names {name!r}, but there is no --params")
+        block, _, field = name.partition(".")
+        p = params.get(block, {}).get(field)
+        if p is None:
+            raise ValueError(f"{who}: the program has no parameter {name!r}")
+        base = {m: b for m, b, _ in MEMORY}.get(p["memory"])
+        if base is None or p["address"] < base:
+            raise ValueError(f"{who}: {name} is at {p['address']} in {p['memory']!r}, not data memory")
+        return f"0x{p['address']:04x}"
+
+    def named(v, who):
+        return resolve(v["param"], who) if isinstance(v, dict) else v
+
     version = [profile["version"]] if "version" in profile else []
     for e in profile["knobs"] + profile["cells"] + version:
-        if "param" not in e:
-            continue
-        if params is None:
-            raise ValueError(f"{e.get('control', 'version')}: names {e['param']!r}, but there is no --params")
-        block, _, name = e["param"].partition(".")
-        p = params.get(block, {}).get(name)
-        if p is None:
-            raise ValueError(f"{e.get('control', 'version')}: the program has no parameter {e['param']!r}")
-        if p["memory"] != "DM0":
-            raise ValueError(f"{e.get('control', 'version')}: {e['param']} is in {p['memory']}; only DM0 is resolved")
-        e["cell"] = f"0x{p['address']:04x}"
+        who = e.get("control", "version")
+        if "param" in e:
+            e["cell"] = resolve(e["param"], who)
+        if "table" in e:
+            e["table"] = named(e["table"], who)
+        if "balance" in e:
+            e["balance"]["left"] = named(e["balance"]["left"], who)
+            e["balance"]["right"] = named(e["balance"]["right"], who)
+    for f in profile.get("filters", []):
+        f["cells"] = [resolve(f["stage"] + c, f["stage"]) for c in ("B2", "B1", "B0", "A2", "A1")]
     return profile
 
 
@@ -241,11 +264,15 @@ def build(profile, program=None):
         if "filter" in k:
             out.append(data(addr(k["table"]), filter_table(k["filter"], fs, profile["step_db"])))
         if "balance" in k:
-            left, right = balance_tables()
+            left, right = balance_tables(k["balance"].get("form") == "biquad")
             out.append(data(addr(k["balance"]["left"]), left))
             out.append(data(addr(k["balance"]["right"]), right))
         out.append(data(addr(k["cell"]), struct.pack(">I", FLAT)))
         out.append(control(k["control"], addr(k["cell"])))
+    for f in profile.get("filters", []):
+        b0, b1, b2, a1, a2 = biquad(f["filter"], f["filter"]["db"], fs)
+        for at, x in zip(f["cells"], (b2, b1, b0, -a2, -a1)):
+            out.append(data(addr(at), fixed(x)))
     for c in profile["cells"]:
         if "words" in c:
             w = words(c["words"])

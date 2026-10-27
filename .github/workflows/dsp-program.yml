@@ -51,6 +51,8 @@ on:
       - .github/workflows/dsp-program.yml
       - board/ea/common/firmware/dsp/adau1451/program.json
       - board/ea/common/firmware/dsp/adau1451/export2program.py
+      - board/ea/common/firmware/dsp/adau1451/ea3-openhc.json
+      - board/ea/common/firmware/dsp/adau1451/mkfw.py
 
 jobs:
   toolchain:
@@ -110,6 +112,12 @@ jobs:
             # mkfw.py's --program input, and the map that names every parameter's address.
             python board/ea/common/firmware/dsp/adau1451/export2program.py "$env:DSP_OUT\export" "$env:DSP_OUT\program.txt" --params "$env:DSP_OUT\params.json"
             if ($LASTEXITCODE) { "::error::export2program.py failed"; exit 1 }
+            # The firmware the image will build from it, built here first (and thrown
+            # away): every name in ea3-openhc.json must be in the program, and the
+            # version cell must be the one the device tree checks.
+            $dt = (Select-String -Path board/ea/common/kernel/arch/x86/boot/dts/ea-audio-dsp.dtsi -Pattern 'control4,program-version = <(.*)>;').Matches[0].Groups[1].Value
+            python board/ea/common/firmware/dsp/adau1451/mkfw.py board/ea/common/firmware/dsp/adau1451/ea3-openhc.json "$env:RUNNER_TEMP\adau1451-ea3-openhc.bin" --program "$env:DSP_OUT\program.txt" --params "$env:DSP_OUT\params.json" --expect-version "$dt"
+            if ($LASTEXITCODE) { "::error::mkfw.py rejects ea3-openhc.json against this program"; exit 1 }
 
       # PROBE (stage 3, temporary): the design's parameter map (names and
       # addresses only) and the boot words of its DC cells, to fix the formats.

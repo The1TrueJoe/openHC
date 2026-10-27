@@ -1,25 +1,330 @@
 {
   "_doc": [
-    "The parameter side of openHC's own program (program.json), for the firmware",
-    "file adau1451-ea3-openhc.bin. See README.md in this directory.",
+    "openHC's own program (program.json) for the EA3's ADAU1451: its knobs, cells",
+    "and fixed filters, for the firmware file adau1451-ea3-openhc.bin, which the",
+    "device tree names. See README.md in this directory.",
     "",
-    "The image build makes it only when CI built the program, and installs it",
-    "beside adau1451-ea3.bin; the device tree still names that one, so this",
-    "file is not loaded at boot yet. The register init is ea3.json's. Cells are",
-    "named by block label and parameter (params.json, from the same export), so",
-    "they follow the design wherever SigmaStudio+ puts them.",
+    "Everything is named by block label and parameter (params.json, from the same",
+    "export), so it follows the design wherever SigmaStudio+ puts it. The register",
+    "init is ea3.json's.",
     "",
-    "Volume is the program's stereo gain, linear 8.24 per channel; it is written",
-    "0 at boot, so nothing plays until something raises it. Version is the",
-    "program's version cell, for the driver's check."
+    "Every filter knob is a General2ndOrderIndexSelectable block: 49 biquads, the",
+    "index cell (an integer DC input) picking one, 24 flat. mkfw.py computes the",
+    "tables from the designs here; step_db apart (0.5 dB: -12..+12 dB). Balance is",
+    "the same block as a gain per entry, one table per side. Mode and loudness are",
+    "IndexSelectableMuxStereo selectors: the choice is the index.",
+    "",
+    "Volume is the program's stereo gain, linear 8.24 per channel: written 0 at",
+    "boot so nothing plays; ohc-audiod sets the run value (1.0, 0x01000000) once",
+    "the output's level and tone are back. The output's level lives in ALSA, as on",
+    "the HC-800, so the DSP runs it full.",
+    "",
+    "version is the program's version cell and what it holds; the build checks it",
+    "against the device tree's control4,program-version."
   ],
-  "init": {"from": "ea3.json"},
+  "init": {
+    "from": "ea3.json"
+  },
   "rate": 48000,
   "step_db": 0.5,
-  "knobs": [],
+  "version": {
+    "param": "Version.DCValue",
+    "value": 2
+  },
+  "knobs": [
+    {
+      "id": "mode",
+      "label": "Mode",
+      "control": "DSP Output Mode",
+      "param": "ModeIndex.DCValue",
+      "_design": "the program's output selector (IndexSelectableMuxStereo): Tone shapes with bass and treble, EQ with the ten bands, Flat bypasses both, Test tone plays the program's 1 kHz oscillator. The first choice is the boot one",
+      "choices": [
+        {
+          "label": "Tone",
+          "words": [
+            "0x00000000"
+          ]
+        },
+        {
+          "label": "EQ",
+          "words": [
+            "0x00000001"
+          ]
+        },
+        {
+          "label": "Flat",
+          "words": [
+            "0x00000002"
+          ]
+        },
+        {
+          "label": "Test tone",
+          "words": [
+            "0x00000003"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "loudness",
+      "label": "Loudness",
+      "control": "DSP Loudness",
+      "param": "LoudnessIndex.DCValue",
+      "_design": "after the mode: Off passes it through, On through LoudnessEQ (the filters below)",
+      "choices": [
+        {
+          "label": "Off",
+          "words": [
+            "0x00000000"
+          ]
+        },
+        {
+          "label": "On",
+          "words": [
+            "0x00000001"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bass",
+      "label": "Bass",
+      "control": "DSP Bass",
+      "param": "BassIndex.DCValue",
+      "table": {
+        "param": "Bass.GSO_Array"
+      },
+      "filter": {
+        "type": "lowshelf",
+        "freq": 120,
+        "slope": 1.0
+      },
+      "_design": "the HC-800's tone stage (alsa-ohceq): RBJ shelf, slope 1"
+    },
+    {
+      "id": "treble",
+      "label": "Treble",
+      "control": "DSP Treble",
+      "param": "TrebleIndex.DCValue",
+      "table": {
+        "param": "Treble.GSO_Array"
+      },
+      "filter": {
+        "type": "highshelf",
+        "freq": 8000,
+        "slope": 1.0
+      }
+    },
+    {
+      "id": "balance",
+      "label": "Balance",
+      "control": "DSP Balance",
+      "param": "BalanceIndex.DCValue",
+      "_design": "linear, as alsa-ohceq: +100 silences the left channel. One index drives a gain table per side",
+      "balance": {
+        "left": {
+          "param": "BalanceLeft.GSO_Array"
+        },
+        "right": {
+          "param": "BalanceRight.GSO_Array"
+        },
+        "form": "biquad"
+      }
+    },
+    {
+      "id": "eq31",
+      "label": "31 Hz",
+      "group": "eq",
+      "control": "DSP EQ 31 Hz",
+      "param": "EQ31Index.DCValue",
+      "table": {
+        "param": "EQ31.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 31.5,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq63",
+      "label": "63 Hz",
+      "group": "eq",
+      "control": "DSP EQ 63 Hz",
+      "param": "EQ63Index.DCValue",
+      "table": {
+        "param": "EQ63.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 63,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq125",
+      "label": "125 Hz",
+      "group": "eq",
+      "control": "DSP EQ 125 Hz",
+      "param": "EQ125Index.DCValue",
+      "table": {
+        "param": "EQ125.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 125,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq250",
+      "label": "250 Hz",
+      "group": "eq",
+      "control": "DSP EQ 250 Hz",
+      "param": "EQ250Index.DCValue",
+      "table": {
+        "param": "EQ250.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 250,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq500",
+      "label": "500 Hz",
+      "group": "eq",
+      "control": "DSP EQ 500 Hz",
+      "param": "EQ500Index.DCValue",
+      "table": {
+        "param": "EQ500.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 500,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq1k",
+      "label": "1 kHz",
+      "group": "eq",
+      "control": "DSP EQ 1 kHz",
+      "param": "EQ1kIndex.DCValue",
+      "table": {
+        "param": "EQ1k.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 1000,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq2k",
+      "label": "2 kHz",
+      "group": "eq",
+      "control": "DSP EQ 2 kHz",
+      "param": "EQ2kIndex.DCValue",
+      "table": {
+        "param": "EQ2k.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 2000,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq4k",
+      "label": "4 kHz",
+      "group": "eq",
+      "control": "DSP EQ 4 kHz",
+      "param": "EQ4kIndex.DCValue",
+      "table": {
+        "param": "EQ4k.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 4000,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq8k",
+      "label": "8 kHz",
+      "group": "eq",
+      "control": "DSP EQ 8 kHz",
+      "param": "EQ8kIndex.DCValue",
+      "table": {
+        "param": "EQ8k.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 8000,
+        "q": 1.414
+      }
+    },
+    {
+      "id": "eq16k",
+      "label": "16 kHz",
+      "group": "eq",
+      "control": "DSP EQ 16 kHz",
+      "param": "EQ16kIndex.DCValue",
+      "table": {
+        "param": "EQ16k.GSO_Array"
+      },
+      "filter": {
+        "type": "peak",
+        "freq": 16000,
+        "q": 1.414
+      }
+    }
+  ],
+  "filters": [
+    {
+      "stage": "LoudnessEQ.Stage0_",
+      "filter": {
+        "type": "lowshelf",
+        "freq": 100,
+        "slope": 1.0,
+        "db": 6
+      },
+      "_design": "loudness: +6 dB below 100 Hz"
+    },
+    {
+      "stage": "LoudnessEQ.Stage1_",
+      "filter": {
+        "type": "highshelf",
+        "freq": 10000,
+        "slope": 1.0,
+        "db": 3
+      },
+      "_design": "loudness: +3 dB above 10 kHz"
+    }
+  ],
   "cells": [
-    {"control": "DSP Volume Left", "param": "Volume.Gain_Channel0", "words": [0]},
-    {"control": "DSP Volume Right", "param": "Volume.Gain_Channel1", "words": [0]},
-    {"control": "ReadBack DSP Program", "param": "Version.DCValue"}
+    {
+      "control": "DSP Volume Left",
+      "param": "Volume.Gain_Channel0",
+      "words": [
+        0
+      ],
+      "run": 16777216
+    },
+    {
+      "control": "DSP Volume Right",
+      "param": "Volume.Gain_Channel1",
+      "words": [
+        0
+      ],
+      "run": 16777216
+    },
+    {
+      "control": "ReadBack DSP Program",
+      "param": "Version.DCValue",
+      "_doc": "the version cell; never written, read fresh"
+    }
   ]
 }
