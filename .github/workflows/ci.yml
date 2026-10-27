@@ -357,8 +357,9 @@ jobs:
             build-essential bc bison flex git rsync unzip wget cpio file figlet \
             python3 libncurses-dev libssl-dev ca-certificates perl patch xz-utils
 
-      - name: Cache Buildroot downloads
-        uses: actions/cache@v4
+      # Restore only: the image jobs' save (main only) is the one that writes it.
+      - name: Restore Buildroot downloads
+        uses: actions/cache/restore@v4
         with:
           path: dl
           key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
@@ -501,9 +502,12 @@ jobs:
       # The one genuinely shared artefact. Keyed on the board files that pin
       # versions, NOT on the board, so all eight matrix jobs hit the same entry.
       # restore-keys means a version bump reuses the previous download set and
-      # fetches only what actually moved.
-      - name: Cache Buildroot downloads
-        uses: actions/cache@v4
+      # fetches only what actually moved. Restore here, save (main only) after
+      # the build: a PR that bumps a package would otherwise park its own
+      # 1.3 GB dl/ that no other branch can read.
+      - name: Restore Buildroot downloads
+        id: dlcache
+        uses: actions/cache/restore@v4
         with:
           path: dl
           key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
@@ -790,6 +794,13 @@ jobs:
           rm -rf "$O"/build/linux-* "$O"/images
           echo ">> cacheable tree: $(du -sh "$O" 2>/dev/null | cut -f1)"
 
+      - name: Save Buildroot downloads (main)
+        if: ${{ !cancelled() && steps.dlcache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: dl
+          key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
+
       # main only. A PR run RESTOREs (from main's newest tree, via restore-keys)
       # but never saves: every PR would otherwise park its own 1-2 GB tree per
       # board, and with the 10 GB repo cap that evicts the main trees every
@@ -803,12 +814,17 @@ jobs:
           path: output/build/${{ matrix.board }}
           key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
 
-      # Save the ccache on always(), PRs included: even a failed build compiled
-      # objects worth keeping for the next run or attempt, and a typo deep in
-      # WebKit should not cost that work. ccache caps itself (--max-size in the
-      # board's defconfig), so this never grows without bound.
+      # main saves the ccache on every run. A PR saves it only when the build
+      # FAILED: then the objects it compiled are what lets the re-attempt finish
+      # (a cold WebKit runs out of time on the first try), and a typo deep in
+      # WebKit should not cost that work. A PR whose build passed has nothing
+      # to re-attempt, and a PR's cache is readable by that PR alone, so saving
+      # it would only push main's ccache and output tree out of the 10 GB repo
+      # cap, which is what every PR's cold build then pays for. Whatever a PR
+      # does save is deleted when it closes (cache-cleanup.yml). ccache caps
+      # itself (--max-size in the board's defconfig).
       - name: Save ccache
-        if: always() && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
+        if: always() && (failure() || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.ccache
