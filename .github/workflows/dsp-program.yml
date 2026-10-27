@@ -16,11 +16,15 @@
 #
 # With either secret missing the job says so and stops, green.
 #
-# Stage 1 (this file today) proves the toolchain: install, the console app
-# headless, ADAU145x (Sigma 300) support. Stage 2 adds the design script and the export,
-# handed to the EA image build as an artifact — the exported program never
-# enters git (ADI's license restricts distributing generated code outside the
-# products it runs on).
+# The design is board/ea/common/firmware/dsp/adau1451/program.json: SigmaStudio+
+# scripting calls, run in order by the action's headless scripting host
+# (ssplus-script.exe). It starts from ADI's ADAU1452 example project, which comes
+# with SigmaStudio+, because its PC -> USBi -> DSP host link is the one part of a
+# system the scripting API cannot add; the design migrates it to the ADAU1451 and
+# replaces its algorithms with openHC's. The export becomes mkfw.py's --program
+# input (export2program.py), an artifact for the EA image build. The exported
+# program never enters git (ADI's license restricts distributing generated code
+# outside the products it runs on).
 name: dsp-program
 
 permissions:
@@ -34,6 +38,7 @@ on:
     paths:
       - .github/workflows/dsp-program.yml
       - board/ea/common/firmware/dsp/adau1451/program.json
+      - board/ea/common/firmware/dsp/adau1451/export2program.py
 
 jobs:
   toolchain:
@@ -89,6 +94,9 @@ jobs:
             Get-ChildItem "$env:DSP_OUT" -Recurse -File | Select-Object FullName, Length |
               Format-Table -AutoSize | Out-String -Width 300 | Tee-Object logs/export-files.txt
             if ($rc) { "::error::the design script failed ($rc)"; exit 1 }
+            # mkfw.py's --program input, and the map that names every parameter's address.
+            python board/ea/common/firmware/dsp/adau1451/export2program.py "$env:DSP_OUT\export" "$env:DSP_OUT\program.txt" --params "$env:DSP_OUT\params.json"
+            if ($LASTEXITCODE) { "::error::export2program.py failed"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
@@ -102,6 +110,9 @@ jobs:
         if: steps.staged.outputs.ok == 'true'
         with:
           name: adau1451-program
-          path: dsp/
+          path: |
+            dsp/program.txt
+            dsp/params.json
+            dsp/openhc-ea3.ssprj
           retention-days: 3
           if-no-files-found: error
