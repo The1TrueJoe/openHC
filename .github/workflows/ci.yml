@@ -724,13 +724,14 @@ jobs:
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
-          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
-          tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
-          ( cd "kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
+          # Built in runner.temp, outside the checkout.
+          wget -q -P "$RUNNER_TEMP" "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          ( cd "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
               --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
               --without-zlib --without-lzma --without-xen >/dev/null && make -j"$(nproc)" >/dev/null )
           out="output/build/${{ matrix.board }}/images/kexec-i686-static"
-          cp "kexec-tools-${KEXEC_VERSION}/build/sbin/kexec" "$out"
+          cp "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}/build/sbin/kexec" "$out"
           file "$out" | grep -q "ELF 32-bit.*Intel 80386" || { echo "not i386"; exit 1; }
           file "$out" | grep -q "statically linked" || { echo "not static"; exit 1; }
           ls -l "$out"
