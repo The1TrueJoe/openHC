@@ -1,0 +1,22 @@
+#!/bin/sh
+# Bring the SGX545 up once at boot, for every GPU client that follows.
+#
+# The DDK's services are initialised by a dedicated init client (SrvInit, the
+# job pvrsrvinit/the X driver did on Cedarview). Until something has run it,
+# the first EGL client after boot fails eglInitialize with "services not
+# reachable". So run it here, once, instead of leaving each client (the
+# on-screen view, a game, a test tool) to remember to do it first.
+# SrvInit only loads the microkernel and sets up services; it draws nothing, so
+# the boot splash S01splash left on /dev/fb0 stays up (checked on an EA1: fb0's
+# md5 is identical before and after). A no-op without the i386 GPU stack.
+
+case "$1" in
+	start)
+		[ -x /opt/sgx-i386/run.sh ] || exit 0
+		[ -e /dev/dri/card0 ] || exit 0
+		/opt/sgx-i386/run.sh sgxinit 2>&1 | logger -t sgx
+		;;
+	stop|restart) ;;
+	*) echo "Usage: $0 {start}"; exit 1 ;;
+esac
+exit 0

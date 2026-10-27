@@ -1,0 +1,35 @@
+#!/bin/sh
+# Grow the root filesystem to fill its eMMC partition.
+#
+# The image's ext4 is 512 MB (features/emmc) so it flashes quickly; p1 is 6 GB.
+# Without this the other 5.5 GB sit unused and anything that installs more
+# than ~200 MB runs out of room. ext4 grows online while mounted, so this
+# needs no reboot and no unmount. Every boot after the first finds the
+# filesystem already full-size and does nothing.
+#
+# Only acts when / is the root= device and that is a partition (the kexec'd
+# real system on p1); the bootstrap and network boots are left alone.
+
+case "$1" in
+	start) ;;
+	*) exit 0 ;;
+esac
+
+dev=$(sed -n 's/.*root=\(\/dev\/[^ ]*\).*/\1/p' /proc/cmdline)
+[ -b "$dev" ] || exit 0
+name=${dev##*/}
+[ -f "/sys/class/block/$name/partition" ] || exit 0
+command -v resize2fs >/dev/null || exit 0
+
+# Partition and filesystem sizes, in KiB. df reports the filesystem net of its
+# own metadata (inode tables, journal: a few % of a full-size one), so "short"
+# means under 90% of the partition — 512 MB of 6 GB is far below that, a grown
+# filesystem far above.
+part_kb=$(( $(cat "/sys/class/block/$name/size") / 2 ))
+fs_kb=$(df -k / | awk 'NR==2 {print $2}')
+[ -n "$fs_kb" ] || exit 0
+[ "$fs_kb" -lt $(( part_kb / 10 * 9 )) ] || exit 0
+
+echo "growfs: $dev ${fs_kb} KiB -> ${part_kb} KiB"
+resize2fs "$dev" 2>&1 | logger -t growfs
+exit 0
