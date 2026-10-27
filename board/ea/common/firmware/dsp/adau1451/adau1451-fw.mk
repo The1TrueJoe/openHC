@@ -1,6 +1,6 @@
 ################################################################################
 #
-# adau1451-fw — openHC's SigmaDSP parameter file for the EA3's ADAU1451
+# adau1451-fw — openHC's SigmaDSP firmware file for the EA3's ADAU1451
 #
 # The build rule for THIS folder: firmware generated into the image from its
 # source here, not a package (external.mk includes firmware/*/*/*.mk). Built
@@ -8,6 +8,10 @@
 # (the build host's python3, standard library only). The file is the kernel's
 # own SigmaDSP firmware format: adau1451-c4 hands it to the stock sigmadsp core,
 # which writes its tables at bind and turns its controls into ALSA controls.
+#
+# With BR2_PACKAGE_ADAU1451_FW_PROGRAM set, the file also carries the part's
+# register init (from ea3.json) and that program: the driver loads both. The
+# program comes from CI, never from git.
 #
 # The profile is installed too: ohc-audiod reads its knob list from it, so the
 # web UI shows exactly the knobs the firmware has.
@@ -20,8 +24,11 @@ ADAU1451_FW_SITE_METHOD = local
 ADAU1451_FW_LICENSE = GPL-2.0
 ADAU1451_FW_INSTALL_STAGING = NO
 
+ADAU1451_FW_PROGRAM = $(call qstrip,$(BR2_PACKAGE_ADAU1451_FW_PROGRAM))
+
 define ADAU1451_FW_BUILD_CMDS
-	python3 $(@D)/mkfw.py $(@D)/ea3.json $(@D)/adau1451-ea3.bin
+	python3 $(@D)/mkfw.py $(@D)/ea3.json $(@D)/adau1451-ea3.bin \
+		$(if $(ADAU1451_FW_PROGRAM),--program $(ADAU1451_FW_PROGRAM))
 endef
 
 define ADAU1451_FW_INSTALL_TARGET_CMDS
