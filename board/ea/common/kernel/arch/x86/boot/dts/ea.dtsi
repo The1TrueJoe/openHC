@@ -229,15 +229,18 @@
  * step_wise. Manual cannot outlast the hot trip: at 80 C (ohc-fand's CRITICAL)
  * sysmond hands the fan back to the curve, which is at 100% by then.
  *
- * The CRITICAL trip powers the box off (the thermal core's orderly poweroff) at
- * 100 C, the manufacturer's limit: Intel's TjMax for this core. The CE5300 has
- * no MSR_IA32_TEMPERATURE_TARGET to read it from and Intel publishes no CE53xx
- * figure, but the core is Saltwell (family 6 model 0x36, Cedarview's), whose
- * TjMax the kernel's coretemp takes as 100 C. The heatsink always reads below
- * the die (43 C on the heatsink with the die 22 C under TjMax, EA1 2026-10-27),
- * so this can only fire after the die is past its own limit. It is the backstop
- * for a fan that has failed outright; the CPU's own throttling and THERMTRIP#
- * still guard the die first. Control4 rates the box for 0-40 C ambient.
+ * The CRITICAL trip powers the box off (the kernel's orderly hw_protection
+ * shutdown) at 95 C. That is 38 C past the fan's 100% point, so it only fires
+ * when cooling has failed: a dead fan, or a blocked vent. The number sits
+ * between a 90 C backstop and the die's own limit, Intel's TjMax of 100 C. The
+ * CE5300 has no MSR_IA32_TEMPERATURE_TARGET to read that from and Intel
+ * publishes no CE53xx figure, but the core is Saltwell (family 6 model 0x36,
+ * Cedarview's), whose TjMax the kernel's coretemp takes as 100 C. The heatsink
+ * always reads below the die (43 C on the heatsink with the die 22 C under
+ * TjMax, EA1 2026-10-27), so by the time it reads 95 C the die is past its
+ * limit and its own throttling and THERMTRIP# are already at work: this is the
+ * backstop for the board, not a tuned limit. Control4 rates the box for 0-40 C
+ * ambient.
  */
 / {
 	fan: pwm-fan {
@@ -302,9 +305,9 @@
 					hysteresis = <0>;
 					type = "hot";
 				};
-				/* Powers the box off; see above for the number. */
-				heatsink-critical {
-					temperature = <100000>;
+				/* Cooling has failed: power off (see above for 95 C). */
+				heatsink-crit {
+					temperature = <95000>;
 					hysteresis = <0>;
 					type = "critical";
 				};
