@@ -118,8 +118,9 @@ export function HealthSection() {
 }
 
 /* Fan control. Only on boards whose sysmond reports a controllable fan (the EA
-   family, where ohc-fand exists); everywhere else `available:false` and this
-   renders nothing — the same rule the rest of the UI uses for absent hardware. */
+   family, whose device tree has a pwm-fan); everywhere else `available:false`
+   and this renders nothing — the same rule the rest of the UI uses for absent
+   hardware. */
 function FanControl() {
   const fan = useIoState().health?.fan;
   const [busy, setBusy] = useState(false);
@@ -179,10 +180,10 @@ function FanControl() {
         </button>
       </div>
       {/* The thermal fail-safe is not optional, so say the manual hold has a
-          floor the board enforces regardless. */}
+          limit the board enforces regardless. */}
       <p className="mt-2 text-xs text-muted">
         {manual
-          ? 'Held manually. A critical temperature still forces 100%.'
+          ? 'Held manually. If the board gets hot, the fan goes back to automatic.'
           : 'Following the temperature curve.'}
       </p>
       {err && <p className="mt-1 text-xs text-alarm">{err}</p>}
@@ -191,7 +192,7 @@ function FanControl() {
 }
 
 /* A drag-to-set slider that only commits on release — dragging it would
-   otherwise fire a shell-out per pixel. */
+   otherwise fire a fan write per pixel. */
 function Slider({ value, disabled, onCommit }: { value: number; disabled: boolean; onCommit: (p: number) => void }) {
   const [local, setLocal] = useState(value);
   const dragging = useRef(false);

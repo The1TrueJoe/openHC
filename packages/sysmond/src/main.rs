@@ -144,15 +144,15 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true, "service": "sysmond" }))
 }
 
-/// Fan status. `available` is false on boards with no fan helper (the UI then
+/// Fan status. `available` is false on boards with no pwm-fan (the UI then
 /// shows no control, only the readings), true with `mode` (auto|manual) and the
 /// fan's current duty `pct` otherwise.
 #[utoipa::path(
     get, path = "/api/fan", tag = "Fan",
     summary = "Fan presence, mode and current duty",
-    description = "Shells out to the board's ohc-fand helper, present only on boards with a \
-controllable fan. The EA fan's pwm lives under /sys/class/pwm, not hwmon, so its duty comes from \
-the helper rather than the telemetry series.",
+    description = "Present on boards whose device tree describes a pwm-fan (the EA family). The \
+kernel runs the fan from a thermal zone; `mode` is that zone's policy (step_wise = auto, user_space \
+= manual) and `pct` the fan's hwmon pwm1 as a percent.",
     responses((status = 200, description = "{ available, mode, pct }"))
 )]
 async fn fan_status() -> Json<serde_json::Value> {
@@ -161,12 +161,13 @@ async fn fan_status() -> Json<serde_json::Value> {
 
 #[derive(serde::Deserialize)]
 struct FanSet {
-    /// Duty percent 0-100; clamped before the helper sees it.
+    /// Duty percent 0-100; clamped, and a non-zero value lifted to the fan's floor.
     pct: i64,
 }
 
-/// Set a manual fan override that PERSISTS — the daemon's curve stops fighting
-/// it. The thermal fail-safe still forces 100% on a critical temperature.
+/// Set a manual fan override that PERSISTS — the thermal zone's curve stops
+/// fighting it. It still ends at the zone's hot trip, where the fan goes back
+/// to the curve (100% by then).
 #[utoipa::path(
     post, path = "/api/fan/set", tag = "Fan",
     summary = "Hold the fan at a manual percent",
@@ -237,6 +238,9 @@ fn main() {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
+                if fan::guard() {
+                    retained.set(&client, &base, "health/fan", &fan::status()).await;
+                }
                 let r = sensors::readings();
                 let (total, avail) = sensors::mem().unwrap_or((0, 0));
                 let mem_pct = (total > 0).then(|| ((total - avail) * 100 / total) as u8);
