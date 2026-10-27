@@ -111,6 +111,23 @@ jobs:
             python board/ea/common/firmware/dsp/adau1451/export2program.py "$env:DSP_OUT\export" "$env:DSP_OUT\program.txt" --params "$env:DSP_OUT\params.json"
             if ($LASTEXITCODE) { "::error::export2program.py failed"; exit 1 }
 
+      # PROBE (stage 3, temporary): the algorithm plugins the knobs could use.
+      - name: Probe the algorithm library
+        if: steps.staged.outputs.ok == 'true'
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $plugins = Get-ChildItem "$env:ProgramData\Analog Devices" -Recurse -Directory -Filter Plugins | Select-Object -First 1
+          $pat = 'Index|Mux|Loud|Lookup|LookUp|Biquad|2ndOrder|Shelv|Sine|Tone|Volume|DCInput|Balance|Gain|Mixer|Parametric|EQ|Switch|Select|Mute|Osc'
+          $out = foreach ($dll in Get-ChildItem $plugins.FullName -Recurse -Filter *.dll) {
+            try { $a = [Reflection.Assembly]::ReflectionOnlyLoadFrom($dll.FullName) } catch { continue }
+            try { $ts = $a.GetTypes() } catch [Reflection.ReflectionTypeLoadException] { $ts = $_.Exception.Types | Where-Object { $_ } } catch { continue }
+            foreach ($t in $ts) { if ($t.FullName -match 'Sigma300|ADAU145' -and $t.Name -match '_v\d' -and $t.Name -match $pat) { "$($dll.Name)`t$($t.FullName)" } }
+          }
+          New-Item -ItemType Directory -Force logs | Out-Null
+          $out | Sort-Object -Unique | Tee-Object logs/algorithms.txt
+          "count: $(@($out).Count)"
+
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
         with:
