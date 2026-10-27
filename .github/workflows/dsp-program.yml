@@ -111,28 +111,28 @@ jobs:
             python board/ea/common/firmware/dsp/adau1451/export2program.py "$env:DSP_OUT\export" "$env:DSP_OUT\program.txt" --params "$env:DSP_OUT\params.json"
             if ($LASTEXITCODE) { "::error::export2program.py failed"; exit 1 }
 
-      # PROBE (stage 3, temporary): the algorithm plugins the knobs could use.
-      - name: Probe the algorithm library
+      # PROBE (stage 3, temporary): the scripting calls' parameters.
+      - name: Probe the scripting calls
         if: steps.staged.outputs.ok == 'true'
         continue-on-error: true
-        shell: python
+        shell: powershell
         run: |
-          import os, re
-          plugins = os.path.join(os.environ["ProgramData"], "Analog Devices", "SigmaStudio 3.4", "Plugins")
-          os.makedirs("logs", exist_ok=True)
-          def idents(name):
-              b = open(os.path.join(plugins, name), "rb").read()
-              return sorted(set(re.findall(rb"[A-Za-z_][A-Za-z0-9_.]{3,}", b)))
-          with open("logs/sigma300core-names.txt", "wb") as o:
-              for s in idents("Sigma300Core.dll"):
-                  o.write(s + b"\n")
-          with open("logs/scripting-calls.txt", "wb") as o:
-              for s in idents("ScriptingAPISS+.dll"):
-                  if s.endswith(b"Class") or s.endswith(b"Register"):
-                      o.write(s + b"\n")
-          with open("logs/sigma300-names.txt", "wb") as o:
-              for s in idents("Sigma300.dll") + idents("ADAU145x.dll"):
-                  o.write(s + b"\n")
+          $dir = "$env:ProgramData\Analog Devices\SigmaStudio 3.4\Plugins"
+          [AppDomain]::CurrentDomain.add_ReflectionOnlyAssemblyResolve({ param($s, $e)
+            $n = (New-Object Reflection.AssemblyName $e.Name).Name
+            foreach ($d in @($dir, "$env:SSPLUS_HOME\Host", "$env:SSPLUS_HOME")) { $f = Join-Path $d "$n.dll"; if (Test-Path $f) { return [Reflection.Assembly]::ReflectionOnlyLoadFrom($f) } }
+            return [Reflection.Assembly]::ReflectionOnlyLoad($e.Name) })
+          $a = [Reflection.Assembly]::ReflectionOnlyLoadFrom("$dir\ScriptingAPISS+.dll")
+          New-Item -ItemType Directory -Force logs | Out-Null
+          $out = foreach ($t in $a.GetExportedTypes()) {
+            if ($t.Name -notmatch 'Class$') { continue }
+            foreach ($m in $t.GetMethods([Reflection.BindingFlags]'Public,Instance,DeclaredOnly')) {
+              if ($m.IsSpecialName -or $m.Name -in 'ProcessFunction','RegisterProcess','MsgToAdd') { continue }
+              try { $ps = ($m.GetParameters() | ForEach-Object { "$($_.ParameterType.Name) $($_.Name)" }) -join ', ' } catch { $ps = "?" }
+              "$($t.Name).$($m.Name)($ps)"
+            }
+          }
+          $out | Tee-Object logs/scripting-signatures.txt
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
