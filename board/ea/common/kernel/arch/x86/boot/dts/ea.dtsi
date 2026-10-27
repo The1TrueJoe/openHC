@@ -227,9 +227,13 @@
  * MANUAL CONTROL (the web UI, via sysmond) switches this zone's policy to
  * user_space and writes the fan's hwmon pwm1; "auto" switches it back to
  * step_wise. Manual cannot outlast the hot trip: at 80 C (ohc-fand's CRITICAL)
- * sysmond hands the fan back to the curve, which is at 100% by then. There is
- * deliberately no critical trip: ohc-fand never powered the box off, and where
- * 80 C on a heatsink sensor stands against the CE5300's real limit is unmeasured.
+ * sysmond hands the fan back to the curve, which is at 100% by then.
+ *
+ * At 90 C the critical trip powers the box off (the kernel's orderly
+ * hw_protection shutdown). That is 33 C past the fan's 100% point, so it only
+ * fires when cooling has failed: a dead fan, or a blocked vent. Where 90 C on
+ * the heatsink sensor stands against the CE5300's own limit is unmeasured; it
+ * is a backstop, not a tuned limit.
  */
 / {
 	fan: pwm-fan {
@@ -293,6 +297,12 @@
 					temperature = <80000>;
 					hysteresis = <0>;
 					type = "hot";
+				};
+				/* Cooling has failed: power off. */
+				heatsink-crit {
+					temperature = <90000>;
+					hysteresis = <0>;
+					type = "critical";
 				};
 			};
 
