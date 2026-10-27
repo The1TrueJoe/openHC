@@ -1,8 +1,16 @@
-//! The IO model, parsed from /opt/ohc/board.env.
+//! The IO model: board.env for what only it knows, the kernel for the rest.
 //!
 //! This is the whole reason one binary runs the fleet. Every board answers the
 //! same questions — how is the IO reached, how many of each thing is there —
 //! and nothing above this module knows what a HC-800 or an IO Extender is.
+//!
+//! **Behind an IO microcontroller the counts come from the kernel.** The driver
+//! latched them from the board's device tree node (EA) or from the module
+//! parameters S12iomcu wrote (HC-800, which has no tree), and publishes them at
+//! [`IOMCU_SYSFS`]. Reading them back, rather than a second copy in board.env,
+//! is what keeps the two from disagreeing. board.env's counts are only the
+//! fallback for a board whose driver never attached — the HC-800 before
+//! S12iomcu, where board.env is the only description there is.
 //!
 //! The governing rule, borrowed from the house UI: **a thing with nothing
 //! behind it does not appear**. A count of zero is not "unknown", it is
@@ -10,6 +18,48 @@
 //! empty list for the UI to draw an empty panel from.
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::Path;
+
+/// Where gpio-ohc-iomcu publishes what the part is declared to have.
+pub const IOMCU_SYSFS: &str = "/sys/class/ohc/iomcu";
+
+/// The IO microcontroller's geometry as the kernel driver latched it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declared {
+    pub relays: u8,
+    pub contacts: u8,
+    pub ir_out: u8,
+    pub ir_blaster: u8,
+    pub ir_in: u8,
+    pub uarts: u8,
+    /// `ttyS3` behind the line discipline, `serial0-0` as a serdev device.
+    pub port: String,
+    pub baud: u32,
+    /// The part answered the driver. False is "declared but silent".
+    pub online: bool,
+}
+
+impl Declared {
+    /// `None` when the driver has not attached to anything.
+    pub fn read(dir: &Path) -> Option<Declared> {
+        let get = |f: &str| std::fs::read_to_string(dir.join(f)).ok().map(|s| s.trim().to_string());
+        let n = |f: &str| get(f).and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
+        // relays is the attribute every version of the directory has; its
+        // absence means there is no directory, not a board with no relays.
+        get("relays")?;
+        Some(Declared {
+            relays: n("relays"),
+            contacts: n("contacts"),
+            ir_out: n("ir_out"),
+            ir_blaster: n("ir_blaster"),
+            ir_in: n("ir_in"),
+            uarts: n("uarts"),
+            port: get("port").unwrap_or_default(),
+            baud: get("baud").and_then(|v| v.parse().ok()).unwrap_or(0),
+            online: get("online").as_deref() == Some("1"),
+        })
+    }
+}
 
 /// How the relays/contacts/IR are physically reached. The ONLY thing the rest
 /// of the daemon branches on.
@@ -59,10 +109,18 @@ pub struct SerialPort {
 pub struct Io {
     pub backend: Backend,
     pub mcu_part: Option<String>,
+    /// The port the driver is on, as the kernel names it.
     #[serde(skip)]
     pub mcu_tty: Option<String>,
     #[serde(skip)]
     pub mcu_baud: u32,
+    /// Where the counts below came from: `kernel` or `board.env`.
+    #[serde(skip)]
+    pub declared_by: &'static str,
+    /// The kernel's word on whether the part answered; `None` when the
+    /// driver has not attached.
+    #[serde(skip)]
+    pub mcu_online: Option<bool>,
 
     /// Rear IR jacks.
     pub ir_out: u8,
@@ -136,7 +194,10 @@ fn lines(e: &HashMap<String, String>, k: &str) -> Vec<u32> {
 
 impl Board {
     pub fn load(env_path: &str) -> Board {
-        let e = read_env(env_path);
+        Board::from_env(read_env(env_path), Declared::read(Path::new(IOMCU_SYSFS)))
+    }
+
+    fn from_env(e: HashMap<String, String>, kernel: Option<Declared>) -> Board {
 
         let backend = match e.get("OHC_IO_BACKEND").map(String::as_str) {
             Some("mcu") => Backend::Mcu,
@@ -195,7 +256,13 @@ impl Board {
         // host ports. `transport` stays "mcu" — it is honest about the path and
         // drives the UI's "via MCU" hint — but `dev` is now Some, which is what
         // makes the terminal bridge open it like any other port.
-        let mcu_uarts: u8 = num(&e, "OHC_IO_UARTS");
+        // Only an IO-microcontroller board takes the kernel's word: the
+        // directory belongs to that driver.
+        let kernel = kernel.filter(|_| backend == Backend::Mcu);
+        let mcu_uarts: u8 = match &kernel {
+            Some(k) => k.uarts,
+            None => num(&e, "OHC_IO_UARTS"),
+        };
         for i in 0..mcu_uarts {
             serials.push(SerialPort {
                 dev: Some(format!("/dev/ttyOHC{i}")),
@@ -214,14 +281,24 @@ impl Board {
                 .unwrap_or_else(|_| "openhc".into()),
             io: Io {
                 mcu_part: e.get("OHC_IO_MCU_PART").filter(|s| !s.is_empty()).cloned(),
-                mcu_tty: e.get("OHC_IO_MCU_TTY").filter(|s| !s.is_empty()).cloned(),
-                mcu_baud: e.get("OHC_IO_MCU_BAUD").and_then(|v| v.parse().ok()).unwrap_or(115200),
-                ir_out: num(&e, "OHC_IR_OUT"),
-                ir_combo: num(&e, "OHC_IR_COMBO"),
-                ir_blaster: num(&e, "OHC_IR_BLASTER"),
-                ir_in: num(&e, "OHC_IR_IN"),
-                relays: num(&e, "OHC_RELAYS"),
-                contacts: num(&e, "OHC_CONTACTS"),
+                mcu_tty: match &kernel {
+                    Some(k) => Some(k.port.clone()).filter(|s| !s.is_empty()),
+                    None => e.get("OHC_IO_MCU_TTY").filter(|s| !s.is_empty()).cloned(),
+                },
+                mcu_baud: match &kernel {
+                    Some(k) => k.baud,
+                    None => e.get("OHC_IO_MCU_BAUD").and_then(|v| v.parse().ok()).unwrap_or(115200),
+                },
+                declared_by: if kernel.is_some() { "kernel" } else { "board.env" },
+                mcu_online: kernel.as_ref().map(|k| k.online),
+                ir_out: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_OUT"), |k| k.ir_out),
+                // The combo jacks ARE the MCU-routed UARTs (see Io::ir_combo),
+                // so the kernel's uart count is also the combo count.
+                ir_combo: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_COMBO"), |k| k.uarts),
+                ir_blaster: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_BLASTER"), |k| k.ir_blaster),
+                ir_in: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_IN"), |k| k.ir_in),
+                relays: kernel.as_ref().map_or_else(|| num(&e, "OHC_RELAYS"), |k| k.relays),
+                contacts: kernel.as_ref().map_or_else(|| num(&e, "OHC_CONTACTS"), |k| k.contacts),
                 contacts_active_low: e
                     .get("OHC_CONTACTS_ACTIVE_LOW")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -245,5 +322,66 @@ impl Io {
     }
     pub fn has_any(&self) -> bool {
         self.backend != Backend::None || !self.serials.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn ea1() -> Declared {
+        Declared {
+            relays: 0, contacts: 0, ir_out: 4, ir_blaster: 1, ir_in: 1, uarts: 2,
+            port: "serial0-0".into(), baud: 460800, online: true,
+        }
+    }
+
+    #[test]
+    fn reads_the_sysfs_directory() {
+        let dir = std::env::temp_dir().join(format!("iod-iomcu-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (f, v) in [("relays", "0"), ("contacts", "0"), ("ir_out", "4"), ("ir_blaster", "1"),
+                       ("ir_in", "1"), ("uarts", "2"), ("port", "serial0-0"), ("baud", "460800"),
+                       ("online", "1")] {
+            std::fs::write(dir.join(f), format!("{v}\n")).unwrap();
+        }
+        assert_eq!(Declared::read(&dir), Some(ea1()));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(Declared::read(&dir), None);
+    }
+
+    #[test]
+    fn kernel_counts_win_and_need_no_board_env() {
+        let b = Board::from_env(env(&[("OHC_IO_BACKEND", "mcu")]), Some(ea1()));
+        assert_eq!(b.io.declared_by, "kernel");
+        assert_eq!((b.io.ir_out, b.io.ir_blaster, b.io.ir_in, b.io.ir_combo), (4, 1, 1, 2));
+        assert_eq!((b.io.relays, b.io.contacts), (0, 0));
+        assert_eq!(b.io.mcu_tty.as_deref(), Some("serial0-0"));
+        assert_eq!(b.io.mcu_baud, 460800);
+        assert_eq!(b.io.mcu_online, Some(true));
+        let ttys: Vec<_> = b.io.serials.iter().filter_map(|p| p.dev.clone()).collect();
+        assert_eq!(ttys, ["/dev/ttyOHC0", "/dev/ttyOHC1"]);
+    }
+
+    #[test]
+    fn board_env_is_the_fallback_before_attach() {
+        let e = env(&[("OHC_IO_BACKEND", "mcu"), ("OHC_RELAYS", "4"), ("OHC_CONTACTS", "4"),
+                      ("OHC_IO_MCU_TTY", "/dev/ttyS3")]);
+        let b = Board::from_env(e, None);
+        assert_eq!(b.io.declared_by, "board.env");
+        assert_eq!((b.io.relays, b.io.contacts), (4, 4));
+        assert_eq!(b.io.mcu_online, None);
+    }
+
+    #[test]
+    fn only_an_mcu_board_reads_the_driver() {
+        let e = env(&[("OHC_IO_BACKEND", "gpio"), ("OHC_RELAYS", "8")]);
+        let b = Board::from_env(e, Some(ea1()));
+        assert_eq!(b.io.declared_by, "board.env");
+        assert_eq!(b.io.relays, 8);
     }
 }

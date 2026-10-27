@@ -196,3 +196,18 @@
 		reg = <0x48>;
 	};
 };
+
+/*
+ * The IO microcontroller (TI Tiva TM4C1231D5) on uart1, the legacy 0x2F8 port.
+ * A serdev child, so gpio-ohc-iomcu binds it at boot and owns the port: it runs
+ * the TI bootloader bring-up itself and there is no ttyS1 left for userspace to
+ * attach to. 460800 is the EA family's rate, not the HC-800's 115200. What sits
+ * behind the part differs by board, so each board's .dts sets the counts on
+ * &io_mcu; a count it leaves out is zero.
+ */
+&uart1 {
+	io_mcu: io-mcu {
+		compatible = "control4,io-mcu";
+		current-speed = <460800>;
+	};
+};
