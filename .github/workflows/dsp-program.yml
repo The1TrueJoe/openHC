@@ -117,27 +117,22 @@ jobs:
         continue-on-error: true
         shell: python
         run: |
-          import os, re, collections
-          root = os.path.join(os.environ["ProgramData"], "Analog Devices")
-          pat = re.compile(r"AnalogDevices\.Plugins\.Algorithms\.[A-Za-z0-9_.]+?_v\d+\.\d+\.\d+\.\d+")
-          ids = collections.defaultdict(set)
+          import os, re
+          plugins = os.path.join(os.environ["ProgramData"], "Analog Devices", "SigmaStudio 3.4", "Plugins")
           os.makedirs("logs", exist_ok=True)
-          with open("logs/plugin-files.txt", "w") as tree:
-              for d, _, fs in os.walk(root):
-                  for f in fs:
-                      p = os.path.join(d, f)
-                      n = os.path.getsize(p)
-                      tree.write(f"{n}\t{p}\n")
-                      if n > 64 << 20:
-                          continue
-                      b = open(p, "rb").read()
-                      for text in (b.decode("latin-1"), b.decode("utf-16-le", "ignore"), b[1:].decode("utf-16-le", "ignore")):
-                          for m in pat.findall(text):
-                              ids[m].add(f)
-          with open("logs/algorithms.txt", "w") as o:
-              for k in sorted(ids):
-                  o.write(f"{k}\t{' '.join(sorted(ids[k]))[:200]}\n")
-          print("ids:", len(ids))
+          def idents(name):
+              b = open(os.path.join(plugins, name), "rb").read()
+              return sorted(set(re.findall(rb"[A-Za-z_][A-Za-z0-9_.]{3,}", b)))
+          with open("logs/sigma300core-names.txt", "wb") as o:
+              for s in idents("Sigma300Core.dll"):
+                  o.write(s + b"\n")
+          with open("logs/scripting-calls.txt", "wb") as o:
+              for s in idents("ScriptingAPISS+.dll"):
+                  if s.endswith(b"Class") or s.endswith(b"Register"):
+                      o.write(s + b"\n")
+          with open("logs/sigma300-names.txt", "wb") as o:
+              for s in idents("Sigma300.dll") + idents("ADAU145x.dll"):
+                  o.write(s + b"\n")
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
