@@ -82,8 +82,8 @@ SoC GPIO, no driver needed.
 
 `gpiochip0` lines 71, 70, 82, 83, 84, 85, 86, 87 for contacts 1–8 (1 and 2 are
 reversed). `S01pinmux` routes all eight to GPIO. They are pull-up inputs, so an
-open terminal reads 1 and a closed one 0: `OHC_CONTACTS_ACTIVE_LOW=1` makes iod
-report them the right way up.
+open terminal reads 1 and a closed one 0. iod reads native-GPIO contacts as
+active low, so it reports them the right way up.
 
 ## LEDs
 

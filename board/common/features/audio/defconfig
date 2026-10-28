@@ -25,17 +25,16 @@ BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
 BR2_PACKAGE_ALSA_UTILS_ALSALOOP=y
 BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 
-# AirPlay 2 (it also takes classic AirPlay senders): openHC's own
-# packages/ohc-shairport-sync and packages/ohc-nqptp, shairport-sync's and nqptp's
-# development branches, where several AirPlay 2 receivers can share one host and
-# address on their own ports. audiod runs one per AirPlay endpoint and the one
-# nqptp they share. Buildroot's shairport-sync (4.3.7) predates all of that; it
-# was classic-only here, so Apple Music (AirPlay 2 only) could not reach it.
-# Built with the D-Bus remote control (how audiod moves a sender's volume
-# slider) and the metadata pipe.
-# BR2_PACKAGE_SHAIRPORT_SYNC is not set
-BR2_PACKAGE_OHC_SHAIRPORT_SYNC=y
-BR2_PACKAGE_OHC_NQPTP=y
+# AirPlay 2 (it also takes classic AirPlay senders): Buildroot's shairport-sync
+# (5.6) and nqptp, which since 5.x and 1.2.9 let several AirPlay 2 receivers share
+# one host and address on their own ports. audiod runs one per AirPlay
+# endpoint and the one nqptp they share. Built with the D-Bus remote control
+# (how audiod moves a sender's volume slider; board/common/patches/
+# shairport-sync makes it work with several instances) and the metadata pipe
+# (on with --with-metadata).
+BR2_PACKAGE_SHAIRPORT_SYNC=y
+BR2_PACKAGE_SHAIRPORT_SYNC_AIRPLAY2=y
+BR2_PACKAGE_SHAIRPORT_SYNC_DBUS=y
 # FFmpeg is AirPlay 2's AAC and ALAC decoder; nothing here encodes, muxes or
 # needs the ffmpeg program.
 # BR2_PACKAGE_FFMPEG_FFMPEG is not set

@@ -34,7 +34,7 @@ pub struct Config {
     pub pinned: Vec<String>,
     pub settings_tx: tokio::sync::watch::Sender<mqtt::settings::Mqtt>,
     /// Whether the ohc-iomcu gpiochip is present. False means no relay or
-    /// contact can work — the discipline was never attached, or the part did
+    /// contact can work — the driver never bound the part, or the part did
     /// not answer the driver.
     pub gpio_io: bool,
     /// Whether the driver registered IR nodes.
@@ -145,7 +145,9 @@ fn main() {
             Some(false) => eprintln!("iod: gpio-ohc-iomcu is on {} but the part is not answering",
                                      board.io.mcu_tty.as_deref().unwrap_or("?")),
             Some(true) if board.io.relays + board.io.contacts == 0 => {}
-            _ => eprintln!("iod: no {} gpiochip — is gpio-ohc-iomcu attached? (device tree, or S12iomcu)",
+            None => eprintln!("iod: gpio-ohc-iomcu has not bound the IO microcontroller — \
+                               is it in the board's device tree / ACPI table? (dmesg | grep ohc-iomcu)"),
+            _ => eprintln!("iod: no {} gpiochip, though the board declares relays or contacts",
                            gpio_io::CHIP_LABEL),
         }
     }
