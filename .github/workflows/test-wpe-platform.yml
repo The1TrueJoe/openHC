@@ -12,7 +12,9 @@
 #   wayland   WPE Platform + Wayland platform (optional; input toggle)
 #   off       series applied, WPE Platform off (regression: nothing new built)
 #   full      glibc + systemd: DRM (logind session code) + Wayland + headless,
-#             with libmanette (gamepads) and sysprof (presentation-time)
+#             with libmanette (gamepads). Not sysprof: Buildroot's sysprof does
+#             not install libsysprof-capture-4, so wpewebkit+sysprof fails before
+#             this series too (USE_SYSPROF_CAPTURE=ON).
 #
 # Mesa uses softpipe (no LLVM) to keep the dependency build short; GBM and
 # EGL come with it. The HC-800 i915+llvmpipe config is covered by the board
@@ -48,24 +50,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: headless
-            toolchain: bootlin-x86-64-glibc
-            snippet: |
-              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
-          - name: drm
-            toolchain: bootlin-x86-64-musl
-            snippet: |
-              BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
-              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
-              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y
-          - name: wayland
-            toolchain: bootlin-x86-64-glibc
-            snippet: |
-              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
-              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_WAYLAND=y
-          - name: off
-            toolchain: bootlin-x86-64-glibc
-            snippet: ""
           - name: full
             toolchain: bootlin-x86-64-glibc
             snippet: |
@@ -74,7 +58,6 @@ jobs:
               BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y
               BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_WAYLAND=y
               BR2_PACKAGE_LIBMANETTE=y
-              BR2_PACKAGE_SYSPROF=y
     name: ${{ matrix.name }}
     steps:
       - name: Skip optional variant
