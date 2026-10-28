@@ -1,30 +1,30 @@
-From d60f86b3a5fbde20a9314f4384319878d590825f Mon Sep 17 00:00:00 2001
-From: Joseph Telaak <jttelaak@hotmail.com>
-Date: Wed, 28 Oct 2026 03:01:58 -0400
+From 1d38f3b261656324ed07f7ff9bb9a9bef66af541 Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <joseph@telaak.dev>
+Date: Wed, 28 Oct 2026 03:51:04 -0400
 Subject: [PATCH] playback, connect: report Alsa mixer volume changes made
  outside librespot
 
 ---
  CHANGELOG.md                    |   1 +
- connect/src/spirc.rs            |  55 +++++++++--
- playback/src/mixer/alsamixer.rs | 169 +++++++++++++++++++++++++++++---
+ connect/src/spirc.rs            |  59 +++++++++--
+ playback/src/mixer/alsamixer.rs | 173 +++++++++++++++++++++++++++++---
  playback/src/mixer/mod.rs       |   8 ++
- 4 files changed, 211 insertions(+), 22 deletions(-)
+ 4 files changed, 219 insertions(+), 22 deletions(-)
 
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 9ce6444..8821349 100644
+index 9ce6444..e72f938 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  
  ### Added
  
-+- [playback] [connect] Report a volume change made outside librespot on the Alsa mixer's control (another program, a hardware control) to Spotify, so the app's volume follows it. Mixers can offer such changes through the new `Mixer::volume_changes`
++- [playback] `alsamixer`: report a volume change made outside librespot on the mixer's control (e.g. by `alsamixer` or another program) to Spotify, so the app's volume follows it. Mixers can offer such changes through the new `Mixer::volume_changes`
  - [docs] Document Android NDK context initialization requirement for Rodio/CPAL audio backend
  - [core] Add `Cache::with_memory_credentials` to keep credentials in memory instead of a file, for applications that store them in their own protected store
  - [connect] Add method `add_to_queue` to `Spirc` to add tracks, episodes, albums and playlists to the queue
 diff --git a/connect/src/spirc.rs b/connect/src/spirc.rs
-index e1b9707..caacda9 100644
+index e1b9707..08e464f 100644
 --- a/connect/src/spirc.rs
 +++ b/connect/src/spirc.rs
 @@ -42,7 +42,10 @@ use std::{
@@ -48,11 +48,22 @@ index e1b9707..caacda9 100644
  
      /// the state management object
      connect_state: ConnectState,
-@@ -228,10 +233,12 @@ impl Spirc {
+@@ -177,6 +182,8 @@ impl Spirc {
+         debug!("new Spirc[{spirc_id}]");
+ 
+         let emit_set_queue_events = config.emit_set_queue_events;
++        // with the volume fixed there is no volume to report
++        let report_mixer_volume = !config.disable_volume;
+         let connect_state = ConnectState::new(config, &session);
+ 
+         let connection_id_update = session
+@@ -228,10 +235,14 @@ impl Spirc {
          let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
  
          let player_events = player.get_player_event_channel();
-+        let mixer_volume_changes = mixer.volume_changes();
++        let mixer_volume_changes = report_mixer_volume
++            .then(|| mixer.volume_changes())
++            .flatten();
  
          let mut task = SpircTask {
              player,
@@ -61,7 +72,7 @@ index e1b9707..caacda9 100644
  
              connect_state,
              connect_established: false,
-@@ -483,6 +490,7 @@ impl SpircTask {
+@@ -483,6 +494,7 @@ impl SpircTask {
          while !self.session.is_invalid() && !self.shutdown {
              let commands = self.commands.as_mut();
              let player_events = self.player_events.as_mut();
@@ -69,7 +80,7 @@ index e1b9707..caacda9 100644
  
              // when state and volume update have a higher priority than context resolving
              // because of that the context resolving has to wait, so that the other tasks can finish
-@@ -519,6 +527,15 @@ impl SpircTask {
+@@ -519,6 +531,15 @@ impl SpircTask {
                          Err(why) => error!("can't update volume, failed to parse i32 to u16: {why}")
                      }
                  },
@@ -85,7 +96,7 @@ index e1b9707..caacda9 100644
                  logout_request = self.connect_state_logout_request.next() => unwrap! {
                      logout_request,
                      |logout_request| {
-@@ -1938,16 +1955,34 @@ impl SpircTask {
+@@ -1938,16 +1959,34 @@ impl SpircTask {
          let old_volume = self.connect_state.device_info().volume;
          let new_volume = volume as u32;
          if old_volume != new_volume || self.mixer.volume() != volume {
@@ -130,7 +141,7 @@ index e1b9707..caacda9 100644
      }
  }
 diff --git a/playback/src/mixer/alsamixer.rs b/playback/src/mixer/alsamixer.rs
-index 90daaf1..6baa32c 100644
+index 90daaf1..519c329 100644
 --- a/playback/src/mixer/alsamixer.rs
 +++ b/playback/src/mixer/alsamixer.rs
 @@ -5,12 +5,16 @@ use super::{Mixer, MixerConfig, VolumeCtrl};
@@ -181,7 +192,7 @@ index 90daaf1..6baa32c 100644
          })
      }
  
-@@ -200,7 +218,45 @@ impl Mixer for AlsaMixer {
+@@ -200,7 +218,49 @@ impl Mixer for AlsaMixer {
              .find_selem(&SelemId::new(&self.config.control, self.config.index))
              .expect("Could not find Alsa mixer control");
  
@@ -197,12 +208,16 @@ index 90daaf1..6baa32c 100644
 +            .expect("Could not find Alsa mixer control");
 +
 +        // Held across the write and its readback, so that the watcher handles
-+        // the write's event only after it can recognise it.
++        // the write's event only after it can recognise it. An outside change
++        // landing between the two is taken for this write and not reported.
 +        let mut own_write = self.lock_own_write();
 +        self.write_volume(&simple_element, volume);
 +        // Read back through a new handle: the one written to reports what was
-+        // asked for, not what the driver kept.
-+        *own_write = self.read_raw_state();
++        // asked for, not what the driver kept. Failing that, what was asked for.
++        *own_write = Some(
++            self.read_raw_state()
++                .unwrap_or_else(|| raw_state(&simple_element)),
++        );
 +    }
 +
 +    fn volume_changes(&self) -> Option<watch::Receiver<u16>> {
@@ -228,7 +243,7 @@ index 90daaf1..6baa32c 100644
              return 0;
          }
  
-@@ -233,13 +289,7 @@ impl Mixer for AlsaMixer {
+@@ -233,13 +293,7 @@ impl Mixer for AlsaMixer {
          self.config.volume_ctrl.as_unmapped(mapped_volume)
      }
  
@@ -243,7 +258,7 @@ index 90daaf1..6baa32c 100644
          if self.has_switch {
              if volume == 0 {
                  debug!("Disabling playback (setting mute) on Alsa");
-@@ -289,10 +339,93 @@ impl Mixer for AlsaMixer {
+@@ -289,10 +343,93 @@ impl Mixer for AlsaMixer {
              .set_playback_db_all(MilliBel::from_db(db_volume as f32), Round::Floor)
              .expect("Could not set Alsa dB volume");
      }
@@ -268,8 +283,8 @@ index 90daaf1..6baa32c 100644
 +    /// librespot and sends the volume after each one. `None` if it cannot.
 +    fn watch(&self) -> Option<watch::Receiver<u16>> {
 +        let (tx, rx) = watch::channel(self.volume());
-+        // Without the receiver this mixer keeps, so that the thread stops once
-+        // the mixer and everyone it handed a receiver to are gone.
++        // The thread's copy must not hold a receiver itself, or the channel
++        // would never close and the thread would never stop.
 +        let mixer = Self {
 +            volume_changes: Arc::default(),
 +            ..self.clone()
@@ -340,7 +355,7 @@ index 90daaf1..6baa32c 100644
  
      fn switched_off(&self) -> bool {
          if !self.has_switch {
-@@ -315,3 +448,15 @@ impl AlsaMixer {
+@@ -315,3 +452,15 @@ impl AlsaMixer {
          self.is_softvol || self.use_linear_in_db
      }
  }
@@ -357,7 +372,7 @@ index 90daaf1..6baa32c 100644
 +    (volume, on)
 +}
 diff --git a/playback/src/mixer/mod.rs b/playback/src/mixer/mod.rs
-index 89d0323..89eb2d9 100644
+index 89d0323..0c14b7d 100644
 --- a/playback/src/mixer/mod.rs
 +++ b/playback/src/mixer/mod.rs
 @@ -1,6 +1,7 @@
@@ -374,8 +389,8 @@ index 89d0323..89eb2d9 100644
      }
 +
 +    /// Changes to the volume made outside librespot, for a mixer that can see
-+    /// them: another program or a hardware control setting the same Alsa
-+    /// control, for example. Spirc reports each one to Spotify.
++    /// them, such as another program setting the same control. The receiver
++    /// holds the latest volume; Spirc reports it to Spotify.
 +    fn volume_changes(&self) -> Option<watch::Receiver<u16>> {
 +        None
 +    }
