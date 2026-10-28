@@ -436,12 +436,15 @@ jobs:
 
   images-build:
     needs: [select, images-toolchain, config]
-    # always(), so a run that selected only non-EA boards (toolchain skipped)
-    # still builds them, and a toolchain failure fails only the EA image jobs
-    # (at their download step), not ioxv1/ca1/hc800. select must have succeeded
-    # and picked at least one board.
+    # !cancelled(), so a run that selected only non-EA boards (toolchain
+    # skipped) still builds them, and a toolchain failure fails only the EA
+    # image jobs (at their download step), not ioxv1/ca1/hc800. NOT always():
+    # GitHub never cancels an always() job, so a superseded branch run kept its
+    # image jobs going for hours and held the newer run pending behind it in
+    # the concurrency group. select must have succeeded and picked at least
+    # one board.
     # `config.heavy` is the stage-1/stage-2 master switch (see the `config` job).
-    if: always() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' && needs.select.outputs.boards != '[]'
+    if: ${{ !cancelled() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' && needs.select.outputs.boards != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -570,7 +573,7 @@ jobs:
       # previous attempt first (the run_id- prefix), then this board's newest
       # from older runs, then any of its family's. restore/save split (not plain
       # actions/cache) so a FAILED build still saves what it compiled — the save
-      # runs on always() — and the next attempt resumes from it.
+      # runs on failure() — and the next attempt resumes from it.
       #
       # This is what lets a PR finish a cold WebKit at all: PRs do not save the
       # output tree (below), so a build that runs out of time keeps nothing but
@@ -955,7 +958,8 @@ jobs:
 
   images-carry-forward:
     needs: [select, images-build, config]
-    if: always() && needs.config.outputs.heavy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # !cancelled(), not always(): runs after a failed build, stops with a cancel.
+    if: ${{ !cancelled() && needs.config.outputs.heavy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1592,6 +1596,11 @@ jobs:
   # from deadlocking on an unrelated PR); it passes when every component it
   # needs either passed or was skipped as irrelevant, and FAILS if any of them
   # failed or was cancelled. It is NOT an always-green sentinel.
+  # The one job that keeps always() (every other uses !cancelled() so a cancel
+  # stops it): a SKIPPED required check counts as passing, so under
+  # !cancelled() a cancelled run would leave a mergeable green PR. It costs a
+  # few seconds after the cancel; a superseded run's red ci-ok is replaced by
+  # the newer run's.
   #
   # `needs` lists every GATE and BUILD job. It deliberately OMITS
   # images-carry-forward (best-effort, main-only; a cold cache is not a failure)
