@@ -1,0 +1,76 @@
+name: test-librespot-alsa-watch
+
+# TEST ONLY: check the librespot Alsa volume-watch patch (meant for upstream,
+# librespot-org/librespot#1450) the way librespot's own CI does, run it against
+# a real ALSA control (snd-dummy), and build a binary to try on a box.
+on:
+  push:
+    branches: [test-librespot-alsa-watch]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      LIBRESPOT_BASE: 99b6088
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: librespot dev + the patch
+        run: |
+          git clone -q https://github.com/librespot-org/librespot.git "$RUNNER_TEMP/librespot"
+          cd "$RUNNER_TEMP/librespot"
+          git checkout -q "$LIBRESPOT_BASE"
+          git -c user.name=ci -c user.email=ci@localhost am -q "$GITHUB_WORKSPACE/test/librespot/0001-alsa-watch.patch"
+          git log --oneline -2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install librespot's build dependencies, alsa-utils, snd-dummy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse-dev portaudio19-dev libasound2-dev libsdl2-dev \
+            gstreamer1.0-dev libgstreamer-plugins-base1.0-dev libavahi-compat-libdnssd-dev \
+            alsa-utils
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe snd-dummy && sudo chmod a+rw /dev/snd/* && amixer -D hw:Dummy scontrols \
+            || echo "::warning::no snd-dummy on this runner"
+
+      - name: cargo fmt
+        working-directory: ${{ runner.temp }}/librespot
+        run: cargo fmt --all -- --check
+
+      - name: clippy (alsa-backend, connect) with -D warnings
+        working-directory: ${{ runner.temp }}/librespot
+        run: |
+          cargo clippy -p librespot-playback --features alsa-backend --all-targets -- -D warnings
+          cargo clippy -p librespot-connect --all-targets -- -D warnings
+          cargo clippy --features alsa-backend --all-targets -- -D warnings
+
+      - name: cargo test --workspace
+        working-directory: ${{ runner.temp }}/librespot
+        run: cargo test --workspace --features alsa-backend
+
+      - name: Watch a real ALSA control (snd-dummy)
+        working-directory: ${{ runner.temp }}/librespot
+        run: |
+          cp "$GITHUB_WORKSPACE/test/librespot/alsa_watch.rs" examples/
+          amixer -D hw:Dummy scontrols || { echo "::warning::skipped, no snd-dummy"; exit 0; }
+          RUST_LOG=librespot_playback=debug cargo run -q --example alsa_watch --features alsa-backend -- hw:Dummy Master
+
+      - name: Binary for a box (alsa, rustls, libmdns)
+        working-directory: ${{ runner.temp }}/librespot
+        run: |
+          cargo build --release --no-default-features --features alsa-backend,rustls-tls-webpki-roots,with-libmdns
+          cargo build --release --example alsa_watch --no-default-features --features alsa-backend,rustls-tls-webpki-roots
+          mkdir -p "$RUNNER_TEMP/out"
+          cp target/release/librespot target/release/examples/alsa_watch "$RUNNER_TEMP/out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: librespot-alsa-watch-x86_64
+          path: ${{ runner.temp }}/out/
