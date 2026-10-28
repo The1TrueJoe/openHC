@@ -234,6 +234,9 @@ device, and are **not** what the fan curve uses. Mainline `coretemp` and
 `x86_pkg_temp_thermal` both fail to bind on the CE5310, so the LM75 heatsink
 sensor is the open path.
 
+How openHC runs the fan from those interfaces, and why its PWM runs at
+100 kHz rather than stock's 25 kHz, is on [fan and thermal](/ea/fan/).
+
 ## The PIC24 watchdog
 
 `/dev/ttyS2` goes to a **Microchip PIC24**, a discrete part on the board, not

@@ -125,7 +125,9 @@ the chip, the lirc devices and the `ttyOHC` ports. Nothing in userspace is
 involved, and there is no `/dev/ttyS1` any more: a UART with a serdev child
 belongs to that driver.
 
-**The HC-800 has none.** Its BIOS describes 8250 UARTs and nothing else, so no
+**The HC-800 has none for its UARTs.** It links a small tree for the GPIO
+block and front panel, but its BIOS (ACPI) owns the 8250s, and an x86 kernel
+takes UARTs from a tree only when ACPI is off. So no
 serdev device is created there. A **line discipline** needs no enumeration:
 userspace opens the port and hands it to the kernel with `TIOCSETD`, the way
 PPP, SLIP and `n_gsm` are attached. Both front ends share one core — framing,

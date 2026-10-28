@@ -11,3 +11,4 @@ audio       # ALSA + Spotify Connect + AirPlay userspace (needs an output: DSP o
             # EA3, HDMI elsewhere once that driver lands)
 restore     # software return-to-stock: ohc-restore edits the MFH over mtd0
 storage     # USB drives mounted and shared over SMB (ohc-storaged)
+usb-input   # USB keyboards, mice and game controllers (hubs too) for the on-screen UI

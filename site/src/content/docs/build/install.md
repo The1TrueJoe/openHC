@@ -162,12 +162,34 @@ ohc-flash uninstall <host>   # put back the as-shipped menu.lst, delete our file
 ohc-flash restore   <host>   # Control4's own factory restore, once, then stock
 ```
 
-`restore` is the software ID button. It appends a copy of the factory entry
-that `savedefault`s back to the stock entry, and points the saved default at
-it. The box runs Control4's restore once (about 5 minutes, re-imaging
-`sda3`/`sda4` from `sda2`) and reboots into a clean stock image. It never writes
-`default 0`: Control4's `restore.sh` reboots without touching `menu.lst`, so
-that restores forever. An earlier version of the tool did exactly that.
+`restore` is the software ID button. It appends two one-shot entries and points
+the saved default at the first:
+
+1. A copy of the factory entry. The box runs Control4's restore once (about 5
+   minutes, re-imaging `sda3`/`sda4` from `sda2`), and its `savedefault` points
+   at the next entry.
+2. Stock's first boot: a copy of the stock entry whose kernel line adds an
+   `rdinit=/bin/sh -- -c "…"`. That shell runs inside Control4's kernel-embedded
+   initramfs, creates `/tmp` (mode 1777) on `sda4`, and then hands over to
+   Control4's own `/init`. (`init=` would not do: that `/init` reads it into a
+   variable it never uses. The script ends in ` #` because stock's 3.16 kernel
+   strips a quoted argument's opening quote but leaves the closing one, and the
+   `#` makes it a comment.) Control4's restore never creates `/tmp`, and
+   without it Director restarts every 20 seconds. Its `savedefault` points back
+   at the stock entry, so every later boot is plain stock.
+
+Nothing logs in to the box after the restore. It never writes `default 0`:
+Control4's `restore.sh` reboots without touching `menu.lst`, so that restores
+forever. An earlier version of the tool did exactly that. The web UI's
+*Reset to stock* writes the same entries. The ID button does not: it boots
+Control4's own entry 0, so after a button restore `/tmp` is missing until
+openHC is installed again or `uninstall` runs.
+
+`uninstall` also checks that stock's root (`sda4`) still has its `/tmp` mount
+point, mode 1777, and creates it if not. Stock mounts a tmpfs there, and without
+the directory Control4's Director restarts every 20 seconds. Control4's own
+factory restore never creates it: the root tarball on `sda2` has no `tmp`, and
+neither `restore.sh` nor stock's `rcS` makes one.
 
 The first `menu.lst.pre-openhc` the tool writes is the as-shipped file, and it
 is never overwritten. Keep a byte copy of `sda1` off the box too. It is the one

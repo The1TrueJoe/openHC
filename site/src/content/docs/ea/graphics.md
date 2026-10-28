@@ -317,6 +317,100 @@ out-of-memory kill costs a reboot and is informative. Reclaiming is the step tha
 can strand the board.
 :::
 
+## Kexec out of a GPU kernel breaks the next one
+
+Once `pvrsrvkm` has bound the SGX (01:02.0), **a kexec out of that kernel leaves
+the next kernel broken**, every time. Measured on an EA1, 2026-10-26:
+
+- **Legacy-block reads run one behind.** Reads of the HPET (`0xfed00000`) and
+  IOAPIC (`0xfec00000`) return the *previous* read's value. The HPET looks frozen
+  (`clocksource: Watchdog hpet interval: 0ns`), the TSC is marked unstable,
+  timers die, and interrupts are misrouted.
+- **DMA is dead.** SDHCI times out waiting for its ADMA interrupt. e1000 reports
+  `Detected Tx Unit Hang` with TDH stuck at 0. EHCI gets -110.
+
+It doesn't depend on the incoming kernel or initrd. MTRRs and PAT are identical
+on both sides, and there is no DMAR table. A second kexec on its own is fine:
+bootstrap → kexec'd bootstrap → fat kernel boots clean. What matters is whether
+the SGX driver probed in the *outgoing* kernel. With it blacklisted
+(`initcall_blacklist=PVRSRVDrmInit`), the same kexec is clean.
+
+**The normal boot is not affected.** The bootstrap kernel that `S00kexec` runs
+from never binds the GPU, so its hand-off to the fat kernel is clean.
+
+### GPU idle: fixed by holding the core in reset
+
+After a **cold** boot where nothing rendered, unbinding `pvrsrvkm` and then
+writing `EUR_CR_SOFT_RESET` (`0x80`) = `0x3f` holds BIF, DPM, TA, USE, ISP and
+TSP in reset. The next kernel then comes up healthy. This was confirmed on two
+different fat kernels.
+
+The fat kernel does it by itself (#90):
+`board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c` registers a syscore
+`.shutdown`. It runs after every driver's `.shutdown`, so it comes after PVR's
+own power-down handshake. It writes the reset only if a driver is still bound to
+the SGX. The next PVR probe releases the reset itself (`sgxreset.c`).
+
+### GPU used: not recoverable without a power-cycle
+
+Once the GPU has rendered, nothing tried brings back a clean kexec. That includes
+the panel web view or any GL client, and probably `S60sgx`, which brings the
+services up at every boot since #96. That last case wasn't measured separately.
+None of these fixed it:
+
+- unbinding the driver, plus the soft reset (PCI bus master was already off,
+  command register `0x0002`);
+- restoring every safely accessible register to its power-on value: events
+  cleared, `BIF_CTRL` `0xff00` (MMU bypass), `CLKGATECTL` 0. That made it
+  *worse*, with garbled reads on PCI bus 1 on top.
+
+| SGX register | power-on (bootstrap kernel) | after rendering |
+|---|---|---|
+| `CLKGATECTL` (`0x0`) | 0 | `0xa6aa` |
+| `CLKGATESTATUS` (`0x8`) | 0 | `0x20` |
+| `EVENT_STATUS` (`0x12c`) | 0 | `0xa0004000` |
+| `HOST_ENABLE` (`0x130`) | 0 | `0x4000` |
+| `BIF_CTRL` (`0xc00`) | `0xff00` | 0 |
+
+**A warm reboot through CEFDK doesn't clear it either.** The SGX keeps the used
+state across the reset, and a kexec from the kernel that boots next still breaks.
+Only a power-cycle clears it. Whatever state remains lies beyond the registers
+that are safe to touch.
+
+:::danger[Reading the wrong SGX register wedges the bus]
+On an SGX that isn't clocked or initialised, reading `EUR_CR_USE_CODE_BASE_0`
+(`0xa0c`) **hangs the whole box** and needs a power-cycle. Registers safe to
+access in any state, as measured: `0x0`, `0x8`, `0x80`, `0x12c`, `0x130` and
+`0xc00`. Probe only those.
+:::
+
+### The rule
+
+**The product never kexecs out of the real kernel** (#90).
+
+- `ohc-restore stock` stages its one-shot flag and **reboots through CEFDK**
+  into boot-init. Boot-init reimages p1 from the bootstrap kernel, which never
+  touched the GPU.
+- `ohc-restore recovery-kexec` **refuses** while a driver is bound to
+  `0000:01:02.0`.
+- The flasher's `kexec` command is a developer tool, and the same limit applies
+  to it.
+
+**To RAM-test a kernel on an EA,** start from a box that has been power-cycled
+since the GPU last rendered. Two ways to set that up:
+
+- **Proven:** keep the outgoing kernel from binding the GPU at all. Add
+  `initcall_blacklist=PVRSRVDrmInit` to `OHC_KEXEC_CMDLINE_EXTRA` in
+  `board.env`, then power-cycle.
+- **Proven only before `S60sgx` existed:** set `OHC_DISPLAY_ENABLE=0` and
+  power-cycle. Then unbind `pvrsrvkm`, run `devmem 0xdc000080 32 0x3f`, and
+  kexec. Unbind and reset by hand anyway, because a kernel without the quiesce
+  won't do it. With `S60sgx` bringing the GPU up at boot, assume this no longer
+  counts as idle until it's measured.
+
+If a kexec'd kernel shows the HPET or DMA symptoms above, the fault is the
+hand-off, not the kernel under test.
+
 ## Recovered material index
 
 | What | Where | DDK |

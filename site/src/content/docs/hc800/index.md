@@ -310,6 +310,36 @@ gives `gpio_ich` a node under the LPC bridge (00:1f.0); one small kernel patch
 (`patches/linux/0002`) gives `lpc_ich`'s GPIO cell the compatible that hands it
 that node. The sysfs numbers are an artefact of a dynamic base.
 
+### How the tree attaches (alongside ACPI)
+
+The HC-800 boots with ACPI, and keeps it: `arch/x86/kernel/devicetree.c` takes
+CPUs, interrupts and PNP devices from a tree only when ACPI is off, so the tree
+adds nodes and replaces nothing it does not describe.
+
+- **`BUILTIN_DTB`** is `board/common/patches/linux/0015-x86-of-builtin-dtb.patch`,
+  ONE copy shared with the EA family (both x86 defconfigs list
+  `board/common/patches` in `BR2_GLOBAL_PATCH_DIR`; the ARM boards never do). It
+  links `CONFIG_BUILTIN_DTB_NAME="hc800"` into the kernel, because GRUB 0.97
+  passes no tree. A tree from `kexec --dtb` still wins over the built-in one.
+- **`board/hc800/hc800.dts`** is copied into `arch/x86/boot/dts/` by the
+  generic `OHC_BOARD_DTS_HOOK` in `board/external.mk`, named by
+  `BR2_OHC_BOARD_DTS` in `hc800_defconfig`.
+- **Reaching the ICH.** `pci@80000000` (`device_type = "pci"`, `bus-range = <0 0>`)
+  is what `pcibios_get_phb_of_node()` matches to the root bus; `lpc@1f`
+  (`reg = <0xf800 …>`, devfn 00:1f.0) is what `pci_set_of_node()` matches to the
+  LPC bridge. Only that one function is described, because **a PCI device with a
+  DT node loses its ACPI companion** — verified: 00:1f.0 has an `of_node` and no
+  `firmware_node`. The PNP devices under it (UARTs, etc.) are unaffected.
+- **Reaching `gpio_ich`.** mfd-core gives a cell an `of_node` only when the cell
+  has an `of_compatible`; `lpc_ich` sets none, hence the one-line
+  `patches/linux/0002-mfd-lpc_ich-gpio-of-compatible.patch` (`intel,ich-gpio`).
+  gpiolib then takes the chip's fwnode from its parent, and `dev_fwnode()`
+  prefers the `of_node`, so `gpio-line-names` and the `&gpio` phandles that
+  `gpio-leds` and `gpio-keys-polled` use resolve.
+
+This replaced `ohc-hc800.c`, a C platform driver that registered the same LEDs
+and button and could not name lines.
+
 ### LEDs and the ID button
 
 Six LED channels on four physical LEDs, all active-high, read out of the vendor
@@ -330,6 +360,15 @@ The ID button (offset 2) is a `gpio-keys-polled` input device,
 `hc800-id-button`, emitting `KEY_F5` as the vendor's does (40 ms poll, 20 ms
 debounce). It is the **factory-reset button**, read by GRUB and the stock
 firmware; openHC exposes it and gives it no runtime job.
+
+**Verified on hardware 2026-10-26** (kexec'd from the installed image, not
+flashed): `/sys/firmware/fdt` present; `gpioinfo` shows the names and
+`gpiofind io_reset` gives `gpiochip0 33`; the six LEDs register with the same
+labels and triggers (`green:data` toggles, `blue:wifi` blinks 500/500); one ID
+button press read `EV_KEY 63` down, then up 246 ms later; and nothing else moved:
+ttyS0–4, `\_SB_.PCI0.SBRG.UAR4` still an ACPI PNP device, IO-MCU on ttyS3
+(4 relays, 4 contacts, 8 IR), Zigbee on tcp 6638, `iTCO_wdt`, `i801` and the HDA
+card.
 
 ## Network
 
@@ -636,8 +675,10 @@ the CA-1:
 1. **Every driver it needs is mainline and has been for a decade** — `ahci`,
    `r8169`, `snd_hda_intel`, `i2c_i801`, `lpc_ich`/`gpio_ich`, `iTCO_wdt`, `8250`,
    `ehci`/`uhci`. The only staging component is the USB Wi-Fi. There's no SoC
-   resurrection work, no de-device-tree patching, and no board DTS to reconstruct.
-   **openHC needs zero kernel patches for this board.**
+   resurrection work and no de-device-tree patching. The only board DTS is a
+   small one for the front panel and line names, and the kernel patches are a
+   small ALSA hint, the one-line `lpc_ich` compatible and the `BUILTIN_DTB` patch
+   shared with the EA family.
 2. **The boot chain is a text file.**
 3. **No image-size ceiling.** GRUB is not CEFDK.
 4. **It's a PC, so it isn't a family.** Nothing about it generalises, which is
@@ -650,8 +691,6 @@ the EA family and with the HC-250.
 
 ## Open questions
 
-- **The LED GPIO map**, six `leds-gpio` LEDs whose ICH offsets are only in the
-  vendor board file.
 - **The LM3S1162 profile table**, whether the image carries a per-board table
   like the decoded TM4C one. This would settle the six-jacks-versus-four-timers IR
   conflict and confirm the 4/4 relay/contact counts from firmware rather than from
