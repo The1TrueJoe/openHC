@@ -1,0 +1,215 @@
+# Build-test the wpewebkit WPE Platform series (0001 libxkbcommon dep,
+# 0002 WPE Platform options) on GitHub-hosted runners, with Buildroot's own
+# utils/test-pkg. workflow_dispatch only; saves NO caches (the repo is over its
+# 10 GB Actions cache cap), so every job is a cold build of ~3-4 h.
+#
+# Drop into .github/workflows/ on any branch that has the two patches under
+# build/buildroot-patches/ (wpe-patch-necessity does, as 0004/0005).
+#
+# Jobs (each one runner, in parallel):
+#   headless  WPE Platform on, DRM off. glibc x86-64.  <- the case CI never built
+#   drm       WPE Platform + DRM, musl x86-64 + eudev (HC-800-like libc/udev)
+#   wayland   WPE Platform + Wayland platform (optional; input toggle)
+#   off       series applied, WPE Platform off (regression: nothing new built)
+#   full      glibc + systemd: DRM (logind session code) + Wayland + headless,
+#             with libmanette (gamepads) and sysprof (presentation-time)
+#
+# Mesa uses softpipe (no LLVM) to keep the dependency build short; GBM and
+# EGL come with it. The HC-800 i915+llvmpipe config is covered by the board
+# build itself (ci.yml) on the follow-up PR.
+
+name: test-wpe-platform
+
+on:
+  # workflow_dispatch needs the file on the default branch; on this test-only
+  # branch a push of this file starts it instead, with every variant on.
+  push:
+    branches: [test-wpe-series-final]
+    paths: [.github/workflows/test-wpe-platform.yml]
+  workflow_dispatch:
+    inputs:
+      wayland:
+        description: "Also build the Wayland-platform variant"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # Same Buildroot as ci.yml.
+  BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
+
+jobs:
+  test-pkg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: headless
+            toolchain: bootlin-x86-64-glibc
+            snippet: |
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
+          - name: drm
+            toolchain: bootlin-x86-64-musl
+            snippet: |
+              BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y
+          - name: wayland
+            toolchain: bootlin-x86-64-glibc
+            snippet: |
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_WAYLAND=y
+          - name: off
+            toolchain: bootlin-x86-64-glibc
+            snippet: ""
+          - name: full
+            toolchain: bootlin-x86-64-glibc
+            snippet: |
+              BR2_INIT_SYSTEMD=y
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y
+              BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_WAYLAND=y
+              BR2_PACKAGE_LIBMANETTE=y
+              BR2_PACKAGE_SYSPROF=y
+    name: ${{ matrix.name }}
+    steps:
+      - name: Skip optional variant
+        if: matrix.name == 'wayland' && !(inputs.wayland || github.event_name == 'push')
+        run: echo "wayland variant not requested" && exit 0
+
+      - uses: actions/checkout@v4
+        if: matrix.name != 'wayland' || inputs.wayland || github.event_name == 'push'
+
+      - name: Free disk (WebKit needs ~25 GB)
+        if: matrix.name != 'wayland' || inputs.wayland || github.event_name == 'push'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: Host packages
+        if: matrix.name != 'wayland' || inputs.wayland || github.event_name == 'push'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential file wget cpio unzip rsync bc \
+            libncurses-dev git python3 binutils
+
+      - name: Buildroot + the wpewebkit series
+        if: matrix.name != 'wayland' || inputs.wayland || github.event_name == 'push'
+        run: |
+          set -e
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
+          # Exactly how ci.yml applies them.
+          for p in build/buildroot-patches/*wpewebkit*.patch; do
+            echo ">> ${p##*/}"
+            patch -d "$HOME/buildroot" -p1 --forward --batch < "$p"
+          done
+
+      - name: test-pkg
+        if: matrix.name != 'wayland' || inputs.wayland || github.event_name == 'push'
+        run: |
+          set -e
+          cd "$HOME/buildroot"
+          echo "support/config-fragments/autobuild/${{ matrix.toolchain }}.config,x86_64" > /tmp/tc.csv
+          cat > /tmp/snippet.config <<'EOF'
+          BR2_PACKAGE_MESA3D=y
+          BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SOFTPIPE=y
+          BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+          BR2_PACKAGE_MESA3D_OPENGL_ES=y
+          BR2_PACKAGE_WPEWEBKIT=y
+          ${{ matrix.snippet }}
+          EOF
+          sed -i 's/^ *//' /tmp/snippet.config
+          cat /tmp/snippet.config
+          # -k keeps the tree so the next step can inspect it.
+          ./utils/test-pkg -t /tmp/tc.csv -c /tmp/snippet.config \
+            -p wpewebkit -d "$HOME/tp" -k
+          # test-pkg SKIPS (exit 0) when a snippet option does not stick in
+          # the final .config. With -k it keeps that .config, but it leaves
+          # missing.config behind only on a skip: treat that as a failure.
+          M="$HOME/tp/${{ matrix.toolchain }}/missing.config"
+          if [ -s "$M" ]; then
+            echo "FAIL: test-pkg skipped the build; options that did not stick:"
+            cat "$M"; exit 1
+          fi
+
+      - name: Check what was built
+        if: matrix.name != 'wayland' || inputs.wayland || github.event_name == 'push'
+        run: |
+          set -e
+          O="$HOME/tp/${{ matrix.toolchain }}"
+          T="$O/target"; S="$O/staging"
+          C="$O/build/wpewebkit-2.50.5/CMakeCache.txt"
+          grep -E '^ENABLE_WPE_PLATFORM[A-Z_]*:' "$C" | tee opts.txt
+          pc() { find "$O/host" -name "$1-2.0.pc" | grep -q .; }
+          lib=$(ls "$T"/usr/lib/libWPEWebKit-2.0.so.* | head -1)
+          readelf -d "$lib" | grep NEEDED | tee needed.txt
+          fail=0
+          want() { grep -q "$1" opts.txt || { echo "FAIL: want $1"; fail=1; }; }
+          case "${{ matrix.name }}" in
+            off)
+              want 'ENABLE_WPE_PLATFORM:[A-Z]*=OFF'
+              pc wpe-platform && { echo "FAIL: wpe-platform built"; fail=1; }
+              [ -d "$O/build/libinput-"* ] 2>/dev/null && { echo "FAIL: libinput built"; fail=1; }
+              ;;
+            headless)
+              want 'ENABLE_WPE_PLATFORM:[A-Z]*=ON'
+              want 'ENABLE_WPE_PLATFORM_HEADLESS:[A-Z]*=ON'
+              want 'ENABLE_WPE_PLATFORM_DRM:[A-Z]*=OFF'
+              want 'ENABLE_WPE_PLATFORM_WAYLAND:[A-Z]*=OFF'
+              pc wpe-platform-headless || { echo "FAIL: no headless .pc"; fail=1; }
+              pc wpe-platform-drm && { echo "FAIL: drm built"; fail=1; }
+              grep -q libinput needed.txt && { echo "FAIL: links libinput"; fail=1; }
+              ;;
+            drm)
+              want 'ENABLE_WPE_PLATFORM_DRM:[A-Z]*=ON'
+              pc wpe-platform-drm || { echo "FAIL: no drm .pc"; fail=1; }
+              grep -q libinput needed.txt || { echo "FAIL: no libinput NEEDED"; fail=1; }
+              grep -q libudev needed.txt || { echo "FAIL: no libudev NEEDED"; fail=1; }
+              ;;
+            wayland)
+              want 'ENABLE_WPE_PLATFORM_WAYLAND:[A-Z]*=ON'
+              pc wpe-platform-wayland || { echo "FAIL: no wayland .pc"; fail=1; }
+              ;;
+            full)
+              want 'ENABLE_WPE_PLATFORM_DRM:[A-Z]*=ON'
+              want 'ENABLE_WPE_PLATFORM_WAYLAND:[A-Z]*=ON'
+              want 'ENABLE_WPE_PLATFORM_HEADLESS:[A-Z]*=ON'
+              for v in drm wayland headless; do pc wpe-platform-$v || { echo "FAIL: no $v .pc"; fail=1; }; done
+              # systemd -> ENABLE_JOURNALD_LOG -> the logind DRM session code
+              find "$O/build/wpewebkit-2.50.5" -name '*WPEDRMSessionLogind*.o' | grep -q . \
+                || { echo "FAIL: logind DRM session not compiled"; fail=1; }
+              grep -q libsystemd needed.txt || echo "note: libsystemd not NEEDED by libWPEWebKit (may be in libWPEPlatform)"
+              ;;
+          esac
+          if [ "${{ matrix.name }}" != off ]; then
+            # A runtime-only select: test-pkg builds just wpewebkit, so check
+            # the select stuck, then build it and check its data is installed.
+            grep -q '^BR2_PACKAGE_XKEYBOARD_CONFIG=y' "$O/.config" \
+              || { echo "FAIL: xkeyboard-config not selected"; fail=1; }
+            make -C "$HOME/buildroot" O="$O" xkeyboard-config >/dev/null
+            [ -f "$T/usr/share/X11/xkb/rules/evdev" ] \
+              || { echo "FAIL: no xkeyboard-config data in target"; fail=1; }
+          fi
+          for l in "$O"/target/usr/lib/libWPEPlatform*.so.*; do
+            [ -e "$l" ] && { echo "== $l"; readelf -d "$l" | grep NEEDED; }
+          done
+          exit $fail
+
+      - name: Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-pkg-${{ matrix.name }}
+          path: |
+            ~/tp/*/logfile
+            ~/tp/*/.config
+          retention-days: 7
