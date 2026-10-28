@@ -1,4 +1,4 @@
-From efd2b8c0d694681255191c6f89c50d0e2e7bf191 Mon Sep 17 00:00:00 2001
+From e535a960cd63d25fa025cf861028ff7c38032e8d Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
 Date: Wed, 28 Oct 2026 03:38:44 -0400
 Subject: [PATCH] ALSA: hda/generic: Add indep_dig_outs hint
@@ -26,7 +26,7 @@ HDMI output stays the "Digital" PCM (device 3), the coax output becomes
 "Alt Digital" (device 1) with its IEC958 controls at index 16, and the
 two play different streams at once.
 
-Signed-off-by: Joseph Telaak <joseph@telaak.dev>
+Assisted-by: LLM
 ---
  Documentation/sound/hd-audio/notes.rst |  3 ++
  sound/hda/codecs/generic.c             | 63 ++++++++++++++++++++++----
@@ -34,7 +34,7 @@ Signed-off-by: Joseph Telaak <joseph@telaak.dev>
  3 files changed, 63 insertions(+), 10 deletions(-)
 
 diff --git a/Documentation/sound/hd-audio/notes.rst b/Documentation/sound/hd-audio/notes.rst
-index c16f8387..5dce0f85 100644
+index c16f83875..5dce0f85e 100644
 --- a/Documentation/sound/hd-audio/notes.rst
 +++ b/Documentation/sound/hd-audio/notes.rst
 @@ -486,6 +486,9 @@ inv_dmic_split (bool)
@@ -48,7 +48,7 @@ index c16f8387..5dce0f85 100644
      add the stereo mix (analog-loopback mix) to the input mux if
      available
 diff --git a/sound/hda/codecs/generic.c b/sound/hda/codecs/generic.c
-index 6120f797..6d7c2ad0 100644
+index 6120f797b..6d7c2ad0f 100644
 --- a/sound/hda/codecs/generic.c
 +++ b/sound/hda/codecs/generic.c
 @@ -168,6 +168,9 @@ static void parse_user_hints(struct hda_codec *codec)
@@ -181,7 +181,7 @@ index 6120f797..6d7c2ad0 100644
  		return 0;
  
 diff --git a/sound/hda/codecs/generic.h b/sound/hda/codecs/generic.h
-index 52459182..e6971ff6 100644
+index 524591821..e6971ff66 100644
 --- a/sound/hda/codecs/generic.h
 +++ b/sound/hda/codecs/generic.h
 @@ -93,6 +93,7 @@ struct hda_gen_spec {
