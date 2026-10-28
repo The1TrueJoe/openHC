@@ -1,0 +1,38 @@
+name: test-hda-indep-for-next
+
+# TEST ONLY: build the indep_dig_outs patch (going to linux-sound) on Takashi
+# Iwai's sound.git for-next, with W=1, both with the generic codec built in
+# and as a module.
+on:
+  push:
+    branches: [test-hda-indep-for-next]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y flex bison libelf-dev libssl-dev bc
+      - name: for-next + the patch
+        run: |
+          git clone -q --depth 1 -b for-next https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git "$RUNNER_TEMP/linux"
+          cd "$RUNNER_TEMP/linux"
+          git log --oneline -1
+          git -c user.name=ci -c user.email=ci@localhost am -q "$GITHUB_WORKSPACE/.github/test-hda/0001-ALSA-hda-generic-Add-indep_dig_outs-hint.patch"
+          git log --oneline -2
+      - name: x86_64, HDA generic + Realtek as modules, W=1
+        working-directory: ${{ runner.temp }}/linux
+        run: |
+          make -s x86_64_defconfig
+          scripts/config -m SND_HDA_INTEL -m SND_HDA_GENERIC -m SND_HDA_CODEC_REALTEK -m SND_HDA_CODEC_ALC882 -e SND_HDA_PATCH_LOADER -e SND_HDA_RECONFIG
+          make -s olddefconfig
+          grep -E "^CONFIG_SND_HDA_(GENERIC|INTEL|CODEC_REALTEK|PATCH_LOADER)=" .config
+          make -s -j"$(nproc)" W=1 sound/hda/ 2>&1 | tee build.log
+          ! grep -E "generic\.[ch].*(warning|error)" build.log
+      - name: Docs entry renders (notes.rst)
+        working-directory: ${{ runner.temp }}/linux
+        run: python3 -c "import docutils" 2>/dev/null || pip install -q docutils; python3 -m docutils --halt=warning Documentation/sound/hd-audio/notes.rst /dev/null
