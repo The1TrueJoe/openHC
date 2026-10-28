@@ -81,3 +81,32 @@ jobs:
         with:
           name: librespot-alsa-watch-x86_64
           path: ${{ runner.temp }}/out/
+
+  # The HC-800 image is musl (1.2.6): build the same binaries in Alpine so they
+  # run there against the box's own libasound.
+  musl-binaries:
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    env:
+      LIBRESPOT_BASE: 99b6088
+    steps:
+      - name: Toolchain
+        run: apk add --no-cache git rust cargo alsa-lib-dev pkgconf build-base perl linux-headers
+      - uses: actions/checkout@v4
+      - name: librespot dev + the patch, musl release binaries
+        run: |
+          set -e
+          git config --global --add safe.directory '*'
+          git clone -q https://github.com/librespot-org/librespot.git /tmp/librespot
+          cd /tmp/librespot
+          git checkout -q "$LIBRESPOT_BASE"
+          git -c user.name=ci -c user.email=ci@localhost am -q "$GITHUB_WORKSPACE/.github/test-librespot/0001-alsa-watch.patch"
+          cp "$GITHUB_WORKSPACE/.github/test-librespot/alsa_watch.rs" examples/
+          cargo build --release --no-default-features --features alsa-backend,rustls-tls-webpki-roots,with-libmdns
+          cargo build --release --example alsa_watch --no-default-features --features alsa-backend,rustls-tls-webpki-roots
+          mkdir -p /tmp/out && cp target/release/librespot target/release/examples/alsa_watch /tmp/out/
+          file /tmp/out/* 2>/dev/null || ls -la /tmp/out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: librespot-alsa-watch-x86_64-musl
+          path: /tmp/out/
