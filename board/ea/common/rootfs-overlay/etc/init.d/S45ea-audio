@@ -7,7 +7,8 @@
 # modalias, and deferred probe sorts out the order --
 #   ce5300-i2s           CPU DAI (+ the PCM once enable_pcm=1), by its PCI id
 #   adau1451-c4          codec, by the "adi,adau1451" node on i2c-3; loads
-#                        /lib/firmware/openhc/adau1451-ea3.bin (the DSP parameters)
+#                        /lib/firmware/openhc/adau1451-ea3-openhc.bin (openHC's
+#                        DSP program and its parameters)
 #   snd-soc-simple-card  the card, by the "simple-audio-card" node
 # (both nodes are in ea-audio-dsp.dtsi; each driver has a
 # MODULE_DEVICE_TABLE(of, ...)). A board without the DSP has no card node, so

@@ -4,11 +4,11 @@ config BR2_PACKAGE_ADAU1451_FW
 	  openHC's SigmaDSP firmware file for the EA3's ADAU1451, built
 	  from board/ea/common/firmware/dsp/adau1451/ea3.json: the filter
 	  tables behind every tone and EQ knob, the controls ALSA shows
-	  for them, and the DSP's boot settings, all for stock's program.
-	  Installed as /lib/firmware/openhc/adau1451-ea3.bin, which the
+	  for them, and the DSP's boot settings, all for stock's program,
+	  as /lib/firmware/openhc/adau1451-ea3.bin. With a program
+	  (below), also openHC's own: adau1451-ea3-openhc.bin, which the
 	  board's device tree names and the adau1451-c4 codec driver
-	  loads through the kernel's sigmadsp core. With a program
-	  (below), also a file for openHC's own.
+	  loads through the kernel's sigmadsp core.
 
 	  Selected by the audio-dsp feature.
 
@@ -22,5 +22,6 @@ config BR2_PACKAGE_ADAU1451_FW_PROGRAM
 	  the same run as the image (build.sh takes it from
 	  OHC_DSP_PROGRAM); it is never committed. Set, the build also
 	  makes /lib/firmware/openhc/adau1451-ea3-openhc.bin from
-	  ea3-openhc.json: register init, program and cells. Empty: only
-	  adau1451-ea3.bin, the parameters of stock's program.
+	  ea3-openhc.json: register init, program and parameters. Empty:
+	  no file the device tree names, and the DSP is left as it
+	  comes up.

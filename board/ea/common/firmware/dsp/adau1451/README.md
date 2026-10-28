@@ -13,30 +13,35 @@ out of one firmware file:
 
 1. **the register init** in `ea3.json` — clocks, serial ports, routing, decoded
    from a stock unit's registers ([below](#the-register-init));
-2. **the program** — openHC's own, built by SigmaStudio+ in CI and handed to the
-   image build. It is never committed;
-3. **the parameters** — the filter tables behind every tone and EQ knob, and the
-   knob cells.
+2. **the program** — openHC's own (`program.json`), built by SigmaStudio+ in CI
+   and handed to the image build. It is never committed;
+3. **the parameters** (`ea3-openhc.json`) — the filter tables behind every tone,
+   EQ and balance knob, the fixed loudness filters, and the knob cells.
 
-Until there is a program the build makes a file with the parameters only,
-byte for byte what it made before, and the driver writes nothing (see
-[No program yet](#no-program-yet)).
+That file is `adau1451-ea3-openhc.bin`, the one the device tree names. An image
+built without the program (a fork, with no SigmaStudio+ secrets) has no such
+file, and the driver leaves the DSP as it came up.
+
+`ea3.json` is the same map for **stock's** program, read off a running stock
+unit ([Where the map came from](#where-the-map-came-from)). It still builds
+`adau1451-ea3.bin`, parameters only, and its register init is the one
+`ea3-openhc.json` uses; nothing loads that file at boot any more.
 
 ## How openHC drives it — all stock Linux
 
 | Piece | What it is |
 |---|---|
-| `ea3.json` | **The configuration, in code.** Every knob: the cell it lives in, the table behind it, and the filter design that fills the table. |
-| `ea3-openhc.json` | The parameter side of **openHC's own program**: its cells, named by block label (`Volume.Gain_Channel0`), and `ea3.json`'s register init. |
+| `ea3-openhc.json` | **The configuration, in code**, for openHC's own program: every knob (the cell it lives in, the table behind it, the filter design that fills the table), the fixed filters and the cells, named by block label (`Bass.GSO_Array`, `Volume.Gain_Channel0`), plus `ea3.json`'s register init. |
+| `ea3.json` | The register init, and the same map for stock's program at its fixed addresses. |
 | `program.json` | **The program's design, in code**: SigmaStudio+ scripting calls, run in order by CI (`dsp-program.yml`) — see [Building the program](#building-the-program). |
 | `export2program.py` | Turns SigmaStudio+'s export into `mkfw.py`'s `--program` input, and its parameter map into `params.json`. Standard library Python. |
 | `mkfw.py` | Builds a profile, and the program if given (`--program`, with `--params` to resolve cell names), into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2, mainline chunk tags). Standard library Python. |
 | `adau1451-fw.mk`, `Config.in` | The build rule: runs `mkfw.py` at image build and installs the file and the profile. Selected by the `audio-dsp` feature (`BR2_PACKAGE_ADAU1451_FW`); `BR2_PACKAGE_ADAU1451_FW_PROGRAM` is the folder holding the program (`program.txt`, `params.json`), empty for none; build.sh sets it from `OHC_DSP_PROGRAM`. |
-| `/lib/firmware/openhc/adau1451-ea3.bin` | That file, on the box: `ea3.json`, stock's program's parameters. |
-| `/lib/firmware/openhc/adau1451-ea3-openhc.bin` | With a program: `ea3-openhc.json` + register init + openHC's program. Not named by the device tree yet. |
-| the board DTB | `firmware-name` names the file; `control4,program-version` is the program's version cell and the value it must hold, checked after the load. The card is a stock `simple-audio-card`. |
+| `/lib/firmware/openhc/adau1451-ea3-openhc.bin` | That file, on the box: register init + openHC's program + `ea3-openhc.json`'s parameters. |
+| `/lib/firmware/openhc/adau1451-ea3.bin` | `ea3.json`: stock's program's parameters. Not loaded. |
+| the board DTB | `firmware-name` names the file; `control4,program-version` is the program's version cell and the value it must hold, checked after the load. The build fails if it is not the design's `Version` cell. The card is a stock `simple-audio-card`. |
 | `adau1451-c4` | The codec driver. It hands the file to the kernel's **sigmadsp** core (the one the mainline ADAU1701/ADAU17x1 drivers use), which writes it at bind and turns each named cell into an **ALSA control**. Around that the driver does the sequencing: soft reset, hibernate, the wait for PLL lock, start. |
-| ohc-audiod | Reads the knob list from the installed copy of `ea3.json` and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
+| ohc-audiod | Reads the knob list from the installed copy of `ea3-openhc.json` (board.env's `dsp=`) and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
 
 So the DSP is tuned with ordinary ALSA tools:
 
@@ -93,12 +98,25 @@ processor with no host link; nothing is downloaded over it). It migrates the
 example's processor to the ADAU1451, removes the example's algorithms, and
 builds openHC's chain:
 
+```
+                ┌ Bass → Treble ───────────────┐
+Input (ASRC 0) ─┼ EQ31 → EQ63 → … → EQ16k ─────┼→ Mode ─┬──────────────┬→ Loudness → BalanceLeft ─┐
+                ├ (flat) ──────────────────────┤        └→ LoudnessEQ ─┘            BalanceRight ┴→ Volume → Out*
+                └ TestTone (1 kHz, −20 dB) ────┘
+```
+
 | Block (label) | What |
 |---|---|
-| `ASRCInput_0` | ASRC 0's two channels: serial input 3, the CE5300's I²S1, converted to the core's rate |
-| `Volume` | a stereo volume (two gains in DM0) |
-| `Output_*` | left and right to the first two channels of **all four** serial outputs (channels 0/1, 16/17, 32/33, 40/41), until it is known which one feeds the AK4621 |
-| `Version` | a DC cell holding the program's version (1, as 8.24), for the driver's check |
+| `Input` | ASRC 0's two channels: serial input 3, the CE5300's I²S1, converted to the core's rate |
+| `Bass`, `Treble`, `EQ31` … `EQ16k` | `General2ndOrderIndexSelectable`, stereo: 49 biquads (`GSO_Array`, after a 7-word header — stock's layout exactly), the entry picked by an index cell |
+| `BassIndex`, … , `BalanceIndex` | those index cells: integer DC inputs (`FormatX` 32), 24 = flat |
+| `Mode` | `IndexSelectableMuxStereo`, index `ModeIndex`: 0 Tone, 1 EQ, 2 Flat, 3 Test tone |
+| `TestTone` | a 1 kHz sine at −20 dB, both channels, for the Test tone mode |
+| `LoudnessEQ`, `Loudness` | two fixed shelves (`GenSecondOrder`, 2 stages; mkfw writes them) and the mux that switches them in, index `LoudnessIndex` |
+| `BalanceLeft`, `BalanceRight` | the indexed filter block again, one channel each, as a gain table: one index, `BalanceIndex`, drives both |
+| `Volume` | a stereo volume, linear gain per channel |
+| `Out*`, `Output_0/1` | left and right to the first two channels of **all four** serial outputs (channels 0/1, 16/17, 32/33, 40/41), until it is known which one feeds the AK4621 |
+| `Version` | an integer DC cell holding the program's version (2), for the driver's check |
 
 The export becomes two files, `export2program.py`'s output:
 
@@ -127,13 +145,13 @@ Nothing exported, and not the saved project, ever enters git or a readable
 artifact. A design that fails to build fails the EA3 images. A run without the
 SigmaStudio+ secrets (a fork) builds them without the program.
 
-**The device tree still names `adau1451-ea3.bin`**, so the box does not load
-openHC's program at boot yet. Loading it means pointing `firmware-name` at
-`openhc/adau1451-ea3-openhc.bin` and `control4,program-version` at the program's
-`Version` cell (DM0 22 today, holding 1 as 8.24: `<22 0x01000000>`). The ALSA
-controls then become `ea3-openhc.json`'s (`DSP Volume Left`/`Right`, linear 8.24
-gains written 0 at boot) instead of stock's knobs. That switch waits for the
-knobs' blocks in the design and for `ea3-openhc.json` to describe them.
+**Every export is checked before an image uses it.** `dsp-program.yml` builds
+`adau1451-ea3-openhc.bin` from it and throws it away: every name in
+`ea3-openhc.json` must be in the program, and the `Version` cell must be the one
+the device tree's `control4,program-version` names. The image build runs the
+same check. A design change that moves the version cell fails there, with the
+cell to put in `ea-audio-dsp.dtsi`, instead of shipping a program the driver
+would stop.
 
 ### No program yet
 
@@ -189,6 +207,29 @@ Not settled by the registers, and left for hardware or the board:
 
 ## The knobs
 
+openHC's program has the same knobs as stock's, so the web UI and ohc-audiod do
+not change. Every address comes from the export by name (`ea3-openhc.json`):
+
+| Knob | Index cell | Table / block | Design |
+|---|---|---|---|
+| Mode | `ModeIndex` | `Mode` mux | selector: **Tone** (boot) / EQ / Flat / Test tone |
+| Loudness | `LoudnessIndex` | `Loudness` mux | selector: Off (boot) / On: `LoudnessEQ`, +6 dB below 100 Hz and +3 dB above 10 kHz |
+| Bass | `BassIndex` | `Bass.GSO_Array` | RBJ low shelf, 120 Hz, slope 1 — the HC-800's |
+| Treble | `TrebleIndex` | `Treble.GSO_Array` | RBJ high shelf, 8 kHz, slope 1 — the HC-800's |
+| Balance | `BalanceIndex` | `BalanceLeft/Right.GSO_Array` | linear, one side to silence — the HC-800's, as gain biquads |
+| EQ 31 Hz … 16 kHz | `EQ31Index` … | `EQ31.GSO_Array` … | RBJ peaking, Q 1.414 |
+
+Plus **DSP Volume Left/Right** (linear gains, written 0 at boot; ohc-audiod's
+`run` sets 1.0) and a read-only `ReadBack DSP Program` (the version cell).
+
+**The mode decides which knobs act.** Tone (bass and treble), EQ (the ten
+bands), Flat and Test tone are alternatives, not a chain; loudness and balance
+come after whichever is chosen.
+
+### Stock's program
+
+`ea3.json` maps stock's program the same way, at its fixed addresses:
+
 | Knob | Cell | Table | Design (`ea3.json`) |
 |---|---|---|---|
 | Mode | 0x0db5 (8 words) | — | selector: **Tone** (boot) / EQ / Flat / Test tone |
@@ -201,24 +242,20 @@ Not settled by the registers, and left for hardware or the board:
 Plus cells written once at boot: **Volume 0**, Max Volume 100, the
 volume-curve select, Input Gain 24 (0 dB), the test oscillator's level, the
 program's mute (released — stock's own "on" words), and a read-only
-`ReadBack DSP Program` (the version cell).
-
-**The mode decides which knobs act.** The program's output selector has four
-paths, one per channel: Tone (bass and treble), EQ (the ten bands), Flat (stock's
-"Bypass", what stock idles on), and Test tone (the program's oscillator). They
-are alternatives, not a chain. The program boots its right-channel selectors and
-its mute half set, which is why the firmware writes all three.
+`ReadBack DSP Program` (the version cell). Its output selector is one-hot per
+channel, and the program boots its right-channel selectors and its mute half
+set, which is why that profile writes all three.
 
 ## Silent unless something plays
 
 * **At boot** the DSP's Volume is written 0 and the DAC's soft mute is held.
   ohc-audiod restores the output's saved level and tone, *then* raises Volume to
-  its `run` value (100 — the output's level lives in ALSA, as on the HC-800).
+  its `run` value (1.0 — the output's level lives in ALSA, as on the HC-800).
 * **While idle** the DAC stays muted: the codec's ASoC `mute_stream` releases it
   when a stream is prepared and asserts it again when the last one closes, so
   there is no hiss on the jacks between songs.
 
-To change a design, edit `ea3.json` and rebuild. The bass and treble shelves
+To change a design, edit `ea3-openhc.json` (or the blocks, `program.json`) and rebuild. The bass and treble shelves
 match the HC-800's software stage, so a setting sounds the same on both boxes.
 
 ## Where the map came from
