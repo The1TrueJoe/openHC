@@ -1,0 +1,40 @@
+# openHC feature: usb-input — USB keyboards, mice and game controllers, directly
+# or through a hub, so whatever is on the HDMI/panel output (the on-screen WebKit
+# UI, or anything a downstream layer runs there) can be driven by hand.
+#
+# The fleet half builds everything IN: the HC-800 runs MODULES=n, where an =m
+# would silently become =n. A family whose bootstrap kernel is size-capped
+# re-layers this as modules (board/ea/common/features/usb-input).
+#
+#   * evdev + usbhid + hid-generic: keyboards, mice, touch panels.
+#   * xpad      wired Xbox 360 / Xbox One / Series pads and clones. They are
+#               vendor-class USB, not HID, so hid-generic never sees them.
+#   * joydev    /dev/input/js* for software that wants the old joystick API.
+#   * uinput    userspace input devices (remapping a pad to keyboard/mouse,
+#               virtual keyboards).
+#   * the HID pads hid-generic does not fully cover (PlayStation, Switch,
+#     Logitech/Microsoft) — their rumble and LEDs need the vendor driver.
+# Hubs need nothing extra: the hub driver is part of usbcore.
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
+CONFIG_INPUT_JOYSTICK=y
+CONFIG_JOYSTICK_XPAD=y
+CONFIG_JOYSTICK_XPAD_FF=y
+CONFIG_JOYSTICK_XPAD_LEDS=y
+CONFIG_INPUT_JOYDEV=y
+CONFIG_INPUT_MISC=y
+CONFIG_INPUT_UINPUT=y
+CONFIG_INPUT_FF_MEMLESS=y
+CONFIG_HID_PLAYSTATION=y
+CONFIG_PLAYSTATION_FF=y
+CONFIG_HID_SONY=y
+CONFIG_SONY_FF=y
+CONFIG_HID_NINTENDO=y
+CONFIG_HID_MICROSOFT=y
+CONFIG_HID_LOGITECH=y
+CONFIG_LOGITECH_FF=y
+CONFIG_HID_LOGITECH_DJ=y
+CONFIG_HID_LOGITECH_HIDPP=y

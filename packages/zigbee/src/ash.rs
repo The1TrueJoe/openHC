@@ -162,7 +162,7 @@ pub fn parse_stack(s: &str) -> Option<u16> {
 }
 
 /// OHC_ZIGBEE_DEBUG=1: log every byte the ASH layer sends and receives.
-fn debug() -> bool {
+pub(crate) fn debug() -> bool {
     std::env::var("OHC_ZIGBEE_DEBUG").map(|v| v == "1").unwrap_or(false)
 }
 

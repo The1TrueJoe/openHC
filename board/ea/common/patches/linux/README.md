@@ -134,7 +134,8 @@ What the move changed, beyond deleting C:
   address as upstream did: with `pci=realloc` a BAR can move, its index cannot.
   A BAR with no node still registers, bare, so a device-tree mistake never takes
   the box's i2c — and with it the LM75 the fan is driven from — away.
-  (`ohc-ea-hw` still instantiates the LM75 by hand if `0-0048` is missing.)
+  (`ohc-ea-hw` still instantiates the LM75 by hand if `0-0048` is missing; that
+  one has no thermal zone, so the fan stays at the full speed pwm-fan probes at.)
 * **`"intel,ce4100-i2c"` compatible in i2c-pxa.** Upstream's CE4100 DT path has
   rotted: a DT-probed adapter matched no compatible and fell back to
   `REGS_PXA2XX`, the wrong register offsets.

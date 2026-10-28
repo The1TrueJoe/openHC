@@ -1,0 +1,19 @@
+# openHC feature: usb-input, EA kernel half — the fleet fragment
+# (board/common/features/usb-input) with the controller drivers as modules.
+#
+# CEFDK's bootlinux window caps the EA bootstrap bzImage (see
+# board/ea/common/post-image.sh), and none of this is needed to reach p1. As
+# modules it costs the image nothing: eudev loads each one from the device's
+# modalias when it is plugged in. Keyboards and mice (evdev, usbhid,
+# hid-generic) are already built into the EA common kernel.
+CONFIG_JOYSTICK_XPAD=m
+CONFIG_INPUT_JOYDEV=m
+CONFIG_INPUT_UINPUT=m
+CONFIG_INPUT_FF_MEMLESS=m
+CONFIG_HID_PLAYSTATION=m
+CONFIG_HID_SONY=m
+CONFIG_HID_NINTENDO=m
+CONFIG_HID_MICROSOFT=m
+CONFIG_HID_LOGITECH=m
+CONFIG_HID_LOGITECH_DJ=m
+CONFIG_HID_LOGITECH_HIDPP=m
