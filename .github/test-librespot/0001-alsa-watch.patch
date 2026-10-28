@@ -1,4 +1,4 @@
-From 1d38f3b261656324ed07f7ff9bb9a9bef66af541 Mon Sep 17 00:00:00 2001
+From 784c2abcce716c1dce52551c55a1b754d6590eb9 Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
 Date: Wed, 28 Oct 2026 03:51:04 -0400
 Subject: [PATCH] playback, connect: report Alsa mixer volume changes made
@@ -141,7 +141,7 @@ index e1b9707..08e464f 100644
      }
  }
 diff --git a/playback/src/mixer/alsamixer.rs b/playback/src/mixer/alsamixer.rs
-index 90daaf1..519c329 100644
+index 90daaf1..82ba674 100644
 --- a/playback/src/mixer/alsamixer.rs
 +++ b/playback/src/mixer/alsamixer.rs
 @@ -5,12 +5,16 @@ use super::{Mixer, MixerConfig, VolumeCtrl};
@@ -290,7 +290,7 @@ index 90daaf1..519c329 100644
 +            ..self.clone()
 +        };
 +        let spawned = thread::Builder::new()
-+            .name("alsa-mixer-watch".into())
++            .name("alsamixer-watch".into())
 +            .spawn(move || {
 +                if let Err(e) = mixer.watch_events(&tx) {
 +                    warn!("Stopped watching the Alsa mixer for volume changes: {e}");

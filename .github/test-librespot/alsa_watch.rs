@@ -86,7 +86,7 @@ async fn main() {
     let watching = || {
         std::fs::read_dir("/proc/self/task").unwrap().filter(|t| {
             let comm = t.as_ref().unwrap().path().join("comm");
-            std::fs::read_to_string(comm).map(|c| c.trim() == "alsa-mixer-watch").unwrap_or(false)
+            std::fs::read_to_string(comm).map(|c| c.trim() == "alsamixer-watch").unwrap_or(false)
         }).count()
     };
     assert_eq!(watching(), 1, "expected exactly one watcher thread");
