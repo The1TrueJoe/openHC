@@ -25,10 +25,12 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
 | 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
+| 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
+| 0018 | b53_spi single-transfer reads | the CE5300 SSP's chip select is its frame signal and drops between transfers, so a split write-then-read never reaches the switch |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
@@ -276,11 +278,18 @@ The switch burned the most time of anything here, so the traps stay recorded:
    (`spi92`), and DSA's platform_data needed `netdev[cpu_port]` set by hand.
    Neither matters with a device tree: the switch is a child of the SSP node and
    the conduit is `ethernet = <&gbe>`.
-5. **The CE5300 SSP has Quark's register layout but not Quark's clock** (0009).
-   It has no DDS: routing it through Quark's DDS_RATE path wedges the SSP
-   (`b53-switch spi92.1: Flush failed / SPI transfer failed: -5`). It is clocked
-   like a CE4100/PXA25x part, a /2 SCR divisor off a 10 MHz input clock, and
-   skips pxa2xx's flush-first, which times out on a stopped SSP.
+5. **The CE5300 SSP is Quark X1000's SSP, clock included** (0009). `+0x28` is
+   Quark's `DDS_RATE` (100 MHz × DDS / 2²⁴ / (SCR+1), measured), and with it at 0
+   the SSP doesn't shift at all. It must be `pxa25x_ssp_comp()`: otherwise
+   spi-pxa2xx writes PXA27x's SSTO, at the same `+0x28`, over the clock. That
+   was the "wedged SSP" (`SSSR = 0x1F14`) on every kexec boot. It must be in
+   `write_SSSR_CS()` too, or every status clear resets the chip select to 0.
+   CEFDK leaves stale words in the TX FIFO, so probe clocks them out once.
+   An earlier note here said the CE5300 "has no DDS". That was wrong: the SSTO
+   writes were clobbering it.
+6. **No split reads** (0018). The chip select is the SSP's frame signal, so it
+   drops between two transfers; b53_spi must read in one full-duplex transfer,
+   as Control4's spi-bcm53125 does.
 
 Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.
