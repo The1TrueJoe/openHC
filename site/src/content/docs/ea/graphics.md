@@ -138,6 +138,24 @@ depends: (none)
 For scale, Control4's stock DDK 1.12 module is 182 KB and depends on two Intel
 shim modules.
 
+`sgx545-ce` is a submodule at `board/ea/common/sgx545-ce`. Its `kernel/` is
+mirrored into the kernel tree as `drivers/gpu/drm/sgx545ce` (`board/external.mk`).
+The rest of it is the open userspace: `srvinit/`, `libpvr/`, the Mesa driver and
+the reverse-engineering tools.
+
+## Bringing the GPU up at boot
+
+The services need one init client per boot before any GL client can connect.
+`S60sgx` runs `srvinit`, our open replacement for the DDK's `libsrv_init`
+(package `sgx545-srvinit`). It's native x86_64 and assembles everything itself
+except the 53,096-byte microkernel. The build cuts that out of the DDK tarball
+into `/lib/firmware`, so the repository holds no Imagination code. The DDK's GL
+clients run on a GPU it started.
+
+The DDK's own `sgxinit` (from `/opt/sgx-i386`) stays for A/B testing: boot with
+`ohc.sgxinit=ddk` on the kernel command line, or put `SGX_INIT=ddk` in
+`/opt/ohc/sgx.conf`.
+
 ## Verified on silicon
 
 ```

@@ -24,7 +24,7 @@ on:
   push:
     paths:
       - .github/workflows/sgx-gpu.yml
-      - board/ea/common/kernel/drivers/gpu/drm/sgx545ce/tools/**
+      - board/ea/common/sgx545-ce
 
 jobs:
   i386-sysroot:
@@ -75,7 +75,7 @@ jobs:
       - name: Cross-compile the DDK smoke tests (i686)
         run: |
           set -euxo pipefail
-          T=board/ea/common/kernel/drivers/gpu/drm/sgx545ce/tools
+          T=board/ea/common/sgx545-ce/tools/ddk
           INC=ddk/usr/include
           LIB=sgx-i386/usr/lib
           CF="-m32 -O2 -Wall -I$INC -DMESA_EGL_NO_X11_HEADERS=1"
@@ -88,6 +88,19 @@ jobs:
           gcc $CF "$T/gpubench.c" -L"$LIB" -Wl,-rpath-link,"$LIB" -lEGL -lGLESv2 -o sgx-i386/bin/gpubench || echo "gpubench optional: skipped"
           # sgxregs is a shell script; ship it too.
           cp -a "$T/sgxregs.sh" sgx-i386/bin/sgxregs
+          # run.sh: how S60sgx runs the DDK's sgxinit (ohc.sgxinit=ddk), and how
+          # to run the tools by hand (/opt/sgx-i386/run.sh gles2tri).
+          cat > sgx-i386/run.sh <<'EOF'
+          #!/bin/sh
+          # openHC: run an i386 SGX userspace tool against the x86_64 kernel driver.
+          # LD_PRELOAD the busidshim so drmOpen(pci:0000:00:02.0) is rewritten to the
+          # CE5300's 0000:01:02.0 -- without it SrvInit fails before any ioctl.
+          BIN="${1:-sgxinit}"; shift 2>/dev/null
+          ROOT=/opt/sgx-i386
+          export LD_PRELOAD="$ROOT/usr/lib/sgx-busidshim.so"
+          exec "$ROOT/lib/ld-linux.so.2" --library-path "$ROOT/usr/lib:$ROOT/lib" "$ROOT/bin/$BIN" "$@"
+          EOF
+          chmod +x sgx-i386/run.sh
           chmod +x sgx-i386/bin/*
           file sgx-i386/bin/* || true
 

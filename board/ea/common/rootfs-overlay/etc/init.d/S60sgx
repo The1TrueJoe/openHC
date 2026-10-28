@@ -1,20 +1,49 @@
 #!/bin/sh
 # Bring the SGX545 up once at boot, for every GPU client that follows.
 #
-# The DDK's services are initialised by a dedicated init client (SrvInit, the
-# job pvrsrvinit/the X driver did on Cedarview). Until something has run it,
-# the first EGL client after boot fails eglInitialize with "services not
-# reachable". So run it here, once, instead of leaving each client (the
-# on-screen view, a game, a test tool) to remember to do it first.
-# SrvInit only loads the microkernel and sets up services; it draws nothing, so
-# the boot splash S01splash left on /dev/fb0 stays up (checked on an EA1: fb0's
-# md5 is identical before and after). A no-op without the i386 GPU stack.
+# The services are initialised by a dedicated init client, once per boot. Until
+# something has run it, the first EGL client fails eglInitialize with "services
+# not reachable". So run it here instead of leaving each client (the on-screen
+# view, a game, a test tool) to remember to do it first. It only loads the
+# microkernel and sets up services; it draws nothing, so the boot splash
+# S01splash left on /dev/fb0 stays up.
+#
+# Two init clients, one per boot (a second run is refused by the driver):
+#
+#   open  srvinit (sgx545-srvinit package), native x86_64, the default. Ours,
+#         from the sgx545-ce submodule; the only Imagination bytes are the
+#         microkernel in /lib/firmware. DDK GL clients run on a GPU it started.
+#   ddk   the DDK's own libsrv_init through sgxinit, from the i386 sysroot in
+#         /opt/sgx-i386 (sgx-gpu.yml). Kept for A/B testing.
+#
+# Pick the DDK with ohc.sgxinit=ddk on the kernel command line, or for every
+# boot with SGX_INIT=ddk in /opt/ohc/sgx.conf; the command line wins.
+
+SGX_INIT=open
+[ -r /opt/ohc/sgx.conf ] && . /opt/ohc/sgx.conf
+case " $(cat /proc/cmdline 2>/dev/null) " in
+	*" ohc.sgxinit=ddk "*) SGX_INIT=ddk ;;
+	*" ohc.sgxinit=open "*) SGX_INIT=open ;;
+esac
 
 case "$1" in
 	start)
-		[ -x /opt/sgx-i386/run.sh ] || exit 0
 		[ -e /dev/dri/card0 ] || exit 0
-		/opt/sgx-i386/run.sh sgxinit 2>&1 | logger -t sgx
+		case "$SGX_INIT" in
+			ddk)
+				[ -x /opt/sgx-i386/run.sh ] || {
+					echo "sgx: no DDK sysroot in /opt/sgx-i386" | logger -t sgx
+					exit 0
+				}
+				set -- /opt/sgx-i386/run.sh sgxinit ;;
+			*)
+				[ -x /usr/sbin/srvinit ] || exit 0
+				set -- /usr/sbin/srvinit ;;
+		esac
+		echo "sgx: $SGX_INIT init: $*" | logger -t sgx
+		out=$("$@" 2>&1); rc=$?
+		[ -n "$out" ] && printf '%s\n' "$out" | logger -t sgx
+		[ "$rc" -eq 0 ] || echo "sgx: $SGX_INIT init failed ($rc)" | logger -t sgx
 		;;
 	stop|restart) ;;
 	*) echo "Usage: $0 {start}"; exit 1 ;;

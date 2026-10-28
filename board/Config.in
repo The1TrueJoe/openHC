@@ -81,10 +81,12 @@ source "$BR2_EXTERNAL_OPENHC_PATH/../packages/alsa-ohceq/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/webview/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/hc800-acpi/Config.in"
-# sgx545-ce (the SGX545 KERNEL driver) is no longer a package — it is an in-tree
-# driver mirrored from board/ea/common/kernel/drivers/gpu/drm/sgx545ce. Only its
-# userspace (sgx545-um) and its libwpe backend remain packages here; webview, the
-# on-screen browser every display board runs, is in packages/.
+# sgx545-ce (the submodule at board/ea/common/sgx545-ce) is not a package: its
+# kernel/ is mirrored in-tree as the SGX545 driver (external.mk), and srvinit, the
+# open GPU bring-up built from its srvinit/ + libpvr/, is the package below. The
+# DDK userspace (sgx545-um) and its libwpe backend are packages here too; webview,
+# the on-screen browser every display board runs, is in packages/.
+source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-srvinit/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-um/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/wpebackend-pvr/Config.in"
 # Built firmware (not a package): its rule lives with its source in firmware/.

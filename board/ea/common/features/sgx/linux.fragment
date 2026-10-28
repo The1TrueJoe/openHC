@@ -1,5 +1,5 @@
 # Kernel options for the in-tree PowerVR SGX545 driver (sgx545ce, mirrored from
-# board/ea/common/kernel/drivers/gpu/drm/sgx545ce). Mirrors that repo's own
+# board/ea/common/sgx545-ce/kernel). Mirrors that directory's own
 # linux.fragment.
 #
 # NOTE ON COMMENTS IN THIS FILE: Buildroot's merge_config.sh scrapes any line that
