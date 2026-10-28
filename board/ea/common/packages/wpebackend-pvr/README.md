@@ -12,9 +12,11 @@ runtime. The standard one, `wpebackend-fdo`, is built on Wayland — it needs
 
 The Imagination DDK 1.7 that ships for PowerVR SGX 5-series predates Wayland
 entirely. Its window-system layer (WSEGL) offers X11/DRI, LinuxFB, Front, Blit
-and Flip backends, and no Wayland at all, so `wpebackend-fdo` cannot be built
-against it, let alone run. On a headless appliance with a framebuffer and no X
-server, that leaves WPE with no way to reach the screen.
+and Flip backends, and no Wayland at all. `wpebackend-fdo` builds against it
+(Buildroot builds it for every wpewebkit), but it has no compositor to hand
+frames to and no `EGL_WL_bind_wayland_display`, so it cannot put anything on
+the screen. On a headless appliance with a framebuffer and no X server, that
+leaves WPE with no way to reach the screen.
 
 This backend fills that gap: it drives EGL directly on the DDK's LinuxFB WSEGL,
 which is the path such a device already uses for GLES.

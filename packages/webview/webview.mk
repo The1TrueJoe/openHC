@@ -10,8 +10,8 @@ WEBVIEW_SITE_METHOD = local
 WEBVIEW_LICENSE = MIT
 # libglib2 is listed even though wpewebkit already pulls it in: this source
 # includes <glib.h> and <glib-object.h> itself, and depending on someone
-# else's dependency is how wpewebkit ended up with no ordering guarantee on
-# libwpe (see build/buildroot-patches/0001).
+# else's dependency is fragile: wpewebkit itself reaches libwpe only through
+# wpebackend-fdo's dependencies.
 WEBVIEW_DEPENDENCIES = wpewebkit libwpe libglib2 host-pkgconf
 
 define WEBVIEW_BUILD_CMDS
