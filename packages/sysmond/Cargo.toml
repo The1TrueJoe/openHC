@@ -13,3 +13,8 @@ utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 rumqttc = { version = "0.25", default-features = false }
 ohcmqtt = { path = "../ohcmqtt" }
+
+# GPIO is Linux-only (see iod's Cargo.toml); the rear-USB fault line is read
+# through it, and the Mac host check builds without it.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpiocdev = "0.8"
