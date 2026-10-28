@@ -102,14 +102,22 @@ case "$1" in
                 dhcp)
                     printf 'Net: %s (switchd): ' "$OHC_NET_L3_IFACE"
                     wait_carrier "$OHC_NET_L3_IFACE"
-                    lease "$OHC_NET_L3_IFACE" && echo "up ($(addr_of "$OHC_NET_L3_IFACE"))" || echo "no lease"
+                    lease "$OHC_NET_L3_IFACE" && echo "up ($(addr_of "$OHC_NET_L3_IFACE"))" || {
+                        # switchd builds br-lan even when DSA never created its
+                        # ports, and an empty bridge never leases: fall through
+                        # to the port/master fallback below rather than staying dark.
+                        echo "no lease, falling back"
+                        switchd_failed=yes
+                    }
                     ;;
                 static)
                     echo "Net: $OHC_NET_L3_IFACE (switchd): static $(addr_of "$OHC_NET_L3_IFACE")" ;;
                 *)  echo "Net: $OHC_NET_L3_IFACE (switchd): up, no L3 address" ;;
             esac
-            [ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash restart >/dev/null 2>&1
-            exit 0
+            if [ -z "${switchd_failed:-}" ]; then
+                [ -x /etc/init.d/S01splash ] && /etc/init.d/S01splash restart >/dev/null 2>&1
+                exit 0
+            fi
         fi
     fi
 
