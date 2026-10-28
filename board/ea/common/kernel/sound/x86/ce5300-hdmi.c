@@ -39,6 +39,18 @@
  * Periods are paced by a timer from the DMA position, as in ce5300-i2s: no
  * interrupt is needed and none is routed reliably on the kernels openHC boots.
  *
+ * Once up, the link never stops sending audio: between streams the engine
+ * loops a short silent buffer, and a stream starts by linking its ring in
+ * after it and ends by linking it back out. Stopping the audio unit instead
+ * cost the start of every following stream, while the sink locked on again
+ * (heard: each speaker-test channel and each clip after the first lost its
+ * first syllable).
+ *
+ * Periods are whole and 64-byte aligned: the engine walks its source in
+ * 32-byte steps, and a ring that is not exactly the ALSA buffer drifts against
+ * it (heard: OpenAL's 4458-frame buffer of 1115-frame periods played choppy
+ * and fast).
+ *
  * Samples are MSB-aligned in their 32-bit FIFO word (S32_LE; bits 7:0 are not
  * sent). Heard: the same tone LSB-aligned is ~60 dB down, inaudible.
  */
@@ -46,6 +58,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/hrtimer.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/unaligned.h>
@@ -154,6 +167,9 @@ struct hdmi_dma_desc {
 
 #define HDMI_PERIODS_MAX	32
 #define HDMI_BUFFER_BYTES_MAX	(256 * 1024)
+#define HDMI_BYTES_ALIGN	64
+/* What the engine loops between streams: 128 frames, 2.7 ms. */
+#define HDMI_SILENCE_BYTES	1024
 
 static int index = SNDRV_DEFAULT_IDX1;
 module_param(index, int, 0444);
@@ -165,8 +181,12 @@ struct ce5300_hdmi {
 	struct snd_card		*card;
 	struct snd_pcm_substream *substream;
 
-	struct hdmi_dma_desc	*ring;
+	struct hdmi_dma_desc	*ring;		/* HDMI_PERIODS_MAX, then the idle one */
 	dma_addr_t		ring_phys;
+	struct hdmi_dma_desc	*idle;		/* loops the silence between streams */
+	dma_addr_t		idle_phys;
+	dma_addr_t		silence_phys;
+	bool			streaming;	/* audio unit on, engine walking */
 
 	struct hrtimer		tick;		/* one period; reports elapsed periods */
 	ktime_t			period;
@@ -335,7 +355,21 @@ static int ce5300_hdmi_pcm_open(struct snd_pcm_substream *ss)
 {
 	struct ce5300_hdmi *h = snd_pcm_substream_chip(ss);
 
-	ss->runtime->hw = ce5300_hdmi_pcm_hw;
+	struct snd_pcm_runtime *rt = ss->runtime;
+	int ret;
+
+	rt->hw = ce5300_hdmi_pcm_hw;
+	ret = snd_pcm_hw_constraint_integer(rt, SNDRV_PCM_HW_PARAM_PERIODS);
+	if (ret < 0)
+		return ret;
+	ret = snd_pcm_hw_constraint_step(rt, 0, SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
+					 HDMI_BYTES_ALIGN);
+	if (ret < 0)
+		return ret;
+	ret = snd_pcm_hw_constraint_step(rt, 0, SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
+					 HDMI_BYTES_ALIGN);
+	if (ret < 0)
+		return ret;
 	h->substream = ss;
 	return 0;
 }
@@ -348,40 +382,28 @@ static int ce5300_hdmi_pcm_close(struct snd_pcm_substream *ss)
 	return 0;
 }
 
-/*
- * The ring: one descriptor per period, chained in a circle with no STOP bit
- * anywhere, so the engine runs until told to stop. pd_hdmi instead marks the
- * newest descriptor STOP (bit 28) because it is fed buffer by buffer; a cyclic
- * ALSA buffer is always full.
- */
-static int ce5300_hdmi_pcm_prepare(struct snd_pcm_substream *ss)
+static void hdmi_desc_set(struct hdmi_dma_desc *d, dma_addr_t next,
+			  dma_addr_t src, unsigned int bytes)
 {
-	struct ce5300_hdmi *h = snd_pcm_substream_chip(ss);
-	struct snd_pcm_runtime *rt = ss->runtime;
-	unsigned int period_bytes = snd_pcm_lib_period_bytes(ss);
+	d->next_desc  = cpu_to_le32(next);
+	d->src_size   = cpu_to_le32(bytes);
+	d->src_start  = cpu_to_le32(src);
+	d->dst_start  = cpu_to_le32(HDMI_DMA_DST_FIFO);
+	d->flags_mode = cpu_to_le32(HDMI_DMA_FLAGS);
+	d->tag        = 0;
+}
+
+/*
+ * First playback: HDMI mode, the audio unit, and the engine on the idle
+ * descriptor, which loops the silence until a stream links its ring in.
+ */
+static int ce5300_hdmi_link_up(struct ce5300_hdmi *h)
+{
 	static const u8 audio_if[10] = { 0x01 };	/* 2 channels, rest from the stream */
-	unsigned int i;
 	int ret;
 
-	if (rt->periods > HDMI_PERIODS_MAX)
-		return -EINVAL;
-
-	for (i = 0; i < rt->periods; i++) {
-		struct hdmi_dma_desc *d = &h->ring[i];
-
-		d->next_desc  = cpu_to_le32(h->ring_phys +
-					    ((i + 1) % rt->periods) * sizeof(*d));
-		d->src_size   = cpu_to_le32(period_bytes);
-		d->src_start  = cpu_to_le32(rt->dma_addr + i * period_bytes);
-		d->dst_start  = cpu_to_le32(HDMI_DMA_DST_FIFO);
-		d->flags_mode = cpu_to_le32(HDMI_DMA_FLAGS);
-		d->tag        = 0;
-	}
-	/* Publish every descriptor before the engine can be pointed at them. */
-	wmb();
-
-	h->period = ns_to_ktime(div_u64((u64)rt->period_size * NSEC_PER_SEC, rt->rate));
-
+	if (h->streaming)
+		return 0;
 	ret = ce5300_hdmi_link_to_hdmi(h);
 	if (ret)
 		return ret;
@@ -399,51 +421,123 @@ static int ce5300_hdmi_pcm_prepare(struct snd_pcm_substream *ss)
 	hdmi_write(h, HDMI_AUD_CHSTAT_SEND, 1);
 
 	hdmi_infoframe(h, HDMI_IF_SLOT_AUDIO, 0x84, 1, audio_if, sizeof(audio_if));
+
+	hdmi_desc_set(h->idle, h->idle_phys, h->silence_phys, HDMI_SILENCE_BYTES);
+	wmb();
+	/* pd_hdmi's hdmi_dma_custom_start, then hdmi_audio_enable. */
+	hdmi_write(h, HDMI_DMA_NEXT_DESC, h->idle_phys);
+	hdmi_write(h, HDMI_DMA_SIZE, 0);
+	hdmi_write(h, HDMI_DMA_DST, HDMI_DMA_DST_FIFO);
+	hdmi_write(h, HDMI_DMA_CTRL, HDMI_DMA_FLAGS);
+	hdmi_update(h, HDMI_AUD_CONFIG, HDMI_AUD_ENABLE, HDMI_AUD_ENABLE);
+	h->streaming = true;
 	return 0;
 }
 
-static void ce5300_hdmi_stop(struct ce5300_hdmi *h)
+static void ce5300_hdmi_link_down(struct ce5300_hdmi *h)
 {
 	hdmi_update(h, HDMI_DMA_STOP, BIT(0), BIT(0));
 	hdmi_update(h, HDMI_AUD_CONFIG, HDMI_AUD_ENABLE, 0);
+	h->streaming = false;
+}
+
+static bool ce5300_hdmi_idle(struct ce5300_hdmi *h)
+{
+	u32 src = hdmi_read(h, HDMI_DMA_CUR_SRC);
+
+	return src - (u32)h->silence_phys <= HDMI_SILENCE_BYTES;
+}
+
+/*
+ * The ring: one descriptor per period, chained in a circle with no STOP bit
+ * anywhere. pd_hdmi instead marks the newest descriptor STOP (bit 28) because
+ * it is fed buffer by buffer; a cyclic ALSA buffer is always full. sync_stop
+ * has seen the engine back on the idle descriptor, so the ring is free.
+ */
+static int ce5300_hdmi_pcm_prepare(struct snd_pcm_substream *ss)
+{
+	struct ce5300_hdmi *h = snd_pcm_substream_chip(ss);
+	struct snd_pcm_runtime *rt = ss->runtime;
+	unsigned int period_bytes = snd_pcm_lib_period_bytes(ss);
+	unsigned int i;
+	int ret;
+
+	if (rt->periods > HDMI_PERIODS_MAX)
+		return -EINVAL;
+
+	ret = ce5300_hdmi_link_up(h);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < rt->periods; i++)
+		hdmi_desc_set(&h->ring[i],
+			      h->ring_phys + ((i + 1) % rt->periods) * sizeof(h->ring[i]),
+			      rt->dma_addr + i * period_bytes, period_bytes);
+	/* Publish every descriptor before trigger links the ring in. */
+	wmb();
+
+	h->period = ns_to_ktime(div_u64((u64)rt->period_size * NSEC_PER_SEC, rt->rate));
+	return 0;
 }
 
 static int ce5300_hdmi_pcm_trigger(struct snd_pcm_substream *ss, int cmd)
 {
 	struct ce5300_hdmi *h = snd_pcm_substream_chip(ss);
+	struct snd_pcm_runtime *rt = ss->runtime;
+	unsigned int i;
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
-	case SNDRV_PCM_TRIGGER_RESUME:
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		/* pd_hdmi's hdmi_dma_custom_start, then hdmi_audio_enable. */
-		hdmi_write(h, HDMI_DMA_NEXT_DESC, h->ring_phys);
-		hdmi_write(h, HDMI_DMA_SIZE, 0);
-		hdmi_write(h, HDMI_DMA_DST, HDMI_DMA_DST_FIFO);
-		hdmi_write(h, HDMI_DMA_CTRL, HDMI_DMA_FLAGS);
-		hdmi_update(h, HDMI_AUD_CONFIG, HDMI_AUD_ENABLE, HDMI_AUD_ENABLE);
+		/*
+		 * The engine latches a descriptor's next pointer as it loads it,
+		 * so the ring starts after one or two more laps of the silence.
+		 */
+		h->idle->next_desc = cpu_to_le32(h->ring_phys);
+		wmb();
 		atomic_set(&h->running, 1);
 		hrtimer_start(&h->tick, h->period, HRTIMER_MODE_REL_SOFT);
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
-	case SNDRV_PCM_TRIGGER_SUSPEND:
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		atomic_set(&h->running, 0);
 		if (!hrtimer_callback_running(&h->tick))
 			hrtimer_try_to_cancel(&h->tick);
-		ce5300_hdmi_stop(h);
+		/*
+		 * Up to two more periods play before the engine is back on the
+		 * silence (the latch again): make them silent too.
+		 */
+		memset(rt->dma_area, 0, snd_pcm_lib_buffer_bytes(ss));
+		h->idle->next_desc = cpu_to_le32(h->idle_phys);
+		for (i = 0; i < rt->periods; i++)
+			h->ring[i].next_desc = cpu_to_le32(h->idle_phys);
+		wmb();
 		return 0;
 	default:
 		return -EINVAL;
 	}
 }
 
-/* Wait out a tick that was mid-flight when trigger stopped the stream. */
+/*
+ * Wait out a tick that was mid-flight when trigger stopped the stream, and the
+ * engine's last periods of the ring: prepare rewrites it and hw_free may hand
+ * the buffer back. If the engine never gets back to the silence, stop it; the
+ * next prepare brings the link up again.
+ */
 static int ce5300_hdmi_pcm_sync_stop(struct snd_pcm_substream *ss)
 {
 	struct ce5300_hdmi *h = snd_pcm_substream_chip(ss);
+	struct snd_pcm_runtime *rt = ss->runtime;
+	unsigned long timeout_us;
+	bool idle;
 
 	hrtimer_cancel(&h->tick);
+	if (!h->streaming)
+		return 0;
+	timeout_us = 4 * div_u64((u64)rt->period_size * USEC_PER_SEC, rt->rate) +
+		     10 * USEC_PER_MSEC;
+	if (read_poll_timeout(ce5300_hdmi_idle, idle, idle, 500, timeout_us, false, h)) {
+		dev_warn(&h->pdev->dev, "engine not back on the silence; stopping it\n");
+		ce5300_hdmi_link_down(h);
+	}
 	return 0;
 }
 
@@ -487,13 +581,23 @@ static const struct snd_pcm_ops ce5300_hdmi_pcm_ops = {
 
 /*
  * No register access here: BAR0 is a later devres than the card, so it is
- * already unmapped when the card is freed. Closing the PCM stopped the engine.
+ * already unmapped when the card is freed. ce5300_hdmi_quiesce stopped the
+ * engine before that.
  */
 static void ce5300_hdmi_free(struct snd_card *card)
 {
 	struct ce5300_hdmi *h = card->private_data;
 
 	hrtimer_cancel(&h->tick);
+}
+
+/* A devres after BAR0 and the ring: stop the engine before either goes. */
+static void ce5300_hdmi_quiesce(void *data)
+{
+	struct ce5300_hdmi *h = data;
+
+	if (h->streaming)
+		ce5300_hdmi_link_down(h);
 }
 
 static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -526,11 +630,19 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret)
 		return ret;
+	/* The ring, the idle descriptor after it, then the silence it loops. */
 	h->ring = dmam_alloc_coherent(&pdev->dev,
-				      HDMI_PERIODS_MAX * sizeof(*h->ring),
+				      (HDMI_PERIODS_MAX + 1) * sizeof(*h->ring) +
+				      HDMI_BYTES_ALIGN + HDMI_SILENCE_BYTES,
 				      &h->ring_phys, GFP_KERNEL);
 	if (!h->ring)
 		return -ENOMEM;
+	h->idle = &h->ring[HDMI_PERIODS_MAX];
+	h->idle_phys = h->ring_phys + HDMI_PERIODS_MAX * sizeof(*h->ring);
+	h->silence_phys = ALIGN(h->idle_phys + sizeof(*h->idle), HDMI_BYTES_ALIGN);
+	ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_quiesce, h);
+	if (ret)
+		return ret;
 
 	hrtimer_setup(&h->tick, ce5300_hdmi_tick, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 	card->private_free = ce5300_hdmi_free;

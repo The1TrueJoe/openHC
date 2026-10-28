@@ -91,6 +91,22 @@ mute, which the monitor obeyed whenever a GCP landed where it looks. Setting
 `+0x3104` made it silent outright; sending bit 15 instead made it a clean,
 steady tone (2026-10-28).
 
+**Through the driver** (EA1, 2026-10-28): left and right land on the right
+speakers. Two things the register tests could not show:
+
+- *The start of every stream after the first was lost* (each speaker-test
+  channel, each clip's first syllable) while the sink locked onto audio again.
+  So once up, the link never stops: between streams the engine loops a 2.7 ms
+  silent buffer from an idle descriptor, and a stream links its ring in after
+  it and back out at stop. The engine latches a descriptor's next pointer as
+  it loads it (`+0x0c` is that latch), so a relink lands one or two
+  descriptors later; stop zeroes the buffer for those, and `sync_stop` waits
+  until the engine is back on the silence before prepare rewrites the ring.
+- *Odd period sizes played choppy and fast*: OpenAL opened `hw:HDMI` with
+  1115-frame periods in a 4458-frame buffer, not a whole number of periods,
+  and the engine walks its source in 32-byte steps. Periods are now whole and
+  64-byte aligned.
+
 ## The thing that blocked everything
 
 The ADAU1451 codec sits at I²C address `0x38` on the CE5300's **fourth** I²C
