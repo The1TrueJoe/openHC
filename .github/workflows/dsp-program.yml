@@ -16,27 +16,47 @@
 #
 # With either secret missing the job says so and stops, green.
 #
-# Stage 1 (this file today) proves the toolchain: install, the console app
-# headless, ADAU145x (Sigma 300) support. Stage 2 adds the design script and the export,
-# handed to the EA image build as an artifact — the exported program never
-# enters git (ADI's license restricts distributing generated code outside the
-# products it runs on).
+# The design is board/ea/common/firmware/dsp/adau1451/program.json: SigmaStudio+
+# scripting calls, run in order by the action's headless scripting host
+# (ssplus-script.exe). It starts from ADI's ADAU1452 example project, which comes
+# with SigmaStudio+, because its PC -> USBi -> DSP host link is the one part of a
+# system the scripting API cannot add; the design migrates it to the ADAU1451 and
+# replaces its algorithms with openHC's. The export becomes mkfw.py's --program
+# input and its parameter map (export2program.py).
+#
+# THE EXPORTED PROGRAM IS NEVER PUBLISHED. ADI's license lets generated code be
+# used only to program the products it runs on, and this repo is public, so its
+# artifacts are anyone's to download. The program goes only into the EA image:
+# ci.yml calls this workflow in the same run as the image build, and the hand-
+# over is sealed (AES-256, the key derived from SIGMASTUDIO_TOKEN, which only
+# this repo's own runs can read) and kept one day. Neither it, nor the export,
+# nor the saved project ever enters git or a readable artifact.
 name: dsp-program
 
 permissions:
   contents: read
 
 on:
+  # ci.yml, for the EA image build.
+  workflow_call:
+    outputs:
+      program:
+        description: "'true' when the sealed program was uploaded (adau1451-program-sealed)"
+        value: ${{ jobs.toolchain.outputs.program }}
   workflow_dispatch:
   # workflow_dispatch only registers from the default branch, so until this lands
   # on main, a path-filtered push trigger is how it runs on a feature branch.
   push:
     paths:
       - .github/workflows/dsp-program.yml
+      - board/ea/common/firmware/dsp/adau1451/program.json
+      - board/ea/common/firmware/dsp/adau1451/export2program.py
 
 jobs:
   toolchain:
     runs-on: windows-latest
+    outputs:
+      program: ${{ steps.seal.outputs.program }}
     steps:
       - name: Staged installer?
         id: staged
@@ -52,6 +72,9 @@ jobs:
             "ok=true" >> $env:GITHUB_OUTPUT
           }
 
+      - uses: actions/checkout@v4
+        if: steps.staged.outputs.ok == 'true'
+
       - name: SigmaStudio+
         if: steps.staged.outputs.ok == 'true'
         uses: The1TrueJoe/sigmastudio-plus-action@v1
@@ -60,24 +83,61 @@ jobs:
           token: ${{ secrets.SIGMASTUDIO_TOKEN }}
           # SigmaStudio+ 3.4.0, as staged in the private repo.
           installer-sha256: 47814f9691d6a0f334b341caa6a49db2a03f6549b62db3cc82530845c1268640
+          script-host: 'true'
           run: |
             New-Item -ItemType Directory -Force logs | Out-Null
-            & $env:SSPLUS_CONSOLE --help *>&1 | Tee-Object logs/console.txt
-            if ($LASTEXITCODE) { "::error::console app exit $LASTEXITCODE"; exit 1 }
             # ADAU145x support is a set of plugins the installer drops in
             # ProgramData (not under the install folder): the family's compiler and
             # the Sigma 300 core the ADAU1451 is built on.
             $plugins = "$env:ProgramData\Analog Devices\SigmaStudio 3.4\Plugins"
-            Get-ChildItem $plugins -File | Select-Object Name, Length |
-              Format-Table -AutoSize | Out-String -Width 200 | Out-File logs/plugins.txt
             foreach ($dll in 'ADAU145x.dll', 'ADAU145XCompiler.dll', 'Sigma300Core.dll') {
               if (-not (Test-Path "$plugins\$dll")) { "::error::no $dll in $plugins"; exit 1 }
             }
-            "ADAU145x/Sigma 300 support present in $plugins"
+            # The design: SigmaStudio+ scripting calls, run headless.
+            $env:DSP_OUT = "$env:GITHUB_WORKSPACE\dsp"
+            New-Item -ItemType Directory -Force "$env:DSP_OUT\export" | Out-Null
+            # The design starts from ADI's ADAU1452 example: its PC -> USBi -> DSP host
+            # link is the one part of a system the scripting API cannot add.
+            $tpl = Get-ChildItem "$env:ProgramData\Analog Devices" -Recurse -File -Filter '*ADAU1452 Filtering Compressed Input Signal Example.sspeg' | Select-Object -First 1
+            if (-not $tpl) { "::error::no ADAU1452 template under $env:ProgramData\Analog Devices"; exit 1 }
+            $env:DSP_TEMPLATE = "$env:RUNNER_TEMP\adau1452-template.ssprj"
+            Copy-Item -LiteralPath $tpl.FullName $env:DSP_TEMPLATE
+            & $env:SSPLUS_SCRIPT board/ea/common/firmware/dsp/adau1451/program.json logs *>&1 | Tee-Object logs/script.txt
+            $rc = $LASTEXITCODE
+            Get-ChildItem "$env:DSP_OUT" -Recurse -File | Select-Object FullName, Length |
+              Format-Table -AutoSize | Out-String -Width 300 | Tee-Object logs/export-files.txt
+            if ($rc) { "::error::the design script failed ($rc)"; exit 1 }
+            # mkfw.py's --program input, and the map that names every parameter's address.
+            python board/ea/common/firmware/dsp/adau1451/export2program.py "$env:DSP_OUT\export" "$env:DSP_OUT\program.txt" --params "$env:DSP_OUT\params.json"
+            if ($LASTEXITCODE) { "::error::export2program.py failed"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.staged.outputs.ok == 'true'
         with:
-          name: sigmastudio-toolchain-logs
+          name: sigmastudio-logs
           path: logs/
           if-no-files-found: ignore
+
+      # The program, for the EA image build only: sealed, so the artifact is
+      # unreadable to anyone but this repo's own runs, and kept one day. ci.yml's
+      # image job opens it with the same key. Git Bash's openssl here, Ubuntu's
+      # there; both OpenSSL 3.
+      - name: Seal the program for the image build
+        id: seal
+        if: steps.staged.outputs.ok == 'true'
+        shell: bash
+        env:
+          KEY: ${{ secrets.SIGMASTUDIO_TOKEN }}
+        run: |
+          set -euo pipefail
+          tar -C dsp -cf - program.txt params.json |
+            openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:KEY -out adau1451-program.tar.enc
+          echo "program=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.seal.outputs.program == 'true'
+        with:
+          name: adau1451-program-sealed
+          path: adau1451-program.tar.enc
+          retention-days: 1
+          if-no-files-found: error

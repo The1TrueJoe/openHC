@@ -323,6 +323,21 @@ fi
         echo "# --- feature kernel fragments (appended by build.sh) ---"
         echo "BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=\"$merged\""
     fi
+    # openHC's own DSP program for the EA3's ADAU1451, which CI builds in the
+    # same run (dsp-program.yml, on Windows, with SigmaStudio+) and hands over
+    # sealed: a folder with program.txt and params.json. It is ADI-generated
+    # code, so it never enters git or a public artifact, only the image.
+    if [ -n "${OHC_DSP_PROGRAM:-}" ]; then
+        for _f in program.txt params.json; do
+            [ -f "$OHC_DSP_PROGRAM/$_f" ] || {
+                echo "build.sh: OHC_DSP_PROGRAM=$OHC_DSP_PROGRAM has no $_f" >&2
+                exit 1
+            }
+        done
+        echo
+        echo "# --- DSP program (OHC_DSP_PROGRAM) ---"
+        echo "BR2_PACKAGE_ADAU1451_FW_PROGRAM=\"$OHC_DSP_PROGRAM\""
+    fi
     # Optional downstream layer, appended LAST so its assignments win.
     #
     # This exists so a separate BR2_EXTERNAL tree can build on these boards
@@ -680,11 +695,20 @@ done
 # member (board/ea/common, board/ea/ea3-v2). Miss the second and every EA
 # silicon package silently ships stale.
 #
+# The firmware rules (board/<family>/common/firmware/<kind>/<part>/, e.g. the
+# EA3 DSP's adau1451-fw) are local-source packages too: an edited profile, or a
+# new DSP program from CI, shipped the previous firmware the same way. Their
+# folder is the part, not the package, so the name comes from the .mk.
+#
 # Same shape as the linux-dirclean above: a cached step that silently ignores
 # changed input.
-for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board/*/*/packages/*/*.mk; do
+for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board/*/*/packages/*/*.mk \
+           "$REPO"/board/*/*/firmware/*/*/*.mk; do
     [ -e "$_mk" ] || continue
-    _pkg=$(basename "$(dirname "$_mk")")
+    case "$_mk" in
+        */firmware/*) _pkg=$(basename "$_mk" .mk) ;;
+        *)            _pkg=$(basename "$(dirname "$_mk")") ;;
+    esac
     # only if this build selects it, else make has no such target
     _sym="BR2_PACKAGE_$(echo "$_pkg" | tr 'a-z-' 'A-Z_')"
     # Both of these must not fail under `set -e` (a failing command substitution

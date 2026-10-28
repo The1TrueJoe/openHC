@@ -27,9 +27,13 @@ byte for byte what it made before, and the driver writes nothing (see
 | Piece | What it is |
 |---|---|
 | `ea3.json` | **The configuration, in code.** Every knob: the cell it lives in, the table behind it, and the filter design that fills the table. |
-| `mkfw.py` | Builds `ea3.json`, and the program if given (`--program`), into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2, mainline chunk tags). Standard library Python. |
-| `adau1451-fw.mk`, `Config.in` | The build rule: runs `mkfw.py` at image build and installs the file and the profile. Selected by the `audio-dsp` feature (`BR2_PACKAGE_ADAU1451_FW`); `BR2_PACKAGE_ADAU1451_FW_PROGRAM` is the path of the program, empty for none. |
-| `/lib/firmware/openhc/adau1451-ea3.bin` | That file, on the box. |
+| `ea3-openhc.json` | The parameter side of **openHC's own program**: its cells, named by block label (`Volume.Gain_Channel0`), and `ea3.json`'s register init. |
+| `program.json` | **The program's design, in code**: SigmaStudio+ scripting calls, run in order by CI (`dsp-program.yml`) — see [Building the program](#building-the-program). |
+| `export2program.py` | Turns SigmaStudio+'s export into `mkfw.py`'s `--program` input, and its parameter map into `params.json`. Standard library Python. |
+| `mkfw.py` | Builds a profile, and the program if given (`--program`, with `--params` to resolve cell names), into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2, mainline chunk tags). Standard library Python. |
+| `adau1451-fw.mk`, `Config.in` | The build rule: runs `mkfw.py` at image build and installs the file and the profile. Selected by the `audio-dsp` feature (`BR2_PACKAGE_ADAU1451_FW`); `BR2_PACKAGE_ADAU1451_FW_PROGRAM` is the folder holding the program (`program.txt`, `params.json`), empty for none; build.sh sets it from `OHC_DSP_PROGRAM`. |
+| `/lib/firmware/openhc/adau1451-ea3.bin` | That file, on the box: `ea3.json`, stock's program's parameters. |
+| `/lib/firmware/openhc/adau1451-ea3-openhc.bin` | With a program: `ea3-openhc.json` + register init + openHC's program. Not named by the device tree yet. |
 | the board DTB | `firmware-name` names the file; `control4,program-version` is the program's version cell and the value it must hold, checked after the load. The card is a stock `simple-audio-card`. |
 | `adau1451-c4` | The codec driver. It hands the file to the kernel's **sigmadsp** core (the one the mainline ADAU1701/ADAU17x1 drivers use), which writes it at bind and turns each named cell into an **ALSA control**. Around that the driver does the sequencing: soft reset, hibernate, the wait for PLL lock, start. |
 | ohc-audiod | Reads the knob list from the installed copy of `ea3.json` and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
@@ -71,6 +75,65 @@ block, hex bytes follow (commas, `0x`, comments all fine) — the address and
 byte array of each memory write a SigmaStudio(+) export contains
 (`Program_Data`, `Param_Data`, `DM1_DATA_Data`). Memory only: control registers
 are `ea3.json`'s, and `mkfw.py` refuses them.
+
+## Building the program
+
+There is no open compiler for the ADAU145x (its instruction set is not public),
+so the program is built by Analog Devices' SigmaStudio+, on a GitHub-hosted
+Windows runner, with no GUI: `.github/workflows/dsp-program.yml` installs it
+through [sigmastudio-plus-action](https://github.com/The1TrueJoe/sigmastudio-plus-action)
+and runs `program.json` with the action's headless scripting host. The calls
+are SigmaStudio+'s own scripting API (`AddShapeV2`, `AddConnectionV2`,
+`UpdatePropertiesV2`, `LinkCompileConnect`, `Export`, …).
+
+The design starts from ADI's *ADAU1452 Filtering Compressed Input Signal*
+example, which ships with SigmaStudio+, because its PC → USBi → DSP link is the
+one part of a system the scripting API cannot add (the compiler refuses a
+processor with no host link; nothing is downloaded over it). It migrates the
+example's processor to the ADAU1451, removes the example's algorithms, and
+builds openHC's chain:
+
+| Block (label) | What |
+|---|---|
+| `ASRCInput_0` | ASRC 0's two channels: serial input 3, the CE5300's I²S1, converted to the core's rate |
+| `Volume` | a stereo volume (two gains in DM0) |
+| `Output_*` | left and right to the first two channels of **all four** serial outputs (channels 0/1, 16/17, 32/33, 40/41), until it is known which one feeds the AK4621 |
+| `Version` | a DC cell holding the program's version (1, as 8.24), for the driver's check |
+
+The export becomes two files, `export2program.py`'s output:
+
+* `program.txt`: the memory writes of the export's default download, which is
+  `mkfw.py --program`'s format; and
+* `params.json`: every parameter's address, by block label and parameter name
+  (`Volume.Gain_Channel0` → DM0 20), so a profile can name a cell instead of
+  hard-coding an address that moves whenever the design does.
+
+### Into the image, and nowhere else
+
+Both are code generated by ADI's tools, which ADI's license lets us use only to
+program the products it runs on. This repo is public, and so are its
+artifacts, so the program is never published:
+
+1. `ci.yml`'s `dsp` job runs `dsp-program.yml` in the **same run** as the EA3
+   image builds, alongside the EA toolchain.
+2. It hands the two files over **sealed**: AES-256, the key derived from the
+   `SIGMASTUDIO_TOKEN` secret, which only this repo's own runs can read. The
+   artifact (`adau1451-program-sealed`) is kept one day and is useless to anyone
+   who downloads it.
+3. Each EA3 image job opens it and points `build.sh` at it (`OHC_DSP_PROGRAM`).
+   The image gets `adau1451-ea3-openhc.bin`, built from `ea3-openhc.json`.
+
+Nothing exported, and not the saved project, ever enters git or a readable
+artifact. A design that fails to build fails the EA3 images. A run without the
+SigmaStudio+ secrets (a fork) builds them without the program.
+
+**The device tree still names `adau1451-ea3.bin`**, so the box does not load
+openHC's program at boot yet. Loading it means pointing `firmware-name` at
+`openhc/adau1451-ea3-openhc.bin` and `control4,program-version` at the program's
+`Version` cell (DM0 22 today, holding 1 as 8.24: `<22 0x01000000>`). The ALSA
+controls then become `ea3-openhc.json`'s (`DSP Volume Left`/`Right`, linear 8.24
+gains written 0 at boot) instead of stock's knobs. That switch waits for the
+knobs' blocks in the design and for `ea3-openhc.json` to describe them.
 
 ### No program yet
 
