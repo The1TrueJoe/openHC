@@ -27,8 +27,13 @@
  *        the transmitter puts data islands. CEFDK leaves it 0; switched to HDMI
  *        mode that way, a monitor drops the signal outright (measured). It is
  *        read off the VDC's pipe A, which CEFDK set to the mode it drives;
+ *      - the GCP position at +0x3104 (front porches: where VSYNC starts), which
+ *        the GCP has to go out against. CEFDK leaves it 0, and then a GCP
+ *        lands wherever and a sink takes it some of the time (heard: a tone
+ *        that keeps cutting out). Also from pipe A;
  *      - an AVI infoframe that keeps the picture as it was (RGB, full range);
- *      - a GCP clearing AV mute.
+ *      - a GCP clearing AV mute (bit 15; bit 16 sets it -- swapped, it is the
+ *        same cutting out, and silence once the GCP position is right).
  *  - Channel status and an audio infoframe, both 2-channel LPCM at 48 kHz.
  *
  * Periods are paced by a timer from the DMA position, as in ce5300-i2s: no
@@ -73,6 +78,9 @@
 #define HDMI_OPMODE		0x3000
 #define   HDMI_OPMODE_HDMI	BIT(0)	/* clear = DVI */
 #define HDMI_LINE_TIMING	0x3100	/* hdmi_video_set_tv_timings: active << 16 | hblank */
+#define HDMI_GCP_LINE		0x3104	/* hdmi_hal_gcp_line_set: [29:16] h, [13:0] v front porch */
+#define   HDMI_GCP_LINE_ENABLE	BIT(30)
+#define   HDMI_GCP_LINE_KEEP	BIT(31)	/* stock preserves it */
 
 /* ---- Audio ------------------------------------------------------------- */
 #define HDMI_AUD_CONFIG		0x4000
@@ -99,15 +107,20 @@
 #define HDMI_IF_SLOT_AVI	0
 #define HDMI_IF_SLOT_AUDIO	1
 #define HDMI_GCP		0x428c	/* hdmi_hal_gcp_avmute_set */
-#define   HDMI_GCP_SET_AVMUTE	BIT(15)
-#define   HDMI_GCP_CLEAR_AVMUTE	BIT(16)
+#define   HDMI_GCP_CLEAR_AVMUTE	BIT(15)
+#define   HDMI_GCP_SET_AVMUTE	BIT(16)
 #define   HDMI_GCP_SEND		BIT(5)
 
 /* The display controller (VDC, 8086:2e61): pipe A's timing, i9xx layout --
- * (total - 1) << 16 | (active - 1), and blank (end - 1) << 16 | (start - 1). */
+ * (total - 1) << 16 | (active - 1), and blank/sync (end - 1) << 16 | (start - 1). */
 #define VDC_PCI_DEVICE		0x2e61
-#define VDC_HTOTAL_A		0x60000
-#define VDC_HBLANK_A		0x60004
+#define VDC_TIMING_A		0x60000
+#define VDC_HTOTAL		0x00
+#define VDC_HBLANK		0x04
+#define VDC_HSYNC		0x08
+#define VDC_VBLANK		0x10
+#define VDC_VSYNC		0x14
+#define VDC_TIMING_LEN		0x18
 
 /* 48 kHz from a 24.576 MHz MCLK; N from pd_hdmi's table (6144 at every pixel
  * clock CEFDK sets except the /1.001 ones, and the CTS is measured anyway). */
@@ -228,32 +241,46 @@ static void hdmi_infoframe(struct ce5300_hdmi *h, unsigned int slot,
 		    HDMI_IF_ENABLE);
 }
 
-/* Pipe A's active width and horizontal blanking, as CEFDK set the VDC up. */
-static int ce5300_hdmi_line_timing(struct ce5300_hdmi *h, u32 *timing)
+struct hdmi_link_timing {
+	u32 line;	/* HDMI_LINE_TIMING */
+	u32 gcp;	/* HDMI_GCP_LINE, without the enable */
+};
+
+/* Pipe A's timing as CEFDK set the VDC up, in the transmitter's two words. */
+static int ce5300_hdmi_link_timing(struct ce5300_hdmi *h, struct hdmi_link_timing *t)
 {
 	struct pci_dev *vdc = pci_get_device(PCI_VENDOR_ID_INTEL, VDC_PCI_DEVICE, NULL);
 	void __iomem *regs;
-	u32 htotal, hblank, active, blank;
+	u32 htotal, hblank, hsync, vblank, vsync, active, blank, hfp, vfp;
 
 	if (!vdc)
 		return -ENODEV;
-	/* Read-only, and not ours to claim: map the two registers, no request. */
-	regs = ioremap(pci_resource_start(vdc, 0) + VDC_HTOTAL_A, 8);
+	/* Read-only, and not ours to claim: map the registers, no request. */
+	regs = ioremap(pci_resource_start(vdc, 0) + VDC_TIMING_A, VDC_TIMING_LEN);
 	pci_dev_put(vdc);
 	if (!regs)
 		return -ENOMEM;
-	htotal = readl(regs);
-	hblank = readl(regs + VDC_HBLANK_A - VDC_HTOTAL_A);
+	htotal = readl(regs + VDC_HTOTAL);
+	hblank = readl(regs + VDC_HBLANK);
+	hsync = readl(regs + VDC_HSYNC);
+	vblank = readl(regs + VDC_VBLANK);
+	vsync = readl(regs + VDC_VSYNC);
 	iounmap(regs);
 
 	active = (htotal & 0xfff) + 1;
 	blank = ((hblank >> 16) & 0xfff) - (hblank & 0xfff);
-	if (!active || active > 0xfff || !blank || blank > 0x3ff) {
-		dev_err(&h->pdev->dev, "VDC timing unreadable (htotal %#x hblank %#x)\n",
-			htotal, hblank);
+	/* hdmi_hal_gcp_line_set's arguments: sync start - blank start */
+	hfp = (hsync & 0xfff) - (hblank & 0xfff);
+	vfp = (vsync & 0xfff) - (vblank & 0xfff);
+	if (!active || active > 0xfff || !blank || blank > 0x3ff ||
+	    !hfp || hfp > blank || !vfp || vfp > 0x3fff) {
+		dev_err(&h->pdev->dev,
+			"VDC timing unreadable (h %#x/%#x/%#x v %#x/%#x)\n",
+			htotal, hblank, hsync, vblank, vsync);
 		return -EINVAL;
 	}
-	*timing = active << 16 | blank;
+	t->line = active << 16 | blank;
+	t->gcp = hfp << 16 | vfp;
 	return 0;
 }
 
@@ -266,21 +293,23 @@ static int ce5300_hdmi_line_timing(struct ce5300_hdmi *h, u32 *timing)
 static int ce5300_hdmi_link_to_hdmi(struct ce5300_hdmi *h)
 {
 	static const u8 avi[13] = { 0x00, 0x08, 0x08 };	/* RGB; aspect as coded; Q full */
-	u32 timing;
+	struct hdmi_link_timing t;
 	int ret;
 
 	if (hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI)
 		return 0;
-	ret = ce5300_hdmi_line_timing(h, &timing);
+	ret = ce5300_hdmi_link_timing(h, &t);
 	if (ret)
 		return ret;
-	hdmi_write(h, HDMI_LINE_TIMING, timing);
+	hdmi_write(h, HDMI_LINE_TIMING, t.line);
+	hdmi_update(h, HDMI_GCP_LINE, ~HDMI_GCP_LINE_KEEP, HDMI_GCP_LINE_ENABLE | t.gcp);
 	hdmi_infoframe(h, HDMI_IF_SLOT_AVI, 0x82, 2, avi, sizeof(avi));
 	hdmi_update(h, HDMI_GCP, HDMI_GCP_SET_AVMUTE | HDMI_GCP_CLEAR_AVMUTE | HDMI_GCP_SEND,
 		    HDMI_GCP_CLEAR_AVMUTE | HDMI_GCP_SEND);
 	hdmi_update(h, HDMI_OPMODE, HDMI_OPMODE_HDMI, HDMI_OPMODE_HDMI);
-	dev_info(&h->pdev->dev, "link switched from DVI to HDMI mode for audio (line %u + %u)\n",
-		 timing >> 16, timing & 0xffff);
+	dev_info(&h->pdev->dev,
+		 "link switched from DVI to HDMI mode for audio (line %u + %u, porches %u/%u)\n",
+		 t.line >> 16, t.line & 0xffff, t.gcp >> 16, t.gcp & 0xffff);
 	return 0;
 }
 

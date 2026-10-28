@@ -6,8 +6,8 @@ sidebar:
 ---
 
 **Status.** [HDMI out](#hdmi-out-every-ea) (every EA): a test tone played
-through an HDMI monitor's speakers on an EA1 under openHC, from the register
-sequence the driver uses; the driver itself is not yet run on hardware. The EA3's analog path through the DSP:
+through an HDMI monitor's speakers on an EA1 under openHC, clean and steady,
+from the register sequence the driver uses; the driver itself is not yet run on hardware. The EA3's analog path through the DSP:
 drivers written, not yet proven on hardware. The userspace half is the HC-800's
 audio scheme. Read [what is still unproven](#what-is-still-unproven) before
 trusting the DSP half.
@@ -29,6 +29,7 @@ map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
 | `+0x1000` bit 2 | audio clock enable |
 | `+0x3000` bit 0 | **HDMI mode**; clear is DVI, which carries no audio |
 | `+0x3100` | line timing: active width << 16 \| horizontal blanking (`hdmi_video_set_tv_timings`) |
+| `+0x3104` | GCP position: bit 30 enable, horizontal front porch << 16 \| vertical front porch (`hdmi_hal_gcp_line_set`; bit 31 kept) |
 | `+0x4000` | audio config: bit 0 enable; layout, format, channels, high rate, B/flat/valid bits above it (all 0 = 2-ch LPCM) |
 | `+0x4004` | CTS as the transmitter measures it |
 | `+0x4008` / `+0x400c` | N; CTS override (0 = measure) |
@@ -37,7 +38,7 @@ map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
 | `+0x4050` / `+0x4054` / `+0x4058` | IEC 60958 channel status bytes 0–3, byte 4, send |
 | `+0x4100 + 0x20n` | infoframe slot *n*: header, then 7 payload words (checksum first). AVI is slot 0, audio slot 1 |
 | `+0x4180 + 4n` | slot *n* control: bit 0 enable, bit 1 send once |
-| `+0x428c` | GCP: bit 15 set AV mute, bit 16 clear it, bit 5 send |
+| `+0x428c` | GCP: bit 15 **clear** AV mute, bit 16 set it, bit 5 send |
 
 Descriptors are 24 bytes: next, size, source, destination (`0x10101010`, a
 placeholder: the FIFO is the engine's own), mode word `0x40006096`, tag. Start
@@ -62,14 +63,16 @@ bridge's mailbox (config `0xd0` command, `0xd4` data, `0xd8` extended offset;
 CR read opcode `0x06`), as in Intel's GPL `_ce5300_iosf.c`.
 
 **DVI mode.** CEFDK leaves the link in DVI mode with no infoframes, and never
-programs the line timing at `+0x3100`. Setting the HDMI-mode bit alone made an
+programs the line timing at `+0x3100` or the GCP position at `+0x3104`. Setting the HDMI-mode bit alone made an
 HDMI monitor drop the signal outright: the transmitter then puts data islands
 into blanking it does not know the size of. So the first playback does what
 stock's `pd_set_mode`/`pd_post_set_mode` do for an HDMI sink: the line timing,
 read off the display controller's pipe A (VDC `01:08.0`, `+0x60000` HTOTAL and
-`+0x60004` HBLANK, i9xx layout; 720 + 138 at CEFDK's 480p), an AVI infoframe
-(RGB, full range: what a sink assumes of DVI, so the picture does not change),
-a GCP clearing AV mute, then HDMI mode. A box that never plays sound keeps
+`+0x60004` HBLANK, i9xx layout; 720 + 138 at CEFDK's 480p), the GCP position
+from the same pipe (sync start − blank start, `+0x60008`/`+0x60004` and
+`+0x60014`/`+0x60010`: 16 and 9 at 480p, `0x40100009`), an AVI infoframe (RGB,
+full range: what a sink assumes of DVI, so the picture does not change), a GCP
+clearing AV mute, then HDMI mode. A box that never plays sound keeps
 CEFDK's link untouched.
 
 **Heard** (EA1, 2026-10-27, from userspace with `devmem`, the driver's
@@ -77,10 +80,16 @@ sequence): a 1 kHz tone out of an HDMI monitor's speakers, picture intact. The
 DMA walks a looping descriptor, the FIFO never drops below its refill
 threshold, and the transmitter measures CTS = 27000 at 480p — 27 MHz with
 N = 6144, exactly 48 kHz. Samples are **MSB-aligned** in the 32-bit word
-(`S32_LE`): the same tone LSB-aligned is ~60 dB down, inaudible. The tone
-sounded "a little warbly" on that monitor; whether that is the monitor, the
-room or the transmitter is not settled yet (real program material through the
-driver is the next test).
+(`S32_LE`): the same tone LSB-aligned is ~60 dB down, inaudible.
+
+The first tone kept cutting in and out ("warbly"). It was not the loop (a
+10 ms and a 0.5 s buffer, in 1, 4 or 16 descriptors, sounded the same), not
+the clock (a fixed CTS changed nothing) and not packet room in 480p's short
+blanking (32 kHz did the same). It was AV mute: with `+0x3104` at 0 the GCP
+went out at no particular point in the frame, and the bit sent was **set** AV
+mute, which the monitor obeyed whenever a GCP landed where it looks. Setting
+`+0x3104` made it silent outright; sending bit 15 instead made it a clean,
+steady tone (2026-10-28).
 
 ## The thing that blocked everything
 
