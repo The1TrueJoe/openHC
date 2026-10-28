@@ -24,6 +24,11 @@ drivers/pwm/Makefile|obj-y += pwm-ce5300.o
 # openHC gets /dev/mtd0 -- what a software stock-restore and an in-place
 # autoscript rewrite need. Unconditional; the flash is always present.
 drivers/spi/Makefile|obj-y += spi-ea-ce5xx.o
+# SGX545 handoff quiesce: holds the GPU in soft reset at kexec/reboot once a
+# driver has bound it, or the next kernel's HPET/IOAPIC reads and DMA break (see
+# the file). drivers/gpu/ is always descended (obj-y += host1x/ drm/ vga/), so
+# this is built in whether DRM is =y (real kernel) or =m (bootstrap).
+drivers/gpu/Makefile|obj-y += ce5300-sgx-quiesce.o
 
 # --- audio (ASoC lives outside drivers/; the hook mirrors sound/ too) ---
 # The codec goes in the existing codecs/ dir. The CE5300 I2S platform driver gets

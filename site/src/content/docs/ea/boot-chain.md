@@ -202,7 +202,7 @@ be built in. If a genuinely large kernel is ever unavoidable, the escape hatch i
 a small bootstrap kernel that `kexec`s the real one from p1, kexec has no such
 limit.
 
-## Two board quirks you will hit
+## Three board quirks you will hit
 
 **The UART is at 921600, not 115200.** The CE5310's legacy `0x3f8` UART clock is
 **8× standard** (14.7456 MHz), so a mainline kernel asked for 115200 drives the
@@ -227,6 +227,43 @@ This is why every hunt for the Zigbee radio on `ttyS1..3` came back empty —
 those are the legacy ports, they enumerate with `irq = 0`, and a port with no
 IRQ transmits fine but never receives. `SERIAL_8250_NR_UARTS` is raised from 4
 to 8.
+
+**A kexec out of a kernel whose GPU driver has probed breaks the next kernel.** Once `pvrsrvkm` has bound the SGX545
+(01:02.0), the core stays live after the driver lets go: its shutdown hook, and
+even a full unbind, leave it out of reset. The kernel kexec'd next then gets
+reads from the HPET and IOAPIC that return the *previous* read's value, so the
+HPET looks frozen (`clocksource: Watchdog hpet interval: 0ns`) and interrupt
+routing breaks. DMA dies with it: SDHCI `Timeout waiting for hardware interrupt`,
+e1000 `Detected Tx Unit Hang`, EHCI `-110`. Which kernel comes next does not
+matter. The bootstrap → real-kernel handoff is unaffected, because the bootstrap
+never binds the GPU.
+
+How much can be saved depends on whether the GPU ever rendered:
+
+- **GPU bound but never used** (display off since a *cold* boot): holding the SGX in soft
+  reset (`EUR_CR_SOFT_RESET` = all units) after its driver shuts down gives a
+  healthy next kernel. The real kernel does this itself at kexec and reboot
+  (`board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c`). On an older kernel,
+  first run `echo 0000:01:02.0 > /sys/bus/pci/drivers/pvrsrvkm/unbind; devmem 0xdc000080 32 0x3f`.
+- **GPU used** (the panel web view ran): nothing found so far saves the next
+  kernel. Unbind plus soft reset, and even every safe SGX register put back to
+  its power-on value (events cleared, MMU back to bypass, clock gating off), still
+  leave it with dead DMA and garbled bus-1 reads.
+
+A warm reboot does not clear the used state: CEFDK's reset leaves the SGX as it
+was, so after a GPU-used boot only a power-cycle gets back to "never used". That
+is harmless on the normal boot path. The bootstrap never binds the GPU, so its
+S00kexec handoff to the real kernel works after a warm reboot too, and boot-init
+(where `ohc-restore stock` does its reimage) kexecs nothing.
+
+So nothing in the product kexecs out of the real kernel. `ohc-restore stock`
+reboots through CEFDK into boot-init, and `ohc-restore recovery-kexec` refuses
+while the GPU driver is bound. To RAM-test an image on an installed box, set
+`OHC_DISPLAY_ENABLE=0`, **power-cycle** (a `reboot` is not enough), then unbind +
+reset as above and kexec.
+
+Don't poke other SGX registers by hand: on an uninitialised core, reading e.g.
+`EUR_CR_USE_CODE_BASE_0` (0xa0c) hangs the bus.
 
 ## Recovery nets, all proven on hardware
 

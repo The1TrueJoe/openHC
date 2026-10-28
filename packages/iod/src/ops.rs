@@ -296,7 +296,8 @@ async fn restore_stock(confirm: bool) -> Out {
     if !std::path::Path::new(RESTORE_BIN).exists() {
         return Err(Fault::NoSuch("no restore support on this board".into()));
     }
-    // Detached: the recovery kexec reboots the box, so we must not wait on it.
+    // Detached: `stock` stages the one-shot restore and reboots the box, so we must
+    // not wait on it.
     std::process::Command::new(RESTORE_BIN)
         .arg("stock")
         .stdin(std::process::Stdio::null())
