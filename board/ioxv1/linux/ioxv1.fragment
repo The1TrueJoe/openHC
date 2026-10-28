@@ -133,7 +133,7 @@ CONFIG_MODULES=n
 # The FPGA's eight IR outputs are exposed as lirc TX devices by ohc-iox-irout,
 # one rc_dev per jack named "openHC IR out N" — exactly what iod's lirc.rs finds
 # and drives with the microsecond timings ir-ctl speaks. Output only (no RX on
-# this board, OHC_IR_IN=0), so RC_CORE + LIRC + RC_DEVICES is the whole need;
+# this board: no receiver), so RC_CORE + LIRC + RC_DEVICES is the whole need;
 # the protocol decoders are RX-side and omitted.
 CONFIG_RC_CORE=y
 CONFIG_LIRC=y

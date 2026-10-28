@@ -1,0 +1,13 @@
+config BR2_PACKAGE_HC800_ACPI
+	bool "hc800-acpi (ACPI table upgrade: the IO microcontroller)"
+	depends on BR2_i386 || BR2_x86_64
+	help
+	  Compiles the HC-800's own ACPI tables (board/hc800/acpi/*.asl)
+	  with the host iasl and packs them as an uncompressed cpio under
+	  kernel/firmware/acpi/, which post-image.sh puts in front of the
+	  initrd. The kernel loads them early as an ACPI table upgrade
+	  (CONFIG_ACPI_TABLE_UPGRADE).
+
+	  Today that is one SSDT: the LM3S1162 IO microcontroller as a
+	  serdev child of the BIOS's ttyS3, so gpio-ohc-iomcu binds it at
+	  boot with no userspace attach.

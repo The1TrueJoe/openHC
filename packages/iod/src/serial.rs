@@ -234,7 +234,7 @@ pub fn open_serial(dev: &str, baud: u32) -> io::Result<RawFd> {
     // syntax-check the file at all (Homebrew's cargo has no cross std).
     //
     // The high rates are not academic: 460800 is the EA family's IO
-    // microcontroller rate, which the init script hands to the line discipline.
+    // microcontroller rate.
     #[cfg(target_os = "linux")]
     let speed = match baud {
         9600 => libc::B9600,

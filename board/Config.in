@@ -47,19 +47,19 @@ config BR2_OHC_BOARD_DTS
 #   gpio-ohc-iomcu.c: undefined reference to `rc_allocate_device'
 #   gpio-ohc-iomcu.c: undefined reference to `rc_register_device'
 #
-# The userspace half was already conditional (the `iomcu` feature, whose own
-# defconfig says outright that the CA-1 and the IO Extender have nothing for it
-# to attach to). Only the kernel half was not, so the two halves disagreed about
-# which boards this exists on. Now the feature sets this and both halves follow.
+# The `iomcu` feature sets this, and only boards with an IO microcontroller take
+# that feature, so the driver exists exactly where there is a part to bind.
 config BR2_OHC_IOMCU_KERNEL_DRIVER
 	# A PROMPT IS LOAD BEARING — see the note above.
 	bool "IO microcontroller: inject the gpiochip driver"
 	help
-	  Injects board/common/kernel/drivers/gpio/gpio-ohc-iomcu.c, which turns
-	  the relays, contacts and IR jacks behind the companion microcontroller
+	  Injects board/common/kernel/drivers/gpio/gpio-ohc-iomcu.c, a serdev
+	  driver that binds the companion microcontroller from the board's
+	  firmware node and turns the relays, contacts and IR jacks behind it
 	  into a standard gpiochip plus one lirc device per emitter. Needs
-	  CONFIG_RC_CORE and CONFIG_LIRC, which the `iomcu` feature's kernel
-	  fragment supplies. Set by that feature; nothing else sets it.
+	  CONFIG_SERIAL_DEV_BUS, CONFIG_RC_CORE and CONFIG_LIRC, which the
+	  `iomcu` feature's kernel fragment supplies. Set by that feature;
+	  nothing else sets it.
 
 # The IO Extender's FPGA. Its four RS-232 ports and eight IR outputs live
 # inside a Xilinx part that boots BLANK, so without this driver those twelve
@@ -79,10 +79,10 @@ source "$BR2_EXTERNAL_OPENHC_PATH/../packages/librespot/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-nqptp/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/ohc-shairport-sync/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/splash/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/../packages/iomcu-attach/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/alsa-ohceq/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/../packages/webview/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
+source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/hc800-acpi/Config.in"
 # sgx545-ce (the SGX545 KERNEL driver) is no longer a package — it is an in-tree
 # driver mirrored from board/ea/common/kernel/drivers/gpu/drm/sgx545ce. Only its
 # userspace (sgx545-um) and its libwpe backend remain packages here; webview, the

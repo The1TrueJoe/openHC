@@ -33,7 +33,18 @@ out="$IMAGES/openhc-$BOARD-kernel.img"
 
 cp -f "$bzimage" "$out"
 cp -f "$bzimage" "$IMAGES/$KERNEL_NAME"
-cp -f "$cpio"    "$IMAGES/$INITRD_NAME"
+# The board's ACPI table upgrade (package hc800-acpi) goes IN FRONT of the
+# rootfs: the kernel reads kernel/firmware/acpi/*.aml from an uncompressed cpio
+# at the very start of the initrd, before anything is decompressed, and then
+# unpacks the rest as usual. The file keeps its .gz name because GRUB, the
+# flasher and kexec all know it by that name; it is two concatenated archives.
+tables="$IMAGES/acpi-tables.cpio"
+if [ -f "$tables" ]; then
+    cat "$tables" "$cpio" > "$IMAGES/$INITRD_NAME"
+    echo "post-image: ACPI tables -> front of $INITRD_NAME ($(wc -c < "$tables") B)"
+else
+    cp -f "$cpio" "$IMAGES/$INITRD_NAME"
+fi
 
 # --- the menu.lst stanza ----------------------------------------------------
 # No root= : the initrd IS the rootfs (the kernel unpacks a cpio.gz initrd as

@@ -111,6 +111,10 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 # it is fitted and answers, and is configured by nobody — not even the vendor OS.
 BR2_PACKAGE_THS8200=y
 
+# The board's own ACPI tables (board/hc800/acpi/), prepended to the initrd by
+# post-image.sh: the IO microcontroller as a serdev child of ttyS3.
+BR2_PACKAGE_HC800_ACPI=y
+
 # --- board device tree: the front panel and the GPIO line names ---
 # Copied into arch/x86/boot/dts/ and linked in by name (CONFIG_BUILTIN_DTB_NAME
 # in linux/hc800.fragment). It describes the six LEDs and the ID button, wiring

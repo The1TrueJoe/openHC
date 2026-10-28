@@ -206,7 +206,7 @@
         }
       },
       "summary": "Pulse the microcontroller's reset line",
-      "description": "Recovery for a wedged part. Tries both polarities and reports which worked. Note: on the HC-800 a wedged MCU has NOT been recoverable by reset — it needs a power cycle."
+      "description": "Recovery for a wedged part: unbinds the IO driver, pulses the line, binds it again, and reports whether the part answers. Note: on the HC-800 a wedged MCU has NOT been recoverable by reset — it needs a power cycle."
     },
     "displayKey": {
       "address": "openhc/{box}/cmd/display/key",
