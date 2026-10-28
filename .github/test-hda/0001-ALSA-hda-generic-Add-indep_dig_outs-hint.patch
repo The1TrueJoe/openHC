@@ -1,6 +1,6 @@
-From e535a960cd63d25fa025cf861028ff7c38032e8d Mon Sep 17 00:00:00 2001
+From ae628e401c8bd133557e8d087fed7d7037327ebb Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
-Date: Wed, 28 Oct 2026 03:38:44 -0400
+Date: Wed, 28 Oct 2026 04:04:55 -0400
 Subject: [PATCH] ALSA: hda/generic: Add indep_dig_outs hint
 
 The generic parser gives a codec one digital playback PCM. Any further
@@ -15,35 +15,42 @@ the S/PDIF coax jack. These are two outputs that should play different
 streams at the same time. The follower setup cannot express that, and
 userspace cannot split one stream tag in two.
 
-Add an "indep_dig_outs" hint, in the manner of indep_hp. With it, the
-second digital output gets its own hda_multi_out and its own PCM,
-"Alt Digital", typed from its pin and with its own IEC958 controls. The
-digital playback ops pick the multiout by the stream's NID. Without the
-hint nothing changes.
+Add an "indep_dig_outs" hint. Like indep_hp does for the headphone DAC,
+it gives the second digital output pin its own stream: its own
+hda_multi_out and its own PCM, "Alt Digital", typed from its pin and
+with its own IEC958 controls. The digital playback ops pick the
+multiout by the stream's NID. The analog "IEC958 Default PCM"
+duplication stays on the first digital output only. Unlike indep_hp,
+the split is fixed at parse time; there is no mixer switch. A codec
+driver can also set spec->indep_dig_outs itself. Without the hint or
+the flag nothing changes.
 
-On the HC-800, with "indep_dig_outs = yes" in an hda patch file, the
-HDMI output stays the "Digital" PCM (device 3), the coax output becomes
-"Alt Digital" (device 1) with its IEC958 controls at index 16, and the
-two play different streams at once.
+The new PCM takes the next free device number of its type. With an
+HDMI-typed first output and an S/PDIF-typed second one, as on the
+HC-800, the HDMI output stays the "Digital" PCM (device 3) and the
+coax output becomes "Alt Digital" (device 1), with its IEC958 controls
+at index 16.
 
 Assisted-by: LLM
 ---
- Documentation/sound/hd-audio/notes.rst |  3 ++
+ Documentation/sound/hd-audio/notes.rst |  5 ++
  sound/hda/codecs/generic.c             | 63 ++++++++++++++++++++++----
  sound/hda/codecs/generic.h             |  7 ++-
- 3 files changed, 63 insertions(+), 10 deletions(-)
+ 3 files changed, 65 insertions(+), 10 deletions(-)
 
 diff --git a/Documentation/sound/hd-audio/notes.rst b/Documentation/sound/hd-audio/notes.rst
-index c16f83875..5dce0f85e 100644
+index c16f83875..c618bb2d7 100644
 --- a/Documentation/sound/hd-audio/notes.rst
 +++ b/Documentation/sound/hd-audio/notes.rst
-@@ -486,6 +486,9 @@ inv_dmic_split (bool)
+@@ -486,6 +486,11 @@ inv_dmic_split (bool)
  indep_hp (bool)
      provide the independent headphone PCM stream and the corresponding
      mixer control, if available
 +indep_dig_outs (bool)
-+    give the second digital output its own PCM stream ("Alt Digital")
-+    instead of making it follow the first one; default false
++    give the second digital output pin (in parsing order) its own PCM
++    stream, "Alt Digital", instead of making it follow the first one's
++    stream. The PCM takes the next free device number of its type, so
++    two S/PDIF outputs need dynamic minors. Default false
  add_stereo_mix_input (bool)
      add the stereo mix (analog-loopback mix) to the input mux if
      available
