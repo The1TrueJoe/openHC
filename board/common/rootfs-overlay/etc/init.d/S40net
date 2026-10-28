@@ -23,9 +23,9 @@
 MASTER="${OHC_UPLINK_IFACE:-eth0}"
 PORTS="${OHC_DSA_PORTS:-}"
 
-wait_carrier() {
+wait_carrier() {               # $1 = iface, $2 = seconds (default 10)
     i=0
-    while [ $i -lt 10 ]; do
+    while [ $i -lt "${2:-10}" ]; do
         [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = 1 ] && return 0
         sleep 1
         i=$((i + 1))
@@ -101,14 +101,33 @@ case "$1" in
             case "$OHC_NET_L3_MODE" in
                 dhcp)
                     printf 'Net: %s (switchd): ' "$OHC_NET_L3_IFACE"
-                    wait_carrier "$OHC_NET_L3_IFACE"
-                    lease "$OHC_NET_L3_IFACE" && echo "up ($(addr_of "$OHC_NET_L3_IFACE"))" || {
-                        # switchd builds br-lan even when DSA never created its
-                        # ports, and an empty bridge never leases: fall through
-                        # to the port/master fallback below rather than staying dark.
-                        echo "no lease, falling back"
-                        switchd_failed=yes
-                    }
+                    # switchd's bridge runs STP by default, and a bridge has no
+                    # carrier until a port reaches forwarding: listening plus
+                    # learning is 2 x forward_delay = 30 s. Leasing inside the
+                    # usual 10 s wait loses that race every boot (EA3, measured).
+                    wait_carrier "$OHC_NET_L3_IFACE" 40
+                    if lease "$OHC_NET_L3_IFACE"; then
+                        echo "up ($(addr_of "$OHC_NET_L3_IFACE"))"
+                    else
+                        have_ports=
+                        for p in $PORTS; do
+                            [ -e "/sys/class/net/$p" ] && have_ports=yes
+                        done
+                        if [ -n "$have_ports" ]; then
+                            # DSA is up and its ports are in the bridge: a lease on
+                            # a bridged port cannot work, and unbinding b53 does not
+                            # undo its switch setup (on an EA3 plain eth0 got no
+                            # lease after the unbind either). Keep retrying.
+                            echo "no lease"
+                            persist "$OHC_NET_L3_IFACE"
+                        else
+                            # switchd builds br-lan even when DSA never created its
+                            # ports, and an empty bridge never leases: fall through
+                            # to the port/master fallback below rather than staying dark.
+                            echo "no lease, falling back"
+                            switchd_failed=yes
+                        fi
+                    fi
                     ;;
                 static)
                     echo "Net: $OHC_NET_L3_IFACE (switchd): static $(addr_of "$OHC_NET_L3_IFACE")" ;;
