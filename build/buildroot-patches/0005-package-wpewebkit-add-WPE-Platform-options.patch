@@ -1,7 +1,7 @@
-From c75be026342645c59917402df8f06ddf47299660 Mon Sep 17 00:00:00 2001
+From 7d9c85fccb8459b869de0dfd7e87cc98b2542875 Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
 Date: Tue, 27 Oct 2026 15:21:10 -0400
-Subject: [PATCH 2/2] package/wpewebkit: add WPE Platform options
+Subject: [PATCH] package/wpewebkit: add WPE Platform options
 
 WPE Platform is the newer embedding API of WPE WebKit: the application
 creates a WPEDisplay and WebKit renders through it, without libwpe or
@@ -14,7 +14,13 @@ WPE Platform uses libmanette for gamepads when it finds it, so build
 libmanette first when it is enabled.
 
 The DRM platform needs libinput and libudev. It also needs GBM and
-libdrm, which the existing USE_GBM and USE_LIBDRM blocks handle.
+libdrm, which the existing USE_GBM and USE_LIBDRM blocks handle. It
+imports buffers for scanout with the GBM format modifier API
+(GBM_BO_IMPORT_FD_MODIFIER, gbm_bo_get_plane_count), which not every
+GBM provider has, so it depends on
+BR2_PACKAGE_LIBGBM_HAS_FEATURE_FORMAT_MODIFIER_PLANE_COUNT. It does
+not use gbm_bo_get_fd, so unlike cog it does not need the DMA_BUF
+feature.
 
 Every WPE Platform display compiles an XKB keymap with libxkbcommon.
 Without the xkeyboard-config data this fails and the application
@@ -23,15 +29,15 @@ crashes, so select xkeyboard-config.
 Pass ENABLE_WPE_PLATFORM explicitly in both cases, as upstream
 enables it by default starting with 2.54.
 ---
- package/wpewebkit/Config.in    | 35 ++++++++++++++++++++++++++++++++++
- package/wpewebkit/wpewebkit.mk | 24 +++++++++++++++++++++++
- 2 files changed, 59 insertions(+)
+ package/wpewebkit/Config.in    | 38 ++++++++++++++++++++++++++++++++++
+ package/wpewebkit/wpewebkit.mk | 24 +++++++++++++++++++++
+ 2 files changed, 62 insertions(+)
 
 diff --git a/package/wpewebkit/Config.in b/package/wpewebkit/Config.in
-index c624c697a5..14984d97ae 100644
+index c624c697a5..3b7ea4fcef 100644
 --- a/package/wpewebkit/Config.in
 +++ b/package/wpewebkit/Config.in
-@@ -86,6 +86,41 @@ comment "sandboxing supports needs a toolchain w/ headers >= 3.17"
+@@ -86,6 +86,44 @@ comment "sandboxing supports needs a toolchain w/ headers >= 3.17"
  	depends on BR2_PACKAGE_LIBSECCOMP_ARCH_SUPPORTS
  	depends on !BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_17
  
@@ -51,6 +57,7 @@ index c624c697a5..14984d97ae 100644
 +config BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM
 +	bool "DRM platform"
 +	depends on BR2_PACKAGE_HAS_LIBGBM
++	depends on BR2_PACKAGE_LIBGBM_HAS_FEATURE_FORMAT_MODIFIER_PLANE_COUNT
 +	depends on BR2_PACKAGE_HAS_LIBUDEV # libinput
 +	select BR2_PACKAGE_LIBDRM
 +	select BR2_PACKAGE_LIBINPUT
@@ -58,8 +65,10 @@ index c624c697a5..14984d97ae 100644
 +	  Display directly through kernel mode-setting (KMS), without
 +	  a compositor, with input from libinput.
 +
-+comment "DRM platform needs GBM and libudev"
-+	depends on !BR2_PACKAGE_HAS_LIBGBM || !BR2_PACKAGE_HAS_LIBUDEV
++comment "DRM platform needs GBM w/ format modifiers and libudev"
++	depends on !BR2_PACKAGE_HAS_LIBGBM || \
++		!BR2_PACKAGE_LIBGBM_HAS_FEATURE_FORMAT_MODIFIER_PLANE_COUNT || \
++		!BR2_PACKAGE_HAS_LIBUDEV
 +
 +config BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_WAYLAND
 +	bool "Wayland platform"

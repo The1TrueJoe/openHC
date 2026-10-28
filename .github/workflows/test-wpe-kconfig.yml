@@ -1,0 +1,52 @@
+# TEST ONLY (branch wpe-patch-necessity): Kconfig check of the wpewebkit
+# series' DRM gate. Minutes, no compile: defconfig + read .config.
+name: test-wpe-kconfig
+on:
+  push:
+    branches: [wpe-patch-necessity]
+    paths: [.github/workflows/test-wpe-kconfig.yml, build/buildroot-patches/0005-*]
+permissions:
+  contents: read
+jobs:
+  kconfig:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Buildroot 04b8e19 + the series
+        run: |
+          set -e
+          git clone -q https://github.com/buildroot/buildroot "$HOME/br"
+          git -C "$HOME/br" checkout -q 04b8e19efd4b7085583cdc3fe099890a04abbc9e
+          for p in build/buildroot-patches/0004-*.patch build/buildroot-patches/0005-*.patch; do
+            patch -d "$HOME/br" -p1 --batch --forward < "$p"
+          done
+      - name: DRM stays with a modifier-capable GBM, drops without one
+        run: |
+          set -e
+          common='BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
+          BR2_TOOLCHAIN_BUILDROOT_CXX=y
+          BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
+          BR2_PACKAGE_WPEWEBKIT=y
+          BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
+          BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y'
+          fail=0
+          check() {  # $1 name, $2 want y|n, $3 arch + GPU lines
+            d="$HOME/kc/$1"; mkdir -p "$d"
+            printf '%s\n%s\n' "$3" "$common" | sed 's/^ *//' > "$d/defconfig"
+            make -s -C "$HOME/br" O="$d" BR2_DEFCONFIG="$d/defconfig" defconfig >/dev/null
+            for s in WPEWEBKIT WPEWEBKIT_WPE_PLATFORM HAS_LIBGBM; do
+              grep -q "^BR2_PACKAGE_$s=y" "$d/.config" || { echo "INVALID $1: $s did not stick"; fail=1; return; }
+            done
+            got=n; grep -q '^BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y' "$d/.config" && got=y
+            feat=n; grep -q '^BR2_PACKAGE_LIBGBM_HAS_FEATURE_FORMAT_MODIFIER_PLANE_COUNT=y' "$d/.config" && feat=y
+            echo "$1: modifier feature=$feat, DRM=$got (want $2)"
+            [ "$got" = "$2" ] || fail=1
+          }
+          check mesa-x86_64 y 'BR2_x86_64=y
+          BR2_PACKAGE_MESA3D=y
+          BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SOFTPIPE=y
+          BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+          BR2_PACKAGE_MESA3D_OPENGL_ES=y'
+          check rockchip-mali-aarch64 n 'BR2_aarch64=y
+          BR2_PACKAGE_ROCKCHIP_MALI=y'
+          exit $fail
