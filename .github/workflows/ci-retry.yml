@@ -1,0 +1,67 @@
+name: ci-retry
+
+# Re-run an image build that ran out of time, instead of a person doing it. A
+# cold Buildroot build (WebKit, LLVM, Node.js) can need more than one job's 325
+# minutes; what it compiled is kept when it runs out (its ccache, and on main
+# the output tree), so a re-run resumes from there and finishes.
+#
+# Only when EVERY failed job of the attempt is an image build that ci.yml's
+# Build step marked `build-timeout`, or ci-ok (which fails because of it): a
+# real failure is left for a person. At most three attempts in all, and not
+# when the run's commit is no longer the head of its branch or PR, because a
+# newer run has replaced it.
+#
+# workflow_run only fires from the copy of this file on the default branch.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  retry:
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run timed-out image builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R: ${{ github.repository }}
+          RUN: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request)
+              [ -n "$PR" ] || { echo "no PR in this repo (a fork?): not re-running"; exit 0; }
+              head=$(gh api "repos/$R/pulls/$PR" -q .head.sha) ;;
+            push)
+              head=$(gh api "repos/$R/branches/$BRANCH" -q .commit.sha) ;;
+            *)
+              echo "a $EVENT run: not re-running"; exit 0 ;;
+          esac
+          [ "$head" = "$SHA" ] || { echo "superseded: $SHA is no longer the head ($head)"; exit 0; }
+
+          timedout=0
+          while IFS=$'\t' read -r name url; do
+            [ "$name" = ci-ok ] && continue
+            if gh api "${url#https://api.github.com/}/annotations" -q '.[].title' | grep -qx build-timeout; then
+              echo "ran out of time: $name"; timedout=1
+            else
+              echo "failed for another reason: $name, leaving the run for a person"; exit 0
+            fi
+          done < <(gh api "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs" --paginate \
+                     -q '.jobs[] | select(.conclusion == "failure") | [.name, .check_run_url] | @tsv')
+          [ "$timedout" = 1 ] || { echo "nothing ran out of time"; exit 0; }
+
+          echo "re-running the failed jobs of run $RUN (attempt $ATTEMPT -> $((ATTEMPT + 1)))"
+          gh run rerun "$RUN" -R "$R" --failed

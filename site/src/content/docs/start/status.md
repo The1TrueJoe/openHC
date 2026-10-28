@@ -51,6 +51,22 @@ EA5, but neither board has been in hand.
   the DLE/STX framing, IR transmit confirmed emitting 38 kHz on a live jack,
   IR capture decoding a real NEC remote, and contacts measured in both
   directions.
+- **The IO-MCU bound by firmware, as a serdev device**, with no userspace attach
+  and no line discipline. On the EA it is a `control4,io-mcu` child of uart1 in
+  the board device tree, with its counts in each board's `.dts`. On the HC-800
+  it is a `PRP0001` device under the BIOS's ttyS3 UART (`\_SB.PCI0.SBRG.UAR4`),
+  from an SSDT prepended to the initrd, because that UART belongs to ACPI and a
+  tree-described one would be polled too slowly for IR. Both were verified on
+  hardware (an EA1 ramboot, an HC-800 kexec): the gpiochip, every lirc device
+  and the MCU-routed serial ports came up, and iod took its counts from
+  `/sys/class/ohc/iomcu`. See [IO as GPIO](/shared/io-as-gpio/).
+- **Restarting the IO-MCU from its bootloader after a reset.** The autobaud
+  knock (`55 55`) has to go before any DLE/STX frame, or the TI bootloader
+  never ACKs. A reset has to be pulsed with the driver *unbound*, or the
+  contact poll's next frame reaches the bootloader first and the part goes
+  silent until another reset. iod's `mcu.reset` unbinds, pulses `io_reset` and
+  binds again, and that was run twice on an HC-800 with IR and relays working
+  afterwards each time.
 - **GLES2 on the PowerVR SGX545**, which the prevailing wisdom said was
   impossible. Shaders compile, a triangle rasterises, and it was confirmed on a
   panel.
@@ -90,14 +106,22 @@ EA5, but neither board has been in hand.
 - **The Zigbee NCP on the CA-1**, which answers nothing at any baud. (The EA1's
   NCP now does answer; this caveat is CA-1-specific.)
 - **The full `stock` return-to-Control4 round-trip on the EA, end to end.** The
-  `mtd0` write path that it rests on is proven, but reverting the MFH *and*
-  recovery-kexec'ing p2 to reimage p1 has not yet been run through on hardware.
+  `mtd0` write path that it rests on is proven, but the reboot into boot-init
+  that reimages p1 from p2 and reverts the MFH has not yet been run through on
+  hardware.
 - **The return-to-stock button on the EA3.** The software path ships there too, but
   that board's GPIO line and polarity are not hardware-confirmed yet, so the
   fail-safe keeps the watcher inert until they are.
 - **The HC-800 software factory-restore.** `ohc-flash factory-restore` flips the
   GRUB default to Control4's own recovery entry; it is code-complete and
   read-back-verifies, but has not been run against real HC-800 hardware.
+- **Parts of the IO-MCU rework that have not run on hardware.** These are
+  dropping the driver's contact cache when the part stops answering (so a
+  silent part's contacts fail instead of repeating the last reading), the IO
+  Extender's IO counts now coming from the lines and lirc devices its kernel
+  names (the box was not on the bench), and starting the application from the
+  bootloader at bind on an EA (the EA1's MCU was already running when it was
+  tested; that path was proven on the HC-800).
 - **The EA1 RAM reclaim.** EA1-v1 still boots on the ~176 MB CEFDK hands over,
   while ~1.8 GB sits "device reserved". The `memmap=exactmap` line that gives the
   EA3 its 1.7 GB is now written for the EA1 too — its e820 split and the fact that
