@@ -23,7 +23,7 @@ jobs:
           git clone -q https://github.com/librespot-org/librespot.git "$RUNNER_TEMP/librespot"
           cd "$RUNNER_TEMP/librespot"
           git checkout -q "$LIBRESPOT_BASE"
-          git -c user.name=ci -c user.email=ci@localhost am -q "$GITHUB_WORKSPACE/test/librespot/0001-alsa-watch.patch"
+          git -c user.name=ci -c user.email=ci@localhost am -q "$GITHUB_WORKSPACE/.github/test-librespot/0001-alsa-watch.patch"
           git log --oneline -2
 
       - uses: dtolnay/rust-toolchain@stable
@@ -58,7 +58,7 @@ jobs:
       - name: Watch a real ALSA control (snd-dummy)
         working-directory: ${{ runner.temp }}/librespot
         run: |
-          cp "$GITHUB_WORKSPACE/test/librespot/alsa_watch.rs" examples/
+          cp "$GITHUB_WORKSPACE/.github/test-librespot/alsa_watch.rs" examples/
           amixer -D hw:Dummy scontrols || { echo "::warning::skipped, no snd-dummy"; exit 0; }
           RUST_LOG=librespot_playback=debug cargo run -q --example alsa_watch --features alsa-backend -- hw:Dummy Master
           # A softvol control too (what openHC uses): alsa-lib creates it as a

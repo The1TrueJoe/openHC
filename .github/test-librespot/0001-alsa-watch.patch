@@ -1,0 +1,387 @@
+From d60f86b3a5fbde20a9314f4384319878d590825f Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <jttelaak@hotmail.com>
+Date: Wed, 28 Oct 2026 03:01:58 -0400
+Subject: [PATCH] playback, connect: report Alsa mixer volume changes made
+ outside librespot
+
+---
+ CHANGELOG.md                    |   1 +
+ connect/src/spirc.rs            |  55 +++++++++--
+ playback/src/mixer/alsamixer.rs | 169 +++++++++++++++++++++++++++++---
+ playback/src/mixer/mod.rs       |   8 ++
+ 4 files changed, 211 insertions(+), 22 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9ce6444..8821349 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Added
+ 
++- [playback] [connect] Report a volume change made outside librespot on the Alsa mixer's control (another program, a hardware control) to Spotify, so the app's volume follows it. Mixers can offer such changes through the new `Mixer::volume_changes`
+ - [docs] Document Android NDK context initialization requirement for Rodio/CPAL audio backend
+ - [core] Add `Cache::with_memory_credentials` to keep credentials in memory instead of a file, for applications that store them in their own protected store
+ - [connect] Add method `add_to_queue` to `Spirc` to add tracks, episodes, albums and playlists to the queue
+diff --git a/connect/src/spirc.rs b/connect/src/spirc.rs
+index e1b9707..caacda9 100644
+--- a/connect/src/spirc.rs
++++ b/connect/src/spirc.rs
+@@ -42,7 +42,10 @@ use std::{
+     time::{Duration, SystemTime, UNIX_EPOCH},
+ };
+ use thiserror::Error;
+-use tokio::{sync::mpsc, time::sleep};
++use tokio::{
++    sync::{mpsc, watch},
++    time::sleep,
++};
+ 
+ #[derive(Debug, Error)]
+ enum SpircError {
+@@ -72,6 +75,8 @@ impl From<SpircError> for Error {
+ struct SpircTask {
+     player: Arc<Player>,
+     mixer: Arc<dyn Mixer>,
++    /// volume changes made outside librespot, if the mixer can see them
++    mixer_volume_changes: Option<watch::Receiver<u16>>,
+ 
+     /// the state management object
+     connect_state: ConnectState,
+@@ -228,10 +233,12 @@ impl Spirc {
+         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+ 
+         let player_events = player.get_player_event_channel();
++        let mixer_volume_changes = mixer.volume_changes();
+ 
+         let mut task = SpircTask {
+             player,
+             mixer,
++            mixer_volume_changes,
+ 
+             connect_state,
+             connect_established: false,
+@@ -483,6 +490,7 @@ impl SpircTask {
+         while !self.session.is_invalid() && !self.shutdown {
+             let commands = self.commands.as_mut();
+             let player_events = self.player_events.as_mut();
++            let mixer_volume_changes = self.mixer_volume_changes.as_mut();
+ 
+             // when state and volume update have a higher priority than context resolving
+             // because of that the context resolving has to wait, so that the other tasks can finish
+@@ -519,6 +527,15 @@ impl SpircTask {
+                         Err(why) => error!("can't update volume, failed to parse i32 to u16: {why}")
+                     }
+                 },
++                // the mixer's volume was changed outside librespot
++                mixer_volume = async {
++                    let changes = mixer_volume_changes?;
++                    changes.changed().await.ok()?;
++                    Some(*changes.borrow_and_update())
++                }, if mixer_volume_changes.is_some() && self.connect_established => match mixer_volume {
++                    Some(volume) => self.handle_mixer_volume_changed(volume),
++                    None => self.mixer_volume_changes = None,
++                },
+                 logout_request = self.connect_state_logout_request.next() => unwrap! {
+                     logout_request,
+                     |logout_request| {
+@@ -1938,16 +1955,34 @@ impl SpircTask {
+         let old_volume = self.connect_state.device_info().volume;
+         let new_volume = volume as u32;
+         if old_volume != new_volume || self.mixer.volume() != volume {
+-            self.update_volume = true;
+-
+-            self.connect_state.set_volume(new_volume);
+             self.mixer.set_volume(volume);
+-            if let Some(cache) = self.session.cache() {
+-                cache.save_volume(volume)
+-            }
+-            if self.connect_state.is_active() {
+-                self.player.emit_volume_changed_event(volume);
+-            }
++            self.record_volume(volume);
++        }
++    }
++
++    /// The mixer's volume was changed outside librespot: report the new volume,
++    /// without setting the mixer to it again.
++    fn handle_mixer_volume_changed(&mut self, volume: u16) {
++        // A write made since, by librespot or from outside, makes this one
++        // out of date; one from outside is on its way here too.
++        if self.mixer.volume() != volume {
++            return;
++        }
++        if self.connect_state.device_info().volume != volume as u32 {
++            debug!("SpircTask::handle_mixer_volume_changed({volume})");
++            self.record_volume(volume);
++        }
++    }
++
++    fn record_volume(&mut self, volume: u16) {
++        self.update_volume = true;
++
++        self.connect_state.set_volume(volume as u32);
++        if let Some(cache) = self.session.cache() {
++            cache.save_volume(volume)
++        }
++        if self.connect_state.is_active() {
++            self.player.emit_volume_changed_event(volume);
+         }
+     }
+ }
+diff --git a/playback/src/mixer/alsamixer.rs b/playback/src/mixer/alsamixer.rs
+index 90daaf1..6baa32c 100644
+--- a/playback/src/mixer/alsamixer.rs
++++ b/playback/src/mixer/alsamixer.rs
+@@ -5,12 +5,16 @@ use super::{Mixer, MixerConfig, VolumeCtrl};
+ 
+ use alsa::Error as AlsaError;
+ use alsa::ctl::{ElemId, ElemIface};
+-use alsa::mixer::{MilliBel, SelemChannelId, SelemId};
++use alsa::mixer::{MilliBel, Selem, SelemChannelId, SelemId};
+ use alsa::{Ctl, Round};
+ 
+ use librespot_core::Error;
+ use std::ffi::{CString, NulError};
++use std::io::{self, ErrorKind};
++use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
++use std::thread;
+ use thiserror::Error;
++use tokio::sync::watch;
+ 
+ #[derive(Clone)]
+ #[allow(dead_code)]
+@@ -25,8 +29,20 @@ pub struct AlsaMixer {
+     has_switch: bool,
+     is_softvol: bool,
+     use_linear_in_db: bool,
++    /// The control's raw state after librespot's own last write, so that the
++    /// watcher can tell that write from a change made outside librespot.
++    own_write: Arc<Mutex<Option<RawState>>>,
++    /// Outside changes, from the watcher the first `volume_changes` starts.
++    volume_changes: Arc<OnceLock<Option<watch::Receiver<u16>>>>,
+ }
+ 
++/// A control's raw volume and whether its playback switch is on.
++type RawState = (i64, bool);
++
++/// How often the watcher wakes with nothing to read, to stop once nobody is
++/// listening any more.
++const WATCH_TIMEOUT_MS: i32 = 1000;
++
+ // min_db cannot be depended on to be mute. Also note that contrary to
+ // its name copied verbatim from Alsa, this is in millibel scale.
+ const SND_CTL_TLV_DB_GAIN_MUTE: MilliBel = MilliBel(-9999999);
+@@ -190,6 +206,8 @@ impl Mixer for AlsaMixer {
+             has_switch,
+             is_softvol,
+             use_linear_in_db,
++            own_write: Arc::default(),
++            volume_changes: Arc::default(),
+         })
+     }
+ 
+@@ -200,7 +218,45 @@ impl Mixer for AlsaMixer {
+             .find_selem(&SelemId::new(&self.config.control, self.config.index))
+             .expect("Could not find Alsa mixer control");
+ 
+-        if self.switched_off() {
++        self.volume_of(&simple_element)
++    }
++
++    fn set_volume(&self, volume: u16) {
++        let mixer =
++            alsa::mixer::Mixer::new(&self.config.device, false).expect("Could not open Alsa mixer");
++        let simple_element = mixer
++            .find_selem(&SelemId::new(&self.config.control, self.config.index))
++            .expect("Could not find Alsa mixer control");
++
++        // Held across the write and its readback, so that the watcher handles
++        // the write's event only after it can recognise it.
++        let mut own_write = self.lock_own_write();
++        self.write_volume(&simple_element, volume);
++        // Read back through a new handle: the one written to reports what was
++        // asked for, not what the driver kept.
++        *own_write = self.read_raw_state();
++    }
++
++    fn volume_changes(&self) -> Option<watch::Receiver<u16>> {
++        let mut changes = self.volume_changes.get_or_init(|| self.watch()).clone()?;
++        // A clone has seen what the original has seen, which may be a change
++        // from before this caller existed.
++        changes.borrow_and_update();
++        Some(changes)
++    }
++}
++
++impl AlsaMixer {
++    pub const NAME: &'static str = "alsa";
++
++    /// The volume `simple_element` is at, in librespot's terms.
++    fn volume_of(&self, simple_element: &Selem) -> u16 {
++        let switched_off = self.has_switch
++            && simple_element
++                .get_playback_switch(SelemChannelId::mono())
++                .map(|playback| playback == 0)
++                .unwrap_or(false);
++        if switched_off {
+             return 0;
+         }
+ 
+@@ -233,13 +289,7 @@ impl Mixer for AlsaMixer {
+         self.config.volume_ctrl.as_unmapped(mapped_volume)
+     }
+ 
+-    fn set_volume(&self, volume: u16) {
+-        let mixer =
+-            alsa::mixer::Mixer::new(&self.config.device, false).expect("Could not open Alsa mixer");
+-        let simple_element = mixer
+-            .find_selem(&SelemId::new(&self.config.control, self.config.index))
+-            .expect("Could not find Alsa mixer control");
+-
++    fn write_volume(&self, simple_element: &Selem, volume: u16) {
+         if self.has_switch {
+             if volume == 0 {
+                 debug!("Disabling playback (setting mute) on Alsa");
+@@ -289,10 +339,93 @@ impl Mixer for AlsaMixer {
+             .set_playback_db_all(MilliBel::from_db(db_volume as f32), Round::Floor)
+             .expect("Could not set Alsa dB volume");
+     }
+-}
+ 
+-impl AlsaMixer {
+-    pub const NAME: &'static str = "alsa";
++    fn lock_own_write(&self) -> MutexGuard<'_, Option<RawState>> {
++        self.own_write
++            .lock()
++            .unwrap_or_else(PoisonError::into_inner)
++    }
++
++    fn read_raw_state(&self) -> Option<RawState> {
++        let mixer = alsa::mixer::Mixer::new(&self.config.device, false).ok()?;
++        let simple_element =
++            mixer.find_selem(&SelemId::new(&self.config.control, self.config.index))?;
++        Some(raw_state(&simple_element))
++    }
++
++    /// Start a thread that watches the control for changes made outside
++    /// librespot and sends the volume after each one. `None` if it cannot.
++    fn watch(&self) -> Option<watch::Receiver<u16>> {
++        let (tx, rx) = watch::channel(self.volume());
++        // Without the receiver this mixer keeps, so that the thread stops once
++        // the mixer and everyone it handed a receiver to are gone.
++        let mixer = Self {
++            volume_changes: Arc::default(),
++            ..self.clone()
++        };
++        let spawned = thread::Builder::new()
++            .name("alsa-mixer-watch".into())
++            .spawn(move || {
++                if let Err(e) = mixer.watch_events(&tx) {
++                    warn!("Stopped watching the Alsa mixer for volume changes: {e}");
++                }
++            });
++        match spawned {
++            Ok(_) => Some(rx),
++            Err(e) => {
++                warn!("Could not watch the Alsa mixer for volume changes: {e}");
++                None
++            }
++        }
++    }
++
++    fn watch_events(&self, tx: &watch::Sender<u16>) -> Result<(), AlsaError> {
++        let mixer = alsa::mixer::Mixer::new(&self.config.device, false)?;
++        let id = SelemId::new(&self.config.control, self.config.index);
++
++        // Changes are measured from the control's state now, unless librespot
++        // has written to it already.
++        if let Some(simple_element) = mixer.find_selem(&id) {
++            self.lock_own_write()
++                .get_or_insert(raw_state(&simple_element));
++        }
++
++        while !tx.is_closed() {
++            match alsa::poll::poll_all(&[&mixer], WATCH_TIMEOUT_MS) {
++                Ok(ready) if ready.is_empty() => continue,
++                Ok(_) => {}
++                Err(e)
++                    if io::Error::from_raw_os_error(e.errno().abs()).kind()
++                        == ErrorKind::Interrupted =>
++                {
++                    continue;
++                }
++                Err(e) => return Err(e),
++            }
++
++            // The whole check and the send happen under the lock, so a write
++            // librespot makes is either recognised here or comes after the send.
++            let mut own_write = self.lock_own_write();
++            mixer.handle_events()?;
++            let Some(simple_element) = mixer.find_selem(&id) else {
++                continue;
++            };
++            let state = raw_state(&simple_element);
++            if *own_write == Some(state) {
++                continue;
++            }
++            *own_write = Some(state);
++
++            let volume = self.volume_of(&simple_element);
++            debug!(
++                "Alsa mixer changed outside librespot (raw volume {}, switch {}): volume is now {volume}",
++                state.0,
++                if state.1 { "on" } else { "off" }
++            );
++            tx.send_replace(volume);
++        }
++        Ok(())
++    }
+ 
+     fn switched_off(&self) -> bool {
+         if !self.has_switch {
+@@ -315,3 +448,15 @@ impl AlsaMixer {
+         self.is_softvol || self.use_linear_in_db
+     }
+ }
++
++fn raw_state(simple_element: &Selem) -> RawState {
++    let volume = simple_element
++        .get_playback_volume(SelemChannelId::mono())
++        .unwrap_or(0);
++    let on = !simple_element.has_playback_switch()
++        || simple_element
++            .get_playback_switch(SelemChannelId::mono())
++            .map(|switch| switch != 0)
++            .unwrap_or(true);
++    (volume, on)
++}
+diff --git a/playback/src/mixer/mod.rs b/playback/src/mixer/mod.rs
+index 89d0323..89eb2d9 100644
+--- a/playback/src/mixer/mod.rs
++++ b/playback/src/mixer/mod.rs
+@@ -1,6 +1,7 @@
+ use crate::config::VolumeCtrl;
+ use librespot_core::Error;
+ use std::sync::Arc;
++use tokio::sync::watch;
+ 
+ pub mod mappings;
+ use self::mappings::MappedCtrl;
+@@ -18,6 +19,13 @@ pub trait Mixer: Send + Sync {
+     fn get_soft_volume(&self) -> Box<dyn VolumeGetter + Send> {
+         Box::new(NoOpVolume)
+     }
++
++    /// Changes to the volume made outside librespot, for a mixer that can see
++    /// them: another program or a hardware control setting the same Alsa
++    /// control, for example. Spirc reports each one to Spotify.
++    fn volume_changes(&self) -> Option<watch::Receiver<u16>> {
++        None
++    }
+ }
+ 
+ pub trait VolumeGetter {
+-- 
+2.50.1 (Apple Git-155)
+
