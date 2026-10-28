@@ -122,14 +122,15 @@ fn main() {
 
     let board = Board::load(&env_path);
     eprintln!(
-        "iod: board={} backend={:?} ir={}+{} relays={} contacts={} serial={}",
+        "iod: board={} backend={:?} ir={}+{} relays={} contacts={} serial={} (counts from {})",
         board.model,
         board.io.backend,
         board.io.ir_out,
         board.io.ir_blaster,
         board.io.relays,
         board.io.contacts,
-        board.io.serials.len()
+        board.io.serials.len(),
+        board.io.declared_by,
     );
 
     // The kernel owns the protocol. iod once spoke DLE/STX itself; that path is
@@ -140,8 +141,13 @@ fn main() {
     } else if board.io.backend == Backend::Mcu {
         // Not fatal: capabilities still serve, so the GUI can say what is wrong
         // rather than failing to load. But no relay or contact will work.
-        eprintln!("iod: no {} gpiochip — is gpio-ohc-iomcu attached? (S12iomcu)",
-                  gpio_io::CHIP_LABEL);
+        match board.io.mcu_online {
+            Some(false) => eprintln!("iod: gpio-ohc-iomcu is on {} but the part is not answering",
+                                     board.io.mcu_tty.as_deref().unwrap_or("?")),
+            Some(true) if board.io.relays + board.io.contacts == 0 => {}
+            _ => eprintln!("iod: no {} gpiochip — is gpio-ohc-iomcu attached? (device tree, or S12iomcu)",
+                           gpio_io::CHIP_LABEL),
+        }
     }
 
     // Separate from the gpiochip: the driver registers lirc nodes even on a

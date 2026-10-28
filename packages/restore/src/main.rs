@@ -23,6 +23,9 @@
 //! the install's (`ohc_flash_core::mfh` — the flasher's own module, unit-tested
 //! there, so the install and its inverse cannot drift apart).
 //!
+//! Both backends start `stock` by putting Control4's own Zigbee firmware back on
+//! the radio (radio.rs; `--keep-radio` skips it, `radio` runs only that).
+//!
 //! Subcommands (safe -> destructive):
 //!   status        parse and print the MFH table. No write.
 //!   revert        remove openHC's MFH item (stock boot). Writes mtd0. REVERSIBLE
@@ -36,6 +39,7 @@ use std::os::unix::io::AsRawFd;
 
 use ohc_flash_core::{cefdk, mfh};
 mod hc800;
+mod radio;
 
 const MTD: &str = "/dev/mtd0";
 const ERASE_BLOCK: usize = 0x1_0000; // 64 KiB, confirmed on the S25FL127S
@@ -632,12 +636,22 @@ fn cmd_erasetest() -> io::Result<()> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or_default();
+    let keep_radio = args.iter().any(|a| a == "--keep-radio");
+    if cmd == "radio" || (cmd == "stock" && !keep_radio) {
+        if let Err(e) = radio::restore() {
+            eprintln!("ohc-restore {cmd}: {e}");
+            std::process::exit(1);
+        }
+        if cmd == "radio" {
+            return;
+        }
+    }
     if hc800::is_hc800() {
         let r = match cmd {
             "status" => hc800::status(),
             "stock" => hc800::stock(!args.iter().any(|a| a == "--no-reboot")),
             _ => {
-                eprintln!("usage: ohc-restore {{status|stock [--no-reboot]}}   (HC-800)");
+                eprintln!("usage: ohc-restore {{status|stock [--no-reboot] [--keep-radio]|radio}}   (HC-800)");
                 std::process::exit(2);
             }
         };
@@ -670,7 +684,7 @@ fn main() {
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: ohc-restore {{status|revert|install|stock|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: ohc-restore {{status|revert|install|stock [--keep-radio]|radio|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };

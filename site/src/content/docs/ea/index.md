@@ -113,3 +113,5 @@ the gap is silent rather than loud:
   [CE5300 register map](/ea/audio-regmap/).
 - [Graphics](/ea/graphics/), the SGX545, which works.
 - [HDMI CEC](/ea/hdmi-cec/), and why it isn't where anyone would look.
+- [Fan and thermal](/ea/fan/) — the kernel runs the fan from the device tree;
+  the 100 kHz PWM, the curve, manual control and the 95 °C poweroff.

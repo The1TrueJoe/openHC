@@ -57,11 +57,13 @@ playback:
 - **The SoC audio DSPs** run 1.8 MB of signed firmware loaded through the security
   engine, but they only do decode and mix. The **I²S render path needs none of
   it**, which is what makes a mainline driver possible at all.
-- **The ADAU1451** boots its own program from the board's EEPROM; Linux only
-  pushes parameter RAM. Stock requests `ea3-1451.bin`, but at 48 kHz nothing
-  from it is ever written. openHC loads a firmware file of **its own** instead,
-  built from `ea3.json`: the kernel's stock sigmadsp core writes its tables and
-  makes its knobs into ALSA controls. See [the DSP](#the-dsp-openhcs-configuration).
+- **The ADAU1451** has no program of its own. It comes out of reset with its PLL
+  off and its core idle; stock loads its program and register setup over I²C
+  at boot, from a userspace loader. openHC loads a firmware file of **its own**
+  instead, from the codec driver: the register init from `ea3.json`, openHC's
+  own program, and the parameters, all through the kernel's stock sigmadsp
+  core, which also makes the knobs into ALSA controls. See
+  [the DSP](#the-dsp-openhcs-configuration).
 
 :::caution[One header must never be committed]
 `ea3-dsp-params.h` is 10,410 `#define`s with an Analog Devices header stating it
@@ -72,9 +74,29 @@ every table they index is computed by openHC.
 
 ## The DSP: openHC's configuration
 
-The program in the EEPROM reads every knob as an **index 0..48** from a
+The ADAU1451 runs whatever the host loads into it. An earlier premise here, that
+it boots a program from an EEPROM, was wrong: read on hardware under openHC, the
+part had its PLL off, its core idle and its RAM random. So openHC loads three
+things at bind, in the order of the datasheet's initialization sequence:
+
+1. **The register init** — PLL (24.576 MHz MCLK ÷8 ×96 = 294.912 MHz), power,
+   serial ports, ASRC, output routing, pads — decoded from a stock unit's
+   registers into `ea3.json`, one line and one meaning per register. The driver
+   waits for the PLL to lock part-way: until it does, the part answers nothing.
+2. **The program** — openHC's own, built by SigmaStudio+ in CI and handed to
+   the image build (`BR2_PACKAGE_ADAU1451_FW_PROGRAM`). It is never committed.
+3. **The parameters** — the knob tables, computed from openHC's designs.
+
+Then it starts the core and checks the program's version cell. A build with no
+program yet gets a firmware file with parameters only, and the driver writes
+nothing to a DSP that is not already running the program they belong to — which,
+after reset, it never is.
+
+The knob addresses in `ea3.json` are those of the program a stock unit runs,
+read off a running unit: it reads every knob as an **index 0..48** from a
 parameter cell and looks the setting up in a 49-entry table, 24 neutral. openHC
-fills those tables from its own designs and hands the cells to ALSA:
+fills those tables from its own designs and hands the cells to ALSA; a program
+with another layout brings its own addresses:
 
 | Knob | Design |
 |---|---|
@@ -83,10 +105,10 @@ fills those tables from its own designs and hands the cells to ALSA:
 | EQ 31 Hz … 16 kHz | ten RBJ peaking bands, Q 1.414, ±12 dB |
 
 `board/ea/common/firmware/dsp/adau1451/ea3.json` is the whole configuration —
-cells, tables, designs — and `mkfw.py` builds it into the kernel's SigmaDSP
-firmware format (`/lib/firmware/openhc/adau1451-ea3.bin`). The board DTB names
-the file and the program it belongs to (`control4,program-version`); on any
-other program the driver writes nothing. ohc-audiod reads the same profile for
+register init, cells, tables, designs — and `mkfw.py` builds it, with the
+program when there is one, into the kernel's SigmaDSP firmware format
+(`/lib/firmware/openhc/adau1451-ea3.bin`). The board DTB names the file and the
+program's version cell (`control4,program-version`). ohc-audiod reads the same profile for
 its knob list, so the web UI shows exactly those knobs, set over MQTT like the
 HC-800's tone. The [directory's README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)
 has the map and how it was proven.
@@ -169,10 +191,15 @@ interrupt is needed. Two things are still inferred:
 2. **The ungate** — why the TX and DMA blocks hang on access under openHC when
    stock reads them freely. The plan is below.
 
-Master/slave couldn't be determined either, but it matters less than it sounds:
-the render path exposes **no** clock-direction control at all, consistent with the
-SoC side being permanently slave, and the codec is I²S master. So don't program
-the bit-clock divider speculatively.
+Master/slave is not settled from the SoC side: the render path exposes **no**
+clock-direction control at all. The DSP side says the opposite of what the
+vendor's ASoC link declared (codec master): in the register init stock loads,
+**every serial port of the ADAU1451 is a slave**. The SoC's stream lands on
+`SDATA_IN3`, clocked by its own `BCLK_IN3`/`LRCLK_IN3` and brought into the
+core's clock domain by an ASRC, which is only needed for a source with a clock
+of its own. So the CE5300 most likely drives I2S1's clocks, and `ea-audio-dsp.dtsi`
+(which names the codec master) is to be revisited with the PCM. Still, don't
+program the bit-clock divider speculatively.
 
 :::danger[Do not poke this device with devmem]
 An unbound PCI function may have memory decode off or sub-blocks unclocked.
@@ -185,9 +212,11 @@ with the device already enabled.
 
 1. Flash a kernel with the i2c patch; confirm `i2cdetect -y -r 3` shows `0x38`.
    **Nothing below matters until this passes.**
-2. With the card up (`aplay -l` shows `openhcea`), `amixer -c openhcea contents`
-   lists the DSP controls and `ReadBack DSP Program` reads 10: the DSP is alive
-   and running openHC's parameters.
+2. With a program in the image, `dmesg` says `DSP program loaded`, and with the
+   card up (`aplay -l` shows `openhcea`) `amixer -c openhcea contents` lists the
+   DSP controls and `ReadBack DSP Program` reads the version cell. `PLL did not
+   lock` means no MCLK reaches the DSP. Without a program the driver leaves the
+   DSP alone and there are no DSP controls.
 3. **Find the ungate** — reads first, then one write at a time. Every write
    below is a test: do it on a **RAM-booted** openHC (`ohc.ramboot=1`), never a
    flashed kernel, and expect to power-cycle if a read hangs.

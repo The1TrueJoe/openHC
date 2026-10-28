@@ -15,3 +15,15 @@
 	model = "Control4 EA-1 v2";
 	compatible = "control4,ea1-v2", "intel,ce5300";
 };
+
+/*
+ * What sits behind the IO microcontroller (the node is in ea.dtsi). This is the
+ * only copy: the driver publishes it at /sys/class/ohc/iomcu and iod reads it
+ * from there, so board.env carries no counts.
+ */
+&io_mcu {
+	control4,ir-outputs = <4>;	/* rear jacks */
+	control4,ir-blaster;		/* internal front emitter */
+	control4,ir-receiver;		/* front learner */
+	control4,uarts = <2>;		/* combo jacks in serial mode */
+};

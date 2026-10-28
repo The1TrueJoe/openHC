@@ -10,8 +10,8 @@ So on x86_64 CONFIG_I2C_PXA=y is dropped in silence — the symbol's dependency 
 unmet, exactly the "assignment to an unavailable symbol vanishes" trap — and
 i2c-pxa-pci is never compiled. The result is NO i2c bus at all: the CE5300's
 four I2C controllers (PCI 8086:2e68) never enumerate, and that takes with it the
-LM75 heatsink sensor (so ohc-fand finds no hwmon and exits, leaving the fan
-stopped and uncontrolled), the DS1339 RTC, and the ADAU1451 audio codec. On the
+LM75 heatsink sensor (so nothing reads the temperature the fan is run from),
+the DS1339 RTC, and the ADAU1451 audio codec. On the
 live EA1 this showed as an empty /sys/bus/i2c and no /sys/class/hwmon.
 
 The X86_32 restriction is historical: the only in-tree user was the 32-bit

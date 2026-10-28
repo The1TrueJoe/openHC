@@ -58,6 +58,61 @@ fragments, then the board fragment. Ordering matters and has bitten before — t
 sets `# CONFIG_DRM is not set`, and it works only because feature fragments are
 appended *after* the board file.
 
+## Which Buildroot
+
+openHC builds against **Buildroot master, pinned to a commit** (`04b8e19`, from
+2026-10-26), not a release. The pin is `BUILDROOT_REF` in `ci.yml`,
+`sgx-module.yml`, `sgx-wpe.yml` and `build/Dockerfile`. The fetch takes a SHA or
+a tag, so moving to the 2026.11 tag when it ships is a one-line change in each.
+This moved from 2026.02.3 in openHC #82.
+
+Whatever upstream has fixed, openHC stops carrying. The move to master dropped:
+
+- **The shairport-sync and plistutil forks** (`packages/ohc-shairport-sync`,
+  `packages/ohc-plistutil`). Buildroot ships shairport-sync 5.6, which has
+  every commit the fork pinned, plus `host-libplist`.
+- **The nqptp fork** (`packages/ohc-nqptp`). AirPlay 2 on shairport-sync 5.6
+  needs nqptp 1.2.9, the release that serves several receivers on one host.
+  Buildroot had 1.2.4, so openHC sent the 1.2.9 bump upstream. It was applied
+  to master as `04b8e19`, and that commit is the pin, so no local nqptp patch
+  is left.
+- **glibc BZ 33367** (`board/ea/common/patches/glibc`). Fixed in glibc 2.43,
+  and master ships 2.44.
+- **`buildroot-patches/0002`** (gcc libsanitizer). gcc 14.4 and 15.3 no longer
+  include `linux/scc.h`.
+- **`buildroot-patches/0003`** (harfbuzz without cairo). It was only needed
+  until the next from-scratch build.
+
+What is still carried:
+
+- **`build/buildroot-patches/0001` and `0004`, both wpewebkit.**
+  - `0001` swaps the wpewebkit dependency from `wpebackend-fdo` to `libwpe`. A
+    test build on 2026-10-27 showed it is no longer needed: the EA's i386 tree
+    builds with `wpebackend-fdo` present, against the SGX EGL, and still
+    selects the PowerVR backend. That costs about 264 KB of unused libraries.
+    It is to be dropped in a follow-up, which boots on an EA and the HC-800
+    first.
+  - `0004` adds the WPE Platform API and its DRM platform as Buildroot options.
+    The HC-800's display needs it, Buildroot has no equivalent, and it is the
+    one candidate to send upstream.
+- **The two shairport-sync D-Bus patches** (`board/common/patches/shairport-sync`,
+  on `BR2_GLOBAL_PATCH_DIR` for the EA family and the HC-800). They give a
+  second receiver its own bus name and make a D-Bus volume set the next
+  session's starting volume. Upstream 5.6.2 does neither yet.
+- **An `S90nqptp` overlay stub**, which replaces the init script Buildroot's
+  nqptp installs. audiod and `S99shairport-sync` start the one shared nqptp
+  themselves, the same way `S95mpd` is handled.
+
+The move also changed configuration:
+
+- Kernel headers went to `CUSTOM_7_1`, matching the 7.1.8 kernel.
+- The EA external toolchain went to GCC 15 with 7.1 headers. GCC 15 defaults
+  userspace to C23.
+- `gpu-wpe-i386` uses the bundled 6.18 headers, because 6.19 is no longer
+  bundled.
+- The EA family now gets the shared AirPlay 2 build like the HC-800, instead of
+  classic AirPlay 4.3.7.
+
 ## Parallelism and memory
 
 `build/build.sh` caps Buildroot's parallelism by the VM's RAM at roughly

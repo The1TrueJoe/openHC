@@ -60,6 +60,7 @@ fn set(ssh: &Ssh, pr: &str, se: &str, k: &str, v: &str) -> Result<()> {
 /// Control4's `factoryrestore` once. On a box already restored, fold `bootcmd`
 /// back to the literal original and remove the helper variables.
 pub fn restore(ssh: &Ssh, p: &Progress) -> Result<()> {
+    crate::radio::restore(ssh, p)?;
     let (pr, se) = env_tools(ssh, p)?;
     if get(ssh, &pr, "factoryrestore").is_empty() {
         bail!("this U-Boot has no `factoryrestore` command; nothing changed");

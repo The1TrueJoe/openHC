@@ -1,8 +1,12 @@
 # openHC — persistent eMMC rootfs, shared by EA variants that boot from eMMC.
 # Kernel side is the linux.fragment beside this file.
 #
-# 512M base image: dd'd onto p1 then grown with resize2fs to fill the partition.
-# A build needing more (Node/Python/HA) raises this in ITS OWN layer.
+# 512M base image: dd'd onto p1, then grown online to fill the partition on the
+# first boot that finds it short (S03growfs). A build that needs more in the
+# image itself (Node/Python/HA) raises this in ITS OWN layer.
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
+# resize2fs for S03growfs: an online grow of the mounted root.
+BR2_PACKAGE_E2FSPROGS=y
+BR2_PACKAGE_E2FSPROGS_RESIZE2FS=y

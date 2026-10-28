@@ -130,6 +130,68 @@ The feature is switched off at present to keep an image under the
 the network: the always-applied fake-PHY patch gives `eth0` on the primary jack
 on its own.
 
+## The CE5300 SSP: Quark's registers, not Quark's clock (patch 0009)
+
+The switch hangs off the CE5300's PXA-style SSP (PCI `01:0b.4`, `8086:2e6a`),
+driven by mainline `spi-pxa2xx`. That PCI id is shared with the CE4100, so
+mainline takes it for a CE4100, which it is not. Patch
+`board/ea/common/patches/linux/0009-spi-pxa2xx-ce5x00-ssp.patch` adds a
+`CE5X00_SSP` type, as Control4's GPL kernel does. The type is picked when the SoC
+host bridge at `00:00.0` is `8086:0c40`, so a real CE4100 is unaffected.
+
+| | mainline CE4100 | CE5300 |
+|---|---|---|
+| SSCR1 TFT / RFT | 2-bit fields | 5-bit fields (bits 10:6 / 15:11) |
+| SSSR TFL | bits 9:8 | bits 12:8 |
+| FIFO depth | 4 | 32 |
+| SSP input clock | 3.6864 MHz | **10 MHz** |
+| Bit clock | SCR divisor | SCR divisor, **no DDS** |
+
+The **register layout** is Quark X1000's, so `CE5X00_SSP` falls through to
+`case QUARK_X1000_SSP:` everywhere a layout is chosen. It joins `CE4100_SSP`
+where the chip select is written into SSSR.
+
+**The clock must not be aliased to Quark.** Quark builds its bit clock from a
+24-bit `DDS_RATE` register plus SCR. The CE5300 has no DDS: on its SSP that
+offset is not a clock register, and the vendor driver never touches it. Through
+Quark's clock path the SSP wedges:
+
+```
+b53-switch spi92.1: Flush failed
+b53-switch spi92.1: SPI transfer failed: -5
+```
+
+So CE5X00 is clocked like a CE4100/PXA25x part: an 8-bit SCR, a bit rate of
+`clk / (2 × (SCR+1))`, and a 10 MHz input clock (the vendor's
+`spi_clk_get_rate()`). `ce4100_spi_setup()` registers 10 MHz for a CE5300 and
+3.6864 MHz otherwise.
+
+How 0009 got there:
+
+- An early version set `CE4100_SSP`. The chip select was right but the FIFO
+  layout was wrong, and every byte read back as `0xff`.
+- The next version aliased only five of the twelve Quark sites. The rest fell to
+  `default:` and transfers timed out.
+- Aliasing the clock divider to Quark as well puts CE5X00 on the DDS path,
+  which causes the `Flush failed / -5` wedge above. The version that first
+  reached main avoided that, but gave CE5X00 neither the /2 SCR divisor nor the
+  10 MHz clock. It fell to the generic `clk / (SCR+1)` divider off the CE4100's
+  3.6864 MHz, so the bit rate was wrong.
+- **PR #69** (`aa54ecb`) made it a 10 MHz SCR part with no DDS. It also skipped
+  pxa2xx's flush-first for CE5X00, because that flush polls a stopped SSP until
+  it times out. This came from the never-PR'd branch `ea-switch-ce5x00-clock`
+  (523266d + 2ef53c3).
+- **PR #92** (`b32448c`) changed the skip to "flush but don't bail". It does not
+  fix the switch; see the 2026-10-27 test below.
+
+:::note[Rate nit]
+`ea-switch.dtsi` asks for `spi-max-frequency = <1843200>`, but this SCR divider
+cannot hit 1.8432 MHz from 10 MHz. The divisor rounds up, so SCR = ⌈10 MHz /
+(2 × 1.8432 MHz)⌉ − 1 = 2, and the bus actually runs at 10 MHz / 6 =
+**1.667 MHz**. `SSCR0 = 0x207` has SCR = 2, which agrees. This is harmless, since
+it is under the request, but the number in the tree is not the bus rate.
+:::
+
 ## When the switch is enabled, b53 still doesn't probe: the kexec-wedged SSP
 
 Turning the `switch` feature on (`ohc.switch=1`) is necessary but, on an
@@ -195,12 +257,34 @@ does **not** un-wedge it (BSY stays latched in the engine), so it cannot be
 repaired after the fact: the probe has to stop doing the destructive init in the
 first place.
 
+### 2026-10-27: "flush but don't bail" (#92) does not fix it
+
+PR #92 assumed a stale RX FIFO inherited from CEFDK was wedging the first
+transfer, so it flushed for CE5X00 and ignored the result. It was tested on the
+EA3 (10.0.0.113) with its fat kernel booted through the real durable path:
+bootstrap kernel → `S00kexec` → kexec. In that build `spi-pxa2xx` is built in
+and `b53_spi` is a module that loads at about 38 s.
+
+```
+b53-switch spi92.1: probe with driver b53-switch failed with error -22
+
+              pre-kexec (same boot)        after the b53 failure
+SSCR0         0x00000007                   0x00000207
+SSCR1         0x000003C0                   0x00000000
+SSSR          0x0000D905  (live)           0x00001F14  (BSY stuck, TFL=31)
+```
+
+The SSP was live before kexec and wedged after it, the same as before #92. **The
+stale-FIFO flush theory is ruled out.** Two leads remain:
+
+- **H2:** put CE5X00 on the MMP2 TX-FIFO drain path in `spi-pxa2xx`.
+- **H3:** reconfigure a live CE5X00 in place, without the `pxa_ssp_disable()`
+  stop/restart.
+
 :::note[Status]
-Root-caused to an in-driver mis-init of the CE5X00 SSP — not a hardware clock
-mystery — so the fix is a `spi-pxa2xx` CE5X00 gate (patch `0009`): set the TX/RX
-FIFO thresholds the CE5X00 way and preserve the vendor enable order, instead of
-leaving `SSCR1=0` and running the sequence that wedges the 32-deep CE5X00 FIFO.
-The patch plus a kexec hardware test are the open work. Until then the switch
+Narrowed to the fat kernel's `spi-pxa2xx` handling of a live CE5X00 SSP after
+kexec. It is not a lost clock, and it is not a stale FIFO (#92 is ruled out).
+The open work is H2 or H3 in patch `0009`, plus a kexec hardware test. Until then the switch
 stays off and `eth0` runs on the primary jack via the fake-PHY path; a switch-off
 boot now falls back cleanly (the `S39ea-switch` / `S87ohcswitch` gating fix, PR
 #85). The register-level narrowing is also recorded alongside the

@@ -1,6 +1,6 @@
 ---
 title: IO as GPIO
-description: The IO microcontroller behind a standard Linux gpiochip — why a line discipline rather than serdev, how to attach it, and what userspace sees.
+description: The IO microcontroller behind a standard Linux gpiochip — bound from the device tree where there is one, a line discipline where there is not, and what userspace sees.
 sidebar:
   order: 2
 ---
@@ -57,7 +57,7 @@ a daemon quietly fighting the kernel for the same UART.
               │
       DLE/STX over a UART
               │
-   gpio-ohc-iomcu  (line discipline)       the kernel owns the protocol
+   gpio-ohc-iomcu  (serdev or ldisc)       the kernel owns the protocol
               │
       /dev/gpiochipN                       standard, and open to anything
         │          │
@@ -91,22 +91,47 @@ device. Nothing is labelled 0, so a client sending it has almost certainly
 assumed zero-based, and driving relay 1 for it would be the worst available
 answer.
 
-## Why a line discipline, not serdev
+## serdev where there is a tree, a line discipline where there is not
 
 `serdev` is the modern way a kernel driver claims a UART instead of leaving it
-to userspace, and it is the wrong mechanism here.
+to userspace. Its devices are **enumerated by firmware** — a device tree node or
+an ACPI device that says "there is a thing on this port".
 
-serdev devices are **enumerated by firmware** — a device tree node or an ACPI
-device that says "there is a thing on this port". The HC-800 and the EA family
-are x86 PCs whose BIOS describes 8250 UARTs and nothing else. No firmware on
-earth is going to declare a Control4 IO co-processor, so no serdev device is
-created and there is nothing for a driver to bind to.
+**The EA family has a tree.** Its kernel links a built-in device tree (the
+board's own `board/ea/<board>/<board>.dts`), and the part is a child of the UART
+it is wired to, with what sits behind it:
 
-A **line discipline** does not need enumeration. Userspace opens the port and
-hands it to the kernel with `TIOCSETD`; from that moment the driver owns the
-byte stream. It is how PPP, SLIP and `n_gsm` are attached, and it puts the
-choice of *which* port in userspace — where the board description already lives
-— instead of hardcoding a tty in a driver.
+```dts
+&uart1 {
+	io_mcu: io-mcu {
+		compatible = "control4,io-mcu";
+		current-speed = <460800>;
+	};
+};
+
+/* in ea3-v2.dts */
+&io_mcu {
+	control4,relays = <1>;
+	control4,contacts = <1>;
+	control4,ir-outputs = <6>;
+	control4,ir-blaster;
+	control4,ir-receiver;
+	control4,uarts = <3>;
+};
+```
+
+The driver binds it at boot, runs the bootloader bring-up itself and registers
+the chip, the lirc devices and the `ttyOHC` ports. Nothing in userspace is
+involved, and there is no `/dev/ttyS1` any more: a UART with a serdev child
+belongs to that driver.
+
+**The HC-800 has none for its UARTs.** It links a small tree for the GPIO
+block and front panel, but its BIOS (ACPI) owns the 8250s, and an x86 kernel
+takes UARTs from a tree only when ACPI is off. So no
+serdev device is created there. A **line discipline** needs no enumeration:
+userspace opens the port and hands it to the kernel with `TIOCSETD`, the way
+PPP, SLIP and `n_gsm` are attached. Both front ends share one core — framing,
+bring-up, gpiochip, lirc, serial — and differ only in how bytes get to it.
 
 :::note[The number is `N_DEVELOPMENT`]
 The discipline registers as 29, the slot the kernel reserves for out-of-tree
@@ -116,18 +141,20 @@ a loud module-load failure an operator can work around — not a reason to patch
 a header.
 :::
 
-## Attaching it
+## Attaching it (no device tree)
 
-`/etc/init.d/S12iomcu` does this at boot, from `board.env`:
+`/etc/init.d/S12iomcu` does this at boot, from `board.env`. On a board whose
+tree describes the part it only reports that the kernel bound it, and stops.
 
 ```sh
 echo 4 > /sys/module/gpio_ohc_iomcu/parameters/relays
 echo 4 > /sys/module/gpio_ohc_iomcu/parameters/contacts
-ldattach -s 115200 -8 -n -1 29 /dev/ttyS3
+iomcu-attach /dev/ttyS3 115200 29
 ```
 
 It runs **early** — before `iod` and `webd` — because those are clients of the
-chip. `ldattach` stays running: the discipline lives as long as the fd is open.
+chip. `iomcu-attach` stays running: the discipline lives as long as the fd is
+open.
 
 The geometry is set through sysfs rather than passed to `modprobe` because these
 images are deliberately all-builtin (`CONFIG_MODULES=n` — self-contained image,
@@ -139,10 +166,29 @@ attach and never a chip that has already told userspace what its lines are.
 | board.env key | what it does |
 |---|---|
 | `OHC_IO_BACKEND` | `mcu` — anything else and the script does nothing |
-| `OHC_IO_MCU_TTY` | which port the part is on (`/dev/ttyS3` on HC-800, `/dev/ttyS1` on EA) |
-| `OHC_IO_MCU_BAUD` | 115200 on HC-800, **460800** on EA — see the [protocol page](/shared/io-mcu/) |
-| `OHC_RELAYS` / `OHC_CONTACTS` | how many lines to expose |
+| `OHC_IO_MCU_TTY` | which port the part is on (`/dev/ttyS3` on HC-800) |
+| `OHC_IO_MCU_BAUD` | 115200 on HC-800 (the EA family's 460800 is in its tree) — see the [protocol page](/shared/io-mcu/) |
+| `OHC_RELAYS` / `OHC_CONTACTS` / `OHC_IR_*` / `OHC_IO_UARTS` | what sits behind the part |
 | `OHC_IO_MCU_LDISC` | discipline number, default 29 |
+
+On the EA family none of these but `OHC_IO_BACKEND` exist: the device tree is
+the description.
+
+## Where iod gets the counts
+
+Whichever front end attached, the driver publishes what it latched, before the
+part has even answered:
+
+```
+/sys/class/ohc/iomcu/relays  contacts  ir_out  ir_blaster  ir_in  uarts
+/sys/class/ohc/iomcu/port    baud      online
+```
+
+iod reads its relay, contact, IR and serial counts from there, not from
+board.env, so on a device-tree board there is exactly one copy of them. `online`
+separates "this board has four relays and the part is not answering" from "this
+board has no relays". board.env's counts are only the fallback when the driver
+never attached at all, which on the HC-800 means S12iomcu did not run.
 
 ## What each board actually gets
 
@@ -150,16 +196,15 @@ attach and never a chip that has already told userspace what its lines are.
 |---|---|---|---|
 | HC-800 | 4 | 4 | 8 |
 | EA3 | 1 | 1 | 2 |
-| EA1 | 0 | 0 | **none — the script skips** |
+| EA1 | 0 | 0 | **none — IR and serial only** |
 | CA-1 | — | — | no IO microcontroller at all |
 | IO Extender V1 | 8 | 8 | native SoC GPIO; this driver is not involved |
 
 The EA1 is worth calling out. It has an IO microcontroller, and it has no relays
 or contacts — its IO is two MCU-routed UARTs and the IR jacks. The driver
-refuses to register a chip with no lines, so `S12iomcu` checks the counts and
-says so rather than letting a correct outcome look like a failure. The EA1's win
-from moving this into the kernel is not GPIO; it is the serial work listed at the
-bottom of this page.
+registers no gpiochip for a part with no lines, but still brings up the IR
+emitters, the receiver and `/dev/ttyOHC0..1`. The EA1's win from moving this
+into the kernel is not GPIO; it is the IR and serial work.
 
 ## Two details that are not obvious
 
