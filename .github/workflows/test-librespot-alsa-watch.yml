@@ -49,7 +49,8 @@ jobs:
         run: |
           cargo clippy -p librespot-playback --features alsa-backend --all-targets -- -D warnings
           cargo clippy -p librespot-connect --all-targets -- -D warnings
-          cargo clippy --features alsa-backend --all-targets -- -D warnings
+          # upstream main.rs trips clippy::useless_borrows_in_formatting (new in 1.99), not this patch
+          cargo clippy --features alsa-backend --all-targets -- -D warnings -A clippy::useless_borrows_in_formatting
 
       - name: cargo test --workspace
         working-directory: ${{ runner.temp }}/librespot
