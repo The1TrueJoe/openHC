@@ -61,6 +61,12 @@ jobs:
           cp "$GITHUB_WORKSPACE/test/librespot/alsa_watch.rs" examples/
           amixer -D hw:Dummy scontrols || { echo "::warning::skipped, no snd-dummy"; exit 0; }
           RUST_LOG=librespot_playback=debug cargo run -q --example alsa_watch --features alsa-backend -- hw:Dummy Master
+          # A softvol control too (what openHC uses): alsa-lib creates it as a
+          # user control the first time its PCM opens.
+          printf '%s\n' 'pcm.testsoft { type softvol; slave.pcm "hw:Dummy"; control { name "TestVol"; card Dummy } }' > ~/.asoundrc
+          dd if=/dev/zero bs=4k count=20 2>/dev/null | aplay -q -D testsoft -f S16_LE -r 48000 -c 2
+          amixer -D hw:Dummy sget TestVol
+          RUST_LOG=librespot_playback=debug cargo run -q --example alsa_watch --features alsa-backend -- hw:Dummy TestVol
 
       - name: Binary for a box (alsa, rustls, libmdns)
         working-directory: ${{ runner.temp }}/librespot
