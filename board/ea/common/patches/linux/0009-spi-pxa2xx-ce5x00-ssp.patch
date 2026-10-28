@@ -35,6 +35,21 @@ TX FIFO (SSSR TFL = 25 just before the kexec), and toggling SSE does not empty
 it. Probe clocks those out once, or the first transfer would shift them ahead
 of its own data and every read after it would be misaligned.
 
+The chip select is the SSP's frame signal, and it drops whenever the FIFO
+runs dry, which means between any two transfers. A device that needs CS held
+across a message never sees one cycle. The BCM53125 is one: mainline b53_spi
+reads with spi_write_then_read(), a command transfer then a read transfer, and
+gets 0xff back. Measured on an EA3 by hand: command and read clocked back to
+back return RACK and the chip id 0x53125, while the same bytes with a gap
+between them return 0xff. The SSP's pads are dedicated (they are not in the
+CE5300 GPIO mux), so a GPIO chip select isn't an option. Instead, for CE5X00,
+optimize_message() swaps a message of compatible transfers (same speed and word
+size, no cs_change or delays except on the last) for one bounce-buffered
+transfer. prepare_message() and unprepare_message() copy the data in and out
+on every run, and unoptimize_message() puts the caller's transfers back.
+Control4's own spi-bcm53125 driver avoids the problem the same way, by never
+splitting a read.
+
 The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
 rather than by the SSP function's own id, which it shares with the CE4100, so
 genuine CE4100 hardware is unaffected.
@@ -137,12 +152,10 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		return;
  
  	/* Wait until SSP becomes idle before deasserting the CS */
-@@ -467,6 +473,31 @@
- 	write_SSSR_CS(drv_data, SSSR_ROR);
- 
+@@ -469,6 +475,31 @@
  	return limit;
-+}
-+
+ }
+ 
 +/*
 + * CEFDK leaves the CE5300's SSP with its DDS clock stopped and stale words in
 + * the TX FIFO, and toggling SSE does not empty it. Clock them out once, or the
@@ -166,9 +179,11 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +		pxa2xx_spi_read(drv_data, SSDR);
 +	pxa_ssp_disable(drv_data->ssp);
 +	write_SSSR_CS(drv_data, SSSR_ROR);
- }
- 
++}
++
  static void pxa2xx_spi_off(struct driver_data *drv_data)
+ {
+ 	/* On MMP, disabling SSE seems to corrupt the Rx FIFO */
 @@ -583,6 +614,7 @@
  	}
  
@@ -194,7 +209,134 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), chip->dds_rate);
  
  	/* Stop the SSP */
-@@ -1135,6 +1168,7 @@
+@@ -1095,6 +1128,126 @@
+ 	return 0;
+ }
+ 
++/*
++ * The CE5300's SSP selects a chip with its frame signal, which drops whenever
++ * the FIFO runs dry, so between any two transfers of a message. A device that
++ * needs CS held across a message (a command, then its response) sees two
++ * cycles. So run a multi-transfer message as one bounce-buffered transfer.
++ */
++struct ce5x00_merged_msg {
++	struct list_head orig;
++	struct spi_transfer xfer;
++	u8 *tx;
++	u8 *rx;
++};
++
++static int ce5x00_optimize_message(struct spi_message *msg)
++{
++	struct spi_transfer *first, *last, *xfer;
++	struct ce5x00_merged_msg *m;
++	unsigned int len = 0;
++
++	if (list_empty(&msg->transfers) || list_is_singular(&msg->transfers))
++		return 0;
++
++	first = list_first_entry(&msg->transfers, struct spi_transfer, transfer_list);
++	last = list_last_entry(&msg->transfers, struct spi_transfer, transfer_list);
++	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
++		if (xfer->speed_hz != first->speed_hz ||
++		    xfer->bits_per_word != first->bits_per_word ||
++		    xfer->word_delay.value)
++			return 0;
++		if (xfer != last &&
++		    (xfer->cs_change || xfer->delay.value || xfer->cs_off))
++			return 0;
++		len += xfer->len;
++	}
++
++	m = kzalloc(sizeof(*m), GFP_KERNEL);
++	if (!m)
++		return -ENOMEM;
++	m->tx = kzalloc(len, GFP_KERNEL);
++	m->rx = kzalloc(len, GFP_KERNEL);
++	if (!m->tx || !m->rx) {
++		kfree(m->tx);
++		kfree(m->rx);
++		kfree(m);
++		return -ENOMEM;
++	}
++
++	m->xfer.tx_buf = m->tx;
++	m->xfer.rx_buf = m->rx;
++	m->xfer.len = len;
++	m->xfer.speed_hz = first->speed_hz;
++	m->xfer.bits_per_word = first->bits_per_word;
++	m->xfer.delay = last->delay;
++	m->xfer.cs_change = last->cs_change;
++	m->xfer.cs_change_delay = last->cs_change_delay;
++
++	INIT_LIST_HEAD(&m->orig);
++	list_splice_init(&msg->transfers, &m->orig);
++	list_add(&m->xfer.transfer_list, &msg->transfers);
++	msg->opt_state = m;
++
++	return 0;
++}
++
++static void ce5x00_unoptimize_message(struct spi_message *msg)
++{
++	struct ce5x00_merged_msg *m = msg->opt_state;
++
++	if (!m)
++		return;
++
++	list_del(&m->xfer.transfer_list);
++	list_splice(&m->orig, &msg->transfers);
++	kfree(m->tx);
++	kfree(m->rx);
++	kfree(m);
++}
++
++static int ce5x00_prepare_message(struct spi_controller *controller,
++				  struct spi_message *msg)
++{
++	struct ce5x00_merged_msg *m = msg->opt_state;
++	struct spi_transfer *xfer;
++	u8 *p;
++
++	if (!m)
++		return 0;
++
++	p = m->tx;
++	list_for_each_entry(xfer, &m->orig, transfer_list) {
++		if (xfer->tx_buf)
++			memcpy(p, xfer->tx_buf, xfer->len);
++		else
++			memset(p, 0, xfer->len);
++		p += xfer->len;
++	}
++
++	return 0;
++}
++
++static int ce5x00_unprepare_message(struct spi_controller *controller,
++				    struct spi_message *msg)
++{
++	struct ce5x00_merged_msg *m = msg->opt_state;
++	struct spi_transfer *xfer;
++	u8 *p;
++
++	if (!m)
++		return 0;
++
++	p = m->rx;
++	list_for_each_entry(xfer, &m->orig, transfer_list) {
++		if (xfer->rx_buf)
++			memcpy(xfer->rx_buf, p, xfer->len);
++		p += xfer->len;
++	}
++
++	return 0;
++}
++
+ static void pxa2xx_spi_handle_err(struct spi_controller *controller,
+ 				 struct spi_message *msg)
+ {
+@@ -1135,6 +1288,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -202,7 +344,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1207,7 @@
+@@ -1173,7 +1327,7 @@
  		break;
  	}
  
@@ -211,7 +353,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1242,7 @@
+@@ -1208,6 +1362,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -219,15 +361,24 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1309,6 +1344,7 @@
+@@ -1307,8 +1462,16 @@
  
+ 	drv_data->ssp_type = ssp->type;
+ 
++	if (drv_data->ssp_type == CE5X00_SSP) {
++		controller->optimize_message = ce5x00_optimize_message;
++		controller->unoptimize_message = ce5x00_unoptimize_message;
++		controller->prepare_message = ce5x00_prepare_message;
++		controller->unprepare_message = ce5x00_unprepare_message;
++	}
++
  	if (pxa25x_ssp_comp(drv_data)) {
  		switch (drv_data->ssp_type) {
 +		case CE5X00_SSP:
  		case QUARK_X1000_SSP:
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
-@@ -1372,6 +1408,7 @@
+@@ -1372,6 +1535,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
@@ -235,7 +386,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tmp = QUARK_X1000_SSCR1_RxTresh(RX_THRESH_QUARK_X1000_DFLT) |
  		      QUARK_X1000_SSCR1_TxTresh(TX_THRESH_QUARK_X1000_DFLT);
-@@ -1409,6 +1446,9 @@
+@@ -1409,6 +1573,9 @@
  		break;
  	}
  

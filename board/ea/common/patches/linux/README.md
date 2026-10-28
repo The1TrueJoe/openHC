@@ -25,12 +25,11 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
 | 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
-| 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR |
+| 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR, and its CS drops between transfers, so multi-transfer messages are merged |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
-| 0018 | b53_spi single-transfer reads | the CE5300 SSP's chip select is its frame signal and drops between transfers, so a split write-then-read never reaches the switch |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
@@ -287,9 +286,11 @@ The switch burned the most time of anything here, so the traps stay recorded:
    CEFDK leaves stale words in the TX FIFO, so probe clocks them out once.
    An earlier note here said the CE5300 "has no DDS". That was wrong: the SSTO
    writes were clobbering it.
-6. **No split reads** (0018). The chip select is the SSP's frame signal, so it
-   drops between two transfers; b53_spi must read in one full-duplex transfer,
-   as Control4's spi-bcm53125 does.
+6. **The chip select drops between transfers** (0009). It is the SSP's frame
+   signal, released whenever the FIFO runs dry. The pads are dedicated (not in
+   the CE5300 GPIO mux), so `cs-gpios` isn't possible. spi-pxa2xx instead merges
+   a CE5X00 message of compatible transfers into one bounce-buffered transfer.
+   Without that, b53_spi's write-then-read gets 0xff.
 
 Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.
