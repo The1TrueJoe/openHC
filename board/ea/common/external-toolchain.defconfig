@@ -19,8 +19,8 @@
 # drops every C++ package (ICU, harfbuzz, WPE WebKit), so it is the one to never miss.
 #
 # Must track board/ea/common/common_defconfig + board/common/common_defconfig:
-#   GCC_14      <- Buildroot 2026.02.3 default gcc for x86_64 (14.3.0)
-#   HEADERS_6_19 <- board/common sets BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_19
+#   GCC_15      <- Buildroot's default gcc for x86_64 (15.3.0)
+#   HEADERS_7_1 <- board/common sets BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_7_1
 #   CUSTOM_GLIBC <- the family runs glibc (PowerVR DDK blobs are glibc-linked)
 #   CXX          <- C++/wchar for WPE WebKit + ICU
 # For a glibc external toolchain Buildroot assumes wchar/locale/threads/NPTL/SSP;
@@ -35,8 +35,8 @@ BR2_TOOLCHAIN_EXTERNAL=y
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
 BR2_TOOLCHAIN_EXTERNAL_PREINSTALLED=y
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="x86_64-buildroot-linux-gnu"
-BR2_TOOLCHAIN_EXTERNAL_GCC_14=y
-BR2_TOOLCHAIN_EXTERNAL_HEADERS_6_19=y
+BR2_TOOLCHAIN_EXTERNAL_GCC_15=y
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_7_1=y
 BR2_TOOLCHAIN_EXTERNAL_CUSTOM_GLIBC=y
 BR2_TOOLCHAIN_EXTERNAL_CXX=y
 # BR2_TOOLCHAIN_EXTERNAL_INET_RPC is not set
