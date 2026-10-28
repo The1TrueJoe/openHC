@@ -296,7 +296,8 @@ async fn restore_stock(confirm: bool) -> Out {
     if !std::path::Path::new(RESTORE_BIN).exists() {
         return Err(Fault::NoSuch("no restore support on this board".into()));
     }
-    // Detached: the recovery kexec reboots the box, so we must not wait on it.
+    // Detached: `stock` stages the one-shot restore and reboots the box, so we must
+    // not wait on it.
     std::process::Command::new(RESTORE_BIN)
         .arg("stock")
         .stdin(std::process::Stdio::null())
@@ -441,7 +442,7 @@ async fn mcu_info(c: &Arc<Config>) -> Out {
 /// Can this board's relays and contacts actually be reached?
 ///
 /// Where the lines COME from differs per board and nothing below this cares;
-/// only the diagnosis does, because "attach the line discipline" and "the pins
+/// only the diagnosis does, because "the driver did not bind" and "the pins
 /// are still muxed to the video port" send you to very different places.
 fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
     match c.board.io.backend {
@@ -449,12 +450,16 @@ fn io_ready(c: &Arc<Config>) -> Result<(), Fault> {
         Backend::None => Err(Fault::NoSuch("no IO on this board".into())),
         Backend::Mcu => Err(Fault::NoChip(match c.board.io.mcu_online {
             Some(false) => format!(
-                "{} is attached on {} but the microcontroller is not answering it",
+                "{} is bound on {} but the microcontroller is not answering it",
                 crate::gpio_io::CHIP_LABEL,
                 c.board.io.mcu_tty.as_deref().unwrap_or("its port")
             ),
-            _ => format!(
-                "{} is not attached — no device tree node bound it, and S12iomcu did not attach it",
+            Some(true) => format!(
+                "{} is answering but registered no gpiochip for this board",
+                crate::gpio_io::CHIP_LABEL
+            ),
+            None => format!(
+                "{} has not bound the IO microcontroller: the board's firmware node (device tree / ACPI table) is missing or the probe failed — see dmesg",
                 crate::gpio_io::CHIP_LABEL
             ),
         })),
@@ -493,11 +498,13 @@ async fn alive(c: &Arc<Config>) -> bool {
     // Copied out before the closure: the blocking task outlives this borrow of
     // `c`, so reaching through it inside would not compile.
     let low = c.board.io.contacts_active_low;
+    // A relay first: the driver reads it live, where a contact comes from its
+    // poller's cache and can still answer for a moment after the part stopped.
     tokio::task::spawn_blocking(move || {
-        if has_contact {
-            crate::gpio_io::contact_get(0, low).is_ok()
-        } else if has_relay {
+        if has_relay {
             crate::gpio_io::relay_get(0).is_ok()
+        } else if has_contact {
+            crate::gpio_io::contact_get(0, low).is_ok()
         } else {
             false
         }
@@ -506,13 +513,45 @@ async fn alive(c: &Arc<Config>) -> bool {
     .unwrap_or(false)
 }
 
+/// The IO microcontroller's driver, and the serdev device it binds.
+const MCU_DRIVER: &str = "/sys/bus/serial/drivers/ohc-iomcu";
+
+/// The device name to bind and unbind (serial0-0). The driver publishes it
+/// while bound; once unbound, the firmware node's compatible still finds it.
+fn mcu_device() -> Option<String> {
+    if let Ok(port) = std::fs::read_to_string("/sys/class/ohc/iomcu/port") {
+        return Some(port.trim().to_string());
+    }
+    std::fs::read_dir("/sys/bus/serial/devices").ok()?.flatten().find_map(|e| {
+        let alias = std::fs::read_to_string(e.path().join("modalias")).unwrap_or_default();
+        alias
+            .contains("control4,io-mcu")
+            .then(|| e.file_name().to_string_lossy().into_owned())
+    })
+}
+
+/// Wait for the driver to say the part answered (it identifies it at bind).
+async fn mcu_online(within: Duration) -> bool {
+    let until = std::time::Instant::now() + within;
+    while std::time::Instant::now() < until {
+        if std::fs::read_to_string("/sys/class/ohc/iomcu/online").is_ok_and(|v| v.trim() == "1") {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 /// Hold the MCU in reset briefly, then let it run.
 ///
-/// Tries both polarities: the HC-800's active sense was translated from the
-/// vendor's sysfs numbers and never verified against hardware, so reporting
-/// which one revived the part is how board.env gets corrected. The line is left
-/// where the part came back, or at the documented "released" level if it did
-/// not — a controller with a dead MCU should not also be holding it in reset.
+/// With the driver unbound. Out of reset the part sits in the TI bootloader,
+/// which autobauds on the first bytes it hears: a bound driver's contact poll
+/// gets there before any knock, and after that the part answers nothing. Bound
+/// again, the driver knocks first and starts the application (ohc_bringup).
+///
+/// One polarity: board.env's is confirmed against the vendor OS (released =
+/// high). Trying the other would leave the part held in reset under a driver
+/// that has just bound to it, and so nothing to answer.
 async fn mcu_reset(c: &Arc<Config>) -> Out {
     let chip_label = c
         .board
@@ -525,6 +564,8 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         .io
         .io_reset_gpio
         .ok_or_else(|| Fault::NoSuch("this board declares no IO reset line".into()))?;
+    let device = mcu_device()
+        .ok_or_else(|| Fault::NoSuch("no IO microcontroller device under /sys/bus/serial".into()))?;
 
     // Claim the line once and keep it. A released line reverts to the kernel's
     // default, which for an undocumented reset pin could mean leaving the part
@@ -540,48 +581,43 @@ async fn mcu_reset(c: &Arc<Config>) -> Out {
         }
     }
 
-    // `released` is the level board.env says leaves the part running.
-    for released in [true, false] {
-        {
-            let held = c.io_reset.lock().unwrap();
-            let line = held.as_ref().expect("claimed above");
-            line.set(!released).map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
-            std::thread::sleep(Duration::from_millis(200));
-            line.set(released).map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
-        }
-        // The part needs a moment to boot before it will answer.
-        tokio::time::sleep(Duration::from_millis(600)).await;
+    // Not bound (a failed earlier attempt) is fine; the bind below is what counts.
+    let _ = std::fs::write(format!("{MCU_DRIVER}/unbind"), &device);
+    let pulsed = {
+        let held = c.io_reset.lock().unwrap();
+        let line = held.as_ref().expect("claimed above");
+        let low = line.set(false);
+        std::thread::sleep(Duration::from_millis(200));
+        // Released whatever happened above: never leave the part in reset.
+        low.and(line.set(true))
+    };
+    let bound = std::fs::write(format!("{MCU_DRIVER}/bind"), &device);
+    pulsed.map_err(|e| Fault::Io(format!("cannot drive the reset line: {e}")))?;
+    bound.map_err(|e| Fault::Io(format!("cannot bind {device} to the IO driver again: {e}")))?;
 
-        // Through the gpiochip: the same path every relay and contact read
-        // takes, so a pass means the thing callers use is working.
+    // Bring-up and identify take a second or so; the gpiochip comes after.
+    // Then through the gpiochip: the same path every relay and contact read
+    // takes, so a pass means the thing callers use is working.
+    let mut answering = mcu_online(Duration::from_secs(4)).await;
+    if answering {
+        answering = false;
         for _ in 0..6 {
             if alive(c).await {
-                c.bus.set("mcu/link", json!(true));
-                return Ok(json!({
-                    "reset": true, "chip": chip_label, "line": line_no,
-                    // The useful part: which sense actually worked.
-                    "released_level": if released { 1 } else { 0 },
-                    "matched_board_env": released,
-                    "answering": true,
-                }));
+                answering = true;
+                break;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
-
-    // Neither worked. Leave the pin where board.env says "running".
-    if let Ok(held) = c.io_reset.lock() {
-        if let Some(line) = held.as_ref() {
-            let _ = line.set(true);
-        }
+    c.bus.set("mcu/link", json!(answering));
+    let mut out = json!({
+        "reset": true, "chip": chip_label, "line": line_no, "device": device,
+        "answering": answering,
+    });
+    if !answering {
+        out["note"] = json!("the part did not answer after a reset; it may need a power cycle");
     }
-    c.bus.set("mcu/link", json!(false));
-    Ok(json!({
-        "reset": true, "chip": chip_label, "line": line_no, "answering": false,
-        "tried": ["released=1", "released=0"],
-        "note": "the part did not answer at either polarity; it may need a power cycle, \
-                 or this may not be its reset line",
-    }))
+    Ok(out)
 }
 
 async fn contacts(c: &Arc<Config>) -> Out {

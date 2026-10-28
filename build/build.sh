@@ -719,7 +719,7 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     _sumf="$OUT/build/.ohc-pkg-$_pkg.sum"
     # A changed recipe or patch set needs the source RE-EXTRACTED and
     # re-patched, which -rebuild never does (it keeps the patched tree): a
-    # fixed patch for ohc-shairport-sync was ignored that way and the build kept
+    # fixed patch for our old shairport-sync package was ignored that way and the build kept
     # failing on the old one. So when the package's directory changed since this
     # tree last built it, dirclean it (and its host- variant) first.
     if [ "$(cat "$_sumf" 2>/dev/null)" != "$_want_sum" ]; then
@@ -735,6 +735,25 @@ for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board
     echo ">> $_pkg: forcing rebuild (we maintain it; its stamps mean nothing)"
     "${M[@]}" "$_pkg-rebuild"
 done
+
+# Packages whose single compiles outgrow the per-job RAM budget above. V8 (in
+# nodejs-src) is the one seen: built cold under gcc 15, its generated torque
+# *-csa.cc files are multi-GB translation units, and 4 of them at once swapped
+# the 16 GB runner until it dropped off (ca1, PR #82). So a full build makes
+# these first, on their own: their dependencies at the normal job count, then
+# the package itself at one job per ~6 GB. A later BR2_JLEVEL on the make
+# command line overrides the one in M. Already built, this is a no-op.
+if [ $# -eq 0 ]; then
+    heavyjobs=$(( memkb / 6000000 )); [ "$heavyjobs" -lt 1 ] && heavyjobs=1
+    [ "$heavyjobs" -gt "$JOBS" ] && heavyjobs="$JOBS"
+    for _pkg in nodejs-src; do
+        grep -q "^BR2_PACKAGE_$(echo "$_pkg" | tr 'a-z-' 'A-Z_')=y\$" "$OUT/.config" || continue
+        [ -e "$(ls -d "$OUT"/build/"$_pkg"-[0-9]*/.stamp_target_installed 2>/dev/null | head -1)" ] && continue
+        echo ">> $_pkg: building on its own at BR2_JLEVEL=$heavyjobs (of $JOBS)"
+        "${M[@]}" "$_pkg-depends"
+        "${M[@]}" BR2_JLEVEL="$heavyjobs" "$_pkg"
+    done
+fi
 
 "${M[@]}" "${@:-all}"
 

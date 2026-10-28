@@ -10,7 +10,7 @@
 #    and it is passed to the ALSA backend ("-- -d <device>"). Unset means the
 #    default PCM. Picked up on (re)start.
 #
-# The receiver is AirPlay 2 (packages/ohc-shairport-sync), which needs nqptp,
+# The receiver is AirPlay 2 (Buildroot's shairport-sync), which needs nqptp,
 # its PTP timing daemon, running first; this starts and stops it alongside.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 [ -n "$OHC_AUDIO_OUTPUTS" ] && exit 0

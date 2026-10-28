@@ -104,7 +104,11 @@ permissions:
 
 env:
   # Consumed only by the image jobs' cache keys and Buildroot fetch.
-  BUILDROOT_REF: 2026.02.3
+  # Buildroot master at 04b8e19efd (2026-10-26), ahead of the 2026.11 release:
+  # the first Buildroot with shairport-sync 5.x, host-libplist and nqptp 1.2.9.
+  # Switch to the 2026.11 tag once it is out. A commit or a tag both work here:
+  # the fetch below takes either.
+  BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 jobs:
   # STAGE TOGGLE — the master switch for the two-stage rollout (see the header).
@@ -393,8 +397,10 @@ jobs:
         if: steps.sdkcache.outputs.cache-hit != 'true'
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
@@ -565,7 +571,7 @@ jobs:
       # kernel is safe (linux-dirclean runs every build), but packages are not:
       # r2 forced one clean rebuild after round 2 added dbus, so avahi rebuilt
       # with libavahi-client (shairport-sync needs it) instead of riding the
-      # pre-round-2 dbus-less avahi in the cache. r3 goes with the move to
+      # pre-round-2 dbus-less avahi in the cache. r3 went with the move to
       # Buildroot 2026.02.3 (the ref is in the key too, so this is belt and braces).
       #
       # The tree lives on the `ci-cache` pre-release, not in the Actions cache
@@ -623,8 +629,10 @@ jobs:
       - name: Fetch Buildroot
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"

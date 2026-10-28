@@ -18,10 +18,8 @@ CONFIG_IR_RC5_DECODER=y
 CONFIG_IR_RC6_DECODER=y
 CONFIG_IR_SONY_DECODER=y
 
-# The serdev bus, so a board whose device tree describes the part (the EA
-# family: a "control4,io-mcu" child of its UART) has it bound at boot with no
-# userspace attach. CTRL_TTYPORT is what lets an ordinary 8250 port host a
-# serdev device. A board without a node (the HC-800) loses nothing: its UART
-# stays a plain tty and the line discipline attaches as before.
+# The serdev bus: the driver is a serdev driver and binds the part from the
+# board's firmware node. CTRL_TTYPORT is what lets an ordinary 8250 port host a
+# serdev device. Without these the driver has nothing to bind to.
 CONFIG_SERIAL_DEV_BUS=y
 CONFIG_SERIAL_DEV_CTRL_TTYPORT=y

@@ -275,6 +275,12 @@ The rear panel per the owner of this unit: **6 IR outputs, 4 relays, 4 contact
 inputs**, plus the two RS-232 ports. All of that hangs off the LM3S1162. There are
 no host GPIO lines, no `/sys/class` entries and no device nodes for any of it.
 
+Under openHC the kernel binds the part at boot from an ACPI table that ships in
+front of the initrd (`board/hc800/acpi/ssdt-iomcu.asl`): a `control4,io-mcu`
+serdev child of ttyS3, which keeps its IRQ 10. So ttyS3 has no `/dev` node of
+its own, and the relays, contacts and IR appear as a gpiochip and lirc devices
+with nothing in userspace attaching them. See [IO as GPIO](/shared/io-as-gpio/).
+
 The relay and contact counts agree with the decoded TM4C profile table, which
 predicts **4 + 4** for the nine-output blocks. **The IR count doesn't:** the
 IO-MCU page reads the HC800 image as using TIMER0–3 and infers four IR channels.
@@ -617,6 +623,13 @@ Two prerequisites are config, not code:
 - wpewebkit needs `BR2_TOOLCHAIN_BUILDROOT_CXX`, `BR2_INSTALL_LIBSTDCPP` and
   `BR2_USE_WCHAR`. Without them kconfig drops wpewebkit **silently** — the build
   succeeds and the engine is simply absent.
+
+**Keyboards and mice** need nothing of openHC's own: the DRM platform reads them
+through libinput on eudev's seat, hotplug included, so a USB keyboard and mouse on
+the front port (or a hub on it) drive the page. What it lacks is a cursor. WPE's DRM
+cursor uses the cursor plane through atomic KMS, and i915 leaves atomic off on
+pre-Ironlake parts (`i915.nuclear_pageflip=N`), so the page draws its own cursor,
+the same one as the EAs (see the EA graphics page).
 
 **The caveat is the fragment shader.** From `i915_screen.c` and `i915_reg.h`,
 i915g offers GLSL **1.20** (GL 2.1 / GLES 2.0), **64 ALU + 32 TEX
