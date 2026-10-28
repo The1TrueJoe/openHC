@@ -22,6 +22,13 @@
  *
  * Either way there is no window system to talk to and nothing to configure here
  * about the display.
+ *
+ * Input differs the same way. The DRM platform reads keyboards and mice through
+ * libinput on its own; a libwpe backend never reads input, so on that path
+ * input.c opens /dev/input itself. Neither path has a cursor on screen -- the
+ * EA's fb0 has no cursor plane, and the DRM platform draws its cursor only with
+ * atomic KMS, which the HC-800's Pineview does not enable -- so the page draws
+ * one (CURSOR_JS below).
  */
 
 #include <wpe/webkit.h>
@@ -29,6 +36,7 @@
 #include <wpe/wpe-platform.h>
 #else
 #include <wpe/wpe.h>
+#include "input.h"
 #endif
 #include <glib.h>
 #include <glib-object.h>
@@ -50,6 +58,79 @@
  * layer built on top of openHC points this somewhere else.
  */
 #define DEFAULT_URL "http://localhost/"
+
+/*
+ * The mouse cursor, drawn by the page itself: a fixed, click-through element on
+ * top of everything that follows mousemove. Being part of the page it costs a
+ * composite per move, which WebKit does on the GPU anyway, and it needs nothing
+ * from the display: no cursor plane, no cursor theme. It turns into a hand over
+ * links and buttons and an I-beam over text fields, as the page's CSS says;
+ * appears on the first move and hides on a key press or after a few idle
+ * seconds, since this is a screen across the room, not a desk.
+ * Injected into every frame, so each draws it while the pointer is inside it.
+ * WEBVIEW_CURSOR=0 leaves it out (a touch-only panel).
+ */
+static const char CURSOR_JS[] =
+"(() => {\n"
+"  if (window.__ohcCursor) return;\n"
+"  window.__ohcCursor = true;\n"
+"  const S = 'xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\"';\n"
+"  const P = 'fill=\"#fff\" stroke=\"#000\" stroke-width=\"1.2\" stroke-linejoin=\"round\"';\n"
+"  const shapes = {\n"
+"    arrow: [3, 2, `<svg ${S}><path ${P} d=\"M3 2v17l4.5-4.2 3 6.7 2.8-1.2-2.9-6.5h6.1z\"/></svg>`],\n"
+"    hand: [10, 2, `<svg ${S}><path ${P} d=\"M8.5 3.5a1.5 1.5 0 0 1 3 0V11h.6V9a1.5 1.5 0 0 1 3 0v2h.6v-1.2a1.5 1.5 0 0 1 3 0V11.5h.3a1.4 1.4 0 0 1 2.5.9V16c0 3.3-2.7 6-6 6h-1.6c-1.9 0-3.6-.9-4.8-2.4l-4.6-5.4a1.6 1.6 0 0 1 2.4-2.1l1.6 1.8z\"/></svg>`],\n"
+"    text: [12, 12, `<svg ${S}><path fill=\"none\" stroke=\"#fff\" stroke-width=\"3.4\" d=\"M8.5 3.5h7M12 3.5v17M8.5 20.5h7\"/><path fill=\"none\" stroke=\"#000\" stroke-width=\"1.4\" d=\"M8.5 3.5h7M12 3.5v17M8.5 20.5h7\"/></svg>`],\n"
+"  };\n"
+"  let host, img, shape, timer;\n"
+"  const hide = () => { if (host) host.style.display = 'none'; };\n"
+"  const make = () => {\n"
+"    host = document.createElement('ohc-cursor');\n"
+"    host.style.cssText = 'all:initial;position:fixed;left:0;top:0;width:0;height:0;'\n"
+"      + 'z-index:2147483647;pointer-events:none;will-change:transform;display:none';\n"
+"    img = document.createElement('div');\n"
+"    img.style.cssText = 'position:absolute;width:24px;height:24px;line-height:0';\n"
+"    host.attachShadow({ mode: 'closed' }).appendChild(img);\n"
+"    shape = '';\n"
+"  };\n"
+"  addEventListener('mousemove', (e) => {\n"
+"    if (!document.documentElement) return;\n"
+"    if (!host) make();\n"
+"    if (!host.isConnected) document.documentElement.appendChild(host);\n"
+"    const t = e.target instanceof Element ? e.target : null;\n"
+"    const c = t ? getComputedStyle(t).cursor : '';\n"
+"    const field = t && c === 'auto' && (t.isContentEditable || t.tagName === 'TEXTAREA' ||\n"
+"      (t.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|range|color|file|image)$/.test(t.type)));\n"
+"    // A link keeps cursor:auto in CSS; the browser shows the hand itself.\n"
+"    const link = t && c === 'auto' && t.closest('a[href], area[href]');\n"
+"    const want = c === 'pointer' || link ? 'hand' : c === 'text' || field ? 'text' : 'arrow';\n"
+"    if (want !== shape) {\n"
+"      const [x, y, svg] = shapes[want];\n"
+"      img.innerHTML = svg;\n"
+"      img.style.left = -x + 'px';\n"
+"      img.style.top = -y + 'px';\n"
+"      shape = want;\n"
+"    }\n"
+"    host.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;\n"
+"    host.style.display = 'block';\n"
+"    clearTimeout(timer);\n"
+"    timer = setTimeout(hide, 8000);\n"
+"  }, { capture: true, passive: true });\n"
+"  addEventListener('mouseout', (e) => { if (!e.relatedTarget) hide(); }, true);\n"
+"  addEventListener('keydown', hide, true);\n"
+"})();\n";
+
+static void add_cursor(WebKitWebView *view)
+{
+	const char *on = g_getenv("WEBVIEW_CURSOR");
+	WebKitUserScript *script;
+
+	if (on && g_strcmp0(on, "0") == 0)
+		return;
+	script = webkit_user_script_new(CURSOR_JS, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+					WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+	webkit_user_content_manager_add_script(webkit_web_view_get_user_content_manager(view), script);
+	webkit_user_script_unref(script);
+}
 
 static gboolean on_signal(gpointer loop)
 {
@@ -287,8 +368,12 @@ int main(int argc, char **argv)
 
 	WebKitWebView *view =
 		webkit_web_view_new(webkit_web_view_backend_new(c->backend, NULL, NULL));
+
+	/* USB keyboards and mice: nothing else reads them on this path (input.c). */
+	input_start(c->backend);
 #endif
 	c->view = view;
+	add_cursor(view);
 
 	WebKitSettings *settings = webkit_web_view_get_settings(view);
 #if !WEBKIT_CHECK_VERSION(2, 50, 0)

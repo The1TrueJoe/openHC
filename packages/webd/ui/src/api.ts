@@ -41,8 +41,8 @@ export interface SerialPort {
   dev: string | null;
   label: string;
   baud: number;
-  /** 'host' — a real tty on a SoC UART. 'mcu' — a tty the ohc-iomcu line
-   *  discipline mux-es over the IO protocol's UART opcodes (shown with a "via
+  /** 'host' — a real tty on a SoC UART. 'mcu' — a tty the gpio-ohc-iomcu
+   *  driver mux-es over the IO protocol's UART opcodes (shown with a "via
    *  MCU" hint). Both are openable; `dev === null` is the only non-bridgeable
    *  case. */
   transport: 'host' | 'mcu';

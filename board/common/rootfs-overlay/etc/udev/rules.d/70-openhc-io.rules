@@ -45,8 +45,8 @@
 SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/%c"
 
 # User serial ports and radios, both from board.env. On the EA family the user
-# ports are routed through the microcontroller; the ohc-iomcu line discipline
-# now exposes each as a /dev/ttyOHC<n> tty, and ohc-udev-name numbers them
+# ports are routed through the microcontroller; the gpio-ohc-iomcu driver
+# exposes each as a /dev/ttyOHC<n> tty, and ohc-udev-name numbers them
 # straight after any host ports. No KERNEL== prefix match, because which tty
 # naming the SoC uses (ttyS, ttymxc, ttyAMA, ttyOHC) is exactly what
 # board.env + the helper already answer.

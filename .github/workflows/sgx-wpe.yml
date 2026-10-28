@@ -185,8 +185,9 @@ jobs:
             local hits; hits=$(ls -d $T/$1 2>/dev/null | wc -l)
             [ "$hits" -gt 0 ] || { echo "MISSING (glob): $1"; missing=1; }
           }
-          # webview launcher
+          # webview launcher, and the XKB data its keyboard input keymaps from
           need_file usr/bin/webview
+          need_file usr/share/X11/xkb/rules/evdev
           # the PowerVR libwpe backend + the default-backend symlink libwpe loads
           need_file usr/lib/libWPEBackend-pvr.so.1
           need_file usr/lib/libWPEBackend-default.so.1

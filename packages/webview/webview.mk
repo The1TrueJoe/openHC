@@ -12,7 +12,9 @@ WEBVIEW_LICENSE = MIT
 # includes <glib.h> and <glib-object.h> itself, and depending on someone
 # else's dependency is fragile: wpewebkit itself reaches libwpe only through
 # wpebackend-fdo's dependencies.
-WEBVIEW_DEPENDENCIES = wpewebkit libwpe libglib2 host-pkgconf
+# libxkbcommon likewise: the libwpe path keymaps the keyboards it reads itself
+# (src/input.c).
+WEBVIEW_DEPENDENCIES = wpewebkit libwpe libglib2 libxkbcommon host-pkgconf
 
 define WEBVIEW_BUILD_CMDS
 	$(TARGET_MAKE_ENV) $(MAKE) -C $(@D) CC="$(TARGET_CC)" \
