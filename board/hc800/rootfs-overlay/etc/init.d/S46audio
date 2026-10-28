@@ -74,6 +74,13 @@ case "${1:-start}" in
         # splits off (hda puts an S/PDIF secondary behind an HDMI primary at 16).
         amixer -c "$CARD" -q sset IEC958,0 on >/dev/null 2>&1 && printf "IEC958(hdmi) "
         amixer -c "$CARD" -q sset IEC958,16 on >/dev/null 2>&1 && printf "IEC958(coax) "
+        # Off, or HDMI plays Analog 1. The generic parser shares the primary
+        # digital output with the analog front: while the HDMI PCM is closed,
+        # every stereo stream Analog 1 prepares is set up on the HDMI converter
+        # (0x10) too, so an idle HDMI endpoint carries Analog 1's audio. Each
+        # output is its own endpoint here, so nothing should be duplicated.
+        amixer -c "$CARD" -q cset name='IEC958 Default PCM Playback Switch' off >/dev/null 2>&1 \
+            && printf "hdmi-dup=off "
         echo
 
         # Persist so alsactl restores this on the next boot if state is ever
