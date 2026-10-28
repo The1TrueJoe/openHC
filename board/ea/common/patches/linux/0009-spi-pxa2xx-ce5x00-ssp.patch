@@ -152,10 +152,12 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		return;
  
  	/* Wait until SSP becomes idle before deasserting the CS */
-@@ -469,6 +475,31 @@
- 	return limit;
- }
+@@ -467,6 +473,31 @@
+ 	write_SSSR_CS(drv_data, SSSR_ROR);
  
+ 	return limit;
++}
++
 +/*
 + * CEFDK leaves the CE5300's SSP with its DDS clock stopped and stale words in
 + * the TX FIFO, and toggling SSE does not empty it. Clock them out once, or the
@@ -179,11 +181,9 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +		pxa2xx_spi_read(drv_data, SSDR);
 +	pxa_ssp_disable(drv_data->ssp);
 +	write_SSSR_CS(drv_data, SSSR_ROR);
-+}
-+
+ }
+ 
  static void pxa2xx_spi_off(struct driver_data *drv_data)
- {
- 	/* On MMP, disabling SSE seems to corrupt the Rx FIFO */
 @@ -583,6 +614,7 @@
  	}
  
@@ -209,10 +209,11 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), chip->dds_rate);
  
  	/* Stop the SSP */
-@@ -1095,6 +1128,126 @@
+@@ -1094,7 +1127,129 @@
+ 
  	return 0;
  }
- 
++
 +/*
 + * The CE5300's SSP selects a chip with its frame signal, which drops whenever
 + * the FIFO runs dry, so between any two transfers of a message. A device that
@@ -225,7 +226,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +	u8 *tx;
 +	u8 *rx;
 +};
-+
+ 
 +static int ce5x00_optimize_message(struct spi_message *msg)
 +{
 +	struct spi_transfer *first, *last, *xfer;
@@ -277,18 +278,20 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +	return 0;
 +}
 +
-+static void ce5x00_unoptimize_message(struct spi_message *msg)
++static int ce5x00_unoptimize_message(struct spi_message *msg)
 +{
 +	struct ce5x00_merged_msg *m = msg->opt_state;
 +
 +	if (!m)
-+		return;
++		return 0;
 +
 +	list_del(&m->xfer.transfer_list);
 +	list_splice(&m->orig, &msg->transfers);
 +	kfree(m->tx);
 +	kfree(m->rx);
 +	kfree(m);
++
++	return 0;
 +}
 +
 +static int ce5x00_prepare_message(struct spi_controller *controller,
@@ -336,7 +339,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  static void pxa2xx_spi_handle_err(struct spi_controller *controller,
  				 struct spi_message *msg)
  {
-@@ -1135,6 +1288,7 @@
+@@ -1135,6 +1290,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -344,7 +347,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1327,7 @@
+@@ -1173,7 +1329,7 @@
  		break;
  	}
  
@@ -353,7 +356,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1362,7 @@
+@@ -1208,6 +1364,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -361,7 +364,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1307,8 +1462,16 @@
+@@ -1307,8 +1464,16 @@
  
  	drv_data->ssp_type = ssp->type;
  
@@ -378,7 +381,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		case QUARK_X1000_SSP:
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
-@@ -1372,6 +1535,7 @@
+@@ -1372,6 +1537,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
@@ -386,7 +389,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tmp = QUARK_X1000_SSCR1_RxTresh(RX_THRESH_QUARK_X1000_DFLT) |
  		      QUARK_X1000_SSCR1_TxTresh(TX_THRESH_QUARK_X1000_DFLT);
-@@ -1409,6 +1573,9 @@
+@@ -1409,6 +1575,9 @@
  		break;
  	}
  
