@@ -163,8 +163,12 @@
  * the bootloader leaves 44 low and the port sees nothing (PORTSC SE0, no
  * connect); high, a USB stick enumerates as high-speed; low again, it
  * disconnects. "usb_rear_power" and "usb_rear_oc" are ours; the vendor names
- * are only the driver's gpio_pwr/gpio_oc. Nothing in openHC acts on the fault
- * line yet: it is named so it can be watched.
+ * are only the driver's gpio_pwr/gpio_oc. The recovery is sysmond's
+ * (packages/sysmond/src/usb.rs): it finds the fault flag by that name and the
+ * port by this controller's vbus-supply, and on a fault disables the port for
+ * 2.5 s through usbcore, which switches the regulator below. Userspace because
+ * nothing upstream does it and gpio-intelce has no interrupts to hang a kernel
+ * consumer on, so the line is polled either way.
  *
  * Not a hog: a fixed regulator that is the controller's vbus-supply (patch
  * 0016), so it follows root-hub port power and usbcore's port control cuts the
