@@ -101,7 +101,7 @@ BR2_PACKAGE_DNSMASQ=y
 # converted to a real consumer first (see the DTS).
 
 # Mosquitto, the broker zigbee2mqtt publishes to, comes from common_defconfig
-# now — every board runs one (iod, sysmond and ohc-audiod are its clients).
+# now — every board runs one (iod, sysmond and audiod are its clients).
 
 # Node.js (zigbee2mqtt / zwave-js) and its C++ toolchain come from the shared
 # 'zigbee' feature (board/common/features/zigbee), which ca1 enables in its

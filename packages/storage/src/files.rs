@@ -1,7 +1,7 @@
 //! Files on the mounted drives, for the web UI's file browser.
 //!
 //! Every path is `<volume>/<path inside it>` — a volume being one of the
-//! shares ohc-storaged has mounted (`/media/<volume>`). Paths are resolved
+//! shares storaged has mounted (`/media/<volume>`). Paths are resolved
 //! component by component (no `..`, no absolute paths, no NUL), and the result
 //! must still be inside that volume after following symlinks, so nothing here
 //! can reach outside the drives. Writes are refused on a read-only volume.

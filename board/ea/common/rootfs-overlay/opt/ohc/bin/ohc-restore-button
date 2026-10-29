@@ -2,7 +2,7 @@
 # openHC — hardware "return to stock" button watcher (EA / CEFDK boards).
 #
 # Holding the front ID button for OHC_RESTORE_BUTTON_HOLD seconds and letting go
-# runs `ohc-restore stock` — openHC's software return-to-stock. This exists
+# runs `restore stock` — openHC's software return-to-stock. This exists
 # because the native CEFDK button recovery is not dependable on every EA unit: an
 # EA1 with the boot fuse blown does not rewrite mtd0 from the button, so the
 # physical gesture is offered in software instead.
@@ -20,7 +20,7 @@
 # box at boot.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 
-RESTORE=/opt/ohc/bin/ohc-restore
+RESTORE=/opt/ohc/bin/restore
 DEV=/dev/ohc/input/id-button
 : "${OHC_RESTORE_BUTTON_HOLD:=10}"
 
@@ -106,7 +106,7 @@ while :; do
         fi
         led 1
         echo "restore-button: held ${held}ms — returning to stock"
-        logger -t ohc-restore-button "button held ${held}ms; running ohc-restore stock" 2>/dev/null
+        logger -t ohc-restore-button "button held ${held}ms; running restore stock" 2>/dev/null
         "$RESTORE" stock                            # reverts the MFH and recovery-kexecs; reboots
         led 0
         ;;

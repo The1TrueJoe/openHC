@@ -16,7 +16,7 @@
 # cells. The device tree still names adau1451-ea3.bin, so it is not loaded at
 # boot yet.
 #
-# The profile is installed too: ohc-audiod reads its knob list from it, so the
+# The profile is installed too: audiod reads its knob list from it, so the
 # web UI shows exactly the knobs the firmware has.
 #
 ################################################################################

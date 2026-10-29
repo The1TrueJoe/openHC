@@ -18,5 +18,5 @@ base64 = "0.22"
 mpd_client = "1.4.1"
 
 [[bin]]
-name = "ohc-audiod"
+name = "audiod"
 path = "src/main.rs"

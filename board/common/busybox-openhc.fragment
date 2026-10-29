@@ -11,7 +11,7 @@ CONFIG_SLEEP=y
 CONFIG_SEQ=y
 
 # The EA boot-init one-shot stock restore (board/ea/common/boot-init/init) runs
-# `ohc-restore reimage-finalize` from the initramfs, which empties p1 and unpacks
+# `restore reimage-finalize` from the initramfs, which empties p1 and unpacks
 # p2's recfs.tar.xz (`unxz -c … | tar -x`), then reboots. All of these applets are
 # load-bearing there, so pin them rather than trust the upstream default.
 CONFIG_TAR=y

@@ -49,7 +49,7 @@
  * then ASoC's to move (.mute_stream): released when a stream is prepared,
  * asserted again when the last one closes — so nothing reaches the jacks at
  * power-on or while the output idles. On top of that the firmware boots the
- * program's Volume cell at 0, and ohc-audiod raises it once it has restored
+ * program's Volume cell at 0, and audiod raises it once it has restored
  * the output's saved level and tone.
  *
  * 48 kHz only. That is the one rate the firmware lists, and the CE5300 I2S

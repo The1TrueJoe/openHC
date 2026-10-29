@@ -36,7 +36,7 @@ byte for byte what it made before, and the driver writes nothing (see
 | `/lib/firmware/openhc/adau1451-ea3-openhc.bin` | With a program: `ea3-openhc.json` + register init + openHC's program. Not named by the device tree yet. |
 | the board DTB | `firmware-name` names the file; `control4,program-version` is the program's version cell and the value it must hold, checked after the load. The card is a stock `simple-audio-card`. |
 | `adau1451-c4` | The codec driver. It hands the file to the kernel's **sigmadsp** core (the one the mainline ADAU1701/ADAU17x1 drivers use), which writes it at bind and turns each named cell into an **ALSA control**. Around that the driver does the sequencing: soft reset, hibernate, the wait for PLL lock, start. |
-| ohc-audiod | Reads the knob list from the installed copy of `ea3.json` and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
+| audiod | Reads the knob list from the installed copy of `ea3.json` and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
 
 So the DSP is tuned with ordinary ALSA tools:
 
@@ -47,7 +47,7 @@ amixer -c openhcea cset name='DSP Bass' 0,0,0,30   # bass +3 dB (index 24 + 3/0.
 
 Every control is 4 bytes, big-endian: an **index 0..48** into a 49-entry table,
 **24 neutral**. Tone and EQ steps are `step_db` apart (0.5 dB → ±12 dB);
-balance is 100/24 % a step. ohc-audiod does that arithmetic; the API and UI
+balance is 100/24 % a step. audiod does that arithmetic; the API and UI
 speak dB and −100..100.
 
 ## Loading the part
@@ -212,7 +212,7 @@ its mute half set, which is why the firmware writes all three.
 ## Silent unless something plays
 
 * **At boot** the DSP's Volume is written 0 and the DAC's soft mute is held.
-  ohc-audiod restores the output's saved level and tone, *then* raises Volume to
+  audiod restores the output's saved level and tone, *then* raises Volume to
   its `run` value (100 — the output's level lives in ALSA, as on the HC-800).
 * **While idle** the DAC stays muted: the codec's ASoC `mute_stream` releases it
   when a stream is prepared and asserts it again when the last one closes, so

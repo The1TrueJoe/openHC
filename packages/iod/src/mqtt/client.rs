@@ -1,7 +1,7 @@
 //! iod as a client of the box's mosquitto.
 //!
 //! Every board runs mosquitto, and every openHC daemon is a client of it with
-//! its own topics under one tree (`<prefix>/<host>/`): iod the IO, ohc-audiod
+//! its own topics under one tree (`<prefix>/<host>/`): iod the IO, audiod
 //! the audio, sysmond the health. Reaching a house broker is mosquitto's own
 //! bridge (see bridge.rs), so this client only ever talks to loopback — no TLS,
 //! no credentials, no reconnect policy beyond rumqttc's own.
@@ -87,7 +87,7 @@ pub async fn run(cfg: Arc<Config>, m: Mqtt) {
                 let topic = p.topic.clone();
                 let tail = topic.trim_start_matches(&format!("{base}/cmd/")).to_string();
                 // Other daemons own their own command subtrees on the same
-                // broker (cmd/audio/* is ohc-audiod's, cmd/health/* sysmond's).
+                // broker (cmd/audio/* is audiod's, cmd/health/* sysmond's).
                 if tail.starts_with("audio/") || tail.starts_with("health/") {
                     continue;
                 }

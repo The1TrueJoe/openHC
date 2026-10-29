@@ -178,7 +178,7 @@ fn main() {
     }
 
     let app = Arc::new(App { cfg: Mutex::new(cfg.clone()), ports: ports.clone() });
-    // 7074, not 7073: ohc-storaged took 7073 on main. webd's proxy maps /switch
+    // 7074, not 7073: storaged took 7073 on main. webd's proxy maps /switch
     // to this (WEBD_SWITCHD_ADDR), so keep the two in step.
     let bind = std::env::var("SWITCHD_BIND").unwrap_or_else(|_| "0.0.0.0:7074".into());
     let period: u64 = std::env::var("SWITCHD_PERIOD").ok().and_then(|v| v.parse().ok()).unwrap_or(5);

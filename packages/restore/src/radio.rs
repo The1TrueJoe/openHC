@@ -1,6 +1,6 @@
 //! The Zigbee radio's half of a return to stock: put Control4's own NCP firmware
 //! back before anything else changes, so the box Control4 gets back looks like
-//! openHC never ran on it. The work is ohc-zigbee's (`--restore-stock`, see
+//! openHC never ran on it. The work is zigbee's (`--restore-stock`, see
 //! packages/zigbee/src/stock.rs); this only stops the service that holds the port
 //! and runs it with the board's settings.
 //!
@@ -12,7 +12,7 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
-const ZIGBEE: &str = "/opt/ohc/bin/ohc-zigbee";
+const ZIGBEE: &str = "/opt/ohc/bin/zigbee";
 const SERVICE: &str = "/etc/init.d/S91ohczigbee";
 
 pub fn restore() -> io::Result<()> {
@@ -21,7 +21,7 @@ pub fn restore() -> io::Result<()> {
     }
     println!("radio: putting Control4's Zigbee firmware back (stops the zigbee service)");
     let _ = Command::new(SERVICE).arg("stop").status();
-    let _ = Command::new("killall").arg("ohc-zigbee").status();
+    let _ = Command::new("killall").arg("zigbee").status();
     std::thread::sleep(std::time::Duration::from_secs(1));
     let st = Command::new("sh")
         .args(["-c", &format!("set -a; . /opt/ohc/board.env; set +a; exec {ZIGBEE} --restore-stock")])

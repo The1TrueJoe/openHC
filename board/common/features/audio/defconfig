@@ -3,10 +3,10 @@
 # kernel half here — the sound hardware is per board (the EA-3's ADAU1451 DSP is
 # the audio-dsp feature, the HC-800's HDA codec is in its own fragment).
 #
-# The daemon is ohc-audiod (packages/audiod, staged by this feature's
+# The daemon is audiod (packages/audiod, staged by this feature's
 # `packages` file). With OHC_AUDIO_OUTPUTS in board.env it runs N Spotify Connect
 # and N AirPlay instances mapped onto named outputs; without it, the single
-# S95librespot / S99shairport-sync instances run and ohc-audiod reports them and
+# S95librespot / S99shairport-sync instances run and audiod reports them and
 # turns their output/volume knobs. Its state and control are MQTT
 # (<base>/state/audio/*, <base>/cmd/audio/*), its configuration REST (:7072,
 # webd /audio/).
@@ -20,16 +20,16 @@ BR2_PACKAGE_ALSA_UTILS=y
 BR2_PACKAGE_ALSA_UTILS_APLAY=y
 BR2_PACKAGE_ALSA_UTILS_AMIXER=y
 BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
-# alsaloop plays an input live on an output (ohc-audiod's input routes).
+# alsaloop plays an input live on an output (audiod's input routes).
 # (arecord comes with _APLAY; there is no separate symbol for it.)
 BR2_PACKAGE_ALSA_UTILS_ALSALOOP=y
 BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 
 # AirPlay 2 (it also takes classic AirPlay senders): Buildroot's shairport-sync
 # (5.6) and nqptp, which since 5.x and 1.2.9 let several AirPlay 2 receivers share
-# one host and address on their own ports. ohc-audiod runs one per AirPlay
+# one host and address on their own ports. audiod runs one per AirPlay
 # endpoint and the one nqptp they share. Built with the D-Bus remote control
-# (how ohc-audiod moves a sender's volume slider; board/common/patches/
+# (how audiod moves a sender's volume slider; board/common/patches/
 # shairport-sync makes it work with several instances) and the metadata pipe
 # (on with --with-metadata).
 BR2_PACKAGE_SHAIRPORT_SYNC=y
@@ -52,8 +52,8 @@ BR2_PACKAGE_AVAHI_LIBDNSSD_COMPATIBILITY=y
 # Spotify Connect. Not in Buildroot — packages/librespot is openHC's own (Rust).
 BR2_PACKAGE_LIBRESPOT=y
 
-# The music-library player: mpd, run by ohc-audiod (one instance, when the
-# endpoint map has a `library` entry) over /media, where ohc-storaged mounts the
+# The music-library player: mpd, run by audiod (one instance, when the
+# endpoint map has a `library` entry) over /media, where storaged mounts the
 # drives. Its own S95mpd is replaced by an overlay stub (audiod supervises it).
 # mpd is C++: the musl boards (HC-800) need the C++ toolchain and libstdc++,
 # which the EA family's glibc toolchain already has.
@@ -69,5 +69,5 @@ BR2_PACKAGE_MPD_FAAD2=y
 BR2_PACKAGE_MPD_LIBSNDFILE=y
 
 # Per-output tone (bass, treble, balance): openHC's own ALSA plugin
-# (packages/alsa-ohceq), one stage per output, driven by ohc-audiod.
+# (packages/alsa-ohceq), one stage per output, driven by audiod.
 BR2_PACKAGE_ALSA_OHCEQ=y

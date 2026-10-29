@@ -227,7 +227,7 @@ fn main() {
             tokio::task::spawn_local(poller(cfg.clone()));
         }
 
-        // Audio is ohc-audiod's and health is sysmond's — each its own MQTT
+        // Audio is audiod's and health is sysmond's — each its own MQTT
         // client on the box's broker. What iod still publishes beyond IO is
         // whether a return to stock is available.
         tokio::task::spawn_local(restore_poller(cfg.clone()));

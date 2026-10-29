@@ -46,7 +46,7 @@ openHC's install makes exactly **one** change to this flash — it appends a sin
 `0x80000`, SHA-256 protected) that redirects CEFDK to openHC's autoscript. The
 stock kernel item, the stock kernel and p2's factory payload are left untouched,
 which is why returning to stock is just removing that one item. See
-[recovery](/shared/recovery/) for `ohc-restore` and
+[recovery](/shared/recovery/) for `restore` and
 [secure boot](/ea/secure-boot/) for the autoscript takeover itself.
 
 ## CEFDK cannot be interrupted on a normal boot
@@ -254,10 +254,10 @@ A warm reboot does not clear the used state: CEFDK's reset leaves the SGX as it
 was, so after a GPU-used boot only a power-cycle gets back to "never used". That
 is harmless on the normal boot path. The bootstrap never binds the GPU, so its
 S00kexec handoff to the real kernel works after a warm reboot too, and boot-init
-(where `ohc-restore stock` does its reimage) kexecs nothing.
+(where `restore stock` does its reimage) kexecs nothing.
 
-So nothing in the product kexecs out of the real kernel. `ohc-restore stock`
-reboots through CEFDK into boot-init, and `ohc-restore recovery-kexec` refuses
+So nothing in the product kexecs out of the real kernel. `restore stock`
+reboots through CEFDK into boot-init, and `restore recovery-kexec` refuses
 while the GPU driver is bound. To RAM-test an image on an installed box, set
 `OHC_DISPLAY_ENABLE=0`, **power-cycle** (a `reboot` is not enough), then unbind +
 reset as above and kexec.

@@ -1,8 +1,8 @@
 #!/bin/sh
 # openHC — hardware return-to-stock button watcher (EA / CEFDK boards).
 #
-# Turns a long-press of the front ID button into `ohc-restore stock`. Inert
-# unless BOTH halves are present: the 'restore' feature installed ohc-restore
+# Turns a long-press of the front ID button into `restore stock`. Inert
+# unless BOTH halves are present: the 'restore' feature installed restore
 # (EA only) and the board DTB gave udev a button to link as
 # /dev/ohc/input/id-button. Runs LATE (S96, after the IO and web are up) so a
 # press during boot cannot wipe a box mid-bring-up, and the watcher itself never
@@ -11,7 +11,7 @@ BIN=/opt/ohc/bin/ohc-restore-button
 
 start() {
     [ -x "$BIN" ] || return 0
-    [ -x /opt/ohc/bin/ohc-restore ] || return 0     # no restore feature on this board
+    [ -x /opt/ohc/bin/restore ] || return 0     # no restore feature on this board
     [ -c /dev/ohc/input/id-button ] || return 0      # no button on this board
     start-stop-daemon -S -q -b -m -p /var/run/ohc-restore-button.pid --exec "$BIN" \
         && echo "restore-button: watching for a long-press return-to-stock"

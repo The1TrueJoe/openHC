@@ -13,5 +13,5 @@ libc = "0.2"
 ohc-flash-core = { path = "../../flasher/crates/core" }
 
 [[bin]]
-name = "ohc-restore"
+name = "restore"
 path = "src/main.rs"

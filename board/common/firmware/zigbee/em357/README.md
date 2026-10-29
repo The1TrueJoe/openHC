@@ -12,7 +12,7 @@ is the same thing Control4's own `zap` daemon does with its image.
 | `install.sh` | Fetches it into `dl/`, checks the sha256, installs it into the target |
 
 The binary is not checked in. `board/common/post-build.sh` runs `install.sh` on
-any image that ships `ohc-zigbee` (the `zigbee` feature). The script installs:
+any image that ships `zigbee` (the `zigbee` feature). The script installs:
 
 ```text
 /usr/share/ohc/zigbee/em357-ncp.ebl           the image
@@ -35,7 +35,7 @@ HUSBZB-1 stick is the same EM357):
 ## How the reflash works
 
 The flash lives in `packages/zigbee/src/` (`ash.rs`, `bootloader.rs`,
-`ncp.rs`), and `ohc-zigbee` runs it before it serves or holds the port:
+`ncp.rs`), and `zigbee` runs it before it serves or holds the port:
 
 1. Find the app: try the bootloader menu first (`\r\n`, then `2. run`), then an
    ASH reset and EZSP `version` at each app baud (`OHC_ZIGBEE_BAUD`, 115200,
@@ -44,7 +44,7 @@ The flash lives in `packages/zigbee/src/` (`ash.rs`, `bootloader.rs`,
    `OHC_ZIGBEE_NCP_UPDATE` isn't 0), send EZSP `launchStandaloneBootloader`
    (0x8F) and upload the `.ebl` over XMODEM-CRC through the bootloader's `1.
    upload ebl`, then `2. run`.
-3. Re-read the version. The result goes to `/run/ohc-zigbee.ncp`.
+3. Re-read the version. The result goes to `/run/zigbee.ncp`.
 
 A flash that dies part-way leaves no valid app, so the chip stays in its
 bootloader. The next boot finds it there and finishes the job. The bootloader
@@ -53,9 +53,9 @@ itself sits in protected flash and an upload never touches it.
 By hand:
 
 ```sh
-ohc-zigbee --info            # what the radio runs now
-ohc-zigbee --flash <ebl>     # force a flash
-ohc-zigbee --restore-stock   # put Control4's image back (below)
+zigbee --info            # what the radio runs now
+zigbee --flash <ebl>     # force a flash
+zigbee --restore-stock   # put Control4's image back (below)
 ```
 
 Stop `S91ohczigbee` first. A second process on the tty steals the replies.
@@ -63,8 +63,8 @@ Stop `S91ohczigbee` first. A second process on the tty steals the replies.
 ## Returning to stock
 
 A box handed back to Control4 gets its radio back as it shipped. Every return to
-stock (`ohc-restore stock`, used by the web UI and the EA restore button, and
-the flasher's `restore`/`uninstall`) first runs `ohc-zigbee --restore-stock`:
+stock (`restore stock`, used by the web UI and the EA restore button, and
+the flasher's `restore`/`uninstall`) first runs `zigbee --restore-stock`:
 
 1. A radio running something older than openHC's image was never reflashed, so
    it's left alone.
@@ -76,7 +76,7 @@ the flasher's `restore`/`uninstall`) first runs `ohc-zigbee --restore-stock`:
 3. It's flashed the same way as above, and the version is read back.
 
 If that fails, the restore stops before anything else changes and the zigbee
-service starts again. `ohc-restore stock --keep-radio` skips it, and `ohc-restore
+service starts again. `restore stock --keep-radio` skips it, and `restore
 radio` runs only this step.
 
 | Board | Archive | Status |
@@ -104,7 +104,7 @@ HC-800, about 43 s).
 - **Leaving 6.7.8 for the bootloader**: the app acknowledges
   `launchStandaloneBootloader`, keeps running for about 5 s, goes quiet, and only
   jumps when the next frame arrives. A frame sent while it still runs is taken
-  as an ASH reset and cancels the launch, so `ohc-zigbee` waits 7 s and then
+  as an ASH reset and cancels the launch, so `zigbee` waits 7 s and then
   sends an ASH RST. Polling for the menu without that nudge sees nothing, or a
   bootloader whose bytes arrive rotated two bits left. 4.7.2 jumps straight
   away.

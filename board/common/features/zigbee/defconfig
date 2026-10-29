@@ -8,7 +8,7 @@
 # kernel side of the USB bridge is this feature's linux.fragment.
 #
 # The NCP BRING-UP (run the app out of the bootloader, hold the port) is the
-# feature's own Rust package `zigbee` -> /opt/ohc/bin/ohc-zigbee, staged by
+# feature's own Rust package `zigbee` -> /opt/ohc/bin/zigbee, staged by
 # packages/build.sh only for boards that enable this feature (see features/
 # zigbee/packages). Node.js here is for the BRIDGE: zigbee2mqtt, the stack that
 # turns EZSP into MQTT, is a node app installed on-target (not vendored), so the

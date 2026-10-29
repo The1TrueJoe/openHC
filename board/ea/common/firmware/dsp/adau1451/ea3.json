@@ -19,7 +19,7 @@
     "",
     "A cell's value (an integer) or words (8.24 numbers, or \"0x...\" raw) are",
     "written at boot; a run value, if it has one, is what",
-    "ohc-audiod sets once it is up.",
+    "audiod sets once it is up.",
     "",
     "A knob with choices is a selector: the choice's words are written, the",
     "first one at boot. Every other knob is 49 steps with 24 as its neutral,",
@@ -135,7 +135,7 @@
   "cells": [
     {
       "control": "DSP Volume", "cell": "0x0dd1", "value": 0, "run": 100,
-      "_doc": "0..Max Volume through the program's volume curve. Written 0 at boot so nothing plays while the box comes up; ohc-audiod sets the run value once it has restored the output's saved level and tone. openHC sets each output's level in ALSA, as on the HC-800, so the DSP runs it full"
+      "_doc": "0..Max Volume through the program's volume curve. Written 0 at boot so nothing plays while the box comes up; audiod sets the run value once it has restored the output's saved level and tone. openHC sets each output's level in ALSA, as on the HC-800, so the DSP runs it full"
     },
     { "control": "DSP Max Volume", "cell": "0x0dd2", "value": 100 },
     { "control": "DSP Mute", "cell": "0x0dbd", "words": ["0x00fffe20", "0x01000000"],
