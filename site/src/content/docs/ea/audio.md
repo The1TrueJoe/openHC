@@ -6,8 +6,9 @@ sidebar:
 ---
 
 **Status.** [HDMI out](#hdmi-out-every-ea) (every EA): a test tone played
-through an HDMI monitor's speakers on an EA1 under openHC, clean and steady,
-from the register sequence the driver uses; the driver itself is not yet run on hardware. The EA3's analog path through the DSP:
+through an HDMI monitor's speakers on an EA1 under openHC: the driver plays
+music clean and at speed, every stream start intact, at ALSA's default period
+sizes and at the odd ones OpenAL asks for (2026-10-28). The EA3's analog path through the DSP:
 drivers written, not yet proven on hardware. The userspace half is the HC-800's
 audio scheme. Read [what is still unproven](#what-is-still-unproven) before
 trusting the DSP half.
@@ -105,7 +106,10 @@ speakers. Two things the register tests could not show:
 - *Odd period sizes played choppy and fast*: OpenAL opened `hw:HDMI` with
   1115-frame periods in a 4458-frame buffer, not a whole number of periods,
   and the engine walks its source in 32-byte steps. Periods are now whole and
-  64-byte aligned.
+  64-byte aligned (that request now gets 1112 × 4).
+
+Heard with both fixes: Minecraft's own music (`calm1`, `piano3`) through
+`plughw:HDMI`, and the ALSA voice clips with every first syllable whole.
 
 ## The thing that blocked everything
 
