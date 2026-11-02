@@ -21,9 +21,20 @@ program existed: no register init, no program memory.
 
 A knob or cell names its address with "cell", or, for a program built in CI,
 with "param": "<block label>.<parameter>", looked up in the params.json that
-export2program.py writes beside the program (--params). A profile's init may
+export2program.py writes beside the program (--params). A knob's "table" and
+its balance tables may be {"param": ...} the same way.
+
+openHC's program does balance with the same 49-entry filter block as the tone
+knobs, a pure gain per entry ("balance": {..., "form": "biquad"}), and has
+fixed filters ("filters": a biquad's design and the block stage it goes in,
+"<block>.<stage>_", whose B2 B1 B0 A2 A1 are written once at boot). A profile's init may
 be {"from": "other.json"}: that profile's init, so two profiles for the same
 board share one register setup.
+
+A profile's "version" ({"param" or "cell", "value"}) is the program's version
+cell and what it holds; --expect-version "<cell> <value>" (the device tree's
+control4,program-version) fails the build if the two disagree, so a design
+change that moves the cell cannot ship a firmware the driver then stops.
 
 The program file is plain text: a line "@<address>" starts a block, and the
 hex bytes after it (whitespace or commas between them, "0x" optional, "#"
@@ -119,14 +130,17 @@ def filter_table(f, fs, step_db):
     return out
 
 
-def balance_tables():
+def balance_tables(biquad=False):
     """Per-channel gain for each balance index: one side fades to silence as the
-    balance moves away from it, as alsa-ohceq does."""
+    balance moves away from it, as alsa-ohceq does. As biquads, each gain is a
+    filter that only scales (B0 = gain), for a filter-table block."""
+    def entry(g):
+        return b"".join(fixed(x) for x in (0, 0, g, 0, 0)) if biquad else fixed(g)
     left = right = b""
     for i in range(STEPS):
         bal = (i - FLAT) / FLAT  # -1 .. 1
-        left += fixed(1 - bal if bal > 0 else 1)
-        right += fixed(1 + bal if bal < 0 else 1)
+        left += entry(1 - bal if bal > 0 else 1)
+        right += entry(1 + bal if bal < 0 else 1)
     return left, right
 
 
@@ -201,18 +215,33 @@ def load_profile(path, params=None):
     if src:
         with open(os.path.join(os.path.dirname(path), src)) as f:
             profile["init"] = json.load(f)["init"]
-    for e in profile["knobs"] + profile["cells"]:
-        if "param" not in e:
-            continue
+    def resolve(name, who):
         if params is None:
-            raise ValueError(f"{e['control']}: names {e['param']!r}, but there is no --params")
-        block, _, name = e["param"].partition(".")
-        p = params.get(block, {}).get(name)
+            raise ValueError(f"{who}: names {name!r}, but there is no --params")
+        block, _, field = name.partition(".")
+        p = params.get(block, {}).get(field)
         if p is None:
-            raise ValueError(f"{e['control']}: the program has no parameter {e['param']!r}")
-        if p["memory"] != "DM0":
-            raise ValueError(f"{e['control']}: {e['param']} is in {p['memory']}; only DM0 is resolved")
-        e["cell"] = f"0x{p['address']:04x}"
+            raise ValueError(f"{who}: the program has no parameter {name!r}")
+        base = {m: b for m, b, _ in MEMORY}.get(p["memory"])
+        if base is None or p["address"] < base:
+            raise ValueError(f"{who}: {name} is at {p['address']} in {p['memory']!r}, not data memory")
+        return f"0x{p['address']:04x}"
+
+    def named(v, who):
+        return resolve(v["param"], who) if isinstance(v, dict) else v
+
+    version = [profile["version"]] if "version" in profile else []
+    for e in profile["knobs"] + profile["cells"] + version:
+        who = e.get("control", "version")
+        if "param" in e:
+            e["cell"] = resolve(e["param"], who)
+        if "table" in e:
+            e["table"] = named(e["table"], who)
+        if "balance" in e:
+            e["balance"]["left"] = named(e["balance"]["left"], who)
+            e["balance"]["right"] = named(e["balance"]["right"], who)
+    for f in profile.get("filters", []):
+        f["cells"] = [resolve(f["stage"] + c, f["stage"]) for c in ("B2", "B1", "B0", "A2", "A1")]
     return profile
 
 
@@ -235,11 +264,15 @@ def build(profile, program=None):
         if "filter" in k:
             out.append(data(addr(k["table"]), filter_table(k["filter"], fs, profile["step_db"])))
         if "balance" in k:
-            left, right = balance_tables()
+            left, right = balance_tables(k["balance"].get("form") == "biquad")
             out.append(data(addr(k["balance"]["left"]), left))
             out.append(data(addr(k["balance"]["right"]), right))
         out.append(data(addr(k["cell"]), struct.pack(">I", FLAT)))
         out.append(control(k["control"], addr(k["cell"])))
+    for f in profile.get("filters", []):
+        b0, b1, b2, a1, a2 = biquad(f["filter"], f["filter"]["db"], fs)
+        for at, x in zip(f["cells"], (b2, b1, b0, -a2, -a1)):
+            out.append(data(addr(at), fixed(x)))
     for c in profile["cells"]:
         if "words" in c:
             w = words(c["words"])
@@ -254,6 +287,19 @@ def build(profile, program=None):
     # The kernel checks crc32(0, ...): no pre- or post-inversion.
     crc = zlib.crc32(body, 0xFFFFFFFF) ^ 0xFFFFFFFF
     return b"ADISIGM" + bytes([2]) + struct.pack("<I", crc) + body
+
+
+def check_version(profile, expect):
+    """The device tree's "<cell> <value>" against the profile's version."""
+    v = profile.get("version")
+    if v is None:
+        raise ValueError("--expect-version, but the profile has no version")
+    cell, value = (int(x, 0) for x in expect.split())
+    have = (addr(v["cell"]), int(v["value"], 0) if isinstance(v["value"], str) else v["value"])
+    if have != (cell, value):
+        raise ValueError(f"the device tree checks cell 0x{cell:04x} = 0x{value:x}, but the program's "
+                         f"version is cell 0x{have[0]:04x} = 0x{have[1]:x}: update "
+                         "control4,program-version in ea-audio-dsp.dtsi")
 
 
 def check(profile):
@@ -279,6 +325,8 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--program", help="the DSP program to load (see above); none: parameters only")
     ap.add_argument("--params", help="the program's params.json, to resolve \"param\" names")
+    ap.add_argument("--expect-version", metavar='"CELL VALUE"',
+                    help="the device tree's control4,program-version, checked against the profile's version")
     args = ap.parse_args()
     params = None
     if args.params:
@@ -286,6 +334,8 @@ def main():
             params = json.load(f)
     profile = load_profile(args.profile, params)
     check(profile)
+    if args.expect_version:
+        check_version(profile, args.expect_version)
     init_writes(profile)
     program = load_program(args.program) if args.program else None
     fw = build(profile, program)
