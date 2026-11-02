@@ -1,0 +1,74 @@
+net: dsa: b53: mirror BPDUs to CPU port 5 when port 8 is not a CPU port
+
+With port 5 as the CPU port, b53_brcm_hdr_setup() sets En_IMP_Port to 11:
+dual-IMP mode. The BCM53125 data sheet (Global Management Configuration,
+page 02h address 00h) says that in this mode the frames the switch traps for
+the CPU, the BPDUs that En_RX_BPDU traps among them, go to the IMP port (8)
+from LAN ports and to port 5 only from WAN ports.
+
+The Control4 EA3 wires only port 5 to the SoC; port 8 is unconnected. So the
+bridge on lan1/lan2 never received a BPDU, STP never saw a loop, and cabling
+both jacks into one LAN took the box off the network.
+
+Selecting the user ports as WAN ports does deliver the BPDUs, but a WAN
+port's traffic goes to the CPU only: measured on an EA3, frames from lan1
+stopped reaching lan2. So use the ingress mirror instead, filtered on the
+STP group address, from the user ports to port 5. Measured on an EA3 with a
+host sending BPDUs into lan1: stock, none reached the CPU and br-lan stayed
+its own root; with the mirror, all of them did and br-lan took the sender as
+root, while lan1 <-> lan2 forwarding kept working.
+
+The switch has one mirror, so tc mirroring is refused while it holds.
+
+diff -ruN a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
+--- a/drivers/net/dsa/b53/b53_common.c	2026-11-02 16:25:32
++++ b/drivers/net/dsa/b53/b53_common.c	2026-11-02 16:25:55
+@@ -797,6 +797,24 @@
+ 		hdr_ctl |= GC_FRM_MGMT_PORT_M;
+ 	b53_write8(dev, B53_MGMT_PAGE, B53_GLOBAL_CONFIG, hdr_ctl);
+ 
++	/* Port 5 as CPU port puts BCM531x5 in dual-IMP mode, which traps the
++	 * BPDUs of LAN ports to the IMP port (8), not to port 5. When port 8
++	 * is not a CPU port nothing receives them, so STP never sees its peers
++	 * and never blocks a loop. Mirror them to port 5 instead. This takes
++	 * the switch's only mirror, so tc mirroring is refused while it holds.
++	 */
++	if (tag_en && port == 5 && is531x5(dev) &&
++	    !dsa_is_cpu_port(ds, B53_CPU_PORT)) {
++		b53_write48(dev, B53_MGMT_PAGE, B53_IG_MIR_MAC,
++			    ether_addr_to_u64(eth_stp_addr));
++		b53_write16(dev, B53_MGMT_PAGE, B53_IG_MIR_CTL,
++			    MIRROR_DA << MIRROR_FILTER_SHIFT |
++			    (dsa_user_ports(ds) & MIRROR_MASK));
++		b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL,
++			    MIRROR_EN | port);
++		dev->bpdu_mirror = true;
++	}
++
+ 	/* B53_BRCM_HDR not present on devices with legacy tags */
+ 	if (dev->tag_protocol == DSA_TAG_PROTO_BRCM_LEGACY ||
+ 	    dev->tag_protocol == DSA_TAG_PROTO_BRCM_LEGACY_FCS)
+@@ -2539,6 +2557,12 @@
+ {
+ 	struct b53_device *dev = ds->priv;
+ 	u16 reg, loc;
++
++	if (dev->bpdu_mirror) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "Mirror carries BPDUs to CPU port 5");
++		return -EBUSY;
++	}
+ 
+ 	if (ingress)
+ 		loc = B53_IG_MIR_CTL;
+diff -ruN a/drivers/net/dsa/b53/b53_priv.h b/drivers/net/dsa/b53/b53_priv.h
+--- a/drivers/net/dsa/b53/b53_priv.h	2026-11-02 16:25:32
++++ b/drivers/net/dsa/b53/b53_priv.h	2026-11-02 16:25:35
+@@ -169,6 +169,7 @@
+ 
+ 	/* run time configuration */
+ 	bool enable_jumbo;
++	bool bpdu_mirror;
+ 
+ 	unsigned int num_vlans;
+ 	struct b53_vlan *vlans;
