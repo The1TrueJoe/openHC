@@ -1,0 +1,16 @@
+config BR2_PACKAGE_SGX545_SRVINIT
+	bool "sgx545-srvinit (open SGX545 GPU bring-up)"
+	depends on BR2_x86_64
+	help
+	  srvinit, from the sgx545-ce submodule: brings the PowerVR SGX545
+	  in the Intel Atom CE5300 up once at boot without the DDK's
+	  libsrv_init. It loads the USSE microkernel, assembles the PDS
+	  programs that start it and hands everything to the in-tree
+	  sgx545-ce kernel driver (CONFIG_SGX545_CE). Native x86_64.
+
+	  The microkernel is the one piece of Imagination's code it needs.
+	  It is not in either repository: the build extracts it from
+	  Intel's Cedarview DDK 1.7.862890 tarball (the same download
+	  sgx545-um uses) into /lib/firmware.
+
+	  https://github.com/The1TrueJoe/sgx545-ce

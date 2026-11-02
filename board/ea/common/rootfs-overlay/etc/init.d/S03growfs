@@ -17,6 +17,11 @@ esac
 
 dev=$(sed -n 's/.*root=\(\/dev\/[^ ]*\).*/\1/p' /proc/cmdline)
 [ -b "$dev" ] || exit 0
+# A RAM boot (initramfs, ohc.ramboot=1) still carries root=p1 from S00kexec, but
+# / is the initramfs and p1 is not mounted: never resize it from there.
+case "$(awk '$2 == "/" { d = $1 } END { print d }' /proc/mounts)" in
+	rootfs|none|tmpfs|ramfs) exit 0 ;;
+esac
 name=${dev##*/}
 [ -f "/sys/class/block/$name/partition" ] || exit 0
 command -v resize2fs >/dev/null || exit 0
