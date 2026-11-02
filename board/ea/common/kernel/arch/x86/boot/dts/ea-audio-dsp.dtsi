@@ -3,8 +3,11 @@
  * ADAU1451 SigmaDSP analog audio -- the `audio-dsp` feature (EA3 only).
  *
  * The card is the kernel's own simple-audio-card: the CE5300 I2S (the PCI
- * function's node in ce5300.dtsi) into the ADAU1451, the codec the I2S bit-
- * and frame-clock master. No board machine driver.
+ * function's node in ce5300.dtsi) into the ADAU1451. The CE5300 is the I2S
+ * bit- and frame-clock master -- every serial port of the DSP is a slave, and
+ * ce5300-i2s starts its clocks at probe. (The vendor's link named the codec
+ * master; its own register init says otherwise. Neither DAI implements
+ * .set_fmt, so this only records it.) No board machine driver.
  *
  * The codec sits at 0x38 on the FOURTH I2C controller (vendor i2c-3); the DAC
  * soft mute is vendor GPIO 61, active high = muted.
@@ -70,10 +73,10 @@
 		/* ALSA derives the card id from this: "openhcea". */
 		simple-audio-card,name = "openhc-ea";
 		simple-audio-card,format = "i2s";
-		simple-audio-card,bitclock-master = <&dsp_dai>;
-		simple-audio-card,frame-master = <&dsp_dai>;
+		simple-audio-card,bitclock-master = <&i2s_dai>;
+		simple-audio-card,frame-master = <&i2s_dai>;
 
-		simple-audio-card,cpu {
+		i2s_dai: simple-audio-card,cpu {
 			sound-dai = <&audio>;
 		};
 		dsp_dai: simple-audio-card,codec {

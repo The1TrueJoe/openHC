@@ -17,7 +17,7 @@ trusting the DSP half.
 
 The HDMI transmitter (`01:08.2`, `8086:2e63`) carries its **own** audio DMA
 engine, which reads PCM from memory straight into its audio FIFO. HDMI audio
-never touches the I²S block below, the one that hangs on access. Stock drives
+never touches the I²S block below. Stock drives
 it from Intel's closed `pd_hdmi.ko`; its HAL's function names survive, and the
 map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
 (`hw:HDMI`), loaded by udev off the PCI id, from the `audio-hdmi` feature
@@ -290,8 +290,9 @@ interrupt is needed. Two things are still inferred:
    never in a descriptor) into the control register; the TX run bit as bit 0 of
    TX0 `+0x00`, the register that reads `0x21` while stock plays (bit 0 of
    `TX_CTRL`, the old guess, reads 0 there).
-2. **The ungate** — why the TX and DMA blocks hang on access under openHC when
-   stock reads them freely. The plan is below.
+2. ~~**The ungate**~~ — solved: the block was held in its own reset (global
+   `+0x00` bit 1), and `ce5300-i2s` now releases it and starts TX0 at probe,
+   which is what clocks the DSP ([below](#what-is-left)).
 
 Master/slave is not settled from the SoC side: the render path exposes **no**
 clock-direction control at all. The DSP side says the opposite of what the
@@ -373,9 +374,10 @@ that and sound:
   loads everything over I²C at boot from a userspace SigmaStudio download
   (`/control4/bin/ea3_dsploader`). openHC's own program is being built with
   SigmaStudio+ in CI, and the driver gains a load path for it.
-- **The CE5300 I²S block hangs on access.** Reading its TX/DMA registers
-  (`0x2004` and beyond) hangs the SoC under openHC, where stock reads them
-  freely. The register dump stays off until the cause below is found.
+- ~~**The CE5300 I²S block hangs on access.**~~ It was held in its own reset;
+  `ce5300-i2s` releases it at probe and starts TX0, the I²S clock master for
+  the DSP and DAC, so the DSP runs from boot and its test tone plays. What is
+  left is the PCM itself (`enable_pcm`), which feeds the DSP's `SDATA_IN3`.
 
 ## The CE5300's power and clock controllers
 
@@ -444,8 +446,10 @@ block reads zero; nothing initializes it. It gates no peripheral clock.
   FIFO** (`+0x2018`); without data, no clocks. They keep running after the FIFO
   drains, and the ADAU1451's core runs on them — the test tone reaches the
   analog out ([DSP README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)).
-  Global `+0x2c` (`0x180` on stock) is not needed for this. Next: do it in
-  `ce5300-i2s`'s probe, as stock keeps its pipeline running.
+  Global `+0x2c` (`0x180` on stock) is not needed for this. `ce5300-i2s`
+  now does all of it at probe, in stock's order (`audio_ce53xx_hal_io_reset_hw`:
+  clock on, reset pulsed, every context reset, interrupts cleared), because
+  stock keeps its pipeline running too; `ce5300_i2s.clocks=0` leaves TX0 off.
 - **The master clock's rate.** The ADAU1451 runs from the SoC's MCLK0 (enabled
   on both). Its rate may come from the A/V DDS or audio PLL that stock's media
   stack programs, and that stack never runs under openHC. If the DSP's PLL
