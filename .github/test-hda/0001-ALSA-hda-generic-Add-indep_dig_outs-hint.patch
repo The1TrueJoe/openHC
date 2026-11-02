@@ -1,6 +1,6 @@
-From ae628e401c8bd133557e8d087fed7d7037327ebb Mon Sep 17 00:00:00 2001
+From 5541f7b0493a8ab0094747e9481c4cfb1b5be3f5 Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
-Date: Wed, 28 Oct 2026 04:04:55 -0400
+Date: Mon, 2 Nov 2026 01:22:32 -0500
 Subject: [PATCH] ALSA: hda/generic: Add indep_dig_outs hint
 
 The generic parser gives a codec one digital playback PCM. Any further
@@ -55,7 +55,7 @@ index c16f83875..c618bb2d7 100644
      add the stereo mix (analog-loopback mix) to the input mux if
      available
 diff --git a/sound/hda/codecs/generic.c b/sound/hda/codecs/generic.c
-index 6120f797b..6d7c2ad0f 100644
+index ca780b7f6..12e40c382 100644
 --- a/sound/hda/codecs/generic.c
 +++ b/sound/hda/codecs/generic.c
 @@ -168,6 +168,9 @@ static void parse_user_hints(struct hda_codec *codec)
@@ -105,7 +105,7 @@ index 6120f797b..6d7c2ad0f 100644
  	if (spec->dig_in_nid) {
  		err = snd_hda_create_spdif_in_ctls(codec, spec->dig_in_nid);
  		if (err < 0)
-@@ -5454,12 +5471,24 @@ static int alt_playback_pcm_cleanup(struct hda_pcm_stream *hinfo,
+@@ -5450,12 +5467,24 @@ static int alt_playback_pcm_cleanup(struct hda_pcm_stream *hinfo,
  /*
   * Digital out
   */
@@ -132,7 +132,7 @@ index 6120f797b..6d7c2ad0f 100644
  }
  
  static int dig_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
-@@ -5468,8 +5497,7 @@ static int dig_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
+@@ -5464,8 +5493,7 @@ static int dig_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
  				    unsigned int format,
  				    struct snd_pcm_substream *substream)
  {
@@ -142,7 +142,7 @@ index 6120f797b..6d7c2ad0f 100644
  					     stream_tag, format, substream);
  }
  
-@@ -5477,16 +5505,14 @@ static int dig_playback_pcm_cleanup(struct hda_pcm_stream *hinfo,
+@@ -5473,16 +5501,14 @@ static int dig_playback_pcm_cleanup(struct hda_pcm_stream *hinfo,
  				    struct hda_codec *codec,
  				    struct snd_pcm_substream *substream)
  {
@@ -161,7 +161,7 @@ index 6120f797b..6d7c2ad0f 100644
  }
  
  /*
-@@ -5779,6 +5805,25 @@ int snd_hda_gen_build_pcms(struct hda_codec *codec)
+@@ -5775,6 +5801,25 @@ int snd_hda_gen_build_pcms(struct hda_codec *codec)
  					 spec->dig_in_nid);
  	}
  
