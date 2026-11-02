@@ -435,11 +435,17 @@ block reads zero; nothing initializes it. It gates no peripheral clock.
 
 ### What is left
 
-- **`AUD_IO +0x00`** is the one audio register that differs: `0x1` under
-  openHC, `0x7` on a playing stock unit. Its bits 1–2 are the prime suspects
-  for the I²S block's own sub-block enables, and the next test is to set them
-  and read one TX register (`0xdfa82000`), on a RAM-booted openHC, expecting a
-  possible hang.
+- **`AUD_IO +0x00` is the ungate (proven 2026-11-02 on an EA3).** Writing
+  stock's `0x7` over openHC's `0x1` makes the TX, RX and DMA blocks answer:
+  after it, `+0x2000` and the rest read their reset values instead of hanging
+  the SoC. The I²S clocks then start with TX0 configured as stock has it
+  (`+0x2004` `0xf1e0`, `+0x2008` 5, `+0x2010` `0x100`, `+0x2014` 8, `+0x201c`
+  `0x3f`), its run bit (`+0x2000` = `0x21`), and **a few words written to its
+  FIFO** (`+0x2018`); without data, no clocks. They keep running after the FIFO
+  drains, and the ADAU1451's core runs on them — the test tone reaches the
+  analog out ([DSP README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)).
+  Global `+0x2c` (`0x180` on stock) is not needed for this. Next: do it in
+  `ce5300-i2s`'s probe, as stock keeps its pipeline running.
 - **The master clock's rate.** The ADAU1451 runs from the SoC's MCLK0 (enabled
   on both). Its rate may come from the A/V DDS or audio PLL that stock's media
   stack programs, and that stack never runs under openHC. If the DSP's PLL

@@ -314,9 +314,25 @@ drives an LRCLK at the DSP's serial ports**: every port is a slave (as on
 stock), and their master is not running. With no frame clock the program never
 runs, and the AK4621, on the same clocks, has none either: a test tone (mode 3)
 measured nothing above the noise floor (−93 dBFS) on the line out, with the DAC
-mute line at either level. On stock that master is running, so it is the next
-thing to find — most likely the CE5300's I²S, which openHC does not start
-(`ce5300_i2s.enable_pcm`, the ASoC -19 in the log).
+mute line at either level.
+
+**The master is the CE5300's I²S, and it runs once started** (same day, same
+image). With [the I²S block brought up](../../../../../../site/src/content/docs/ea/audio.md#what-is-left) — its global
+register to 0x7, TX0 configured as stock has it and started, a few words into
+its FIFO — the core executes on `LRCLK_IN0` (and on serial inputs 0–2 and all
+four outputs; serial input 3, the ASRC's, stays unclocked). Then, unbinding the
+codec to drive the cells by hand:
+
+* **Test tone:** mode 3 puts 1000 Hz at **−20.0 dBFS** on both channels of the
+  line out — the design's level — so the mode mux reads its integer index.
+* **SDATA_OUT1 feeds the AK4621:** switching off `SOUT_SOURCE` pair 8 (channels
+  16/17) alone silences the line out; pairs 0, 16 and 20 change nothing.
+* **The indexed filter blocks act on their index:** balance 0 / 12 / 24 / 36 / 48
+  measures one channel only / the other at −6 dB / centre / the first at −6 dB /
+  the other only — the linear law, exactly.
+* Volume 0.5 is −6 dB; loudness leaves 1 kHz alone, as its shelves should.
+* The DAC mute line (gpio61), high or low, made no difference to the tone.
+* `PANIC_FLAG` 1, `PANIC_CODE` 0x0010 appears once the core runs.
 
 The line out was measured end to end by an openSpeakerPoint's line input
 (`cmd/audio/measure`: per-channel RMS, peak and pitch). It also caught, on
@@ -335,15 +351,11 @@ with the EA3's coax out looped to its coax in, the transmitter on too (bit 2,
 
 Still open:
 
-* **The clock master** for the serial ports and the AK4621, above. Until it
-  runs, nothing plays.
-* **Which SDATA_OUT feeds the AK4621** — the program sends to all four;
-  switching them off one at a time (`SOUT_SOURCE`) will tell, once there are
-  clocks.
-* **That the indexed filters act on their index** — the cells hold integers.
-  The mode mux is the quickest check: index 3 is the test tone.
-* **What each mode sounds like**, and in stock's map, **which balance table is
-  the left jack** (assumed 0x0091).
+* **Starting the I²S at boot** (in `ce5300-i2s`), then the PCM, which feeds
+  serial input 3; until then nothing but the test tone plays.
+* **What the DAC mute line does**, since it did not mute.
+* **What each mode sounds like** with programme material, and in stock's map,
+  **which balance table is the left jack** (assumed 0x0091).
 
 ## Not used on the EA1, and the AK4621
 
