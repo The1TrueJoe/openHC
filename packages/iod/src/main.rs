@@ -13,6 +13,7 @@ mod events;
 mod gpio;
 mod gpio_io;
 mod ir;
+mod jack;
 mod led;
 mod lirc;
 mod mqtt;
@@ -197,6 +198,19 @@ fn main() {
             let n = mqtt::topics::label(i);
             cfg.bus.set(&format!("serial/{n}/baud"), serde_json::json!(p.baud));
             cfg.bus.set(&format!("serial/{n}/viewers"), serde_json::json!(0));
+            // A combo jack goes back to its saved mode first; one left as IR
+            // has no serial port to hold.
+            if let (Some(j), Some(u)) = (p.jack, p.uart) {
+                let saved = cfg.settings.lock().unwrap().jacks.get(&j.to_string()).copied();
+                if let Some(m) = saved {
+                    if let Err(e) = jack::set(u, m) {
+                        eprintln!("iod: jack {j}: cannot restore {}: {e}", m.as_str());
+                    }
+                }
+                if jack::mode(u) != Some(jack::Mode::Serial) {
+                    continue;
+                }
+            }
             // Open every host UART now and hold it, as the stock dtserver does:
             // open raises DTR/RTS, which line-powered accessories (a GC-IRL, for
             // one) run on, and serial/N/rx should fire with no terminal attached.

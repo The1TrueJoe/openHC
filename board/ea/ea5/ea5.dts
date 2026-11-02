@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Control4 EA-5, V1 and V2 (V2 has no internal radio). Includes mirror ohc.features. */
+/dts-v1/;
+
+#include "ea5.dtsi"
+#include "ea-wifi.dtsi"
+#include "ea-switch.dtsi"
+#include "ea-audio-fpga.dtsi"
+#include "ea-gpio-names.dtsi"
+
+/ {
+	model = "Control4 EA-5";
+	compatible = "control4,ea5", "intel,ce5300";
+};
+
+/* Five jacks (ETHERNET IN + four switch ports); which port is which is unverified. */
+&switch_ports {
+	port@0 {
+		reg = <0>;
+		label = "lan0";
+	};
+	port@3 {
+		reg = <3>;
+		label = "lan3";
+	};
+	port@4 {
+		reg = <4>;
+		label = "lan4";
+	};
+};

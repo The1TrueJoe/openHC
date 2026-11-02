@@ -44,6 +44,8 @@ drivers/gpu/Makefile|obj-y += ce5300-sgx-quiesce.o
 # already reached only through CONFIG_SND_SOC.
 sound/soc/codecs/Makefile|obj-m += adau1451-c4.o
 sound/soc/Makefile|obj-$(CONFIG_SND_SOC) += ce5300/
+# EA-5 audio FPGA + its card (features/audio-fpga).
+sound/soc/Makefile|obj-$(CONFIG_SND_SOC) += control4/
 # HDMI audio is the HDMI transmitter's own DMA, not the I2S block, and is a plain
 # ALSA card rather than ASoC, so it sits in sound/x86 (descended whenever
 # CONFIG_SND is set). Every EA has HDMI; features/audio-hdmi turns ALSA on.
