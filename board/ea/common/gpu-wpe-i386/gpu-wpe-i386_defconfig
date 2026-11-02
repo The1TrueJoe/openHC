@@ -59,11 +59,11 @@ BR2_USE_WCHAR=y
 # --- no kernel, no bootloader ---
 # We harvest /usr only; there is no hardware to boot here. Turning the kernel
 # off means the toolchain can no longer take its headers "as kernel", so pin a
-# bundled headers series instead. 6.19 is Buildroot 2026.02.3's newest bundled
-# choice and matches the series the fleet toolchain expects elsewhere; a bundled
-# version does NOT require BR2_LINUX_KERNEL (only "as kernel" does).
+# bundled headers series instead. 6.18 is the newest bundled series that is not
+# newer than the fleet's 7.1 kernel, which is what this userspace runs on; a
+# bundled version does NOT require BR2_LINUX_KERNEL (only "as kernel" does).
 # BR2_LINUX_KERNEL is not set
-BR2_KERNEL_HEADERS_6_19=y
+BR2_KERNEL_HEADERS_6_18=y
 
 # --- rootfs: a tar is enough ---
 # The deliverable is output/build/gpu-wpe-i386/target/usr, harvested by the

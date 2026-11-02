@@ -1,4 +1,4 @@
-//! ohc-zigbee — bring the EM35x Zigbee NCP up and hold it up.
+//! zigbee — bring the EM35x Zigbee NCP up and hold it up.
 //!
 //! A first-class openHC package (built and staged into the rootfs like iod/webd),
 //! gated onto only the boards whose `ohc.features` lists `zigbee`. It replaces the
@@ -49,9 +49,9 @@
 //! OHC_ZIGBEE_STOCK_MEMBER (where Control4's own image is; see stock.rs).
 //!
 //! By hand (stop S91ohczigbee first; nothing else may hold the port):
-//!   ohc-zigbee --info             find the NCP, print its version
-//!   ohc-zigbee --flash <img.ebl>  flash an image regardless of version
-//!   ohc-zigbee --restore-stock    put Control4's firmware back (return to stock)
+//!   zigbee --info             find the NCP, print its version
+//!   zigbee --flash <img.ebl>  flash an image regardless of version
+//!   zigbee --restore-stock    put Control4's firmware back (return to stock)
 
 mod ash;
 mod bootloader;
@@ -149,7 +149,7 @@ fn main() {
     let dev = match std::env::var("OHC_ZIGBEE_TTY") {
         Ok(d) if !d.is_empty() => d,
         _ => {
-            println!("ohc-zigbee: OHC_ZIGBEE_TTY unset — no radio on this board, nothing to do");
+            println!("zigbee: OHC_ZIGBEE_TTY unset — no radio on this board, nothing to do");
             return;
         }
     };
@@ -175,12 +175,12 @@ fn main() {
     let image = match ncp::load_image(&image_path) {
         Ok(i) => i,
         Err(e) => {
-            println!("ohc-zigbee: NCP image unusable ({e}) — not updating");
+            println!("zigbee: NCP image unusable ({e}) — not updating");
             None
         }
     };
     if forced.is_some() && image.is_none() {
-        eprintln!("ohc-zigbee: no image at {image_path}");
+        eprintln!("zigbee: no image at {image_path}");
         std::process::exit(2);
     }
     let cfg = ncp::Config {
@@ -193,7 +193,7 @@ fn main() {
     let fd = match open_serial(&dev, baud) {
         Ok(fd) => fd,
         Err(e) => {
-            eprintln!("ohc-zigbee: cannot open {dev}: {e}");
+            eprintln!("zigbee: cannot open {dev}: {e}");
             std::process::exit(1);
         }
     };
@@ -209,9 +209,9 @@ fn main() {
         let archive = std::env::var("OHC_ZIGBEE_STOCK_ARCHIVE").ok().filter(|s| !s.is_empty());
         let member = std::env::var("OHC_ZIGBEE_STOCK_MEMBER").ok().filter(|s| !s.is_empty());
         match stock::restore(fd, &cfg, archive.as_deref(), member.as_deref().unwrap_or(stock::DEFAULT_MEMBER)) {
-            Ok(m) => println!("ohc-zigbee: {m}"),
+            Ok(m) => println!("zigbee: {m}"),
             Err(e) => {
-                eprintln!("ohc-zigbee: cannot put Control4's firmware back: {e}");
+                eprintln!("zigbee: cannot put Control4's firmware back: {e}");
                 std::process::exit(1);
             }
         }
@@ -229,10 +229,10 @@ fn main() {
             None => ncp::flash(fd, img, cfg.btl_baud, None),
         };
         match r.map(|_| ncp::find_app(fd, &cfg)) {
-            Ok(Some((b, v))) => println!("ohc-zigbee: flashed; NCP runs EmberZNet {} at {b} baud", ash::stack_str(v.stack)),
-            Ok(None) => println!("ohc-zigbee: flashed, but no app answers yet"),
+            Ok(Some((b, v))) => println!("zigbee: flashed; NCP runs EmberZNet {} at {b} baud", ash::stack_str(v.stack)),
+            Ok(None) => println!("zigbee: flashed, but no app answers yet"),
             Err(e) => {
-                eprintln!("ohc-zigbee: flash failed: {e}");
+                eprintln!("zigbee: flash failed: {e}");
                 std::process::exit(1);
             }
         }
@@ -240,7 +240,7 @@ fn main() {
     }
 
     if ncp::ensure(fd, &cfg).is_none() {
-        println!("ohc-zigbee: no NCP app answers on {dev} — holding the port anyway");
+        println!("zigbee: no NCP app answers on {dev} — holding the port anyway");
         set_baud(fd, baud);
     }
 
@@ -267,12 +267,12 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
     let listener = match TcpListener::bind((bind, port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("ohc-zigbee: cannot listen on {bind}:{port}: {e} — holding the port only");
+            eprintln!("zigbee: cannot listen on {bind}:{port}: {e} — holding the port only");
             return;
         }
     };
     let _ = listener.set_nonblocking(true);
-    println!("ohc-zigbee: serving {dev} on tcp {bind}:{port} (zigpy: socket://<this box>:{port})");
+    println!("zigbee: serving {dev} on tcp {bind}:{port} (zigpy: socket://<this box>:{port})");
 
     let mut client: Option<TcpStream> = None;
     let mut buf = [0u8; 4096];
@@ -298,9 +298,9 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
                 let _ = s.set_nonblocking(false);
                 let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
                 if client.is_some() {
-                    println!("ohc-zigbee: {peer} replaces the previous client");
+                    println!("zigbee: {peer} replaces the previous client");
                 } else {
-                    println!("ohc-zigbee: client {peer}");
+                    println!("zigbee: client {peer}");
                 }
                 // Stale NCP output belongs to nobody; do not hand it to the
                 // new client mid-frame.
@@ -317,7 +317,7 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
             if r > 0 {
                 if let Some(c) = &mut client {
                     if c.write_all(&buf[..r as usize]).is_err() {
-                        println!("ohc-zigbee: client gone (write failed)");
+                        println!("zigbee: client gone (write failed)");
                         client = None;
                     }
                 }
@@ -334,7 +334,7 @@ fn serve_tcp(tty: RawFd, dev: &str, bind: &str, port: u16) {
                 }
             };
             if gone {
-                println!("ohc-zigbee: client disconnected");
+                println!("zigbee: client disconnected");
                 client = None;
             }
         }

@@ -4,13 +4,18 @@
 //! same questions — how is the IO reached, how many of each thing is there —
 //! and nothing above this module knows what a HC-800 or an IO Extender is.
 //!
-//! **Behind an IO microcontroller the counts come from the kernel.** The driver
-//! latched them from the board's device tree node (EA) or from the module
-//! parameters S12iomcu wrote (HC-800, which has no tree), and publishes them at
-//! [`IOMCU_SYSFS`]. Reading them back, rather than a second copy in board.env,
-//! is what keeps the two from disagreeing. board.env's counts are only the
-//! fallback for a board whose driver never attached — the HC-800 before
-//! S12iomcu, where board.env is the only description there is.
+//! **What the IO is comes from the kernel, never from board.env.** board.env says
+//! HOW it is reached (`OHC_IO_BACKEND`); the counts are read back from what the
+//! board's firmware made the kernel register:
+//!
+//! - behind an IO microcontroller, gpio-ohc-iomcu publishes what the part's
+//!   firmware node declares (device tree on EA, an ACPI table on the HC-800) at
+//!   [`IOMCU_SYSFS`] — before the part even answers;
+//! - on native GPIO (the IO Extender), the lines its device tree names
+//!   (`relay1..N`, `contact1..N`) and the lirc devices its IR driver labels.
+//!
+//! There is no second copy to disagree with: a driver that did not bind means
+//! the board declares nothing, and the diagnosis says why.
 //!
 //! The governing rule, borrowed from the house UI: **a thing with nothing
 //! behind it does not appear**. A count of zero is not "unknown", it is
@@ -24,7 +29,7 @@ use std::path::Path;
 pub const IOMCU_SYSFS: &str = "/sys/class/ohc/iomcu";
 
 /// The IO microcontroller's geometry as the kernel driver latched it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Declared {
     pub relays: u8,
     pub contacts: u8,
@@ -32,7 +37,7 @@ pub struct Declared {
     pub ir_blaster: u8,
     pub ir_in: u8,
     pub uarts: u8,
-    /// `ttyS3` behind the line discipline, `serial0-0` as a serdev device.
+    /// The serdev device the part is: `serial0-0`.
     pub port: String,
     pub baud: u32,
     /// The part answered the driver. False is "declared but silent".
@@ -40,6 +45,29 @@ pub struct Declared {
 }
 
 impl Declared {
+    /// A native-GPIO board's IO, as its kernel registered it: the lines its
+    /// device tree names and the lirc devices its IR driver labels.
+    pub fn discover() -> Declared {
+        let lirc: Vec<String> = crate::lirc::devices().into_iter().map(|d| d.name).collect();
+        Declared::from_names(
+            crate::gpio_io::count_named("relay"),
+            crate::gpio_io::count_named("contact"),
+            &lirc,
+        )
+    }
+
+    fn from_names(relays: u8, contacts: u8, lirc: &[String]) -> Declared {
+        let has = |n: &str| lirc.iter().any(|x| x == n);
+        Declared {
+            relays,
+            contacts,
+            ir_out: (1..=24u8).take_while(|i| has(&format!("openHC IR out {i}"))).count() as u8,
+            ir_blaster: has("openHC IR front blaster") as u8,
+            ir_in: has(crate::ir::RECEIVER_NAME) as u8,
+            ..Declared::default()
+        }
+    }
+
     /// `None` when the driver has not attached to anything.
     pub fn read(dir: &Path) -> Option<Declared> {
         let get = |f: &str| std::fs::read_to_string(dir.join(f)).ok().map(|s| s.trim().to_string());
@@ -78,15 +106,15 @@ pub enum Backend {
 #[derive(Serialize, Clone)]
 pub struct SerialPort {
     /// The device node to open. `Some` for every port that is bridgeable —
-    /// both a host UART (`/dev/ttyS1`) and an MCU-routed port, which the kernel
-    /// line discipline now exposes as a tty (`/dev/ttyOHC0`). `None` only when
+    /// both a host UART (`/dev/ttyS1`) and an MCU-routed port, which the
+    /// gpio-ohc-iomcu driver exposes as a tty (`/dev/ttyOHC0`). `None` only when
     /// a port genuinely has no node yet, which is what the terminal refuses.
     pub dev: Option<String>,
     pub label: String,
     pub baud: u32,
     /// `host` — a real /dev/tty on a 16550A the SoC owns directly.
     /// `mcu`  — a tty whose bytes travel over the IO protocol's UART opcodes,
-    ///          mux'd by the ohc-iomcu line discipline. Still a real node now;
+    ///          mux'd by the gpio-ohc-iomcu driver. Still a real node;
     ///          the distinction drives the UI's "via MCU" hint, not whether the
     ///          port can be opened.
     pub transport: &'static str,
@@ -114,7 +142,7 @@ pub struct Io {
     pub mcu_tty: Option<String>,
     #[serde(skip)]
     pub mcu_baud: u32,
-    /// Where the counts below came from: `kernel` or `board.env`.
+    /// Where the counts below came from: always the kernel now.
     #[serde(skip)]
     pub declared_by: &'static str,
     /// The kernel's word on whether the part answered; `None` when the
@@ -136,10 +164,12 @@ pub struct Io {
     pub contacts: u8,
     /// Does a CLOSED contact read as 0?
     ///
-    /// True on native-GPIO boards, where these are pull-up inputs and closing
-    /// the contact shorts it to ground. False behind an IO microcontroller,
-    /// which normalises the sense in firmware before iod sees it. Getting this
-    /// wrong does not fail loudly — it reports every idle contact as made.
+    /// Follows from the backend: true on native GPIO, where these are pull-up
+    /// inputs and closing the contact shorts it to ground (measured on the IO
+    /// Extender: all eight open terminals read 1); false behind an IO
+    /// microcontroller, which normalises the sense in firmware before iod sees
+    /// it. Getting this wrong does not fail loudly — it reports every idle
+    /// contact as made.
     pub contacts_active_low: bool,
 
     /// The GPIO chip by DRIVER LABEL, not number — the number depends on probe
@@ -148,11 +178,6 @@ pub struct Io {
     /// Line that holds the IO microcontroller in reset. Having this is what
     /// makes a wedged MCU recoverable without a power cycle.
     pub io_reset_gpio: Option<u32>,
-    /// Native GPIO line numbers, `gpio` backend only.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub relay_gpios: Vec<u32>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub contact_gpios: Vec<u32>,
 
     pub serials: Vec<SerialPort>,
 }
@@ -182,28 +207,27 @@ fn read_env(path: &str) -> HashMap<String, String> {
     m
 }
 
-fn num<T: std::str::FromStr + Default>(e: &HashMap<String, String>, k: &str) -> T {
-    e.get(k).and_then(|v| v.parse().ok()).unwrap_or_default()
-}
-
-fn lines(e: &HashMap<String, String>, k: &str) -> Vec<u32> {
-    e.get(k)
-        .map(|s| s.split_whitespace().filter_map(|t| t.parse().ok()).collect())
-        .unwrap_or_default()
+fn backend_of(e: &HashMap<String, String>) -> Backend {
+    match e.get("OHC_IO_BACKEND").map(String::as_str) {
+        Some("mcu") => Backend::Mcu,
+        Some("gpio") => Backend::Gpio,
+        _ => Backend::None,
+    }
 }
 
 impl Board {
     pub fn load(env_path: &str) -> Board {
-        Board::from_env(read_env(env_path), Declared::read(Path::new(IOMCU_SYSFS)))
+        let e = read_env(env_path);
+        let kernel = match backend_of(&e) {
+            Backend::Mcu => Declared::read(Path::new(IOMCU_SYSFS)),
+            Backend::Gpio => Some(Declared::discover()),
+            Backend::None => None,
+        };
+        Board::from_env(e, kernel)
     }
 
     fn from_env(e: HashMap<String, String>, kernel: Option<Declared>) -> Board {
-
-        let backend = match e.get("OHC_IO_BACKEND").map(String::as_str) {
-            Some("mcu") => Backend::Mcu,
-            Some("gpio") => Backend::Gpio,
-            _ => Backend::None,
-        };
+        let backend = backend_of(&e);
 
         // Rates a port may be set to. Overridable per transport in board.env,
         // because these are hardware facts and boards differ.
@@ -248,7 +272,7 @@ impl Board {
             })
             .unwrap_or_default();
 
-        // MCU-routed user UARTs. The ohc-iomcu line discipline mux-es each one
+        // MCU-routed user UARTs. gpio-ohc-iomcu mux-es each one
         // onto a /dev/ttyOHC<n> tty (its own 0-based index, independent of any
         // host ports), so the bytes travel over the IO protocol's UART opcodes
         // while the port is, to everything above, an ordinary tty. They are
@@ -256,14 +280,12 @@ impl Board {
         // host ports. `transport` stays "mcu" — it is honest about the path and
         // drives the UI's "via MCU" hint — but `dev` is now Some, which is what
         // makes the terminal bridge open it like any other port.
-        // Only an IO-microcontroller board takes the kernel's word: the
-        // directory belongs to that driver.
-        let kernel = kernel.filter(|_| backend == Backend::Mcu);
-        let mcu_uarts: u8 = match &kernel {
-            Some(k) => k.uarts,
-            None => num(&e, "OHC_IO_UARTS"),
-        };
-        for i in 0..mcu_uarts {
+        // The kernel is the only description: an unbound driver, or a board
+        // with no IO, declares nothing.
+        let mcu = backend == Backend::Mcu;
+        let kernel = kernel.filter(|_| backend != Backend::None);
+        let k = kernel.clone().unwrap_or_default();
+        for i in 0..k.uarts {
             serials.push(SerialPort {
                 dev: Some(format!("/dev/ttyOHC{i}")),
                 label: format!("Serial {}", i + 1),
@@ -281,32 +303,21 @@ impl Board {
                 .unwrap_or_else(|_| "openhc".into()),
             io: Io {
                 mcu_part: e.get("OHC_IO_MCU_PART").filter(|s| !s.is_empty()).cloned(),
-                mcu_tty: match &kernel {
-                    Some(k) => Some(k.port.clone()).filter(|s| !s.is_empty()),
-                    None => e.get("OHC_IO_MCU_TTY").filter(|s| !s.is_empty()).cloned(),
-                },
-                mcu_baud: match &kernel {
-                    Some(k) => k.baud,
-                    None => e.get("OHC_IO_MCU_BAUD").and_then(|v| v.parse().ok()).unwrap_or(115200),
-                },
-                declared_by: if kernel.is_some() { "kernel" } else { "board.env" },
-                mcu_online: kernel.as_ref().map(|k| k.online),
-                ir_out: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_OUT"), |k| k.ir_out),
+                mcu_tty: Some(k.port.clone()).filter(|s| !s.is_empty()),
+                mcu_baud: k.baud,
+                declared_by: "kernel",
+                mcu_online: kernel.as_ref().filter(|_| mcu).map(|k| k.online),
+                ir_out: k.ir_out,
                 // The combo jacks ARE the MCU-routed UARTs (see Io::ir_combo),
                 // so the kernel's uart count is also the combo count.
-                ir_combo: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_COMBO"), |k| k.uarts),
-                ir_blaster: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_BLASTER"), |k| k.ir_blaster),
-                ir_in: kernel.as_ref().map_or_else(|| num(&e, "OHC_IR_IN"), |k| k.ir_in),
-                relays: kernel.as_ref().map_or_else(|| num(&e, "OHC_RELAYS"), |k| k.relays),
-                contacts: kernel.as_ref().map_or_else(|| num(&e, "OHC_CONTACTS"), |k| k.contacts),
-                contacts_active_low: e
-                    .get("OHC_CONTACTS_ACTIVE_LOW")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false),
+                ir_combo: k.uarts,
+                ir_blaster: k.ir_blaster,
+                ir_in: k.ir_in,
+                relays: k.relays,
+                contacts: k.contacts,
+                contacts_active_low: backend == Backend::Gpio,
                 gpio_chip: e.get("OHC_GPIO_CHIP_LABEL").filter(|s| !s.is_empty()).cloned(),
                 io_reset_gpio: e.get("OHC_GPIO_IO_RESET").and_then(|v| v.parse().ok()),
-                relay_gpios: lines(&e, "OHC_RELAY_GPIOS"),
-                contact_gpios: lines(&e, "OHC_CONTACT_GPIOS"),
                 serials,
                 backend,
             },
@@ -368,20 +379,44 @@ mod tests {
     }
 
     #[test]
-    fn board_env_is_the_fallback_before_attach() {
-        let e = env(&[("OHC_IO_BACKEND", "mcu"), ("OHC_RELAYS", "4"), ("OHC_CONTACTS", "4"),
-                      ("OHC_IO_MCU_TTY", "/dev/ttyS3")]);
+    fn an_unbound_driver_declares_nothing() {
+        // Counts left in an old board.env are not a second opinion.
+        let e = env(&[("OHC_IO_BACKEND", "mcu"), ("OHC_RELAYS", "4"), ("OHC_IO_UARTS", "2")]);
         let b = Board::from_env(e, None);
-        assert_eq!(b.io.declared_by, "board.env");
-        assert_eq!((b.io.relays, b.io.contacts), (4, 4));
+        assert_eq!(b.io.declared_by, "kernel");
+        assert_eq!((b.io.relays, b.io.contacts, b.io.ir_out), (0, 0, 0));
+        assert!(b.io.serials.is_empty());
         assert_eq!(b.io.mcu_online, None);
+        assert_eq!(b.io.mcu_tty, None);
     }
 
     #[test]
-    fn only_an_mcu_board_reads_the_driver() {
-        let e = env(&[("OHC_IO_BACKEND", "gpio"), ("OHC_RELAYS", "8")]);
-        let b = Board::from_env(e, Some(ea1()));
-        assert_eq!(b.io.declared_by, "board.env");
-        assert_eq!(b.io.relays, 8);
+    fn a_native_gpio_board_counts_what_its_kernel_named() {
+        // The IO Extender: eight named relays and contacts, eight labelled
+        // emitters, no blaster or receiver — and board.env counts ignored.
+        let lirc: Vec<String> = (1..=8).map(|i| format!("openHC IR out {i}")).collect();
+        let d = Declared::from_names(8, 8, &lirc);
+        let e = env(&[("OHC_IO_BACKEND", "gpio"), ("OHC_RELAYS", "2")]);
+        let b = Board::from_env(e, Some(d));
+        assert_eq!((b.io.relays, b.io.contacts, b.io.ir_out), (8, 8, 8));
+        assert_eq!((b.io.ir_blaster, b.io.ir_in, b.io.ir_combo), (0, 0, 0));
+        assert!(b.io.contacts_active_low);
+        assert_eq!(b.io.mcu_online, None);
+        assert!(b.io.serials.is_empty());
+    }
+
+    #[test]
+    fn ir_outputs_stop_at_the_first_gap() {
+        let lirc = ["openHC IR out 1", "openHC IR out 2", "openHC IR out 4",
+                    "openHC IR front receiver"].map(String::from);
+        let d = Declared::from_names(0, 0, &lirc);
+        assert_eq!((d.ir_out, d.ir_blaster, d.ir_in), (2, 0, 1));
+    }
+
+    #[test]
+    fn a_board_with_no_io_declares_none() {
+        let b = Board::from_env(env(&[("OHC_IO_BACKEND", "none")]), Some(ea1()));
+        assert_eq!((b.io.relays, b.io.ir_out), (0, 0));
+        assert!(!b.io.contacts_active_low);
     }
 }

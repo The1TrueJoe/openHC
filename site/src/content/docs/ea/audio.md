@@ -49,7 +49,7 @@ enable.
 
 **As an output.** Every EA's `board.env` names it, `OHC_AUDIO_OUT_hdmi=
 "hw:CARD=HDMI,DEV=0|HDMI|format=S32_LE"`: the EA1's only output, the EA3's
-second next to its analog one. ohc-audiod then treats it like any other output
+second next to its analog one. audiod then treats it like any other output
 (Spotify and AirPlay endpoints, level, tone, routes) and makes it the
 `/etc/asound.conf` `default` where it is first. `format=` is the port option
 that opens the dmix at the 32-bit words the FIFO takes, instead of S16_LE.
@@ -210,7 +210,7 @@ with another layout brings its own addresses:
 register init, cells, tables, designs — and `mkfw.py` builds it, with the
 program when there is one, into the kernel's SigmaDSP firmware format
 (`/lib/firmware/openhc/adau1451-ea3.bin`). The board DTB names the file and the
-program's version cell (`control4,program-version`). ohc-audiod reads the same profile for
+program's version cell (`control4,program-version`). audiod reads the same profile for
 its knob list, so the web UI shows exactly those knobs, set over MQTT like the
 HC-800's tone. The [directory's README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)
 has the map and how it was proven.
@@ -349,12 +349,11 @@ with the device already enabled.
 Both are plain ALSA clients and need no special kernel support beyond a working
 card.
 
-**AirPlay** is `shairport-sync` 4.3.7, announced via Avahi over D-Bus. It is
-built as classic AirPlay (AirPlay 1). Buildroot 2026.02 can build AirPlay 2
-(nqptp), but AirPlay 2 wants one receiver per host, and the HC-800 runs several
-named AirPlay endpoints on one box, each with its own device ID. Classic
-AirPlay works from every Apple device; it just can't join AirPlay-2 multi-room
-groups.
+**AirPlay** is Buildroot's `shairport-sync` 5.6, built for AirPlay 2 and
+announced via Avahi over D-Bus. Each named AirPlay endpoint is its own receiver
+on its own port with its own device ID, all sharing one `nqptp` (1.2.9, which
+serves several receivers; 1.2.4 served one). It also takes classic AirPlay
+senders.
 
 **Spotify Connect** is `librespot`, packaged here because Buildroot has none. It
 is built with Buildroot's cargo infrastructure rather than the host-side route

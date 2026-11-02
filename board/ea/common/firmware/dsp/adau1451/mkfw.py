@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build openHC's SigmaDSP firmware file for an ADAU1451 from a profile.
 
-    mkfw.py ea3.json adau1451-ea3.bin [--program program.txt]
+    mkfw.py ea3.json adau1451-ea3.bin [--program program.txt [--params params.json]]
 
 The output is the kernel's own SigmaDSP firmware format (sound/soc/codecs/
 sigmadsp.c, "ADISIGM" version 2, mainline chunk tags), so the stock sigmadsp
@@ -19,6 +19,12 @@ holds three kinds of chunk:
 Without --program the file holds only the parameters, exactly as before a
 program existed: no register init, no program memory.
 
+A knob or cell names its address with "cell", or, for a program built in CI,
+with "param": "<block label>.<parameter>", looked up in the params.json that
+export2program.py writes beside the program (--params). A profile's init may
+be {"from": "other.json"}: that profile's init, so two profiles for the same
+board share one register setup.
+
 The program file is plain text: a line "@<address>" starts a block, and the
 hex bytes after it (whitespace or commas between them, "0x" optional, "#"
 comments) are written there, 4 bytes a word, big-endian, as the part takes
@@ -32,6 +38,7 @@ Standard library only; the build host's python3 runs it.
 import argparse
 import json
 import math
+import os
 import struct
 import zlib
 
@@ -185,6 +192,30 @@ def load_program(path):
     return [(at, bytes(data)) for at, data in blocks]
 
 
+def load_profile(path, params=None):
+    """The profile, its init taken from another profile if it says so, and
+    every "param" name resolved to its cell through params.json."""
+    with open(path) as f:
+        profile = json.load(f)
+    src = profile["init"].get("from")
+    if src:
+        with open(os.path.join(os.path.dirname(path), src)) as f:
+            profile["init"] = json.load(f)["init"]
+    for e in profile["knobs"] + profile["cells"]:
+        if "param" not in e:
+            continue
+        if params is None:
+            raise ValueError(f"{e['control']}: names {e['param']!r}, but there is no --params")
+        block, _, name = e["param"].partition(".")
+        p = params.get(block, {}).get(name)
+        if p is None:
+            raise ValueError(f"{e['control']}: the program has no parameter {e['param']!r}")
+        if p["memory"] != "DM0":
+            raise ValueError(f"{e['control']}: {e['param']} is in {p['memory']}; only DM0 is resolved")
+        e["cell"] = f"0x{p['address']:04x}"
+    return profile
+
+
 def build(profile, program=None):
     fs = profile["rate"]
     out = []
@@ -247,9 +278,13 @@ def main():
     ap.add_argument("profile")
     ap.add_argument("out")
     ap.add_argument("--program", help="the DSP program to load (see above); none: parameters only")
+    ap.add_argument("--params", help="the program's params.json, to resolve \"param\" names")
     args = ap.parse_args()
-    with open(args.profile) as f:
-        profile = json.load(f)
+    params = None
+    if args.params:
+        with open(args.params) as f:
+            params = json.load(f)
+    profile = load_profile(args.profile, params)
     check(profile)
     init_writes(profile)
     program = load_program(args.program) if args.program else None

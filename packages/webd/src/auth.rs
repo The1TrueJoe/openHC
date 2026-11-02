@@ -1,7 +1,7 @@
 //! The controller's one shared secret, enforced at the front door.
 //!
 //! `IOD_TOKEN` (set in /etc/openhc/iod.conf) has always protected iod's REST.
-//! The other daemons — sysmond, ohc-audiod, ohc-storaged — listen on loopback
+//! The other daemons — sysmond, audiod, storaged — listen on loopback
 //! only and are reached through this webd, so the token has to be checked here
 //! or it protects nothing but the IO: the drive files, the audio map and webd's
 //! own Wi-Fi endpoints would stay open to the LAN.

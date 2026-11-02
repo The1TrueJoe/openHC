@@ -329,7 +329,7 @@ CONFIG_MTD_SPI_NOR=y
 CONFIG_SPI_MEM=y
 # Named, read-only partitions from the DTB's fixed-partitions (cefdk, mfh,
 # mfh-items: ce5300.dtsi). PARTITIONED_MASTER keeps the whole chip as mtd0
-# beside them -- every offset ohc-restore, boot-init and the flasher write at is
+# beside them -- every offset restore, boot-init and the flasher write at is
 # a whole-chip offset into /dev/mtd0, and without it mtd0 would become "cefdk".
 CONFIG_MTD_OF_PARTS=y
 CONFIG_MTD_PARTITIONED_MASTER=y

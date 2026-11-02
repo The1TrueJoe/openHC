@@ -275,6 +275,29 @@ So the UI is SD until someone drives the display controller properly, which mean
 a real modeset driver against the register map in the vendor's `gdl_server.ko`.
 That is a separate project from 3D and is not required for any of the above.
 
+## Keyboards and mice
+
+The on-panel UI takes USB keyboards and mice, plugged in directly or through a
+hub (the `usb-input` feature brings the kernel side: evdev, usbhid, hid-generic).
+A libwpe backend is only ever told what to draw, so on this path nothing in WebKit
+reads input. `webview` does it itself (`packages/webview/src/input.c`). It opens
+every `/dev/input/event*` that is a keyboard or a pointer, watches `/dev/input`
+with inotify so an unplugged keyboard comes back on its own, turns keys into
+keysyms with libxkbcommon and hands everything to WebKit through
+`wpe_view_backend_dispatch_*_event`. Absolute devices (a touch panel, a KVM's
+mouse) are scaled to the view. Game controllers are left alone, and nothing is
+grabbed, so another program reading the same keyboard still gets its keys.
+
+The keymap comes from xkeyboard-config inside the i386 sysroot, so
+`S95ohc-display` points `XKB_CONFIG_ROOT` there. The layout is US unless
+`XKB_DEFAULT_LAYOUT` says otherwise.
+
+fb0 has no cursor plane, so the page draws the cursor itself: `webview` injects a
+small script that keeps a click-through element under the pointer. It shows a hand
+over links and an I-beam over text fields, and hides while you type or after a few
+idle seconds. `WEBVIEW_CURSOR=0` turns it off for a touch-only panel. The HC-800
+uses the same cursor.
+
 ## The constraint that actually decides the UI: RAM
 
 Measured on the live EA3: **186 MB**. That's very likely below what a modern
@@ -388,10 +411,10 @@ access in any state, as measured: `0x0`, `0x8`, `0x80`, `0x12c`, `0x130` and
 
 **The product never kexecs out of the real kernel** (#90).
 
-- `ohc-restore stock` stages its one-shot flag and **reboots through CEFDK**
+- `restore stock` stages its one-shot flag and **reboots through CEFDK**
   into boot-init. Boot-init reimages p1 from the bootstrap kernel, which never
   touched the GPU.
-- `ohc-restore recovery-kexec` **refuses** while a driver is bound to
+- `restore recovery-kexec` **refuses** while a driver is bound to
   `0000:01:02.0`.
 - The flasher's `kexec` command is a developer tool, and the same limit applies
   to it.

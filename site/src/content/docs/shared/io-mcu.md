@@ -275,9 +275,9 @@ with no data returns nothing, and `UART_SEND [port, data…]` transmits
 immediately. Send the bytes in the one frame.
 :::
 
-**openHC bridges this in the kernel, not in iod.** The `ohc-iomcu` line
-discipline owns `ttyS1`, so nothing in userspace can speak these opcodes on it
-directly. The discipline therefore mux-es each MCU-routed port onto a
+**openHC bridges this in the kernel, not in iod.** The `gpio-ohc-iomcu`
+driver owns the UART (a serdev device), so nothing in userspace can speak these
+opcodes on it directly. The driver therefore mux-es each MCU-routed port onto a
 `/dev/ttyOHC<n>` tty — the n_gsm pattern — and iod's ordinary host-UART bridge
 opens that. A jack is switched to serial (`UART_SET_CONTROL`) only when its tty
 is opened, so the IR emitter on the same combo jack keeps working until a

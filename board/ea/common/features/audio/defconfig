@@ -11,15 +11,12 @@ BR2_PACKAGE_ALSA_UTILS_APLAY=y
 BR2_PACKAGE_ALSA_UTILS_AMIXER=y
 BR2_PACKAGE_ALSA_UTILS_SPEAKER_TEST=y
 
-# AirPlay. shairport-sync advertises the box over mDNS and renders to ALSA. This
-# is AirPlay 1 (AirPlay 2 needs nqptp, not in Buildroot 2024.02) — works from every
-# Apple device, just no multi-room groups.
+# AirPlay (2, with nqptp) comes from the shared board/common/features/audio.
 # NOTE: there is no _ALSA sub-option (shairport-sync always builds --with-alsa); a
 # BR2_PACKAGE_SHAIRPORT_SYNC_ALSA=y line would be a nonexistent symbol kconfig
 # discards without a word — same silent-nothing bug as CONFIG_PWM_CE5300 / NET_DSA_B53.
-BR2_PACKAGE_SHAIRPORT_SYNC=y
 
-# ...and the mDNS responder it announces through — a full one (openHC's own
+# The mDNS responder AirPlay announces through — a full one (openHC's own
 # _openhc._tcp responder is too minimal for other AirPlay implementations).
 BR2_PACKAGE_AVAHI=y
 BR2_PACKAGE_AVAHI_DAEMON=y

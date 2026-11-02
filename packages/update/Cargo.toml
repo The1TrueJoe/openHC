@@ -22,5 +22,5 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 ohc-flash-core = { path = "../../flasher/crates/core" }
 
 [[bin]]
-name = "ohc-updated"
+name = "updated"
 path = "src/main.rs"

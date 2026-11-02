@@ -40,6 +40,15 @@ pub fn present() -> bool {
         || gpiocdev::find_named_line("contact1").is_some()
 }
 
+/// How many lines `<prefix>1`, `<prefix>2`, … exist, up to the first gap — the
+/// board's relay or contact count, as whatever named the lines registered it.
+#[cfg(target_os = "linux")]
+pub fn count_named(prefix: &str) -> u8 {
+    (1..=32u8)
+        .take_while(|i| gpiocdev::find_named_line(&format!("{prefix}{i}")).is_some())
+        .count() as u8
+}
+
 /// Resolve a line by the name the driver gave it (`relay0`, `contact2`).
 #[cfg(target_os = "linux")]
 fn find(name: &str) -> io::Result<(std::path::PathBuf, u32)> {
@@ -138,6 +147,11 @@ pub fn contacts_mask(count: u8, active_low: bool) -> io::Result<u32> {
 #[cfg(not(target_os = "linux"))]
 pub fn present() -> bool {
     false
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn count_named(_prefix: &str) -> u8 {
+    0
 }
 
 #[cfg(not(target_os = "linux"))]

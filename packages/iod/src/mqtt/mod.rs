@@ -6,7 +6,7 @@
 //! the things MQTT is bad at: what the board IS, and its configuration.
 //!
 //! Every board runs mosquitto. iod is one client of it (client.rs), beside
-//! ohc-audiod and sysmond, each publishing its own topics under the same tree;
+//! audiod and sysmond, each publishing its own topics under the same tree;
 //! the web UI reaches the broker over a WebSocket that webd proxies at /mqtt.
 //! Reaching a house broker is mosquitto's bridge, configured from iod's
 //! settings (bridge.rs).

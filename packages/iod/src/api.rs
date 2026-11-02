@@ -97,10 +97,11 @@ async fn mcu_info(s: Ctx) -> axum::response::Response {
 
 #[utoipa::path(post, path = "/api/io/mcu/reset", tag = "Recovery",
     summary = "Pulse the microcontroller's reset line",
-    description = "Tries both polarities and reports which one revived the part. Available over \
-REST as well as MQTT because a wedged MCU is exactly when you cannot rely on the IO transport to \
-carry the fix.",
-    responses((status = 200, description = "which polarity worked, and whether it answered")))]
+    description = "Unbinds the IO driver, pulses the line, binds it again so the driver starts the \
+application from the bootloader, and reports whether the part answers. Available over REST as \
+well as MQTT because a wedged MCU is exactly when you cannot rely on the IO transport to carry \
+the fix.",
+    responses((status = 200, description = "whether the part answered after the reset")))]
 async fn mcu_reset(s: Ctx) -> axum::response::Response {
     run(s, Cmd::McuReset).await
 }

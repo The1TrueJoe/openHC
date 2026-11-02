@@ -1,5 +1,5 @@
 #!/bin/sh
-# Stable names for the two UARTs that are not consoles — HC-800 only.
+# A stable name for the Zigbee UART — HC-800 only.
 #
 # The vendor image ships /dev/ttySStellaris and /dev/ttySZigbee as symlinks and
 # everything Control4 writes uses those names, not ttyS3/ttyS4. We keep the same
@@ -36,16 +36,17 @@ link_one() {   # $1 = target device, $2 = link name
 case "${1:-start}" in
     start)
         printf "devlinks: "
-        link_one "${OHC_IOMCU_TTY:-/dev/ttyS3}"  /dev/ttySStellaris
+        # No ttySStellaris: the IO microcontroller's ttyS3 belongs to
+        # gpio-ohc-iomcu (a serdev device, board/hc800/acpi/) and has no node.
         link_one "${OHC_ZIGBEE_TTY:-/dev/ttyS4}" /dev/ttySZigbee
         # Report what actually exists, not what we attempted.
-        for l in /dev/ttySStellaris /dev/ttySZigbee; do
+        for l in /dev/ttySZigbee; do
             [ -L "$l" ] && printf "%s -> %s  " "${l##*/}" "$(readlink $l)"
         done
         echo
         ;;
     stop)
-        rm -f /dev/ttySStellaris /dev/ttySZigbee
+        rm -f /dev/ttySZigbee
         ;;
     restart|reload) "$0" stop; "$0" start ;;
     *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;

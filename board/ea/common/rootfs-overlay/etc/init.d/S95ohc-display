@@ -83,7 +83,11 @@ start() {
 	# browser's prefers-color-scheme (WebKit's per-view dark mode,
 	# board/common/patches/wpewebkit/0001), so ANY page responds — like OS dark
 	# mode — not just one that reads a query param.
+	# XKB_CONFIG_ROOT: the keymaps for USB keyboards (webview reads /dev/input
+	# itself on this path) live in the sysroot, not at xkbcommon's built-in
+	# /usr/share/X11/xkb.
 	LD_PRELOAD="$R/usr/lib/sgx-busidshim.so" \
+	XKB_CONFIG_ROOT="$R/usr/share/X11/xkb" \
 	WEBKIT_EXEC_PATH="$R/usr/libexec/wpe-webkit-2.0" \
 	LD_LIBRARY_PATH="$R/usr/lib:$R/lib" \
 	FONTCONFIG_PATH="$R/etc/fonts" \

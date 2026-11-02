@@ -27,8 +27,8 @@ pub fn emitter(target: IrTarget) -> Result<Dev, Fault> {
     let name = emitter_name(target);
     lirc::find(&name).ok_or_else(|| {
         Fault::NoSuch(format!(
-            "no lirc device named {name:?} — is gpio-ohc-iomcu attached, and does \
-             this board's board.env declare that many IR outputs?"
+            "no lirc device named {name:?} — has gpio-ohc-iomcu bound the IO microcontroller, and does \
+             the board's firmware node (device tree / ACPI table) declare that many IR outputs?"
         ))
     })
 }

@@ -56,6 +56,8 @@ CONFIG_CMDLINE_EXTEND=y
 #
 #   ttyS0 0x3f8 console     ttyS1 0x2f8 rear RS-232 #1
 #   ttyS2 0x3e8 rear RS-232 #2                  ttyS3 0x2e8 LM3S1162 IO-MCU
+#   (ttyS3 is held by gpio-ohc-iomcu as a serdev device and has no /dev node;
+#   see board/hc800/acpi/ssdt-iomcu.asl)
 #   ttyS4 0x2f0 Zigbee EM357 NCP
 CONFIG_PNP=y
 CONFIG_PNPACPI=y
@@ -68,6 +70,10 @@ CONFIG_SERIAL_8250_RUNTIME_UARTS=5
 # ── external initrd (GRUB `initrd` line hands us a rootfs.cpio.gz) ────────
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_RD_GZIP=y
+# The board's ACPI tables ride in front of that initrd (board/hc800/acpi/,
+# packed by hc800-acpi, prepended by post-image.sh): the IO microcontroller as a
+# serdev child of ttyS3. This is what makes the kernel read them.
+CONFIG_ACPI_TABLE_UPGRADE=y
 
 # ── storage: ICH7 AHCI ────────────────────────────────────────────────────
 # ata1 is the internal 8 GB SanDisk SSD; ata2 is the rear eSATA jack, same

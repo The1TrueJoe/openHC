@@ -1,7 +1,7 @@
 # Shared feature sets the CA-1 pulls in (board/common/features/<name>/).
-#   zigbee - EM35x NCP bring-up (ohc-zigbee, gated Rust package) + node for the
+#   zigbee - EM35x NCP bring-up (zigbee, gated Rust package) + node for the
 #            zigbee2mqtt bridge + cp210x. The CA-1's NCP is on a native UART
 #            (ttymxc4, DTR-reset), not USB, so cp210x just idles here.
 zigbee
-storage     # USB drives mounted and shared over SMB (ohc-storaged); no audio
+storage     # USB drives mounted and shared over SMB (storaged); no audio
             # playback here, so a network share only

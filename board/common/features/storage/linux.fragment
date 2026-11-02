@@ -1,5 +1,5 @@
 # openHC feature: storage (kernel half) — USB/eSATA drives, mounted by
-# ohc-storaged and shared over SMB by ksmbd.
+# storaged and shared over SMB by ksmbd.
 #
 # The USB host controller (and, on the HC-800, the AHCI SATA controller behind
 # its eSATA jack) is board hardware and stays in each board's own fragment;

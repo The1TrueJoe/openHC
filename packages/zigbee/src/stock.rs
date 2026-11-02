@@ -2,7 +2,7 @@
 //!
 //! openHC reflashes the radio to its own EmberZNet at boot, and a Control4
 //! controller handed back to stock should look like openHC never ran on it, so
-//! every return to stock (ohc-restore, the flasher) runs `--restore-stock` first.
+//! every return to stock (restore, the flasher) runs `--restore-stock` first.
 //! Control4 would put its image back by itself once its `zap` service runs (proven
 //! on an HC-800), but only on a box that is made a Zigbee server again.
 //!
@@ -46,7 +46,7 @@ pub fn restore(fd: RawFd, cfg: &Config, archive: Option<&str>, member: &str) -> 
         format!("the NCP has {now}, and this board names no OHC_ZIGBEE_STOCK_ARCHIVE to take Control4's image from")
     })?;
     let (src, data) = extract(archive, member)?;
-    println!("ohc-zigbee: putting Control4's image back over {now}: {src} ({} bytes)", data.len());
+    println!("zigbee: putting Control4's image back over {now}: {src} ({} bytes)", data.len());
     let img = Image { path: src, data, stack: 0 };
 
     match &found {
@@ -131,7 +131,7 @@ fn extract(spec: &str, member: &str) -> Result<(String, Vec<u8>), String> {
     if !arch.exists() {
         return Err(format!("{dev} has no {path}"));
     }
-    println!("ohc-zigbee: looking for {member} in {dev}:{path}");
+    println!("zigbee: looking for {member} in {dev}:{path}");
     // busybox tar matches the names with fnmatch, but exits 1 for whichever
     // spelling did not occur, so the result is judged by what landed.
     let sh = format!(

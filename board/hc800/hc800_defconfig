@@ -37,10 +37,11 @@ BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_BZIMAGE=y
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/hc800/linux/hc800.fragment"
 # Kernel patches. common/patches is shared with the EA family: 0015 links
-# the board device tree into the kernel (BUILTIN_DTB). This board's own
-# (patches/linux/): 0001 adds the hda-generic "indep_dig_outs" hint so the HDMI
-# and coax digital outputs are two PCMs, not one mirrored; 0002 gives lpc_ich's
-# GPIO cell an OF compatible so the tree can describe gpio_ich.
+# the board device tree into the kernel (BUILTIN_DTB), and it also carries the
+# audio feature's shairport-sync patches. This board's own (patches/linux/):
+# 0001 adds the hda-generic "indep_dig_outs" hint so the HDMI and coax digital
+# outputs are two PCMs, not one mirrored; 0002 gives lpc_ich's GPIO cell an OF
+# compatible so the tree can describe gpio_ich.
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/common/patches $(BR2_EXTERNAL_OPENHC_PATH)/hc800/patches"
 
 # --- ccache: what lets CI finish a cold WebKit ---
@@ -110,6 +111,10 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 # unless it reads 0x04, so a wrong bus or address is a no-op. The ADV7513 beside
 # it is fitted and answers, and is configured by nobody — not even the vendor OS.
 BR2_PACKAGE_THS8200=y
+
+# The board's own ACPI tables (board/hc800/acpi/), prepended to the initrd by
+# post-image.sh: the IO microcontroller as a serdev child of ttyS3.
+BR2_PACKAGE_HC800_ACPI=y
 
 # --- board device tree: the front panel and the GPIO line names ---
 # Copied into arch/x86/boot/dts/ and linked in by name (CONFIG_BUILTIN_DTB_NAME

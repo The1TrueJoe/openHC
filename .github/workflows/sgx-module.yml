@@ -26,7 +26,8 @@ on:
       - .github/workflows/sgx-module.yml
 
 env:
-  BUILDROOT_REF: 2026.02.3
+  # Same Buildroot as ci.yml; keep the two in step.
+  BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 jobs:
   pvrsrvkm:
@@ -63,8 +64,10 @@ jobs:
       - name: Clone Buildroot + apply openHC's buildroot patches
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             patch -d "$HOME/buildroot" -p1 --forward --batch < "$p" || true

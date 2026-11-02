@@ -69,6 +69,7 @@ on:
       - 'Makefile'
       - 'site/**'
       - '.github/workflows/ci.yml'
+      - '.github/workflows/dsp-program.yml'
   pull_request:
   workflow_dispatch:
     inputs:
@@ -84,12 +85,17 @@ on:
     # week nobody touched a board. Monday 04:00 UTC.
     - cron: "0 4 * * 1"
 
-# A second push supersedes the first; no value finishing a run for a commit that
-# is already history. event_name is in the group so a release run (its own tag
-# ref + event) is never cancelled by branch pushes.
+# On a branch, a second push supersedes the first; no value finishing a run for a
+# commit that is already history. NOT on main: main's image builds are what save
+# the output trees every later build resumes from, a cancelled run saves nothing,
+# and main used to merge faster than an HC-800 build finishes, so 23 of 30 main
+# runs were cancelled and its tree never got past Node.js. There a new push
+# queues behind the running build instead (GitHub keeps only the newest one
+# pending). event_name is in the group so a release run (its own tag ref + event)
+# is never cancelled by branch pushes.
 concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Floor for jobs that do not override. Jobs that need more (release uploads,
 # Pages) widen it themselves, so nothing runs with more than it needs.
@@ -98,7 +104,11 @@ permissions:
 
 env:
   # Consumed only by the image jobs' cache keys and Buildroot fetch.
-  BUILDROOT_REF: 2026.02.3
+  # Buildroot master at 04b8e19efd (2026-10-26), ahead of the 2026.11 release:
+  # the first Buildroot with shairport-sync 5.x, host-libplist and nqptp 1.2.9.
+  # Switch to the 2026.11 tag once it is out. A commit or a tag both work here:
+  # the fetch below takes either.
+  BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 jobs:
   # STAGE TOGGLE — the master switch for the two-stage rollout (see the header).
@@ -307,6 +317,10 @@ jobs:
           if echo "$changed" | grep -qE '^board/ea/common/'; then
             sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
           fi
+          # The DSP program's workflow goes into the EA3 images (the `dsp` job).
+          if echo "$changed" | grep -qx '.github/workflows/dsp-program.yml'; then
+            sel+=(ea3-v1 ea3-v2)
+          fi
           # EA boards live under board/ea/<board>/; the others are top-level.
           for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2; do
             echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
@@ -383,8 +397,10 @@ jobs:
         if: steps.sdkcache.outputs.cache-hit != 'true'
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
@@ -429,14 +445,33 @@ jobs:
           if-no-files-found: error
 
 
+  # openHC's own ADAU1451 program for the EA3 images, built from its design
+  # (board/ea/common/firmware/dsp/adau1451/program.json) by SigmaStudio+ on a
+  # Windows runner, alongside the EA toolchain. It is ADI-generated code, which
+  # may go only into the product it programs: dsp-program.yml hands it over
+  # SEALED (readable only with this repo's secrets) and kept a day, and the EA3
+  # image jobs open it and build it into the image. Nowhere else.
+  # Without the SigmaStudio+ secrets (a fork) it reports program=false and the
+  # EA3 images build without it, as before there was one.
+  dsp:
+    needs: [select, config]
+    if: needs.config.outputs.heavy == 'true' && contains(needs.select.outputs.boards, 'ea3')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dsp-program.yml
+    secrets: inherit
+
   images-build:
-    needs: [select, images-toolchain, config]
-    # always(), so a run that selected only non-EA boards (toolchain skipped)
-    # still builds them, and a toolchain failure fails only the EA image jobs
-    # (at their download step), not ioxv1/ca1/hc800. select must have succeeded
-    # and picked at least one board.
+    needs: [select, images-toolchain, config, dsp]
+    # !cancelled(), so a run that selected only non-EA boards (toolchain
+    # skipped) still builds them, and a toolchain failure fails only the EA
+    # image jobs (at their download step), not ioxv1/ca1/hc800. NOT always():
+    # GitHub never cancels an always() job, so a superseded branch run kept its
+    # image jobs going for hours and held the newer run pending behind it in
+    # the concurrency group. select must have succeeded and picked at least
+    # one board.
     # `config.heavy` is the stage-1/stage-2 master switch (see the `config` job).
-    if: always() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' && needs.select.outputs.boards != '[]'
+    if: ${{ !cancelled() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' && needs.select.outputs.boards != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -527,10 +562,7 @@ jobs:
       #     re-extracted, re-patched and re-injected with our drivers — an
       #     edit to board/*/kernel never rides on a stale stamp.
       #
-      # Rolling key: the run id makes every run save a fresh entry, and
-      # restore-keys picks up the newest previous one.
-      # restore/save split rather than actions/cache, because the plain action
-      # does NOT save when the job fails — and a failed build is exactly when
+      # Saved when the build fails too, because a failed build is exactly when
       # the toolchain is most worth keeping. A typo in a driver should cost one
       # kernel rebuild, not another 15 minutes of gcc.
       # CACHE EPOCH — bump this when a PACKAGE's config changes in a way
@@ -539,21 +571,23 @@ jobs:
       # kernel is safe (linux-dirclean runs every build), but packages are not:
       # r2 forced one clean rebuild after round 2 added dbus, so avahi rebuilt
       # with libavahi-client (shairport-sync needs it) instead of riding the
-      # pre-round-2 dbus-less avahi in the cache. r3 goes with the move to
+      # pre-round-2 dbus-less avahi in the cache. r3 went with the move to
       # Buildroot 2026.02.3 (the ref is in the key too, so this is belt and braces).
+      #
+      # The tree lives on the `ci-cache` pre-release, not in the Actions cache
+      # (.github/scripts/release-cache.sh): eight boards' trees, the HC-800's with
+      # WebKit, LLVM and Node in it, do not fit the 10 GB cap, and the evicted
+      # HC-800 tree is why every PR compiled Node and WebKit cold. Main's newest
+      # tree, whether that build passed or ran out of time, is what every run
+      # starts from.
+      # EA is r4: those boards carry an EXTERNAL toolchain, so an r3 tree (its
+      # own internal glibc gcc) must never be restored into one. build.sh would
+      # wipe it anyway (BR2_TOOLCHAIN_EXTERNAL is in its toolchain-change
+      # detector), but a clean name is belt and braces.
       - name: Restore Buildroot output tree
-        id: outcache
-        uses: actions/cache/restore@v4
-        with:
-          path: output/build/${{ matrix.board }}
-          # EA jumps to r4: those boards now carry an EXTERNAL toolchain, so an
-          # r3 tree (its own internal glibc gcc) must never be restored into one.
-          # build.sh would wipe it anyway (BR2_TOOLCHAIN_EXTERNAL is in its
-          # toolchain-change detector), but a clean key is belt and braces and
-          # shrinks the EA caches at once; non-EA stay r3 and are untouched.
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
-          restore-keys: |
-            out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh restore out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }} output/build/${{ matrix.board }}
 
       # ccache, for the boards that build WebKit: the EA family shares ONE,
       # keyed on the family rather than the board, so a translation unit
@@ -566,12 +600,17 @@ jobs:
       # previous attempt first (the run_id- prefix), then this board's newest
       # from older runs, then any of its family's. restore/save split (not plain
       # actions/cache) so a FAILED build still saves what it compiled — the save
-      # runs on always() — and the next attempt resumes from it.
+      # runs on failure() — and the next attempt resumes from it.
       #
       # This is what lets a PR finish a cold WebKit at all: PRs do not save the
       # output tree (below), so a build that runs out of time keeps nothing but
       # this ccache.
+      #
+      # Only a PR's own failed attempts are in the Actions cache; main's ccache is
+      # on the ci-cache release beside its tree, and the next step takes that when
+      # nothing here matched.
       - name: Restore ccache
+        id: ccache
         if: startsWith(matrix.board, 'ea') || matrix.board == 'hc800'
         uses: actions/cache/restore@v4
         with:
@@ -581,12 +620,19 @@ jobs:
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-${{ github.run_id }}-
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-${{ matrix.board }}-
             ccache-${{ startsWith(matrix.board, 'ea') && 'ea' || matrix.board }}-${{ env.BUILDROOT_REF }}-
+      - name: Restore ccache (main's, from the ci-cache release)
+        if: (startsWith(matrix.board, 'ea') || matrix.board == 'hc800') && steps.ccache.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh restore ccache-${{ matrix.board }}-${{ env.BUILDROOT_REF }} .ccache
 
       - name: Fetch Buildroot
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
@@ -612,19 +658,21 @@ jobs:
       # building their own. download-artifact errors if ea-sdk is missing (a
       # failed toolchain job), which correctly fails this EA image job while
       # leaving non-EA jobs alone. Extract to the SAME absolute path the
-      # toolchain was built at so its baked-in sysroot path stays valid.
+      # toolchain was built at so its baked-in sysroot path stays valid. The
+      # tarball itself lands in runner.temp, outside the checkout, so nothing in
+      # an artifact can overwrite a checked-out file (CodeQL artifact poisoning).
       - name: Fetch the shared EA toolchain
         if: startsWith(matrix.board, 'ea')
         uses: actions/download-artifact@v4
         with:
           name: ea-sdk
-          path: ${{ github.workspace }}
+          path: ${{ runner.temp }}/ea-sdk
       - name: Unpack the EA toolchain to its fixed path
         if: startsWith(matrix.board, 'ea')
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/output/ea-toolchain"
-          tar -C "$GITHUB_WORKSPACE/output/ea-toolchain" -xf ea-sdk.tar
+          tar -C "$GITHUB_WORKSPACE/output/ea-toolchain" -xf "$RUNNER_TEMP/ea-sdk/ea-sdk.tar"
           test -x "$GITHUB_WORKSPACE/output/ea-toolchain/host/bin/x86_64-buildroot-linux-gnu-gcc"
 
       # Bake the on-panel WPE/SGX sysroot into EA images. These are i386 trees (the
@@ -644,7 +692,7 @@ jobs:
             run=$(gh run list --workflow="$1" --branch "${{ github.ref_name }}" \
                     --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
             [ -n "$run" ] || { echo ">> no successful $1 run — $2 will be absent"; return 0; }
-            d="$HOME/sgxsr/$2"; rm -rf "$d"; mkdir -p "$d"
+            d="$RUNNER_TEMP/sgxsr/$2"; rm -rf "$d"; mkdir -p "$d"
             gh run download "$run" -n "$2" -D "$d" 2>/dev/null \
               || { echo ">> $2 artifact gone from run $run (expired?) — absent"; return 0; }
             f=$(find "$d" -name '*.tar.gz' | head -1)
@@ -652,6 +700,35 @@ jobs:
           }
           grab sgx-wpe.yml wpe-i386-sysroot wpe
           grab sgx-gpu.yml sgx-i386-sysroot i386
+
+      # The EA3's DSP program from the `dsp` job: opened here, built into the
+      # image's DSP firmware, and nowhere else. A design that failed fails the
+      # EA3 images rather than shipping them silently without it.
+      - name: Fetch the DSP program (EA3)
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.result == 'failure'
+        run: |
+          echo "::error::the dsp job failed: no DSP program for ${{ matrix.board }}"
+          exit 1
+      - name: Download the sealed DSP program (EA3)
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.outputs.program == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: adau1451-program-sealed
+          path: ${{ runner.temp }}/dsp-sealed
+      - name: Open the DSP program (EA3)
+        id: dsp
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.outputs.program == 'true'
+        env:
+          KEY: ${{ secrets.SIGMASTUDIO_TOKEN }}
+        run: |
+          set -euo pipefail
+          d="$HOME/adau1451-program"
+          rm -rf "$d"; mkdir -p "$d"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -pass env:KEY \
+            -in "$RUNNER_TEMP/dsp-sealed/adau1451-program.tar.enc" | tar -C "$d" -xf -
+          rm -rf "$RUNNER_TEMP/dsp-sealed"
+          ls -l "$d"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
 
       - name: Build ${{ matrix.board }}
         env:
@@ -661,6 +738,9 @@ jobs:
           # Consumed by board/common/post-build.sh (empty on non-EA / when absent).
           OHC_SGX_WPE_SYSROOT: ${{ steps.sgxsr.outputs.wpe }}
           OHC_SGX_I386_SYSROOT: ${{ steps.sgxsr.outputs.i386 }}
+          # The EA3's DSP program folder (empty: none); build.sh sets
+          # BR2_PACKAGE_ADAU1451_FW_PROGRAM from it.
+          OHC_DSP_PROGRAM: ${{ steps.dsp.outputs.dir }}
           # The ccache dir (see the restore/save steps; BR2_CCACHE in
           # board/ea/common/common_defconfig and board/hc800/hc800_defconfig).
           # build.sh forwards it to make only when set; a board whose defconfig
@@ -683,9 +763,16 @@ jobs:
           # not (see "Save Buildroot output tree"), so a first build longer than
           # one job (LLVM + WebKit from scratch) would otherwise restart from
           # zero every time. SIGINT lets make remove the half-built target.
+          # Running out of time is marked with a `build-timeout` annotation: that
+          # is what ci-retry.yml looks for before it re-runs the job.
+          rc=0
           BUILDROOT_DIR="$HOME/buildroot" BOARD="${{ matrix.board }}" \
             OHC_VERSION="${{ steps.ver.outputs.version }}" \
-            timeout --signal=INT --kill-after=2m 325m bash ./build/build.sh
+            timeout --signal=INT --kill-after=2m 325m bash ./build/build.sh || rc=$?
+          if [ "$rc" -eq 124 ]; then
+            echo "::error title=build-timeout::${{ matrix.board }} ran out of its 325 minutes; what it built is saved, a re-run resumes from it"
+          fi
+          exit "$rc"
 
       # The HC-800's first install starts openHC from the RUNNING Control4 image
       # with kexec (writes nothing). Control4 never shipped the userspace tool,
@@ -701,13 +788,14 @@ jobs:
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
-          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
-          tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
-          ( cd "kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
+          # Built in runner.temp, outside the checkout.
+          wget -q -P "$RUNNER_TEMP" "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          ( cd "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
               --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
               --without-zlib --without-lzma --without-xen >/dev/null && make -j"$(nproc)" >/dev/null )
           out="output/build/${{ matrix.board }}/images/kexec-i686-static"
-          cp "kexec-tools-${KEXEC_VERSION}/build/sbin/kexec" "$out"
+          cp "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}/build/sbin/kexec" "$out"
           file "$out" | grep -q "ELF 32-bit.*Intel 80386" || { echo "not i386"; exit 1; }
           file "$out" | grep -q "statically linked" || { echo "not static"; exit 1; }
           ls -l "$out"
@@ -750,10 +838,10 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      # Carry-forward store (main only). A newer push to main cancels the older
-      # run (see `concurrency`), and `select` then rebuilds only the boards THIS
-      # push changed — so without this, the boards the cancelled run had already
-      # built would vanish from the newest run's output. Each successful main
+      # Carry-forward store (main only). A newer push to main replaces a run
+      # still queued behind a build (see `concurrency`), and `select` then
+      # rebuilds only the boards THIS push changed — so without this, the boards
+      # an earlier run had built would vanish from the newest run's output. Each successful main
       # build parks its bundle in a per-board cache under a stable `carry/` dir;
       # the `carry-forward` job below republishes it for any board the newest run
       # did not rebuild, so main always has a complete, current image set.
@@ -801,30 +889,32 @@ jobs:
           path: dl
           key: dl-${{ env.BUILDROOT_REF }}-${{ hashFiles('board/**/*_defconfig', 'packages/**/*.mk', 'packages/**/*.hash') }}
 
-      # main only. A PR run RESTOREs (from main's newest tree, via restore-keys)
-      # but never saves: every PR would otherwise park its own 1-2 GB tree per
-      # board, and with the 10 GB repo cap that evicts the main trees every
-      # later run depends on. PR-scoped caches are not readable by other
-      # branches anyway. Release runs build from a tag ref, whose cache is
-      # likewise invisible to everyone else, so they do not save either.
+      # main only, to the ci-cache release (see the restore step). A PR run
+      # restores main's tree but never saves: a PR's tree is its own change on
+      # top of main's, and one writer means no two runs ever race on an entry
+      # (main's runs queue, see `concurrency`). Saved when the build ran out of
+      # time too: the re-run (ci-retry.yml) resumes from it. Release and
+      # scheduled runs do not save.
       - name: Save Buildroot output tree
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v4
-        with:
-          path: output/build/${{ matrix.board }}
-          key: out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }}-${{ github.run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh save out-${{ matrix.board }}-${{ env.BUILDROOT_REF }}-${{ startsWith(matrix.board, 'ea') && 'r4' || 'r3' }} output/build/${{ matrix.board }}
 
-      # main saves the ccache on every run. A PR saves it only when the build
-      # FAILED: then the objects it compiled are what lets the re-attempt finish
-      # (a cold WebKit runs out of time on the first try), and a typo deep in
-      # WebKit should not cost that work. A PR whose build passed has nothing
-      # to re-attempt, and a PR's cache is readable by that PR alone, so saving
-      # it would only push main's ccache and output tree out of the 10 GB repo
-      # cap, which is what every PR's cold build then pays for. Whatever a PR
-      # does save is deleted when it closes (cache-cleanup.yml). ccache caps
-      # itself (--max-size in the board's defconfig).
-      - name: Save ccache
-        if: always() && (failure() || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
+      # main saves the ccache on every run, to the ci-cache release beside its
+      # tree. A PR saves it, to the Actions cache, only when the build FAILED:
+      # then the objects it compiled are what lets the re-attempt finish, and a
+      # typo deep in WebKit should not cost that work. A PR whose build passed
+      # has nothing to re-attempt. Whatever a PR saves is deleted when it closes
+      # (cache-cleanup.yml). ccache caps itself (--max-size in the board's
+      # defconfig).
+      - name: Save ccache (main, to the ci-cache release)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-cache.sh save ccache-${{ matrix.board }}-${{ env.BUILDROOT_REF }} .ccache
+      - name: Save ccache (a PR's failed attempt)
+        if: failure() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (startsWith(matrix.board, 'ea') || matrix.board == 'hc800')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.ccache
@@ -919,8 +1009,8 @@ jobs:
 
   # Republish the latest image for every board the newest main run did NOT
   # rebuild, pulled from the per-board carry-forward cache the build job fills.
-  # This is what lets a newer push to main cancel the older run (see
-  # `concurrency`) without the boards that run had already built dropping out:
+  # This is what lets a newer push to main replace a queued run (see
+  # `concurrency`) without the boards earlier runs had built dropping out:
   # main ends every run with a complete, current image set.
   #
   # Best-effort, and deliberately NOT in images-ok's needs: a cold cache (no
@@ -929,7 +1019,8 @@ jobs:
 
   images-carry-forward:
     needs: [select, images-build, config]
-    if: always() && needs.config.outputs.heavy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # !cancelled(), not always(): runs after a failed build, stops with a cancel.
+    if: ${{ !cancelled() && needs.config.outputs.heavy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1045,7 +1136,7 @@ jobs:
       # features to crates (core + each feature's `packages` file), the same
       # list the image build stages. So a feature's daemon is compiled only for
       # the boards that have the feature — the IO Extender (ARMv5, no 64-bit
-      # atomics) is not held to code it never runs, like ohc-storaged.
+      # atomics) is not held to code it never runs, like storaged.
       - name: Which crates ${{ matrix.board }} ships
         run: |
           crates=$(bash packages/build.sh ${{ matrix.board }} --crates)
@@ -1566,6 +1657,11 @@ jobs:
   # from deadlocking on an unrelated PR); it passes when every component it
   # needs either passed or was skipped as irrelevant, and FAILS if any of them
   # failed or was cancelled. It is NOT an always-green sentinel.
+  # The one job that keeps always() (every other uses !cancelled() so a cancel
+  # stops it): a SKIPPED required check counts as passing, so under
+  # !cancelled() a cancelled run would leave a mergeable green PR. It costs a
+  # few seconds after the cancel; a superseded run's red ci-ok is replaced by
+  # the newer run's.
   #
   # `needs` lists every GATE and BUILD job. It deliberately OMITS
   # images-carry-forward (best-effort, main-only; a cold cache is not a failure)
@@ -1579,6 +1675,7 @@ jobs:
       - changes
       - select
       - images-toolchain
+      - dsp
       - images-build
       - daemons-build
       - flasher-build
