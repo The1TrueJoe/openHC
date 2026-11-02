@@ -298,19 +298,50 @@ for a control register):
   and Volume Left/Right read 0x01000000 (1.0) once audiod has run.
 * **The knobs land in DSP memory:** `amixer cset` on Bass, EQ 1 kHz and the
   mode moved exactly their cells, and back.
-* **The core runs:** the program counter (0xF461) moves between reads.
-* `PANIC_FLAG` is 1 after the load, with `PANIC_CODE` 0x0010. Cleared
-  (`PANIC_CLEAR` 0xF421, 1 → 0), it stays 0, in the test-tone mode too, so it
-  is latched by the load sequence and not raised by the running program.
+* `PANIC_FLAG` read 1 after one load (c3cb7d9), with `PANIC_CODE` 0x0010, and
+  stayed 0 once cleared (`PANIC_CLEAR` 0xF421, 1 → 0); after another (3d15ec4)
+  it read 0.
 
-Still to confirm, all by ear:
+**But the core gets no frames.** `CORE_STATUS` 3 is the core asleep, waiting
+for its next start pulse, and it reads 3 whether or not one ever comes; the
+program counter (0xF461) reads a different value every time either way, so it
+proves nothing. What does: sample `CORE_STATUS` many times and count the 1s
+(executing). On the internal start pulse (`START_PULSE` 2, clock generator 1)
+the core executes in 20 reads of 300; on the booted one (8, `LRCLK_IN0`) in
+**none of 300**, and in none of 60 on any other serial input or output port's
+frame clock (9–15) or the S/PDIF receiver's (16). So under openHC **nothing
+drives an LRCLK at the DSP's serial ports**: every port is a slave (as on
+stock), and their master is not running. With no frame clock the program never
+runs, and the AK4621, on the same clocks, has none either: a test tone (mode 3)
+measured nothing above the noise floor (−93 dBFS) on the line out, with the DAC
+mute line at either level. On stock that master is running, so it is the next
+thing to find — most likely the CE5300's I²S, which openHC does not start
+(`ce5300_i2s.enable_pcm`, the ASoC -19 in the log).
 
-* **Listening.** Nothing plays until the CE5300 I²S PCM is finished
-  (`ce5300_i2s.enable_pcm`); until then the card has the DSP controls and a
-  PCM that refuses to open (the ASoC -19 in the log).
-* **Which SDATA_OUT feeds the AK4621** — the program sends to all four.
-* **That the indexed filters act on their index** — the cells hold integers;
-  whether the blocks read them as such is for the ears.
+The line out was measured end to end by an openSpeakerPoint's line input
+(`cmd/audio/measure`: per-channel RMS, peak and pitch). It also caught, on
+boots of the b53-switch tests only (`ohc.switch=1`), a steady hiss at −66 dBFS
+on one channel — which one changed from boot to boot — that unplugging the
+cable stopped. It did not come back on a boot without the switch, nor after
+loading `b53_spi` by hand, nor on an install without the DSP program; its
+source is open.
+
+**The coax jacks are not on the DSP's S/PDIF**, or not without routing we do
+not know. Stock leaves both halves powered off (`POWER_ENABLE1` = 0). With the
+receiver on (bit 1, `RX_PWR`), an HC-800's coax out at 48, 44.1 and 32 kHz never
+locked it (`SPDIF_LOCK_DET`, `SPDIF_RX_DECODE` and the channel status all 0);
+with the EA3's coax out looped to its coax in, the transmitter on too (bit 2,
+`TX_PWR`, and `SPDIF_TX_EN`), and the core on its internal start pulse, neither.
+
+Still open:
+
+* **The clock master** for the serial ports and the AK4621, above. Until it
+  runs, nothing plays.
+* **Which SDATA_OUT feeds the AK4621** — the program sends to all four;
+  switching them off one at a time (`SOUT_SOURCE`) will tell, once there are
+  clocks.
+* **That the indexed filters act on their index** — the cells hold integers.
+  The mode mux is the quickest check: index 3 is the test tone.
 * **What each mode sounds like**, and in stock's map, **which balance table is
   the left jack** (assumed 0x0091).
 
