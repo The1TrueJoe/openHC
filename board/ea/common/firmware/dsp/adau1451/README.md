@@ -285,17 +285,34 @@ the mode and loudness selectors (written through the safeload registers at
 0x18–0x1e) and the mute pair; stock's master volume is the Volume cell, which
 the program turns into a gain through its log table at 0x0164.
 
-## Still to confirm on hardware
+## On hardware
 
-* **The load** — none of it has run on a unit yet: the soft reset, the PLL lock
-  wait (and that MCLK reaches the DSP under openHC at all), the program, the
-  start.
-* **Which balance table is the left jack** (assumed 0x0091).
-* **What each mode sounds like** — the names are stock's; whether Tone also
-  carries the EQ is for the ears.
+**The load works** (EA3, 2026-11-02, image c3cb7d9, booted to RAM). Read back
+over I²C (`i2ctransfer -f -y 3 w2@0x38 <hi> <lo> r4` for a memory word, `r2`
+for a control register):
+
+* The driver logs `DSP program loaded, core status 3`; `PLL_LOCK` reads 1, so
+  MCLK reaches the DSP under openHC.
+* The version cell holds 2 and the card `openhcea` has all 18 controls.
+* The index cells read 0x18 (24) — integers, as the design writes them —
+  and Volume Left/Right read 0x01000000 (1.0) once audiod has run.
+* **The knobs land in DSP memory:** `amixer cset` on Bass, EQ 1 kHz and the
+  mode moved exactly their cells, and back.
+* **The core runs:** the program counter (0xF461) moves between reads.
+* `PANIC_FLAG` is 1 after the load, with `PANIC_CODE` 0x0010. Cleared
+  (`PANIC_CLEAR` 0xF421, 1 → 0), it stays 0, in the test-tone mode too, so it
+  is latched by the load sequence and not raised by the running program.
+
+Still to confirm, all by ear:
+
 * **Listening.** Nothing plays until the CE5300 I²S PCM is finished
   (`ce5300_i2s.enable_pcm`); until then the card has the DSP controls and a
-  PCM that refuses to open.
+  PCM that refuses to open (the ASoC -19 in the log).
+* **Which SDATA_OUT feeds the AK4621** — the program sends to all four.
+* **That the indexed filters act on their index** — the cells hold integers;
+  whether the blocks read them as such is for the ears.
+* **What each mode sounds like**, and in stock's map, **which balance table is
+  the left jack** (assumed 0x0091).
 
 ## Not used on the EA1, and the AK4621
 
