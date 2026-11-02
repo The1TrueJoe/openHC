@@ -617,9 +617,9 @@ zero-copy; see openHC issue #55.)
 Two prerequisites are config, not code:
 
 - The DRM platform (`BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM`, an option openHC
-  adds to Buildroot in `build/buildroot-patches/0004`) depends on
-  `BR2_PACKAGE_HAS_UDEV` (libinput). Every openHC board uses busybox mdev, so
-  this means switching to eudev.
+  adds to Buildroot in `build/buildroot-patches/0005`) depends on GBM with
+  format-modifier support (Mesa's has it) and on `BR2_PACKAGE_HAS_UDEV`
+  (libinput), which the HC-800 has since it moved from busybox mdev to eudev.
 - wpewebkit needs `BR2_TOOLCHAIN_BUILDROOT_CXX`, `BR2_INSTALL_LIBSTDCPP` and
   `BR2_USE_WCHAR`. Without them kconfig drops wpewebkit **silently** — the build
   succeeds and the engine is simply absent.

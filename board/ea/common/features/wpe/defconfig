@@ -14,8 +14,8 @@
 BR2_PACKAGE_SGX545_UM=y
 
 # WPE WebKit: browser engine rendering through EGL/GLES with no X/window system.
-# Needs board/buildroot-patches/0001-wpewebkit-do-not-require-wpebackend-fdo.patch
-# — Buildroot wires WPE to the Wayland backend, which this DDK cannot provide.
+# Buildroot also builds wpebackend-fdo and Wayland for it; nothing here uses
+# them (the PowerVR backend below is libwpe's default), they are dead weight.
 BR2_PACKAGE_WPEWEBKIT=y
 
 # ...the libwpe backend it loads at runtime to reach the display (stock is Wayland).

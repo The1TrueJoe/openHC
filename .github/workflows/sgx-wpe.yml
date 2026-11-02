@@ -117,9 +117,8 @@ jobs:
           git -C "$HOME/buildroot" fetch -q --depth 1 \
             https://github.com/buildroot/buildroot "$BUILDROOT_REF"
           git -C "$HOME/buildroot" checkout -q FETCH_HEAD
-          # Same set images.yml / sgx-module.yml apply — notably
-          # 0001-wpewebkit-do-not-require-wpebackend-fdo, without which wpewebkit
-          # drags in Wayland/fdo and is unbuildable on the SGX545 DDK's EGL.
+          # Same set images.yml / sgx-module.yml apply, so this sysroot's
+          # wpewebkit is configured exactly like the image's.
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
