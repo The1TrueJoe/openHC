@@ -446,6 +446,20 @@ block reads zero; nothing initializes it. It gates no peripheral clock.
   analog out ([DSP README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)).
   Global `+0x2c` (`0x180` on stock) is not needed for this. Next: do it in
   `ce5300-i2s`'s probe, as stock keeps its pipeline running.
+- **The coax jacks are the CE5300's S/PDIF** (proven 2026-11-02, the EA3's coax
+  out cabled to its own coax in). Out is a TX context with output select 3
+  (`AUDIO_HAL_OUT_SEL_SPDIF`; TX2 here: `+0x2204` `0xf1e0`, `+0x2214` 8,
+  `+0x221c` `0x3f`, `+0x2200` `0x61`), which, like TX0, starts sending once its
+  FIFO (`+0x2218`) has had data. In is RX1 with input select 2, stock's
+  `AUDIO_SPDIF_IN` resource: `+0x3100` bits 6:5 = 2, `+0x310c` |= `0x200`,
+  `+0x311c` = `0x3f`, then `+0x3100` |= 1. Words fed into TX2 came back on RX1
+  bit for bit (24-bit samples in bits 31:8). There is no lock, rate or
+  channel-status register; RX1 `+0x3110` bit 0 (write 1 to clear) is a sync
+  error, 0 while a valid stream arrives and 1 without one. Its FIFO is 0x80
+  words deep and overruns at once, so pulse its reset (`+0x3100` bit 3) and read
+  `+0x3118` only while the level (`+0x3120`) is non-zero. **With global `+0x00`
+  still at `0x1`, a read anywhere past it hangs the SoC**: ungate first, and put
+  it back last.
 - **The master clock's rate.** The ADAU1451 runs from the SoC's MCLK0 (enabled
   on both). Its rate may come from the A/V DDS or audio PLL that stock's media
   stack programs, and that stack never runs under openHC. If the DSP's PLL
