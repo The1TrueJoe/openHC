@@ -220,7 +220,7 @@
 					 * Named views of the regions CEFDK's mask ROM
 					 * fixes, from `mfh list spi_nor` on an EA1. The
 					 * whole chip stays mtd0 (MTD_PARTITIONED_MASTER),
-					 * so the offsets ohc-restore and the flasher
+					 * so the offsets restore and the flasher
 					 * write at keep meaning what they did; these
 					 * are mtd1.. and READ-ONLY, so nothing can
 					 * erase through one. Writes go through mtd0.

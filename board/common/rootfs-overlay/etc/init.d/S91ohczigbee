@@ -1,25 +1,25 @@
 #!/bin/sh
 # openHC Zigbee NCP bring-up — SHARED (board/common).
 #
-# ohc-zigbee takes the EM35x out of its serial bootloader and holds the port open
+# zigbee takes the EM35x out of its serial bootloader and holds the port open
 # so the radio stack (zigbee2mqtt) finds a live NCP. First it brings the NCP's
 # firmware up to the image the zigbee feature ships when the radio runs an older
 # EmberZNet (a one-time reflash, ~30 s, logged; see packages/zigbee/src/ncp.rs),
 # so the port is held — and served over TCP — only once that is settled. This script is on EVERY
 # board but is INERT unless BOTH halves are present:
-#   * the ohc-zigbee binary is installed — only the 'zigbee' feature stages it
+#   * the zigbee binary is installed — only the 'zigbee' feature stages it
 #     (packages/build.sh gates the crate on the feature), so an IO Extender never
 #     has it; and
 #   * board.env names a radio port (OHC_ZIGBEE_TTY).
 # Runs after S90ohcweb; the radio owner starts later and connects to the live NCP.
 #
-# With OHC_ZIGBEE_TCP_PORT set, ohc-zigbee also serves the port over TCP (a
+# With OHC_ZIGBEE_TCP_PORT set, zigbee also serves the port over TCP (a
 # network radio for zigpy / Home Assistant ZHA), and this script advertises it
 # over mDNS as _zigbee-coordinator._tcp — the record ZHA's discovery reads. ZHA
 # wants exactly two TXT keys, radio_type and serial_number.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
-BIN=/opt/ohc/bin/ohc-zigbee
-SVC=/etc/avahi/services/ohc-zigbee.service
+BIN=/opt/ohc/bin/zigbee
+SVC=/etc/avahi/services/zigbee.service
 
 advertise() {
     [ -n "$OHC_ZIGBEE_TCP_PORT" ] && [ -d /etc/avahi/services ] || return 0
@@ -48,15 +48,15 @@ start() {
     export OHC_ZIGBEE_TTY OHC_ZIGBEE_BAUD OHC_ZIGBEE_TCP_PORT OHC_ZIGBEE_TCP_BIND \
         OHC_ZIGBEE_NCP_IMAGE OHC_ZIGBEE_NCP_UPDATE OHC_ZIGBEE_BTL_BAUD
     # stdout to syslog so "NCP up" / client connects are visible in logread.
-    start-stop-daemon -S -q -b -m -p /var/run/ohc-zigbee.pid --exec /bin/sh -- \
-        -c "exec $BIN 2>&1 | logger -t ohc-zigbee" \
+    start-stop-daemon -S -q -b -m -p /var/run/zigbee.pid --exec /bin/sh -- \
+        -c "exec $BIN 2>&1 | logger -t zigbee" \
         && echo "zigbee: NCP bring-up on $OHC_ZIGBEE_TTY${OHC_ZIGBEE_TCP_PORT:+, tcp :$OHC_ZIGBEE_TCP_PORT}"
     advertise
 }
 stop() {
-    [ -f /var/run/ohc-zigbee.pid ] && start-stop-daemon -K -q -p /var/run/ohc-zigbee.pid
-    killall ohc-zigbee 2>/dev/null
-    rm -f /var/run/ohc-zigbee.pid
+    [ -f /var/run/zigbee.pid ] && start-stop-daemon -K -q -p /var/run/zigbee.pid
+    killall zigbee 2>/dev/null
+    rm -f /var/run/zigbee.pid
     if [ -f "$SVC" ]; then rm -f "$SVC"; avahi-daemon -r >/dev/null 2>&1; fi
 }
 case "$1" in

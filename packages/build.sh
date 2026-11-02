@@ -93,7 +93,7 @@ done
 
 # `build.sh <board> --crates` / `--bins`: just say what this board gets, for
 # CI (daemons.yml builds exactly these, so a crate is only ever compiled for
-# the boards that ship it — the IO Extender's ARMv5 never sees ohc-storaged).
+# the boards that ship it — the IO Extender's ARMv5 never sees storaged).
 case "${2:-}" in
   --crates) echo $CRATES; exit 0 ;;
   --bins)   echo $BINS; exit 0 ;;

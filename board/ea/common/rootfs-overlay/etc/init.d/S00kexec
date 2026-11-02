@@ -58,7 +58,14 @@ command -v kexec >/dev/null 2>&1 || { echo "S00kexec: no kexec tool" >&2; exit 0
 # the eMMC fails to init and root never mounts. The driver is also disabled in
 # real-kernel.fragment; this is the runtime belt-and-suspenders. No-op on the lean
 # bootstrap kernel (no IOMMU driver), so it is safe to pass unconditionally.
-CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq intel_iommu=off root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}"
+# The bootstrap's own ohc.* options (ohc.switch=1, ...) are set in CEFDK's
+# cmdline, and --command-line replaces the cmdline wholesale, so carry them over
+# or the real kernel never sees them (S39ea-switch then leaves the switch off).
+OHC_ARGS=
+for a in $(cat /proc/cmdline 2>/dev/null); do
+	case "$a" in ohc.*) OHC_ARGS="$OHC_ARGS $a" ;; esac
+done
+CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq intel_iommu=off root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}${OHC_ARGS}"
 
 echo "S00kexec: handing off to the staged kernel ($KERNEL)"
 if kexec -l "$KERNEL" --command-line="$CMDLINE"; then

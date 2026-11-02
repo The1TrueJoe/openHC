@@ -101,17 +101,29 @@ ifeq ($(BR2_OHC_IOXV1_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/kernel
 endif
 
+# A driver kept in its own repository maps onto ONE kernel directory instead of
+# mirroring a tree: <source dir>:<kernel dir>. sgx545-ce (the submodule at
+# ea/common/sgx545-ce) holds more than the kernel driver -- srvinit, libpvr, the
+# Mesa driver, RE tools -- and only its kernel/ is kernel source. Its Kconfig and
+# Makefile lines are still registered by ea/common/kernel/objs.mk.
+OHC_KERNEL_DRIVER_REPOS =
+ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
+OHC_KERNEL_DRIVER_REPOS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/sgx545-ce/kernel:drivers/gpu/drm/sgx545ce
+endif
+
 define OHC_KERNEL_MIRROR_HOOK
+	for p in $(foreach m,$(OHC_KERNEL_MIRRORS),$(foreach t,$(OHC_KERNEL_SUBTREES),$(m)/$(t):$(t))) \
+	         $(OHC_KERNEL_DRIVER_REPOS); do \
+		src=$${p%%:*}; t=$${p##*:}; who=$${src##*/board/}; \
+		[ -d "$$src" ] || continue; \
+		( cd "$$src" && \
+		  find . \( -name '*.c' -o -name '*.h' -o -name '*.dts' -o -name '*.dtsi' -o -name 'Makefile' -o -name 'Kbuild' -o -name 'Kconfig' \) | sed 's|^\./||' ) | while read -r f; do \
+			install -D -m644 "$$src/$$f" "$(LINUX_DIR)/$$t/$$f"; \
+			echo "openHC: installed $$t/$$f ($$who)"; \
+		done; \
+	done; \
 	for m in $(OHC_KERNEL_MIRRORS); do \
 		who=$${m##*/board/}; \
-		for t in $(OHC_KERNEL_SUBTREES); do \
-			[ -d "$$m/$$t" ] || continue; \
-			( cd "$$m/$$t" && \
-			  find . \( -name '*.c' -o -name '*.h' -o -name '*.dts' -o -name '*.dtsi' -o -name 'Makefile' -o -name 'Kbuild' -o -name 'Kconfig' \) | sed 's|^\./||' ) | while read -r f; do \
-				install -D -m644 "$$m/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
-				echo "openHC: installed $$t/$$f ($$who)"; \
-			done; \
-		done; \
 		[ -f "$$m/objs.mk" ] || continue; \
 		while IFS='|' read -r mk line; do \
 			case "$$mk" in ''|\#*) continue;; esac; \

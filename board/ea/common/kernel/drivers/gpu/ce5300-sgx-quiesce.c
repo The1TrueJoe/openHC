@@ -27,7 +27,7 @@
  * (events cleared, BIF_CTRL 0xff00 = MMU bypass, CLKGATECTL 0) still leaves the
  * next kernel broken, with garbled bus-1 reads on top. A warm reboot through
  * CEFDK does not clear that state either; only a power-cycle does. So the
- * product never kexecs out of this kernel: ohc-restore reboots through CEFDK
+ * product never kexecs out of this kernel: restore reboots through CEFDK
  * into boot-init instead, which kexecs nothing.
  *
  * Why syscore_ops: kernel_kexec() and kernel_restart() run every device's

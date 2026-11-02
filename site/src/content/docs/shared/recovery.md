@@ -36,9 +36,9 @@ ohc-flash restore <host>
   appends a copy of entry 0 that `savedefault`s back to the stock entry and sets
   `default saved`. It never writes `default 0`: `restore.sh` reboots without
   touching `menu.lst`, so that would restore forever. Verified on a unit 2026-10-02.
-  An openHC built with the `restore` feature does this itself (`ohc-restore stock`,
+  An openHC built with the `restore` feature does this itself (`restore stock`,
   the same rewrite from the same code); stock Control4 gets it over SSH.
-- **EA family:** runs the box's `ohc-restore stock`, which removes openHC's single
+- **EA family:** runs the box's `restore stock`, which removes openHC's single
   MFH item from SPI-NOR (read-back verified) and kexecs p2's recovery kernel to
   re-image p1, the same reimage the recessed button starts.
 - **CA-1:** deletes openHC's `boot.scr`, zImage and DTB from the FAT partition and
@@ -93,7 +93,7 @@ item to the CEFDK Master Flash Header (MFH) item-table in SPI-NOR — the table 
 offset `0x80000`, SHA-256 protected — redirecting CEFDK to openHC's autoscript.
 The stock kernel item, the stock kernel, and p2's entire factory payload are left
 untouched. So "return to stock" is just removing that one item. The tool is
-`ohc-restore` (the `restore` feature; this is its EA backend, the HC-800's is
+`restore` (the `restore` feature; this is its EA backend, the HC-800's is
 [below](#hc-800)); its MFH edit is
 the byte-for-byte inverse of the installer's append, unit-tested to reproduce the
 known-stock SHA against the real 16 MB backup. Its subcommands:
@@ -119,7 +119,7 @@ here ever claims success without the flash reading back exactly what was intende
 2. **The web UI System panel**, a two-step "Reset to stock" confirm, shown only
    when `status.available`.
 3. **The front ID button.** Holding it for `OHC_RESTORE_BUTTON_HOLD` seconds
-   (default 10) and letting go runs `ohc-restore stock`; the warning LED blinks
+   (default 10) and letting go runs `restore stock`; the warning LED blinks
    while it is held and goes solid once it has been held long enough. The
    button (SoC GPIO 32, active-low, confirmed on an EA1) is a `gpio-keys-polled`
    node in the board device tree, which udev links as `/dev/ohc/input/id-button`.
@@ -237,18 +237,18 @@ file written and read back first. Never `default 0`: `restore.sh` re-images
 `factorydefault` line is missing. The restore takes ~5 minutes and comes back as
 stock Control4 on a new DHCP lease. Proven on a unit 2026-10-02.
 
-On an openHC built with the `restore` feature, `ohc-restore` does it on the box,
+On an openHC built with the `restore` feature, `restore` does it on the box,
 from the same menu rewrite the flasher uses (`flasher/crates/core`, unit-tested):
 
 | Trigger | How |
 |---|---|
-| `ohc-flash restore <host>` | runs `ohc-restore stock --no-reboot`, reads the verified result, then reboots the box; a box without the tool gets the same rewrite over SSH |
-| Web UI → System → **Reset to stock** | iod's `cmd/system/restore` (`confirm`) → `ohc-restore stock` |
+| `ohc-flash restore <host>` | runs `restore stock --no-reboot`, reads the verified result, then reboots the box; a box without the tool gets the same rewrite over SSH |
+| Web UI → System → **Reset to stock** | iod's `cmd/system/restore` (`confirm`) → `restore stock` |
 | Hold the **ID button** at power-on | Control4's GRUB factory-default button, unchanged — no openHC software involved |
 
 The ID button gets no second, runtime meaning: the power-on factory reset already
 returns the box to stock, so a long-press watcher would only add a way to wipe it
-by accident. `ohc-restore status` prints the menu and a `state:` line (`openHC`,
+by accident. `restore status` prints the menu and a `state:` line (`openHC`,
 `stock`, or `restore pending`).
 
 A serial console on `ttyS0` at 115200 sees GRUB itself if that fails.

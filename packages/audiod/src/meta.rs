@@ -8,7 +8,7 @@
 //!   the details in the environment (track_changed: NAME, ARTISTS, ALBUM,
 //!   COVERS, DURATION_MS; playing/paused/stopped; session_client_changed:
 //!   CLIENT_NAME). That program is a two-line script exec'ing this binary as
-//!   `ohc-audiod --hook <tag>` (`hook`), which updates the file and pokes the
+//!   `audiod --hook <tag>` (`hook`), which updates the file and pokes the
 //!   daemon (SIGUSR1) to publish at once.
 //! * AirPlay: shairport-sync writes its metadata stream — `<item>`s of a type,
 //!   a code and base64 data — to a FIFO per endpoint; a reader thread per
@@ -101,7 +101,7 @@ fn poke_daemon() {
             continue;
         }
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        if comm.trim() == "ohc-audiod" {
+        if comm.trim() == "audiod" {
             let _ = std::process::Command::new("kill").args(["-USR1", &pid.to_string()]).status();
         }
     }
@@ -131,7 +131,7 @@ pub fn apply_librespot(cur: Option<Meta>, env: &dyn Fn(&str) -> Option<String>) 
     Some(m)
 }
 
-/// `ohc-audiod --hook <tag>`: one librespot event.
+/// `audiod --hook <tag>`: one librespot event.
 pub fn hook(tag: &str) {
     if !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return;

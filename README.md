@@ -6,18 +6,24 @@ locked.
 
 📖 **[Documentation and the full hardware research →](https://the1truejoe.github.io/openHC/)**
 
-## Supported controllers
+## Currently Supported controllers
 
 | Controller | Supported |
 |---|:---:|
-| EA-1 (v1) | ✅ |
-| EA-1 (v2) | ❌ |
-| EA-1 (v2, PoE) | ❌ |
-| EA-3 (v1) | ❌ |
-| EA-3 (v2) | ✅ |
-| CA-1 | ✅ |
+| HC-250 | ❌ |
 | HC-800 | ✅ |
+| EA-1 | ✅ |
+| EA-3 | ✅ |
+| EA-5 | ❌ |
+| CA-1 | ✅ |
+| CA-10 | ❌ |
+| Core-1 | ❌ |
+| Core-3 | ❌ |
+| Core-5 | ❌ |
 | IO Extender (v1) | ✅ |
+| IO Extender (v2) | ❌ |
+
+These are just the controllers I have on hand. More will be coming in the future. I do not have plans to work on models older than the HC-250 (HC-200, HC-300, HC-500, HC-1000).
 
 ## The flasher
 

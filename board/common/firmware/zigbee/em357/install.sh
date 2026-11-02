@@ -1,7 +1,7 @@
 #!/bin/sh
 # Fetch the pinned EM357 NCP image (em357-ncp.source) and install it where
-# ohc-zigbee looks for it. Run by board/common/post-build.sh on boards that ship
-# ohc-zigbee.
+# zigbee looks for it. Run by board/common/post-build.sh on boards that ship
+# zigbee.
 #
 #   install.sh <target-dir> <download-dir>
 #

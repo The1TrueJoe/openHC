@@ -21,7 +21,7 @@ export function SystemPanel({ caps }: { caps: Capabilities }) {
   );
 }
 
-/* Software updates (ohc-updated): the channel, what it offers this board, and
+/* Software updates (updated): the channel, what it offers this board, and
    an Install that downloads, installs and reboots. Only on boards built with
    the `update` feature — elsewhere there is no retained system/update. */
 function UpdateSection() {
@@ -107,7 +107,7 @@ function UpdateSection() {
 }
 
 /* Return to stock. Only appears on boards that actually support it (those built
-   with the `restore` feature, which ships ohc-restore: the EA family and the
+   with the `restore` feature, which ships restore: the EA family and the
    HC-800); on anything else iod's
    retained `system/restore` says `available: false` and this renders nothing.
    It is the one destructive control in the UI, so it is two-step: an arm, then
