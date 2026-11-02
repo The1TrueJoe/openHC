@@ -127,8 +127,22 @@ through the durable kexec path with `ohc.switch=1` came up with
 `br-lan` leased the box's address through `lan2`, and SSH reached it through the
 switch. That happened on three consecutive boots (see below). The CPU port has
 no `fixed-link`: DSA skips phylink for it, and firmware's forced 1000/full link
-on port 5 holds, as `ea-switch.dtsi` expects. Traffic on the second jack
-(`lan1`) has not been tested yet; it had no cable.
+on port 5 holds, as `ea-switch.dtsi` expects.
+
+The second jack works too. On a later boot of the same kernel, the one cable
+was moved from `lan2` to `lan1`. `lan1` came up at 1 Gbps full duplex and was
+the only forwarding port. The gateway answered pings through it, and SSH to the
+box crossed it. That is the jack the stock firmware leaves isolated.
+
+:::caution[Don't cable both jacks into one network]
+With `lan1` and `lan2` both plugged into the same LAN, the box dropped off the
+network at once, stayed unreachable after a cable was pulled, and needed a power
+cycle. switchd's bridge runs STP, which should have blocked one port. Why it
+didn't is not known. One suspect is that the switch traps STP's BPDUs to its IMP
+port 8, which is not connected (the CPU is on port 5), so the bridge never sees
+the loop. Another is the upstream switch's own loop protection. The image has no
+`tcpdump` to check.
+:::
 
 If DSA doesn't attach, the network init script falls back to DHCP on the master
 interface and the primary jack works as before.
@@ -238,11 +252,11 @@ Both are fixed in S40net (PR #110). With that fix, boots 2 and 3 leased
 10.0.0.113 on `br-lan` through `lan2`.
 
 :::note[Status]
-b53 works on the durable kexec boot. The switch stays opt-in with `ohc.switch=1`,
-which S00kexec now carries across the kexec (PR #110). Still open:
+b53 works on the durable kexec boot, and both jacks carry traffic. The switch
+stays opt-in with `ohc.switch=1`, which S00kexec now carries across the kexec
+(PR #110). switchd's `vlan_filtering` call needed the bridge built with
+`CONFIG_BRIDGE_VLAN_FILTERING` (PR #121). Still open:
 
-- traffic on the second jack (`lan1`);
-- switchd's `vlan_filtering 0` call, which this kernel answers with
-  `Operation not supported`;
+- why STP doesn't stop a loop between the two jacks (see the caution above);
 - how stock firmware gets a nonzero `DDS_RATE`.
 :::
