@@ -438,9 +438,21 @@ access in any state, as measured: `0x0`, `0x8`, `0x80`, `0x12c`, `0x130` and
   to it.
 
 **To RAM-test a kernel on an EA,** start from a box that has been power-cycled
-since the GPU last rendered. Two ways to set that up:
+since the GPU last rendered. Three ways to set that up:
 
-- **Proven:** keep the outgoing kernel from binding the GPU at all. Add
+- **Works on the EA3 (measured 2026-11-02, 2 of 2):** kexec at the very start of
+  boot, from the bootstrap kernel, before any service has run. Put a one-shot
+  script that sorts just before `S00kexec` (`/etc/init.d/S00aramboot`) on p1. It
+  deletes itself, then runs `kexec -l` with the kernel, the rootfs as `--initrd`
+  and `ohc.ramboot=1`. A hang recovers with a power-cycle, because the script is
+  already gone.
+- **Failed on the EA3, GPU never used, same image and initrd (each 1 of 1):**
+  a kexec from a running system. That covers the fat kernel after unbind and
+  soft reset, the fat kernel with `PVRSRVDrmInit` blacklisted, and the bootstrap
+  kernel with `pvrsrvkm` never loaded, each after its services had run. So on the
+  EA3 the GPU isn't the only thing that breaks the hand-off. All three showed
+  the HPET symptom; EHCI `-110` was seen on the last two.
+- **Proven on the EA1:** keep the outgoing kernel from binding the GPU at all. Add
   `initcall_blacklist=PVRSRVDrmInit` to `OHC_KEXEC_CMDLINE_EXTRA` in
   `board.env`, then power-cycle.
 - **Proven only before `S60sgx` existed:** set `OHC_DISPLAY_ENABLE=0` and
