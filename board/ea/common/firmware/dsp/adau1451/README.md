@@ -41,7 +41,7 @@ unit ([Where the map came from](#where-the-map-came-from)). It still builds
 | `/lib/firmware/openhc/adau1451-ea3.bin` | `ea3.json`: stock's program's parameters. Not loaded. |
 | the board DTB | `firmware-name` names the file; `control4,program-version` is the program's version cell and the value it must hold, checked after the load. The build fails if it is not the design's `Version` cell. The card is a stock `simple-audio-card`. |
 | `adau1451-c4` | The codec driver. It hands the file to the kernel's **sigmadsp** core (the one the mainline ADAU1701/ADAU17x1 drivers use), which writes it at bind and turns each named cell into an **ALSA control**. Around that the driver does the sequencing: soft reset, hibernate, the wait for PLL lock, start. |
-| ohc-audiod | Reads the knob list from the installed copy of `ea3-openhc.json` (board.env's `dsp=`) and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
+| audiod | Reads the knob list from the installed copy of `ea3-openhc.json` (board.env's `dsp=`) and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
 
 So the DSP is tuned with ordinary ALSA tools:
 
@@ -52,7 +52,7 @@ amixer -c openhcea cset name='DSP Bass' 0,0,0,30   # bass +3 dB (index 24 + 3/0.
 
 Every control is 4 bytes, big-endian: an **index 0..48** into a 49-entry table,
 **24 neutral**. Tone and EQ steps are `step_db` apart (0.5 dB → ±12 dB);
-balance is 100/24 % a step. ohc-audiod does that arithmetic; the API and UI
+balance is 100/24 % a step. audiod does that arithmetic; the API and UI
 speak dB and −100..100.
 
 ## Loading the part
@@ -207,7 +207,7 @@ Not settled by the registers, and left for hardware or the board:
 
 ## The knobs
 
-openHC's program has the same knobs as stock's, so the web UI and ohc-audiod do
+openHC's program has the same knobs as stock's, so the web UI and audiod do
 not change. Every address comes from the export by name (`ea3-openhc.json`):
 
 | Knob | Index cell | Table / block | Design |
@@ -219,7 +219,7 @@ not change. Every address comes from the export by name (`ea3-openhc.json`):
 | Balance | `BalanceIndex` | `BalanceLeft/Right.GSO_Array` | linear, one side to silence — the HC-800's, as gain biquads |
 | EQ 31 Hz … 16 kHz | `EQ31Index` … | `EQ31.GSO_Array` … | RBJ peaking, Q 1.414 |
 
-Plus **DSP Volume Left/Right** (linear gains, written 0 at boot; ohc-audiod's
+Plus **DSP Volume Left/Right** (linear gains, written 0 at boot; audiod's
 `run` sets 1.0) and a read-only `ReadBack DSP Program` (the version cell).
 
 **The mode decides which knobs act.** Tone (bass and treble), EQ (the ten
@@ -249,7 +249,7 @@ set, which is why that profile writes all three.
 ## Silent unless something plays
 
 * **At boot** the DSP's Volume is written 0 and the DAC's soft mute is held.
-  ohc-audiod restores the output's saved level and tone, *then* raises Volume to
+  audiod restores the output's saved level and tone, *then* raises Volume to
   its `run` value (1.0 — the output's level lives in ALSA, as on the HC-800).
 * **While idle** the DAC stays muted: the codec's ASoC `mute_stream` releases it
   when a stream is prepared and asserts it again when the last one closes, so

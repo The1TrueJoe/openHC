@@ -1,4 +1,4 @@
-//! ohc-updated — openHC updates, run on the box.
+//! updated — openHC updates, run on the box.
 //!
 //! A channel — `stable` (the latest published GitHub release) or `dev` (the
 //! rolling pre-release images.yml refreshes from main) — is checked against what
@@ -251,7 +251,7 @@ fn download(app: &App, asset: &Asset) -> Result<PathBuf, String> {
 // ── REST ─────────────────────────────────────────────────────────────────────
 
 #[derive(utoipa::OpenApi)]
-#[openapi(info(title = "ohc-updated"), tags((name = "Updates", description = "Software updates from GitHub releases.")))]
+#[openapi(info(title = "updated"), tags((name = "Updates", description = "Software updates from GitHub releases.")))]
 struct ApiDoc;
 
 fn err(code: StatusCode, e: &str) -> axum::response::Response {
@@ -302,7 +302,7 @@ async fn post_install(State(app): State<Arc<App>>) -> axum::response::Response {
     }
 }
 
-#[utoipa::path(get, path = "/api/health", tag = "Updates", summary = "ohc-updated liveness",
+#[utoipa::path(get, path = "/api/health", tag = "Updates", summary = "updated liveness",
     responses((status = 200, description = "ok")))]
 async fn health() -> &'static str {
     "ok"

@@ -21,7 +21,7 @@ use std::time::Duration;
 
 /// Where the zigbee feature installs the image, and its version alongside.
 pub const DEFAULT_IMAGE: &str = "/usr/share/ohc/zigbee/em357-ncp.ebl";
-pub const STATUS: &str = "/run/ohc-zigbee.ncp";
+pub const STATUS: &str = "/run/zigbee.ncp";
 
 pub struct Image {
     pub path: String,
@@ -101,14 +101,14 @@ pub fn flash(fd: RawFd, img: &Image, btl_baud: u32, running: Option<&mut Ash>) -
         return Err(format!("no bootloader prompt at {btl_baud} baud"));
     }
     if let Some(b) = bootloader::banner(fd) {
-        println!("ohc-zigbee: bootloader: {b}");
+        println!("zigbee: bootloader: {b}");
     }
-    println!("ohc-zigbee: uploading {} ({} bytes)", img.path, img.data.len());
+    println!("zigbee: uploading {} ({} bytes)", img.path, img.data.len());
     let mut last = 0;
     bootloader::upload(fd, &img.data, |done, total| {
         let pct = done * 100 / total;
         if pct >= last + 25 || done == total {
-            println!("ohc-zigbee: … {pct}%");
+            println!("zigbee: … {pct}%");
             last = pct;
         }
     })?;
@@ -144,12 +144,12 @@ pub fn ensure(fd: RawFd, cfg: &Config) -> Option<(u32, NcpVersion)> {
             return None;
         }
         let Some(img) = img else {
-            println!("ohc-zigbee: the NCP is in its bootloader with no valid app, and there is no image to flash");
+            println!("zigbee: the NCP is in its bootloader with no valid app, and there is no image to flash");
             return None;
         };
-        println!("ohc-zigbee: the NCP is in its bootloader with no valid app — flashing {}", ash::stack_str(img.stack));
+        println!("zigbee: the NCP is in its bootloader with no valid app — flashing {}", ash::stack_str(img.stack));
         if let Err(e) = flash(fd, img, cfg.btl_baud, None) {
-            println!("ohc-zigbee: flash failed: {e} — the bootloader stays resident; the next start retries");
+            println!("zigbee: flash failed: {e} — the bootloader stays resident; the next start retries");
             return None;
         }
         let after = find_app(fd, cfg);
@@ -157,11 +157,11 @@ pub fn ensure(fd: RawFd, cfg: &Config) -> Option<(u32, NcpVersion)> {
         return after;
     };
 
-    println!("ohc-zigbee: NCP runs {} at {baud} baud", describe(&v));
+    println!("zigbee: NCP runs {} at {baud} baud", describe(&v));
     match img {
         Some(img) if v.stack < img.stack => {
             println!(
-                "ohc-zigbee: updating the NCP {} -> {} from {}",
+                "zigbee: updating the NCP {} -> {} from {}",
                 ash::stack_str(v.stack),
                 ash::stack_str(img.stack),
                 img.path
@@ -169,19 +169,19 @@ pub fn ensure(fd: RawFd, cfg: &Config) -> Option<(u32, NcpVersion)> {
             set_baud(fd, baud);
             let mut a = Ash::new(fd);
             if !(a.reset() && a.version().is_some()) {
-                println!("ohc-zigbee: lost the NCP before the update; keeping {}", ash::stack_str(v.stack));
+                println!("zigbee: lost the NCP before the update; keeping {}", ash::stack_str(v.stack));
                 status(baud, &v);
                 return Some((baud, v));
             }
             if let Err(e) = flash(fd, img, cfg.btl_baud, Some(&mut a)) {
-                println!("ohc-zigbee: update failed: {e}");
+                println!("zigbee: update failed: {e}");
             }
             let after = find_app(fd, cfg);
             report_after(&after, img);
             after
         }
         Some(img) if v.stack > img.stack => {
-            println!("ohc-zigbee: NCP is newer than the bundled {} — left as it is", ash::stack_str(img.stack));
+            println!("zigbee: NCP is newer than the bundled {} — left as it is", ash::stack_str(img.stack));
             status(baud, &v);
             Some((baud, v))
         }
@@ -195,18 +195,18 @@ pub fn ensure(fd: RawFd, cfg: &Config) -> Option<(u32, NcpVersion)> {
 fn report_after(after: &Option<(u32, NcpVersion)>, img: &Image) {
     match after {
         Some((b, v)) if v.stack == img.stack => {
-            println!("ohc-zigbee: NCP updated: {} at {b} baud", describe(v));
+            println!("zigbee: NCP updated: {} at {b} baud", describe(v));
             status(*b, v);
         }
         Some((b, v)) => {
             println!(
-                "ohc-zigbee: NCP answers {} at {b} baud, not the {} it was given",
+                "zigbee: NCP answers {} at {b} baud, not the {} it was given",
                 describe(v),
                 ash::stack_str(img.stack)
             );
             status(*b, v);
         }
-        None => println!("ohc-zigbee: no app answers after the flash — the next start retries"),
+        None => println!("zigbee: no app answers after the flash — the next start retries"),
     }
 }
 

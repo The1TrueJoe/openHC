@@ -8,7 +8,7 @@ import { useIoState } from '../App';
 
 /* Storage: drives plugged into the box, and the network share they are on.
 
-   ohc-storaged mounts every drive on an external bus (USB; the HC-800's eSATA
+   storaged mounts every drive on an external bus (USB; the HC-800's eSATA
    jack) as it is plugged in and serves it over SMB, which macOS and Windows
    both open natively. Volumes come and go live over MQTT; the share settings
    are configuration (REST). Music on the drives is played from the Audio page
@@ -202,7 +202,7 @@ function Share({
 
 /* ── the file browser ────────────────────────────────────────────────────────
 
-   Folders and files on the mounted drives (ohc-storaged's /api/files, confined
+   Folders and files on the mounted drives (storaged's /api/files, confined
    to the drives): open folders, download, rename, delete, make folders, and
    upload — drop files on the panel or pick them; each streams to the drive with
    its own progress bar. */

@@ -49,7 +49,7 @@ function destinations(c: Capabilities): Dest[] {
     // the single-output view pads itself).
     d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} />, full: true });
   }
-  // Storage appears on boards that run ohc-storaged (the 'storage' feature:
+  // Storage appears on boards that run storaged (the 'storage' feature:
   // every board with USB).
   if (c.storage) {
     d.push({ id: 'storage', label: 'Storage', icon: HardDrive, render: (c) => <StoragePanel caps={c} /> });
@@ -85,7 +85,7 @@ export default function App() {
   useEffect(() => {
     // REST first, for two things MQTT cannot supply: the board's shape, and
     // the topic root to subscribe under. Only then does the IO client connect.
-    // Audio is ohc-audiod's (its own daemon and REST); a board without it, or
+    // Audio is audiod's (its own daemon and REST); a board without it, or
     // with it down, simply has no Audio entry.
     Promise.all([
       rest.capabilities(),

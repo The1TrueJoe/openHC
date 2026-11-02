@@ -2,7 +2,7 @@
  * ohceq — openHC's per-output tone stage, as an ALSA filter plugin.
  *
  * Bass and treble (RBJ shelving biquads at 120 Hz and 8 kHz, +-12 dB) and
- * left/right balance, on 16-bit stereo. ohc-audiod puts one in front of every
+ * left/right balance, on 16-bit stereo. audiod puts one in front of every
  * output, between its level (softvol) and its dmix:
  *
  *   pcm.ohc_analog2_eq {

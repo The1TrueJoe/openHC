@@ -193,7 +193,7 @@ anything.
 
 Because `/dev/mtd0` is writable (above), the EA1 has a **software** return-to-stock
 that needs no serial: openHC's install adds exactly one `script` item to the
-SPI-NOR MFH, and `ohc-restore` removes it. It can be triggered from iod (REST/MQTT),
+SPI-NOR MFH, and `restore` removes it. It can be triggered from iod (REST/MQTT),
 the web UI System panel, or by **holding the front ID button** — SoC GPIO 32
 (active-low, confirmed on this EA1), a `gpio-keys-polled` node in the board
 device tree. The watcher times the hold from the button's input events and is

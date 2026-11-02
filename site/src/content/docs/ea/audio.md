@@ -108,7 +108,7 @@ with another layout brings its own addresses:
 register init, cells, tables, designs — and `mkfw.py` builds it, with the
 program when there is one, into the kernel's SigmaDSP firmware format
 (`/lib/firmware/openhc/adau1451-ea3.bin`). The board DTB names the file and the
-program's version cell (`control4,program-version`). ohc-audiod reads the same profile for
+program's version cell (`control4,program-version`). audiod reads the same profile for
 its knob list, so the web UI shows exactly those knobs, set over MQTT like the
 HC-800's tone. The [directory's README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)
 has the map and how it was proven.

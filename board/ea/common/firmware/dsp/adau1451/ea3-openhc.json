@@ -15,7 +15,7 @@
     "IndexSelectableMuxStereo selectors: the choice is the index.",
     "",
     "Volume is the program's stereo gain, linear 8.24 per channel: written 0 at",
-    "boot so nothing plays; ohc-audiod sets the run value (1.0, 0x01000000) once",
+    "boot so nothing plays; audiod sets the run value (1.0, 0x01000000) once",
     "the output's level and tone are back. The output's level lives in ALSA, as on",
     "the HC-800, so the DSP runs it full.",
     "",

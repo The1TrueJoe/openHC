@@ -14,11 +14,11 @@
 # commits), a second file is made too: adau1451-ea3-openhc.bin, from
 # ea3-openhc.json, carrying the register init, openHC's own program and its
 # knobs. That is the file the device tree names, and its profile is the one
-# board.env gives ohc-audiod. The build fails if the device tree's
+# board.env gives audiod. The build fails if the device tree's
 # control4,program-version is not the program's version cell, so a design
 # change that moves it cannot ship a program the driver would stop.
 #
-# The profile is installed too: ohc-audiod reads its knob list from it, so the
+# The profile is installed too: audiod reads its knob list from it, so the
 # web UI shows exactly the knobs the firmware has.
 #
 ################################################################################
