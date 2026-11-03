@@ -59,8 +59,10 @@
  * master (SND_SOC_DAIFMT_CBM_CFM), but the register init a stock unit loads
  * makes every serial port of the DSP a slave. The CE5300's stream comes in on
  * SDATA_IN3 with its own BCLK_IN3/LRCLK_IN3, through an ASRC, and the core
- * runs on serial input 0's frame clock (ea3.json, "init"). Nothing here
- * generates or gates clocks, and neither DAI ever implemented .set_fmt.
+ * runs on serial input 0's frame clock (ea3.json, "init"), which the CE5300's
+ * TX0 drives once ce5300-i2s has started it. Without it the core never gets a
+ * frame. Nothing here generates or gates clocks, and neither DAI ever
+ * implemented .set_fmt.
  */
 
 #include <linux/delay.h>
