@@ -10,7 +10,7 @@ license.workspace = true
 ohc-flash-core = { workspace = true }
 ohc-flash-transport = { workspace = true }
 anyhow = { workspace = true }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 flate2 = "1"
 # Release/update metadata comes back as GitHub JSON; parsed with the workspace
 # serde stack. Downloads shell out to system `curl` (like transport does to ssh),

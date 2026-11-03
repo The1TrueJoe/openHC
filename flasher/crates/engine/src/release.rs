@@ -58,7 +58,7 @@ impl Release {
             // Match by basename, so a release zipped with or without a top
             // folder both work.
             let base = entry
-                .name()
+                .name()?
                 .rsplit(['/', '\\'])
                 .next()
                 .unwrap_or("")
@@ -108,3 +108,28 @@ pub const KNOWN: &[&str] = &[
     // The IO Extender: one legacy uImage, kernel + appended DTB + initramfs.
     "openhc-ioxv1-kernel.img",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_zip_finds_images_by_basename() {
+        let zip_path = std::env::temp_dir().join("ohc-release-test.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut w = zip::ZipWriter::new(f);
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+            use std::io::Write;
+            w.start_file("openhc-ea3-v2/bzImage", opts).unwrap();
+            w.write_all(b"kernel").unwrap();
+            w.start_file("openhc-ea3-v2/notes.txt", opts).unwrap();
+            w.write_all(b"ignored").unwrap();
+            w.finish().unwrap();
+        }
+        let r = Release::from_zip(&zip_path).unwrap();
+        assert_eq!(r.files.len(), 1);
+        assert_eq!(r.files["bzImage"], b"kernel");
+        let _ = std::fs::remove_file(&zip_path);
+    }
+}
