@@ -1,122 +1,57 @@
-# openHC — settings shared by every EA-series board (EA1, EA3).
-#
-# NOT standalone: build/build.sh concatenates this with the board's own file and
-# feeds the result to Buildroot. Kconfig takes the LAST assignment, so a board
-# setting something after this wins. Put something here only if it is true for
-# the whole family.
+# openHC — EA family base, composed by build/build.sh (last assignment wins).
+# Background for every setting here: docs ea/board-config.
 
-# --- arch: x86_64, Bonnell tuning ---
-# Every EA is the same Intel Atom CE5310, which reports `lm`. Proven on hardware
-# 2026-08-31: CEFDK's bootlinux starts a 64-bit kernel.
-#
-# The reason to move off i386 is Home Assistant: orjson has never published an
-# i686 wheel, nor has cryptography, and HA pins exact versions. It also removes
-# the 32-bit lowmem split — ~934 MB of the 1.7 GB was highmem.
-#
-# COST: the SGX545 userspace is 32-bit Intel/Imagination blobs, so 3D needs
-# i386 multiarch through the PowerVR module's compat path. Plausible, unproven.
+# --- arch: x86_64 (every EA is a CE5310) ---
 BR2_x86_64=y
 BR2_x86_bonnell=y
 
-# x86_64 pulls in objtool, which #includes <gelf.h>. Without this the kernel
-# build dies on a missing HOST header while naming only itself:
-#   tools/objtool/include/objtool/elf.h:10:10: fatal error: gelf.h
+# objtool needs host <gelf.h>; without it the kernel build fails on a host header.
 BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
 
-# Inject this family's kernel drivers (board/ea/common/{drivers,sound}) via
-# OHC_KERNEL_MIRROR_HOOK. Opt-in, and this is the only file that opts in — so if
-# an EA kernel comes out missing gpio-intelce, pwm-ce5300 or the ADAU1451 ASoC
-# stack, check this line first.
+# The only opt-in for board/ea/common/kernel/{drivers,sound}; check here if they are missing.
 BR2_OHC_EA_KERNEL_DRIVERS=y
 
 # --- init / login ---
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
 
-# --- kernel ---
-# Size is the constraint: the bzImage must stay under CEFDK bootlinux's ~7 MB
-# copy window, which is what the aggressive trim in linux/common.fragment is for.
+# --- kernel: must fit CEFDK bootlinux's ~7 MB copy window ---
 BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_BZIMAGE=y
 
-# --- rootfs: standalone gzipped cpio, loaded as an external initrd ---
-# NOT embedded in the bzImage. CEFDK's bootlinux copies the kernel to 0x100000
-# while its own loader sits at ~0x812f07, so a big embedded image overruns the
-# loader mid-copy and crashes on return. The initrd rides in high RAM instead.
+# --- rootfs: external gzipped initrd, never embedded (it would overrun CEFDK's loader) ---
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
 
 # --- on-target debugging ---
 BR2_PACKAGE_PCIUTILS=y
 
-# --- MTD tools: read/erase/write the boot SPI-NOR (/dev/mtd0) ---
-# flash_erase, flashcp, mtd_debug and friends are how openHC backs up, rewrites
-# and restores the CEFDK MFH/autoscript once spi-ea-ce5xx gives it an MTD.
+# --- MTD tools for the boot SPI-NOR (/dev/mtd0) ---
 BR2_PACKAGE_MTD=y
 
-# --- kexec: bootstrap the full kernel past CEFDK's fixed-size autoscript slot ---
-# The autoscript can only load a kernel that fits its frozen read size, so the
-# full openHC kernel (i2c/fan, the boot SPI-NOR for /dev/mtd0) is staged on p1
-# and started with kexec by /etc/init.d/S00kexec. Same mechanism the HC-800
-# already uses to update itself. ZLIB because our bzImage is gzip-compressed.
+# --- kexec: S00kexec starts the full kernel staged on p1 ---
 BR2_PACKAGE_KEXEC=y
 BR2_PACKAGE_KEXEC_ZLIB=y
 
-# --- ccache: share compiled objects across the EA family and across CI runs ---
-# Every EA board is the same x86_64 glibc target and compiles the SAME heavy
-# common userspace — glibc, ICU, harfbuzz, libstdc++ and above all WPE WebKit
-# (~1.1 GB/job, the single dominant cost). Without a shared cache each of the
-# five EA images recompiles all of it from source, and a cold CI runner does it
-# again every time the per-board output cache is evicted. ccache wraps HOSTCC
-# and the cross compiler, so a translation unit built once for ea1-v2 is a cache
-# hit for ea3-v2 and for the next run — the toolchain build included.
-#
-# CI points BR2_CCACHE_DIR at a cached directory (see .github/workflows/images.yml)
-# and the whole EA family shares one key, so the cache fills on the first board
-# and every later board/run reads it. Harmless locally: with no cached dir it
-# lands in Buildroot's default and simply starts empty.
-#
-# Capped so one family's cache cannot crowd the others out of GitHub's 10 GB
-# repo-cache budget; ccache evicts its own LRU objects past the limit.
+# --- ccache: one cache for the whole EA family (CI sets BR2_CCACHE_DIR) ---
 BR2_CCACHE=y
 BR2_CCACHE_INITIAL_SETUP="--max-size=3G"
 
-# --- C library: glibc, not the shared musl default ---
-# The EA family runs Intel's PowerVR DDK userspace (packages/sgx545-um) for 3D,
-# and those blobs are glibc-linked — a musl system cannot load them at all.
-# gcompat is in no Buildroot release; a private glibc under /opt means a loader
-# wrapper forever. Size is the one thing this board has spare (512 MB image,
-# ~7 MB used); what is tight is the bzImage, which the C library does not touch.
+# --- C library: glibc, the DDK blobs cannot load on musl ---
 # BR2_TOOLCHAIN_BUILDROOT_MUSL is not set
 BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
 
-# Userspace built for speed (-O2), not the fleet-wide -Os. This board has the
-# room to spare (see above), and glibc 2.42 does not even link at -Os on x86_64
-# (BZ 33367: GCC leaves modf's trunc() as a libcall) without a backport. The
-# kernel has its own CONFIG_CC_OPTIMIZE_FOR_SIZE, so the bzImage is unaffected.
+# Userspace at -O2, not the fleet's -Os.
 # BR2_OPTIMIZE_S is not set
 BR2_OPTIMIZE_2=y
 
-# C++ and wide characters for WPE WebKit, which pulls in ICU and harfbuzz.
-# Without these the wpewebkit package is unselectable and kconfig drops it in
-# SILENCE — the build succeeds and the engine is simply absent.
+# Needed by WPE WebKit; without them kconfig drops wpewebkit silently.
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INSTALL_LIBSTDCPP=y
 BR2_USE_WCHAR=y
 
-# A real font, in /usr/share/fonts. The on-panel WPE WebKit (the i386 sysroot in
-# /opt/sgx-i386-wpe) ships fontconfig but NO font files, and at runtime its
-# fontconfig <dir>/usr/share/fonts</dir> resolves to THIS image's /usr/share/fonts
-# — so without a font here every glyph on the panel renders invisibly and the
-# dashboard looks like a blank screen (its light background with no text). DejaVu
-# is fontconfig's canonical sans/serif/mono generic, so the UI's system-font stack
-# (system-ui -> sans-serif) lands on DejaVu Sans. Small, and only the display path
-# uses it; a board that never turns the on-panel view on just carries the files.
+# The i386 WPE sysroot has no fonts and reads this image's; without one the panel text is invisible.
 BR2_PACKAGE_DEJAVU=y
 
-# Both point back into this directory, which is the giveaway that they were
-# never per-board settings. The patch list starts with the patches the HC-800
-# shares (common/patches: 0015, the built-in device tree, and the audio
-# feature's shairport-sync patches).
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/common/patches $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/patches"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/ea/common/post-image.sh"

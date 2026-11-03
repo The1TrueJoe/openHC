@@ -2,7 +2,7 @@
 title: EA-5
 description: The EA-5 ("garmadon") — what it adds over an EA-3, the audio FPGA, and what openHC does with it so far.
 sidebar:
-  order: 4
+  order: 3.5
 ---
 
 The EA-5 is the EA-3's platform (CE5300, CEFDK, TM4C IO-MCU, EM357 Zigbee) with
@@ -12,8 +12,8 @@ a bigger IO panel and a different audio section. Board: **GARMADON MAIN BOARD,
 
 **Nothing here has run on an EA-5 yet.** Everything below comes from Control4's
 GPL kernel (OS 3.3.1), the stock root filesystem (shared by every EA), the
-installation guide and photos of the board. The [bring-up checklist](#bring-up-checklist)
-is what to confirm first.
+installation guide and photos of the board. The [bring-up](#bring-up) work list says
+what to confirm first.
 
 ## Panel
 
@@ -131,25 +131,9 @@ No EA-5 DSP program exists in openHC yet, so the DSPs are left as they come up.
 Not done: an EA-5 DSP program, the DB9 serial ports, sample rates other than
 48 kHz, DSA port labels.
 
-## Bring-up checklist
+## Bring-up
 
-Netboot first (it writes nothing). Then:
-
-1. `cat /proc/c4board/type /proc/c4board/revision` on stock, for the flasher's
-   board table, and whether the secure-boot fuse is blown.
-2. `lspci -nn | grep 10ee` — the FPGA at `02:00.0`. `dmesg | grep ea5-fpga`:
-   revision, block size, IRQ. `cat /sys/kernel/debug/ea5-fpga`.
-3. `dmesg | grep adau1451` — both DSPs answer (no "DSP did not respond").
-4. `aplay -l` — card `openhcea5` with four PCMs. Then
-   `speaker-test -D hw:CARD=openhcea5,DEV=0 -c2 -r48000 -F S32_LE` on analog 1,
-   `DEV=1` on coax 1, and so on. Note anything heard on the wrong jack.
-5. `arecord -D hw:CARD=openhcea5,DEV=0 -c2 -r48000 -f S32_LE -d 5 /tmp/a.wav`
-   with something on line in 1.
-6. IR on every jack, relays 1–4, contacts 1–4. Which MCU channel drives which
-   jack is assumed in order.
-7. Combo jacks: `echo serial > /sys/class/tty/ttyOHC0/mode`, then talk on
-   `/dev/ttyOHC0` through IR 1 (a 3.5 mm-to-DB9 cable).
-8. `lsusb` and `ls /dev/ttyUSB*` — what carries the DB9s (`usb_3_reset` is a
-   hint) and which `ttyUSB` is the Zigbee CP2104.
-9. Which switch port is ETHERNET IN (boot with `ohc.switch=1`, `ip link`).
-10. RAM: the EA-3's `memmap` line is used as is; check `free -m`.
+The work list (identity and boot, the audio FPGA, the DSPs, the switch, the
+IO-MCU, the DB9 serial ports and the rest) is
+[issue #128](https://github.com/The1TrueJoe/openHC/issues/128). Netboot first:
+it writes nothing.

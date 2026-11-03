@@ -1,6 +1,4 @@
-# ADAU1451 SigmaDSP support shared by the EA-3 (audio-dsp) and EA-5 (audio-fpga).
-# ASoC and the drivers are modules so the bzImage fits CEFDK's bootlinux window;
-# udev loads them from their devices' modaliases.
+# ADAU1451 SigmaDSP for EA-3 (audio-dsp) and EA-5 (audio-fpga). Modules (copy window).
 CONFIG_SOUND=m
 CONFIG_SND=m
 CONFIG_SND_PCM=m
@@ -12,6 +10,5 @@ CONFIG_SND_HRTIMER=m
 # adau1451-c4 is copied in (objs.mk), so it has no Kconfig entry to select these.
 CONFIG_REGMAP=y
 CONFIG_REGMAP_I2C=y
-# The sigmadsp core has no prompt; the ADAU1701 driver is the supported way to
-# get it built.
+# Only way to get the prompt-less sigmadsp core built.
 CONFIG_SND_SOC_ADAU1701=m

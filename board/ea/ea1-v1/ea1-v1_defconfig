@@ -1,8 +1,3 @@
-# openHC — Control4 EA1 (rev 1). Only what differs from the EA family lives here;
-# build.sh assembles the kernel fragments, rootfs overlays and post-image arg
-# from board/ea/common + this board + ohc.features.
-#
-# PROVEN on hardware: secure-boot fuse CLEAR, boots an unsigned kernel. Its radio
-# is the reachability path (ohc.features: wifi).
+# openHC — Control4 EA1 (rev 1). Proven on hardware. See docs: ea/board-config.
 BR2_TARGET_GENERIC_HOSTNAME="openea1"
 BR2_TARGET_GENERIC_ISSUE="openHC EA1"
