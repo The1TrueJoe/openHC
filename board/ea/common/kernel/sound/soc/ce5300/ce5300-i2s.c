@@ -217,6 +217,9 @@ static void ce5300_rx_setup(struct ce5300_stream *st)
 {
 	struct ce5300_i2s *i2s = st->i2s;
 
+	/* An empty FIFO, so no stale words lead the stream; it resets the rest. */
+	ce5300_update(i2s, st->ctx, CE5300_CTX_FIFO_RESET, CE5300_CTX_FIFO_RESET);
+	ce5300_update(i2s, st->ctx, CE5300_CTX_FIFO_RESET, 0);
 	ce5300_update(i2s, st->ctx, CE5300_CTX_SEL_MASK,
 		      CE5300_RX_SEL_SPDIF << CE5300_CTX_SEL_SHIFT);
 	ce5300_update(i2s, st->ctx + CE5300_RX_CTRL,
@@ -375,13 +378,10 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 	case SNDRV_PCM_TRIGGER_START:
 		if (st->capture) {
 			/*
-			 * Stock's capture_start: the RX run bit first (after a
-			 * FIFO reset, so no stale words lead the stream), then
-			 * the RX FIFO as the source, the head as the next
-			 * descriptor and the mode word.
+			 * Stock's capture_start: the RX run bit first, then the RX
+			 * FIFO as the source, the head as the next descriptor and
+			 * the mode word.
 			 */
-			ce5300_update(st->i2s, st->ctx, CE5300_CTX_FIFO_RESET, CE5300_CTX_FIFO_RESET);
-			ce5300_update(st->i2s, st->ctx, CE5300_CTX_FIFO_RESET, 0);
 			ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, CE5300_TX_RUN);
 			writel(st->i2s->phys + st->fifo, dma_reg(st, CE5300_DMA_CUR_SRC));
 		} else {
@@ -526,7 +526,7 @@ static const struct snd_soc_component_driver ce5300_component = {
 
 static struct snd_soc_dai_driver ce5300_dais[CE5300_STREAMS] = {
 	[CE5300_I2S_OUT]   = { .name = "ce5300-i2s", .id = CE5300_I2S_OUT,
-			       .playback = CE5300_DAI_STREAM("Playback") },
+			       .playback = CE5300_DAI_STREAM("I2S Playback") },
 	[CE5300_SPDIF_OUT] = { .name = "ce5300-spdif-out", .id = CE5300_SPDIF_OUT,
 			       .playback = CE5300_DAI_STREAM("S/PDIF Playback") },
 	[CE5300_SPDIF_IN]  = { .name = "ce5300-spdif-in", .id = CE5300_SPDIF_IN,
@@ -548,7 +548,7 @@ static const struct snd_soc_dai_ops ce5300_dai_off_ops = {
 
 static struct snd_soc_dai_driver ce5300_dais_off[CE5300_STREAMS] = {
 	[CE5300_I2S_OUT]   = { .name = "ce5300-i2s", .id = CE5300_I2S_OUT,
-			       .playback = CE5300_DAI_STREAM("Playback"),
+			       .playback = CE5300_DAI_STREAM("I2S Playback"),
 			       .ops = &ce5300_dai_off_ops },
 	[CE5300_SPDIF_OUT] = { .name = "ce5300-spdif-out", .id = CE5300_SPDIF_OUT,
 			       .playback = CE5300_DAI_STREAM("S/PDIF Playback"),

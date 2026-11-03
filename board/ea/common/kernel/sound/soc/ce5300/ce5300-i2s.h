@@ -214,9 +214,12 @@
 /*
  * TX2 as the coax out: TX0's format with output select S/PDIF and DMA 2.
  * MEASURED 2026-11-02 (EA3, coax out cabled to coax in): with these, words fed
- * to TX2's FIFO came back on RX1 bit for bit.
+ * to TX2's FIFO came back on RX1 bit for bit. +0x14 is half TX0's: S/PDIF's
+ * biphase line runs at 128 fs, I2S's bit clock at 64 fs; at TX0's 8 the coax
+ * out ran at exactly half TX0's frame rate (MEASURED 2026-11-03). Like
+ * TX_CTRL it ignores writes while the context runs.
  */
-#define CE5300_TX_SPDIF_14		0x08
+#define CE5300_TX_SPDIF_14		0x04
 #define CE5300_TX_SPDIF_1C		0x3f
 
 /* ---- RX block: base 0x3000, 2 contexts, stride 0x100 ------------------- */
@@ -224,6 +227,10 @@
 #define CE5300_RX_STRIDE		0x100
 #define CE5300_RX_CONTEXTS		2
 #define CE5300_RX_REG(rx, off)		(CE5300_RX_BASE + (rx) * CE5300_RX_STRIDE + (off))
+/*
+ * The FIFO reset (+0x00 bit 3) puts +0x04, +0x0c and +0x1c back to their reset
+ * values (MEASURED 2026-11-03), so they are set after it.
+ */
 #define CE5300_RX_CTRL			0x04	/* [19:17] the DMA context, as on TX */
 #define CE5300_RX_INT			0x0c	/* stock ORs its sa_int_mask in at capture start */
 #define   CE5300_RX_INT_SPDIF		0x200	/* 0x4d3, the S/PDIF input's */
