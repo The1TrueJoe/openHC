@@ -176,14 +176,15 @@ the Dockerfile, deliberately: the Dockerfile keeps sources off a developer's
 machine, but in CI it actively hurts, because Buildroot's `dl/` and `output/` live
 in BuildKit cache mounts and cache mounts aren't exported by any GitHub cache
 backend. Run it natively and `actions/cache` can hold the one thing worth holding
-— the ~GB of upstream tarballs every board re-downloads, keyed so all eight matrix
-jobs hit the same entry.
+— the ~GB of upstream tarballs every board re-downloads, keyed so every matrix
+job hits the same entry.
 
-Toolchains are deliberately **not** shared between boards. Sharing one means an
-external-toolchain tarball and a second pipeline to maintain; the repository is
-public, so runner minutes are free, and parallel matrix jobs already give the
-wall-clock win.
+The EA boards share one toolchain. They are the same target (x86_64 Bonnell,
+glibc, C++/wchar), so the `images-toolchain` job builds it once per run and each
+EA image job uses it as an external toolchain (`OHC_EA_SDK` in `build/build.sh`).
+The other boards each build their own.
 
-A change under `board/<board>/` builds only that board. A change to `board/common`,
-`packages/`, `build/`, the flasher or the Makefile builds everything. A docs-only
-change builds nothing.
+A change under `board/<board>/` builds only that board; one under
+`board/ea/common/` builds every EA board. A change to `board/common`, `build/`,
+the flasher or the Makefile builds everything. A change under `packages/` builds
+the boards that ship the touched crate. A docs-only change builds nothing.

@@ -192,13 +192,11 @@ netfilter, IPv6, Bluetooth, SCSI/ATA/MD, DRM, sound, media, ftrace or debug info
 
 ### What that forces
 
-Features written as `=y` land in the image whether the board uses them or not.
-`CONFIG_MODULES` is on and exactly one symbol in the whole configuration is `=m`,
-against 1370 that are `=y`.
-
-So features that aren't needed to *reach the rootfs* should come back as
-**modules**, not built in. Only e1000, sdhci/mmc, ext4, serial, PCI and ACPI must
-be built in. If a genuinely large kernel is ever unavoidable, the escape hatch is
+Features written as `=y` land in the image whether the board uses them or not,
+so features that aren't needed to *reach the rootfs* are **modules**, loaded from
+p1 by udev: ALSA and ASoC, the switch (b53/DSA), USB storage and input, Wi-Fi,
+the SGX driver. Only e1000, sdhci/mmc, ext4, serial, PCI and ACPI must be built
+in. If a genuinely large kernel is ever unavoidable, the escape hatch is
 a small bootstrap kernel that `kexec`s the real one from p1, kexec has no such
 limit.
 
@@ -225,8 +223,9 @@ Couldn't register serial port 0, irq 25 ... -28    (ENOSPC)
 
 This is why every hunt for the Zigbee radio on `ttyS1..3` came back empty —
 those are the legacy ports, they enumerate with `irq = 0`, and a port with no
-IRQ transmits fine but never receives. `SERIAL_8250_NR_UARTS` is raised from 4
-to 8.
+IRQ transmits fine but never receives. That was once worked around by raising
+`SERIAL_8250_NR_UARTS` to 8; the UARTs now come from the device tree (`8250_of`,
+timer-polled) in the legacy slots at their own addresses, so 4 slots are enough.
 
 **A kexec out of a kernel whose GPU driver has probed breaks the next kernel.** Once `pvrsrvkm` has bound the SGX545
 (01:02.0), the core stays live after the driver lets go: its shutdown hook, and
