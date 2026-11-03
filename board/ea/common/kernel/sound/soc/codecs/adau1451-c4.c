@@ -57,10 +57,10 @@
  *
  * Clocks: the vendor link declared this codec the I2S bit- and frame-clock
  * master (SND_SOC_DAIFMT_CBM_CFM), but the register init a stock unit loads
- * makes every serial port of the DSP a slave. The CE5300's stream comes in on
- * SDATA_IN3 with its own BCLK_IN3/LRCLK_IN3, through an ASRC, and the core
- * runs on serial input 0's frame clock (ea3.json, "init"), which the CE5300's
- * TX0 drives once ce5300-i2s has started it. Without it the core never gets a
+ * makes every serial port of the DSP a slave. The CE5300's TX0 drives serial
+ * input 0's clocks and data once ce5300-i2s has started it: the core runs on
+ * that frame clock, and the stream reaches the program through ASRC 0
+ * (ea3.json, "init"). Without it the core never gets a
  * frame. Nothing here generates or gates clocks, and neither DAI ever
  * implemented .set_fmt.
  */
