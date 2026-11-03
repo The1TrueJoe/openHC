@@ -29,7 +29,7 @@
   "step_db": 0.5,
   "version": {
     "param": "Version.DCValue",
-    "value": 2
+    "value": 4
   },
   "knobs": [
     {
@@ -302,6 +302,14 @@
         "db": 3
       },
       "_design": "loudness: +3 dB above 10 kHz"
+    },
+    {
+      "stage": "LineInDCBlock.Stage0_",
+      "filter": {
+        "type": "highpass1",
+        "freq": 10
+      },
+      "_design": "line in: the ADC's DC offset out, a first-order 10 Hz high-pass (a 2nd-order one at 10 Hz added -34 dBFS of DC: its poles amplify the program's rounding ~120 dB)"
     }
   ],
   "cells": [

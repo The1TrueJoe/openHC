@@ -102,6 +102,16 @@ def biquad(f, db, fs):
         alpha = s / (2 * f["q"])
         b = (1 + alpha * A, -2 * c, 1 - alpha * A)
         a = (1 + alpha / A, -2 * c, 1 - alpha / A)
+    elif kind == "highpass":
+        alpha = s / (2 * f["q"])
+        b = ((1 + c) / 2, -(1 + c), (1 + c) / 2)
+        a = (1 + alpha, -2 * c, 1 - alpha)
+    elif kind == "highpass1":
+        # First order, bilinear. A DC blocker: one pole near 1 amplifies the
+        # program's rounding by 1/(1 - r); two would square it.
+        k = math.tan(math.pi * f["freq"] / fs)
+        b = (1, -1, 0)
+        a = (1 + k, k - 1, 0)
     elif kind in ("lowshelf", "highshelf"):
         alpha = s / 2 * math.sqrt((A + 1 / A) * (1 / f["slope"] - 1) + 2)
         sa = 2 * math.sqrt(A) * alpha
@@ -270,7 +280,7 @@ def build(profile, program=None):
         out.append(data(addr(k["cell"]), struct.pack(">I", FLAT)))
         out.append(control(k["control"], addr(k["cell"])))
     for f in profile.get("filters", []):
-        b0, b1, b2, a1, a2 = biquad(f["filter"], f["filter"]["db"], fs)
+        b0, b1, b2, a1, a2 = biquad(f["filter"], f["filter"].get("db", 0), fs)
         for at, x in zip(f["cells"], (b2, b1, b0, -a2, -a1)):
             out.append(data(addr(at), fixed(x)))
     for c in profile["cells"]:
