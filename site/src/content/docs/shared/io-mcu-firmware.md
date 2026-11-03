@@ -138,7 +138,8 @@ table sent again (a driver rebind) changes nothing, so a closed relay stays clos
 **Stock ignores it.** Neither stock dispatcher handles `0xf0` or `0xf2`: the LM3S
 image compares down a chain that ends `… 0xa1, 0xb9, 0xc1, 0xc4, 0xd2`, the TM4C one
 `… 0xa1, 0xa3, 0xc1, 0xc4, 0xd2`, and anything else falls through to nothing. The
-driver waits 200 ms for an answer from stock and carries on.
+driver doesn't rely on that: it reads the firmware version first and sends the
+table only to openHC's own.
 
 `RESET` (`0xf2`, answered `0xf3`) resets openHC's firmware into the bootloader,
 which the loader uses to replace it without a reset line.

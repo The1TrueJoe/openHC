@@ -4,6 +4,7 @@
  * See site/src/content/docs/ea/device-tree.md.
  */
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/gpio/control4,io-mcu.h>
 #include "ce5300.dtsi"
 
 / {
@@ -267,7 +268,12 @@
 	io_mcu: io-mcu {
 		compatible = "control4,tm4c1231d5-io-mcu", "control4,io-mcu";
 		current-speed = <460800>;
+		control4,heartbeat-pin = <IOMCU_PORT_C 7>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+
+		ir-receiver {
+			control4,ir-pin = <IOMCU_PORT_D 6>;
+		};
 	};
 };

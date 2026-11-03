@@ -3,30 +3,40 @@
 #include "ea.dtsi"
 
 /* Four IR jacks; IR 1 and 2 double as serial ports 1 and 2. */
+/* Pins: docs shared/io-mcu-pinmap (stock TM4C profile block 2). */
 &io_mcu {
-	control4,ir-blaster;
-	control4,ir-receiver;
-
 	jack@1 {
 		reg = <1>;
 		label = "IR / Serial 1";
 		control4,ir-channel = <0>;
+		control4,ir-pin = <IOMCU_PORT_B 6>;
 		control4,uart = <0>;
+		control4,uart-pins = <IOMCU_PORT_E 4>, <IOMCU_PORT_E 5>;
+		control4,uart-mux-pins = <IOMCU_PORT_E 2>, <IOMCU_PORT_B 1>;
 	};
 	jack@2 {
 		reg = <2>;
 		label = "IR / Serial 2";
 		control4,ir-channel = <1>;
+		control4,ir-pin = <IOMCU_PORT_F 2>;
 		control4,uart = <1>;
+		control4,uart-pins = <IOMCU_PORT_E 0>, <IOMCU_PORT_E 1>;
+		control4,uart-mux-pins = <IOMCU_PORT_E 3>, <IOMCU_PORT_B 3>;
 	};
 	jack@3 {
 		reg = <3>;
 		label = "IR 3";
 		control4,ir-channel = <2>;
+		control4,ir-pin = <IOMCU_PORT_B 0>;
 	};
 	jack@4 {
 		reg = <4>;
 		label = "IR 4";
 		control4,ir-channel = <3>;
+		control4,ir-pin = <IOMCU_PORT_B 2>;
+	};
+	ir-blaster {
+		control4,ir-channel = <4>;
+		control4,ir-pin = <IOMCU_PORT_D 4>;
 	};
 };
