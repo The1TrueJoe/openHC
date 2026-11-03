@@ -191,10 +191,51 @@ code, and why the ordering is always: **prove it in RAM, then write it.**
 | `/mnt/persistent` (p3) | 32 MB | small, cheap |
 | p2 recovery partition | 1 GB | the thing you are protecting |
 
-Back up the kernel region specifically before touching it:
+#### Taking them from a stock box
+
+Stock has nowhere to hold a 7.6 GB image, so stream everything to another
+machine over root SSH. Stock Dropbear has no `sftp-server`, so `scp` fails; pipe
+`dd`/`cat` through `ssh` instead. Compress on the receiving end, because the
+CE5300 is the bottleneck.
 
 ```sh
-dd if=/dev/mmcblk0 bs=512 count=14000 of=/mnt/backup/kernel-slot.bin
+# the whole user area: partitions, the CEFDK kernel slot below p1, the gaps
+ssh root@BOX 'dd if=/dev/mmcblk0 bs=1M' | gzip -1 > ea-mmcblk0.img.gz
+
+# SPI NOR (MFH + CEFDK) is a separate chip, not on the eMMC
+ssh root@BOX 'cat /dev/mtd0ro' > ea-spinor.bin
+
+# eMMC hardware boot partitions, if `ls /dev/mmcblk0*` shows them
+ssh root@BOX 'cat /dev/mmcblk0boot0' > ea-mmcblk0boot0.bin
+ssh root@BOX 'cat /dev/mmcblk0boot1' > ea-mmcblk0boot1.bin
+```
+
+If the old Dropbear won't negotiate, add
+`-o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`.
+
+Verify each image against the device, not just its size:
+
+```sh
+ssh root@BOX 'md5sum /dev/mmcblk0'
+gunzip -c ea-mmcblk0.img.gz | md5sum
+```
+
+Stock busybox is missing some tools (`od`, for one). Without `md5sum`, stream
+twice and compare the two files.
+
+:::caution[A live stock box gives a crash-consistent image, not an exact one]
+Stock runs with p1 (root) and p3 (`/mnt/persistent`) mounted read-write, and
+Director writes to them. Those two come out as if the power had been cut at that
+moment. Everything unmounted (p2, the kernel slot, the boot partitions, NOR)
+comes out exact. `sync` first and image while nothing is being configured. For a
+byte-perfect copy, run the same `dd` from a system that doesn't mount p1 or p3,
+such as a RAM [netboot](/build/install/#non-destructive-first-netboot), which writes nothing.
+:::
+
+To grab just the region below p1 (the kernel slot) before touching it:
+
+```sh
+ssh root@BOX 'dd if=/dev/mmcblk0 bs=512 count=$(cat /sys/class/block/mmcblk0p1/start)' > ea-below-p1.bin
 ```
 
 Backups are **your device's own data, kept local.** They contain Control4 and
