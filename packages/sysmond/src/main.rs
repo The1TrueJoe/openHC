@@ -24,9 +24,13 @@
 //! the full ring. `<base>/cmd/health/fan` takes `auto` or a percent. The REST
 //! surface below stays for queries (a full-resolution history window) and other
 //! API consumers.
+//!
+//! It also recovers the EA's rear USB port from an over-current fault, as the
+//! stock firmware did (usb.rs), and reports the faults as `health/usb`.
 mod fan;
 mod history;
 mod sensors;
+mod usb;
 
 use axum::{extract::Query, extract::State, Json};
 use utoipa::OpenApi;
@@ -39,7 +43,8 @@ use std::sync::{Arc, Mutex};
     info(title = "sysmond", description = "Board telemetry: temperatures, fans, CPU, memory and uptime, with history."),
     tags(
         (name = "Telemetry", description = "Sensors and machine-wide figures, sampled on a timer."),
-        (name = "Fan", description = "Fan presence, mode and manual control — EA family only.")
+        (name = "Fan", description = "Fan presence, mode and manual control — EA family only."),
+        (name = "USB", description = "Rear USB port over-current recovery — EA family only.")
     )
 )]
 struct ApiDoc;
@@ -47,6 +52,7 @@ struct ApiDoc;
 struct App {
     store: Mutex<history::Store>,
     period: u64,
+    usb: usb::Shared,
 }
 
 #[derive(serde::Deserialize)]
@@ -188,6 +194,22 @@ async fn fan_auto() -> Json<serde_json::Value> {
     Json(fan::auto())
 }
 
+/// Rear USB over-current recovery. `available` is false on boards without a
+/// board-switched port and its fault line; otherwise `faults` counts the
+/// over-currents since sysmond started, `cut` is true while the port is held
+/// off, and `last_fault` is when the last one began (Unix seconds).
+#[utoipa::path(
+    get, path = "/api/usb", tag = "USB",
+    summary = "Rear USB port over-current faults",
+    description = "On a fault (the load switch's flag, the device tree's `usb_rear_oc` line, going \
+low) sysmond disables the port for 2.5 s and powers it again, as Control4's stock firmware did. \
+Also published retained as `<base>/state/health/usb`.",
+    responses((status = 200, description = "{ available, faults, cut, last_fault }"))
+)]
+async fn usb_status(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(usb::json(&app.usb))
+}
+
 fn main() {
     let bind = std::env::var("SYSMOND_BIND").unwrap_or_else(|_| "127.0.0.1:7071".into());
     // Six hours at five seconds is ~4300 samples. Compact, so a few hundred kB.
@@ -197,6 +219,7 @@ fn main() {
     let app = Arc::new(App {
         store: Mutex::new(history::Store::new(window, period)),
         period,
+        usb: usb::Shared::default(),
     });
     eprintln!(
         "sysmond: sampling every {period}s, holding {}h ({} samples)",
@@ -216,6 +239,8 @@ fn main() {
         let (client, events) = rumqttc::AsyncClient::new(ohcmqtt::options("sysmond", &base), 16);
         let reconnected = std::sync::Arc::new(tokio::sync::Notify::new());
         let fan_changed = std::sync::Arc::new(tokio::sync::Notify::new());
+        let usb_changed = std::sync::Arc::new(tokio::sync::Notify::new());
+        usb::spawn(app.usb.clone(), usb_changed.clone());
         tokio::spawn(mqtt_loop(events, client.clone(), base.clone(), reconnected.clone(), fan_changed.clone()));
         tokio::spawn(async move {
             let mut cpu = sensors::Cpu::default();
@@ -231,6 +256,10 @@ fn main() {
                     }
                     _ = fan_changed.notified() => {
                         retained.set(&client, &base, "health/fan", &fan::status()).await;
+                        continue;
+                    }
+                    _ = usb_changed.notified() => {
+                        retained.set(&client, &base, "health/usb", &usb::json(&collector.usb)).await;
                         continue;
                     }
                 }
@@ -254,6 +283,7 @@ fn main() {
                     retained.set(&client, &base, "health/history", &h).await;
                 }
                 retained.set(&client, &base, "health/fan", &fan::status()).await;
+                retained.set(&client, &base, "health/usb", &usb::json(&collector.usb)).await;
                 n = n.wrapping_add(1);
             }
         });
@@ -269,6 +299,7 @@ fn main() {
             .routes(routes!(fan_status))
             .routes(routes!(fan_set))
             .routes(routes!(fan_auto))
+            .routes(routes!(usb_status))
             .with_state(app)
             .split_for_parts();
         // Served so webd can merge it — see webd's /api/openapi.json.
