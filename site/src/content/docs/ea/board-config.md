@@ -298,10 +298,10 @@ audio DMA (`ce5300-hdmi`). Its FIFO takes 32-bit words, hence `format=`, and its
 clock gives 48 kHz only. Playing switches the link from DVI to HDMI mode if
 CEFDK left it in DVI. See [HDMI out](/ea/audio/#hdmi-out-every-ea).
 
-Each card names its PCMs in the device tree: the EA3's is `Analog`
-(`simple-audio-card,link-name`, from openHC's patch `0020`), and the EA-5's four
-stream pairs are `Audio 1` to `Audio 4` (`control4,link-names`) until each jack
-is checked on hardware.
+Each card names its PCMs in the device tree: the EA3's three links are `Analog`,
+`Coax` and `Coax in` (`link-name` on each `simple-audio-card,dai-link`, from
+openHC's patch `0020`), and the EA-5's four stream pairs are `Audio 1` to
+`Audio 4` (`control4,link-names`) until each jack is checked on hardware.
 
 **EA3 analog** is CE5300 I2S1 → ADAU1451 SigmaDSP → AK4621. Tone is done by the
 DSP, not audiod's software stage: `dsp=` names the profile describing the DSP's
