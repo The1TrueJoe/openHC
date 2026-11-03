@@ -1,7 +1,7 @@
 # ADAU1451 SigmaDSP (EA3)
 
 The EA3 routes its analog audio through an Analog Devices **ADAU1451**
-SigmaDSP: CE5300 I²S1 → ADAU1451 → AK4621 → the analog jacks. It sits on
+SigmaDSP: CE5300 I²S (TX0) → ADAU1451 → AK4621 → the analog jacks. It sits on
 **i2c-3 at 0x38**, with reset on `dsp_reset` (gpio101) and the DAC soft mute on
 `dac_mute` (gpio61).
 
@@ -107,7 +107,7 @@ Input (ASRC 0) ─┼ EQ31 → EQ63 → … → EQ16k ─────┼→ Mode
 
 | Block (label) | What |
 |---|---|
-| `Input` | ASRC 0's two channels: serial input 3, the CE5300's I²S1, converted to the core's rate |
+| `Input` | ASRC 0's two channels: serial input 0, the CE5300's TX0, converted to the core's rate |
 | `Bass`, `Treble`, `EQ31` … `EQ16k` | `General2ndOrderIndexSelectable`, stereo: 49 biquads (`GSO_Array`, after a 7-word header — stock's layout exactly), the entry picked by an index cell |
 | `BassIndex`, … , `BalanceIndex` | those index cells: integer DC inputs (`FormatX` 32), 24 = flat |
 | `Mode` | `IndexSelectableMuxStereo`, index `ModeIndex`: 0 Tone, 1 EQ, 2 Flat, 3 Test tone |
@@ -177,12 +177,11 @@ undocumented 0xF431 and 0xF800–0xF847.
   slaves to BCLK_IN0/LRCLK_IN0 (inputs) and BCLK_OUT0/LRCLK_OUT0 (outputs),
   I²S, 24-bit, two 32-bit slots.
 * **Serial input 3 is the odd one out:** slave to its own BCLK_IN3/LRCLK_IN3
-  (`SERIAL_BYTE_3_0` = 0x6c00), and its channels 40/41 feed **ASRC 0**, which
-  converts them to the outputs' rate (`ASRC_INPUT0` = 0xa1, `ASRC_OUT_RATE0` = 1).
-  ASRCs 1–7 are muted. An ASRC is only needed for a source with a clock of its
-  own, so **SDATA_IN3 is almost certainly the CE5300's I2S1**, with the CE5300
-  (not the DSP) driving its clocks, whatever the vendor's ASoC link (codec
-  master) said.
+  (`SERIAL_BYTE_3_0` = 0x6c00), and in stock's init its channels 40/41 feed
+  **ASRC 0**, which converts them to the outputs' rate (`ASRC_INPUT0` = 0xa1,
+  `ASRC_OUT_RATE0` = 1). ASRCs 1–7 are muted. Under openHC nothing ever clocks
+  SDATA_IN3, and the CE5300's stream arrives on **SDATA_IN0** (measured, below),
+  so openHC's init points ASRC 0 there instead (`ASRC_INPUT0` = 0x01).
 * **Every output channel comes from the DSP core** (`SOUT_SOURCE0..23` = 2);
   which output pin carries the program's output to the AK4621 is the program's
   business, not the registers'.
@@ -334,6 +333,15 @@ codec to drive the cells by hand:
 * The DAC mute line (gpio61), high or low, made no difference to the tone.
 * `PANIC_FLAG` 1, `PANIC_CODE` 0x0010 appears once the core runs.
 
+**The PCM plays** (2026-11-03, #132): `aplay` into `hw:openhcea` or audiod's
+`ohc_analog` dmix moves TX0's DMA, and its samples reach the line out through
+**SDATA_IN0**: with `ASRC_INPUT0` on channels 0/1, a −12 dBFS 1 kHz / 1.5 kHz
+file measures −12.0 dBFS in modes 0, 1 and 2. On channels 16/17 or 32/33
+(serial inputs 1 and 2; the ASRC locks there too) and on stock's 40/41
+(SDATA_IN3, never clocked) the line stays at the −93 dBFS floor. Which jack
+is left is still open: the openSpeakerPoint's line input does not keep its
+channel order from one capture to the next.
+
 The line out was measured end to end by an openSpeakerPoint's line input
 (`cmd/audio/measure`: per-channel RMS, peak and pitch). It also caught, on
 boots of the b53-switch tests only (`ohc.switch=1`), a steady hiss at −66 dBFS
@@ -351,8 +359,6 @@ with the EA3's coax out looped to its coax in, the transmitter on too (bit 2,
 
 Still open:
 
-* **The PCM**, which feeds serial input 3; `ce5300-i2s` starts the clocks at
-  boot now, but until the PCM plays nothing but the test tone does.
 * **What the DAC mute line does**, since it did not mute.
 * **What each mode sounds like** with programme material, and in stock's map,
   **which balance table is the left jack** (assumed 0x0091).

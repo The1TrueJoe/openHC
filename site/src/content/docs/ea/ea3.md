@@ -194,9 +194,9 @@ strings /control4/bin/* | grep spidev  -> none  no vendor binary mentions spidev
 only thing anyone does to the codec is release its reset at boot.
 
 So the part is **strapped into standalone/hardware mode**: reset is deasserted,
-I²S1 feeds it, and nothing ever configures it over a control port. For an open
-image that's good news: the codec needs **no driver**, only `codec_reset` high
-and I²S1 running.
+the DSP's `SDATA_OUT1` feeds it, and nothing ever configures it over a control
+port. For an open image that's good news: the codec needs **no driver**, only
+`codec_reset` high and the CE5300's I²S running.
 
 ## There is no FPGA on this board
 

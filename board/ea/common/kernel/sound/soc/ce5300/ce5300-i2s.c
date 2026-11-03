@@ -8,35 +8,22 @@
  * comes from the DWARF debug info left in ismdaudio.ko. See ce5300-i2s.h for
  * the map and, importantly, for which fields are proven and which are inferred.
  *
- * WHY THIS DOES NOT REGISTER A PCM BY DEFAULT
- * ------------------------------------------
- * The DMA now moves samples into TX0 (start, stop and position are measured),
- * but where TX0's data enters the DSP is not settled, so a stream may still be
- * silent. Registering a PCM that plays into silence is worse than not
- * registering one -- userspace opens it, gets nothing, and the failure looks
- * like a codec or routing bug somewhere else entirely.
+ * ce5300_i2s.enable_pcm=0 is the probe-only fallback: the CPU DAI behind a
+ * component with no PCM ops and a startup that refuses, so the card and its
+ * DSP controls still form while anything opening the PCM gets -ENODEV.
  *
- * So the default is probe-only: bind, map, and read ONE register that is known
- * to answer. It still registers the CPU DAI, behind a component with no PCM
- * ops and a startup that refuses: the board's simple-audio-card then forms the
- * card, so the codec's DSP controls exist and can be tuned, while anything
- * opening the PCM gets -ENODEV at once rather than reaching a TX register.
- *
- * The block itself does come up, and probe brings it up whatever enable_pcm
- * says, because the I2S clocks are what the rest of the EA3's audio runs on
+ * The block itself comes up whatever enable_pcm says, because the I2S clocks are what the rest of the EA3's audio runs on
  * (ce5300_hw_start()). Reading the TX block used to hang the SoC dead (measured
  * 2026-08-30): CEFDK leaves the block clocked but held in its own reset,
  * +0x00 bit 1, and the TX/DMA sub-blocks do not answer until that is released
  * (measured 2026-11-02, with the release stock's driver does first).
  *
- * Pass ce5300_i2s.enable_pcm=1 once the inferred fields are confirmed.
- *
  * MEASURED 2026-10-26 on a stock unit while it played (ce5300-i2s.h): the base,
  * the descriptor format and mode word, the DMA context's registers (and with
  * them the playback position), and TX0's configuration. MEASURED 2026-11-03 on
  * an EA3, with DMA 0 driven by hand from a reserved buffer: stock's three start
- * writes run the engine into the TX0 FIFO, and STOP_AFTER halts it cleanly.
- * What remains open is where TX0's data enters the DSP.
+ * writes run the engine into the TX0 FIFO, and STOP_AFTER halts it cleanly;
+ * through ALSA, TX0's samples reach the line out via the DSP's SDATA_IN0.
  *
  * Periods are paced by a timer, not the interrupt: the PCI interrupt is not
  * routed on every kernel openHC boots, and the position register is exact, so
@@ -60,10 +47,10 @@
 #define CE5300_PERIODS_MAX	32
 #define CE5300_BUFFER_BYTES_MAX	(256 * 1024)
 
-static bool enable_pcm;
+static bool enable_pcm = true;
 module_param(enable_pcm, bool, 0444);
 MODULE_PARM_DESC(enable_pcm,
-		 "Register the PCM. Off by default: several control-register fields are still inferred, see ce5300-i2s.h");
+		 "Register the PCM (0: the DAI and the DSP controls only, no playable PCM)");
 
 struct ce5300_i2s {
 	struct device		*dev;
@@ -506,8 +493,7 @@ static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id
 
 	if (!enable_pcm) {
 		dev_info(&pdev->dev,
-			 "probe-only (enable_pcm=0): mapped, DAI registered without a PCM. "
-			 "Several control fields are still inferred -- see ce5300-i2s.h\n");
+			 "probe-only (enable_pcm=0): DAI registered without a PCM\n");
 		return devm_snd_soc_register_component(&pdev->dev,
 						       &ce5300_component_off,
 						       &ce5300_dai_off, 1);

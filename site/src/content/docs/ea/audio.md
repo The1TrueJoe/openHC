@@ -266,15 +266,13 @@ Two results worth repeating because they are structural rather than guessed:
 
 Full extraction: the [CE5300 audio register map](/ea/audio-regmap/).
 
-## What is still unproven
+## The PCM
 
-The platform driver **does not register a PCM by default** (`enable_pcm=0`). It
-binds, maps BAR0 and dumps registers, and registers its DAI with a startup that
-refuses — so the card forms and the DSP controls can be tuned, while anything
-opening the PCM gets `-ENODEV` at once. That is deliberate: registering a PCM whose
-trigger cannot reliably move samples is worse than absent, because userspace
-opens it, gets silence, and the failure looks like a codec or routing problem
-somewhere else entirely.
+The platform driver registers its PCM (`enable_pcm=0` keeps only the DAI, so
+the card and the DSP controls form while anything opening the PCM gets
+`-ENODEV`). It plays S32_LE only, 24 bits in 32 at 48 kHz: TX0's format, which
+`TX_CTRL` will not change while TX0 runs, and TX0 always runs because it clocks
+the DSP and DAC.
 
 A stock unit was read while it played (2026-10-26; the
 [register map](/ea/audio-regmap/#measured-on-a-stock-unit-while-it-plays) has
@@ -282,27 +280,28 @@ the capture), and the driver now follows it: the base, the descriptor format and
 its mode word, the DMA context's registers — and with them **the playback
 position** (`+0x1010`, the current source address), which `.pointer` reads — and
 TX0's configuration. Periods are paced by a timer from that position, so no
-interrupt is needed. Two things are still inferred:
+interrupt is needed. Measured on an EA3 (2026-11-03), first with DMA 0 driven
+by hand from a reserved buffer, then through ALSA:
 
-1. **Which writes start the engine.** The vendor's three ("descriptor base,
-   size, mode") are taken as the head descriptor into `NEXT_DESC`, 0 into the
-   bytes-left register, and the mode word with bit 31 (set while stock plays,
-   never in a descriptor) into the control register; the TX run bit as bit 0 of
-   TX0 `+0x00`, the register that reads `0x21` while stock plays (bit 0 of
-   `TX_CTRL`, the old guess, reads 0 there).
-2. ~~**The ungate**~~ — solved: the block was held in its own reset (global
+1. **Start** is stock's `render_start`, register for register: the TX0 FIFO
+   (`+0x2018`) into the destination (`+0x1014`), the head descriptor into
+   `NEXT_DESC` (`+0x100c`), then the descriptor's mode word `0x40006696` into
+   the control register (`+0x101c`). The engine sets bit 31 itself. Without the
+   destination it fetches the head and stalls.
+2. **Stop** is flow control: `STOP_AFTER` (bit 28) on every descriptor, and the
+   engine halts at the end of the one it is in, clearing bit 31. Writing the
+   registers of a busy or stalled context **hung the SoC**, twice.
+3. ~~**The ungate**~~ — solved: the block was held in its own reset (global
    `+0x00` bit 1), and `ce5300-i2s` now releases it and starts TX0 at probe,
    which is what clocks the DSP ([below](#what-is-left)).
 
 Master/slave is not settled from the SoC side: the render path exposes **no**
 clock-direction control at all. The DSP side says the opposite of what the
 vendor's ASoC link declared (codec master): in the register init stock loads,
-**every serial port of the ADAU1451 is a slave**. The SoC's stream lands on
-`SDATA_IN3`, clocked by its own `BCLK_IN3`/`LRCLK_IN3` and brought into the
-core's clock domain by an ASRC, which is only needed for a source with a clock
-of its own. So the CE5300 most likely drives I2S1's clocks, and `ea-audio-dsp.dtsi`
-(which names the codec master) is to be revisited with the PCM. Still, don't
-program the bit-clock divider speculatively.
+**every serial port of the ADAU1451 is a slave**, and the CE5300 is the master:
+TX0 drives serial input 0's clocks and data. Stock's init points ASRC 0 at
+`SDATA_IN3`, which nothing clocks under openHC; openHC's points it at
+`SDATA_IN0` (channels 0/1), and the PCM reaches the line out at its own level.
 
 :::danger[Do not poke this device with devmem]
 An unbound PCI function may have memory decode off or sub-blocks unclocked.
@@ -340,7 +339,7 @@ with the device already enabled.
    4. Whatever turns out to ungate it goes into the driver's probe (or into the
       board DT if it is a clock the kernel can name), and `dump_regs=1` then
       shows the TX/DMA blocks the way the stock capture does.
-4. `ce5300_i2s.enable_pcm=1`, then `speaker-test -c2 -twav`. The position should
+4. `speaker-test -c2 -fS32_LE -twav`. The position should
    advance (`/proc/asound/openhcea/pcm0p/sub0/status`), the DAC unmutes while it
    plays, and the DSP's Mode → Test tone is the way to tell a dead I²S from a
    dead analog path.
@@ -376,8 +375,8 @@ that and sound:
   SigmaStudio+ in CI, and the driver gains a load path for it.
 - ~~**The CE5300 I²S block hangs on access.**~~ It was held in its own reset;
   `ce5300-i2s` releases it at probe and starts TX0, the I²S clock master for
-  the DSP and DAC, so the DSP runs from boot and its test tone plays. What is
-  left is the PCM itself (`enable_pcm`), which feeds the DSP's `SDATA_IN3`.
+  the DSP and DAC, so the DSP runs from boot and its test tone plays, and the
+  PCM plays through the DSP's `SDATA_IN0`.
 
 ## The CE5300's power and clock controllers
 

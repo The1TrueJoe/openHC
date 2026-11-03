@@ -7,7 +7,7 @@
 # Nothing to load: udev's coldplug modprobes each driver off its device's
 # modalias, and deferred probe sorts out the order --
 #   ce5300-hdmi          the HDMI card, by its PCI id (8086:2e63)
-#   ce5300-i2s           CPU DAI (+ the PCM once enable_pcm=1), by its PCI id
+#   ce5300-i2s           CPU DAI and PCM, by its PCI id
 #   adau1451-c4          codec, by the "adi,adau1451" node on i2c-3; loads
 #                        /lib/firmware/openhc/adau1451-ea3-openhc.bin (openHC's
 #                        DSP program and its parameters)
