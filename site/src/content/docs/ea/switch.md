@@ -323,7 +323,14 @@ Still open:
   failed read and the dark port are explained above. Why the reads after it
   kept failing is not. The switch's SPI port recovers from every truncated
   frame tried (`60`, `61 ff`, `60 f0`, a lone fast-read opcode, ...), and
-  disabling the SSP empties its TX FIFO, so neither is the cause. The patch
-  cable hasn't been retried since the fix;
+  disabling the SSP empties its TX FIFO, so neither is the cause. Retried on
+  2026-11-03 on a RAM boot of the #131 kernel: the jacks linked within seconds,
+  STP blocked `lan2`, and the loop ran for about 20 minutes, `lan1` bounced
+  once, with no PHY error and no wedge. There was one spontaneous `lan2`
+  down/up;
+- rare misaligned reads remain after #131. A continuous b53 read hammer
+  (~3,300 reads/s) saw a burst of 1–22 bad reads every few minutes, 73 in
+  about 4.1 million. They are shifted rather than cut: `0x3125ffff`, `0x25ffff25`,
+  `0xc20001ff` for a chip id of `0x00053125`. The cause is not known;
 - how stock firmware gets a nonzero `DDS_RATE`.
 :::
