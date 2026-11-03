@@ -494,6 +494,18 @@ jobs:
       matrix:
         board: ${{ fromJSON(needs.select.outputs.boards) }}
     steps:
+      # A warm tree is ~12 GB unpacked on top of dl/ and ccache, which leaves no
+      # margin on a hosted runner (ea5 ran out restoring its tree). Drop the
+      # preinstalled toolchains no board build uses.
+      - name: Free runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/powershell \
+            /usr/share/swift /opt/microsoft /opt/google /usr/lib/jvm
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       # sgx545-ce is a submodule and board/Config.in sources its Config.in
       # unconditionally, so defconfig fails for every board without it.
       - uses: actions/checkout@v4
