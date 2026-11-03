@@ -713,12 +713,13 @@ done
 # The firmware rules (board/<family>/common/firmware/<kind>/<part>/, e.g. the
 # EA3 DSP's adau1451-fw) are local-source packages too: an edited profile, or a
 # new DSP program from CI, shipped the previous firmware the same way. Their
-# folder is the part, not the package, so the name comes from the .mk.
+# folder is the part, not the package, so the name comes from the .mk. The IO
+# microcontroller's (board/common/firmware/io-mcu) sits a level up.
 #
 # Same shape as the linux-dirclean above: a cached step that silently ignores
 # changed input.
 for _mk in "$REPO"/packages/*/*.mk "$REPO"/board/*/packages/*/*.mk "$REPO"/board/*/*/packages/*/*.mk \
-           "$REPO"/board/*/*/firmware/*/*/*.mk; do
+           "$REPO"/board/*/firmware/*/*.mk "$REPO"/board/*/*/firmware/*/*/*.mk; do
     [ -e "$_mk" ] || continue
     case "$_mk" in
         */firmware/*) _pkg=$(basename "$_mk" .mk) ;;

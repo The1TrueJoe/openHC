@@ -24,7 +24,9 @@
 //! there, so the install and its inverse cannot drift apart).
 //!
 //! Both backends start `stock` by putting Control4's own Zigbee firmware back on
-//! the radio (radio.rs; `--keep-radio` skips it, `radio` runs only that).
+//! the radio (radio.rs; `--keep-radio` skips it, `radio` runs only that), and
+//! put Control4's IO microcontroller firmware back (iomcu.rs; `iomcu` runs only
+//! that): first on the HC-800, last in the EA's finalize, after p1 holds stock.
 //!
 //! Subcommands (safe -> destructive):
 //!   status        parse and print the MFH table. No write.
@@ -40,6 +42,7 @@ use std::os::unix::io::AsRawFd;
 
 use ohc_flash_core::{cefdk, mfh};
 mod hc800;
+mod iomcu;
 mod radio;
 
 const MTD: &str = "/dev/mtd0";
@@ -437,6 +440,13 @@ fn reimage_p1_direct() -> io::Result<()> {
     // on the box, so drive unxz into tar explicitly).
     run("sh", &["-c", &format!("unxz -c '{recfs}' | tar -x -C '{p1}'")])?;
     run("sync", &[])?;
+    // Last, from the stock tree just unpacked: the driver in this kernel may
+    // have written openHC's IO firmware at its own probe. Not fatal: p1 is
+    // stock already, and stopping here would strand the box half-restored.
+    match iomcu::restore_from_root(std::path::Path::new(p1)) {
+        Ok(m) => eprintln!("stock: {m}"),
+        Err(e) => eprintln!("stock: IO microcontroller NOT restored: {e}"),
+    }
     let _ = run("umount", &[p1]);
     let _ = run("umount", &[p2]);
     eprintln!("stock: p1 reimaged to stock. Power-cycle to boot Control4.");
@@ -656,10 +666,45 @@ fn cmd_erasetest() -> io::Result<()> {
     Ok(())
 }
 
+/// `KEY=value` from board.env, without sourcing it.
+fn board_env(key: &str) -> Option<String> {
+    let env = std::fs::read_to_string("/opt/ohc/board.env").ok()?;
+    env.lines().rev().find_map(|l| {
+        let v = l.trim().strip_prefix(key)?.strip_prefix('=')?;
+        let v = v.split(" #").next().unwrap_or(v).trim().trim_matches('"');
+        (!v.is_empty()).then(|| v.to_string())
+    })
+}
+
+/// Control4's IO firmware back from the recovery archive. Nothing changed on failure.
+fn iomcu_from_archive() -> io::Result<()> {
+    let spec = board_env("OHC_STOCK_ARCHIVE")
+        .or_else(|| board_env("OHC_ZIGBEE_STOCK_ARCHIVE"))
+        .ok_or_else(|| io::Error::other("board.env names no OHC_STOCK_ARCHIVE to take Control4's IO firmware from"))?;
+    let m = iomcu::restore_from_archive(&spec).map_err(io::Error::other)?;
+    println!("iomcu: {m}");
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or_default();
     let keep_radio = args.iter().any(|a| a == "--keep-radio");
+    if cmd == "iomcu" {
+        if let Err(e) = iomcu_from_archive() {
+            eprintln!("restore iomcu: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    // The HC-800's next boot is Control4's own restore, so its IO firmware goes
+    // back now, first: on failure nothing else has changed.
+    if cmd == "stock" && hc800::is_hc800() {
+        if let Err(e) = iomcu_from_archive() {
+            eprintln!("restore stock: {e}");
+            std::process::exit(1);
+        }
+    }
     if cmd == "radio" || (cmd == "stock" && !keep_radio) {
         if let Err(e) = radio::restore() {
             eprintln!("restore {cmd}: {e}");
@@ -674,7 +719,7 @@ fn main() {
             "status" => hc800::status(),
             "stock" => hc800::stock(!args.iter().any(|a| a == "--no-reboot")),
             _ => {
-                eprintln!("usage: restore {{status|stock [--no-reboot] [--keep-radio]|radio}}   (HC-800)");
+                eprintln!("usage: restore {{status|stock [--no-reboot] [--keep-radio]|radio|iomcu}}   (HC-800)");
                 std::process::exit(2);
             }
         };
@@ -707,7 +752,7 @@ fn main() {
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: restore {{status|revert|install|stock [--no-reboot] [--keep-radio]|radio|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: restore {{status|revert|install|stock [--no-reboot] [--keep-radio]|radio|iomcu|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };

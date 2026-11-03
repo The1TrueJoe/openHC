@@ -6,8 +6,8 @@
  * adds the missing child. serdev finds it by its UartSerialBusV2 resource, and
  * gpio-ohc-iomcu binds it at boot exactly as it binds the EA's device tree
  * node: _HID PRP0001 plus a "compatible" in _DSD make the driver's OF match
- * table and device_property_*() reads work unchanged, so the binding below is
- * the same one the EA .dts files use.
+ * table and fwnode reads work unchanged, and the hierarchical data nodes below
+ * are the binding's child nodes (control4,io-mcu.yaml).
  *
  * ACPI, not the board device tree, on purpose: on an x86 box whose interrupts
  * belong to ACPI a device-tree UART has no IRQ and is timer-polled, and a
@@ -41,40 +41,165 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     0x00, ResourceConsumer, , Exclusive, )
             })
             /*
-             * Every count here was settled on a live unit
-             * (https://the1truejoe.github.io/openHC/hc800/#io-an-lm3s1162-on-ttys3):
-             *
-             *   115200   CONFIRMED on hardware, unlike the EA's 460800.
-             *   IR       SEVEN emitters: six rear jacks plus the internal front
-             *            blaster. Sweeping the IROUT_SEND output bitmask with a
-             *            Global Cache learner watching: bit 0 lit jack 1, bit 5
-             *            jack 6, bit 6 the front of the box, nothing else in the
-             *            24 bits did anything. Bits 5 and 6 together fired both,
-             *            which is what proves the field is a mask, not an index.
-             *            Plus the front receiver, for learning.
-             *   relays   FOUR, all working. They once looked like two: the
-             *            selector is a 0-BASED INDEX and was being sent as a
-             *            bitmask, and the firmware echoes 0x04/0x08 happily
-             *            while addressing nothing. A TOGGLE sweep settled it:
-             *            0x00..0x03 each flip one relay, 0x04 up do nothing.
-             *   contacts FOUR.
-             *   uarts    NONE MCU-routed. The rear RS-232 ports are host
-             *            16550As (ttyS1/ttyS2): the vendor's ioserver holds
-             *            them directly, alongside this one.
+             * Settled on a live unit (docs: hc800, IO): 115200; six rear IR
+             * jacks plus the front blaster on IROUT_SEND bit 6; the front
+             * receiver; four relays (a 0-based index on the wire) and four
+             * contacts; no MCU-routed serial (the rear RS-232 ports are host
+             * UARTs). Pins (control4,ir-pin, control4,pin) go in once the
+             * LM3S1162 pin map is decoded; until then the driver sends no
+             * pin table and the part runs its own.
              */
             Name (_DSD, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
                 Package ()
                 {
-                    Package () { "compatible", "control4,io-mcu" },
+                    Package () { "compatible", Package () {
+                        "control4,lm3s1162-io-mcu", "control4,io-mcu" } },
                     Package () { "current-speed", 115200 },
-                    Package () { "control4,relays", 4 },
-                    Package () { "control4,contacts", 4 },
-                    Package () { "control4,ir-outputs", 6 },
-                    Package () { "control4,ir-blaster", 1 },
+                    /* an empty ir-receiver node would not exist in ACPI */
                     Package () { "control4,ir-receiver", 1 },
+                },
+                ToUUID ("dbb8e3e6-5886-4ba6-8795-1319f52a966b"),
+                Package ()
+                {
+                    Package () { "jack@1", "JK01" },
+                    Package () { "jack@2", "JK02" },
+                    Package () { "jack@3", "JK03" },
+                    Package () { "jack@4", "JK04" },
+                    Package () { "jack@5", "JK05" },
+                    Package () { "jack@6", "JK06" },
+                    Package () { "ir-blaster", "IRBL" },
+                    Package () { "relays", "RLYS" },
+                    Package () { "contacts", "CONS" },
                 }
+            })
+            Name (JK01, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package ()
+                {
+                    Package () { "reg", 1 },
+                    Package () { "label", "IR 1" },
+                    Package () { "control4,ir-channel", 0 },
+                }
+            })
+            Name (JK02, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package ()
+                {
+                    Package () { "reg", 2 },
+                    Package () { "label", "IR 2" },
+                    Package () { "control4,ir-channel", 1 },
+                }
+            })
+            Name (JK03, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package ()
+                {
+                    Package () { "reg", 3 },
+                    Package () { "label", "IR 3" },
+                    Package () { "control4,ir-channel", 2 },
+                }
+            })
+            Name (JK04, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package ()
+                {
+                    Package () { "reg", 4 },
+                    Package () { "label", "IR 4" },
+                    Package () { "control4,ir-channel", 3 },
+                }
+            })
+            Name (JK05, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package ()
+                {
+                    Package () { "reg", 5 },
+                    Package () { "label", "IR 5" },
+                    Package () { "control4,ir-channel", 4 },
+                }
+            })
+            Name (JK06, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package ()
+                {
+                    Package () { "reg", 6 },
+                    Package () { "label", "IR 6" },
+                    Package () { "control4,ir-channel", 5 },
+                }
+            })
+            Name (IRBL, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "control4,ir-channel", 6 } }
+            })
+            Name (RLYS, Package ()
+            {
+                ToUUID ("dbb8e3e6-5886-4ba6-8795-1319f52a966b"),
+                Package ()
+                {
+                    Package () { "relay@0", "RLY0" },
+                    Package () { "relay@1", "RLY1" },
+                    Package () { "relay@2", "RLY2" },
+                    Package () { "relay@3", "RLY3" },
+                }
+            })
+            Name (RLY0, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 0 } }
+            })
+            Name (RLY1, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 1 } }
+            })
+            Name (RLY2, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 2 } }
+            })
+            Name (RLY3, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 3 } }
+            })
+            Name (CONS, Package ()
+            {
+                ToUUID ("dbb8e3e6-5886-4ba6-8795-1319f52a966b"),
+                Package ()
+                {
+                    Package () { "contact@0", "CON0" },
+                    Package () { "contact@1", "CON1" },
+                    Package () { "contact@2", "CON2" },
+                    Package () { "contact@3", "CON3" },
+                }
+            })
+            Name (CON0, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 0 } }
+            })
+            Name (CON1, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 1 } }
+            })
+            Name (CON2, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 2 } }
+            })
+            Name (CON3, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "reg", 3 } }
             })
         }
     }

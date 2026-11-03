@@ -4,12 +4,10 @@
 /br2-external/buildroot/
 *.img
 *.bin
-# NO EXCEPTION for the vendor IO-MCU images. They are Control4/Snap One
-# proprietary firmware, and "the owner of the hardware already has them" is a
-# reason someone may keep a copy — not a licence to redistribute one from a
-# public repository. Pull them off your own unit; see
-# board/hc800/firmware/io-mcu/lm3s1162/vendor/README.md for where they live and
-# the checksums to confirm you have the right ones.
+# NO EXCEPTION for the vendor IO-MCU images: Control4's proprietary firmware,
+# not ours to redistribute. Return to stock reads them from the box's own
+# recovery archive (board/common/firmware/io-mcu/README.md).
+/board/common/firmware/io-mcu/build/
 # scratch
 /tmp/
 *.log

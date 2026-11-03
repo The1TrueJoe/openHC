@@ -81,7 +81,7 @@ linux/                    common.fragment + per-feature fragments
 patches/linux/            edits to upstream: i2c-pxa, serial, e1000 fake-phy,
                           ssp, ehci, x86 built-in device tree
 post-image.sh             wraps the bzImage in the CEFDK container
-firmware/io-mcu/          the clean-room TM4C firmware
+firmware/dsp/             the ADAU1451 program and parameters
 kernel/arch/x86/boot/dts/ the board device trees: switch, codec, LEDs,
                           GPIO names + reset lines, LM75, framebuffer
 kernel/drivers/           gpio-intelce, pwm-ce5300, the boot SPI-NOR controller

@@ -265,7 +265,7 @@
 /* IO microcontroller on uart1; each model .dtsi adds its jacks. */
 &uart1 {
 	io_mcu: io-mcu {
-		compatible = "control4,io-mcu";
+		compatible = "control4,tm4c1231d5-io-mcu", "control4,io-mcu";
 		current-speed = <460800>;
 		#address-cells = <1>;
 		#size-cells = <0>;

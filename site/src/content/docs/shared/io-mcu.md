@@ -100,20 +100,21 @@ Two gotchas, both confirmed by experiment:
 
 ### Who runs it: the kernel, at bind
 
-`gpio-ohc-iomcu` is a serdev driver (`compatible = "control4,io-mcu"`). It runs
-this sequence itself when it binds, then identifies the part and registers the
-gpiochip, the lirc devices and the `/dev/ttyOHC<n>` ports. Nothing in userspace
-attaches it, and the UART has no `/dev/ttyS<n>` of its own any more.
+`gpio-ohc-iomcu` is a serdev driver (`compatible = "control4,<part>-io-mcu",
+"control4,io-mcu"`). It runs this sequence itself when it binds, then identifies
+the part, sends it the board's pin table, and registers the gpiochip, the lirc
+devices and the `/dev/ttyOHC<n>` ports. Nothing in userspace attaches it, and the
+UART has no `/dev/ttyS<n>` of its own any more. The binding, the pin table and
+openHC's own firmware are on [IO-MCU firmware](/shared/io-mcu-firmware/).
 
-- **EA family:** a child of `uart1` (0x2F8, 460800) in the board device tree,
-  with the counts set per board in its `.dts` (`control4,relays`,
-  `control4,contacts`, `control4,ir-outputs`, `control4,ir-blaster`,
-  `control4,ir-receiver`, `control4,uarts`).
+- **EA family:** a child of `uart1` (0x2F8, 460800) in the board device tree:
+  `jack@N`, `ir-blaster`, `ir-receiver`, `relays` and `contacts` nodes, or the
+  older count properties (`control4,relays`, `control4,ir-outputs`, …).
 - **HC-800:** a `PRP0001` device under the BIOS's ttyS3 UART
   (`\_SB.PCI0.SBRG.UAR4`, 0x2E8, IRQ 10), from
-  `board/hc800/acpi/ssdt-iomcu.asl`. It carries the same compatible and
-  properties in `_DSD` and is loaded as an ACPI table upgrade from the front of
-  the initrd. ACPI rather than the board's device tree, because the UART belongs
+  `board/hc800/acpi/ssdt-iomcu.asl`. It carries the same compatible, and the same
+  child nodes as `_DSD` hierarchical data nodes, and is loaded as an ACPI table
+  upgrade from the front of the initrd. ACPI rather than the board's device tree, because the UART belongs
   to ACPI: described in a tree it would lose its interrupt and be polled every
   ~8 ms, while a 16550A at 115200 fills its FIFO in under 2 ms.
 
@@ -308,8 +309,10 @@ puts it back at boot. A combo jack left as IR gets no serial session; one set to
 serial is opened and held like any other port. Capabilities list the jacks
 under `ir.jacks` with their current mode.
 
-Unconfirmed: that enable 0 hands the jack back to IR, and the null-modem
-option stock offers per port.
+Each user UART also owns two mode lines, A and B
+([decoded](/shared/io-mcu-pinmap/#combo-jack-lines)): both low is IR, A high is
+serial, B high serial with RX and TX swapped (`0xa3`, stock's null-modem option).
+Unconfirmed: that enable 0 hands the jack back to IR, and what B does on the wire.
 
 Boards without jack nodes (the HC-800's ACPI table) still give
 `control4,ir-outputs` and `control4,uarts` counts: IR jacks 1..N on channels
@@ -539,9 +542,8 @@ multiply it by the `0x4a4` stride. So the strap mapping is fully determined, on 
 There is no range check: an id of 6 or more would index past the table.
 
 **Those voltages are predictions from the decoded arithmetic, not measurements.**
-Nobody has put a meter on PB4. Confirm them and our firmware can drop its
-compile-time board switch and ship a single image for both boards, the way the
-vendor does.
+Nobody has put a meter on PB4. openHC's firmware does not need them: it reads no
+strap and carries no board table, and takes every pin from the host.
 
 ## Contacts — confirmed on an EA3
 
@@ -838,9 +840,9 @@ Decoded: the jack gates, carriers, receiver, relays (PA5, PA4, PA3, PA2), contac
 here took `PC7 PC6 PF4 PC5 PC4 PF5` for six IR outputs. They are the first two
 jacks' three-line gate groups.
 
-openHC's LM3S firmware still keeps `OHC_IR_PINS_KNOWN` and `OHC_RELAY_PINS_KNOWN`
-at `0` until the gate polarity and relay order are checked on hardware. A relay
-here may be switching a real load.
+openHC's firmware drives none of these until the host's pin table names them, and
+the HC-800's ACPI table gives no pins until the gate polarity and relay order are
+checked on hardware. A relay here may be switching a real load.
 
 ### The protocol is confirmed on this part
 

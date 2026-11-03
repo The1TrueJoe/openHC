@@ -1,0 +1,12 @@
+config BR2_PACKAGE_IO_MCU
+	bool "io-mcu (IO microcontroller firmware)"
+	depends on BR2_PACKAGE_HOST_ARM_GNU_TOOLCHAIN_SUPPORTS
+	help
+	  openHC's firmware for the Control4 IO microcontroller, one image
+	  per part, built from board/common/firmware/io-mcu with the ARM
+	  GNU toolchain: /lib/firmware/openhc/io-mcu-tm4c1231d5.bin (EA
+	  family) and io-mcu-lm3s1162.bin (HC-800). gpio-ohc-iomcu writes
+	  one to the part when the board's io-mcu node names it in
+	  firmware-name and the part runs anything else.
+
+	  Selected by the iomcu feature.

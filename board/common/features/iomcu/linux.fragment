@@ -23,3 +23,9 @@ CONFIG_IR_SONY_DECODER=y
 # serdev device. Without these the driver has nothing to bind to.
 CONFIG_SERIAL_DEV_BUS=y
 CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
+
+# Firmware for the part: request_firmware() to load openHC's image where the
+# node names one, and the firmware-upload class (/sys/class/firmware/ohc-iomcu)
+# that return to stock writes Control4's image back through.
+CONFIG_FW_LOADER=y
+CONFIG_FW_UPLOAD=y
