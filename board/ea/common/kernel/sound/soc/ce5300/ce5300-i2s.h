@@ -112,8 +112,9 @@
 #define CE5300_DMA_BIT30		BIT(30)
 /*
  * MEASURED: set in the CTRL register while stock plays, never in a descriptor's
- * mode word — the context's run bit. Whether the driver sets it or the engine
- * reports it is INFERRED (start writes it; stop clears it).
+ * mode word. The engine sets it when it starts and clears it when it halts on a
+ * STOP_AFTER descriptor (2026-11-03); stock's render_start writes the mode word
+ * without it, and so does this driver.
  */
 #define CE5300_DMA_RUN			BIT(31)
 
@@ -139,7 +140,8 @@
 #define CE5300_TX_SATR			0x18	/* FIFO write port; the DMA destination */
 
 /*
- * TX control. The I2S pin-enable fields are deliberately NOT in bit order --
+ * TX control. Ignores writes while the context runs (MEASURED 2026-11-03), so
+ * it is set before the run bit. The I2S pin-enable fields are deliberately NOT in bit order --
  * pin3 sits low at [6:5] while pins 0..2 run upward from bit 10. Do not "tidy"
  * this into an array; the hardware really is laid out that way.
  */
@@ -153,7 +155,7 @@
 #define CE5300_TX_STORAGE_SHIFT		8	/* [9:8] */
 #define   CE5300_STORAGE_7_1		0
 #define   CE5300_STORAGE_STEREO		1
-#define CE5300_TX_SAMPLE_24BIT		BIT(7)	/* 0 = 16-bit. Position good, association INFERRED */
+#define CE5300_TX_SAMPLE_24BIT		BIT(7)	/* 0 = 16-bit; render_set_sample_size sets it for 24BIT */
 #define CE5300_TX_DMA_CTX_SHIFT		17	/* [19:17] binds this TX stream to a DMA context */
 #define CE5300_TX_DMA_CTX_MASK		0x7
 

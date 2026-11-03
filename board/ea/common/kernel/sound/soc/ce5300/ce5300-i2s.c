@@ -10,12 +10,11 @@
  *
  * WHY THIS DOES NOT REGISTER A PCM BY DEFAULT
  * ------------------------------------------
- * Four things could not be recovered from the decompile: which three DMA
- * registers the vendor's render_start writes, which bit of TX_CTRL is the
- * stream enable, the interrupt mask register's offset, and the DMA position
- * register. Registering a PCM whose trigger cannot reliably move samples is
- * worse than not registering one -- userspace opens it, gets silence, and the
- * failure looks like a codec or routing bug somewhere else entirely.
+ * The DMA now moves samples into TX0 (start, stop and position are measured),
+ * but where TX0's data enters the DSP is not settled, so a stream may still be
+ * silent. Registering a PCM that plays into silence is worse than not
+ * registering one -- userspace opens it, gets nothing, and the failure looks
+ * like a codec or routing bug somewhere else entirely.
  *
  * So the default is probe-only: bind, map, and read ONE register that is known
  * to answer. It still registers the CPU DAI, behind a component with no PCM
@@ -34,8 +33,10 @@
  *
  * MEASURED 2026-10-26 on a stock unit while it played (ce5300-i2s.h): the base,
  * the descriptor format and mode word, the DMA context's registers (and with
- * them the playback position), and TX0's configuration. What remains inferred
- * is which writes START the engine, and the ungate itself.
+ * them the playback position), and TX0's configuration. MEASURED 2026-11-03 on
+ * an EA3, with DMA 0 driven by hand from a reserved buffer: stock's three start
+ * writes run the engine into the TX0 FIFO, and STOP_AFTER halts it cleanly.
+ * What remains open is where TX0's data enters the DSP.
  *
  * Periods are paced by a timer, not the interrupt: the PCI interrupt is not
  * routed on every kernel openHC boots, and the position register is exact, so
@@ -46,6 +47,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/hrtimer.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <sound/pcm.h>
@@ -213,7 +215,8 @@ static void ce5300_dump(struct ce5300_i2s *i2s)
 static const struct snd_pcm_hardware ce5300_pcm_hw = {
 	.info			= SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
 				  SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
-	.formats		= SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,
+	/* Stock's 24 bits in 32, MSB-aligned: TX0's format, fixed while it runs. */
+	.formats		= SNDRV_PCM_FMTBIT_S32_LE,
 	.rates			= SNDRV_PCM_RATE_48000,
 	.rate_min		= 48000,
 	.rate_max		= 48000,
@@ -289,36 +292,12 @@ static int ce5300_pcm_prepare(struct snd_soc_component *comp,
 
 	i2s->period = ns_to_ktime(div_u64((u64)rt->period_size * NSEC_PER_SEC, rt->rate));
 
-	/* TX0's other registers as a playing stock unit has them (ce5300-i2s.h),
-	 * the run bit included: TX0 runs from probe on, because the DSP and DAC
-	 * take their clocks from it (ce5300_hw_start()), and only DMA starts and
-	 * stops with the stream. */
-	writel(CE5300_TX0_STOCK_00,
-	       i2s->base + CE5300_TX_REG(i2s->tx, CE5300_TX_RUN_REG));
-	writel(CE5300_TX0_STOCK_08, i2s->base + CE5300_TX_REG(i2s->tx, 0x08));
-	writel(CE5300_TX0_STOCK_10, i2s->base + CE5300_TX_REG(i2s->tx, 0x10));
-	writel(CE5300_TX0_STOCK_14, i2s->base + CE5300_TX_REG(i2s->tx, 0x14));
-	writel(CE5300_TX0_STOCK_1C, i2s->base + CE5300_TX_REG(i2s->tx, 0x1c));
-
-	/* Bind this TX stream to our DMA context, and set the I2S format. */
-	ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_CTRL),
-		      CE5300_TX_DMA_CTX_MASK << CE5300_TX_DMA_CTX_SHIFT,
-		      i2s->dma << CE5300_TX_DMA_CTX_SHIFT);
-
-	/* Stereo on one data line: pin0 enabled, pins 1-3 disabled. */
-	ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_CTRL),
-		      (CE5300_TX_PIN_MASK << CE5300_TX_PIN0_SHIFT) |
-		      (CE5300_TX_PIN_MASK << CE5300_TX_PIN1_SHIFT) |
-		      (CE5300_TX_PIN_MASK << CE5300_TX_PIN2_SHIFT) |
-		      (CE5300_TX_PIN_MASK << CE5300_TX_PIN3_SHIFT) |
-		      (0x3 << CE5300_TX_STORAGE_SHIFT) |
-		      CE5300_TX_SAMPLE_24BIT,
-		      (CE5300_PIN_ENABLE  << CE5300_TX_PIN0_SHIFT) |
-		      (CE5300_PIN_DISABLE << CE5300_TX_PIN1_SHIFT) |
-		      (CE5300_PIN_DISABLE << CE5300_TX_PIN2_SHIFT) |
-		      (CE5300_PIN_DISABLE << CE5300_TX_PIN3_SHIFT) |
-		      (CE5300_STORAGE_STEREO << CE5300_TX_STORAGE_SHIFT) |
-		      (rt->format == SNDRV_PCM_FORMAT_S16_LE ? 0 : CE5300_TX_SAMPLE_24BIT));
+	/*
+	 * Nothing to set on TX0: ce5300_hw_start() configured it at probe, bound
+	 * to DMA 0 and in stock's 24-in-32 stereo format, and it runs from then on
+	 * because the DSP and DAC take their clocks from it. TX_CTRL ignores
+	 * writes while the context runs (MEASURED), so the format is fixed.
+	 */
 	return 0;
 }
 
@@ -327,49 +306,65 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 {
 	struct ce5300_i2s *i2s = snd_soc_component_get_drvdata(comp);
 
+	unsigned int i;
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
-	case SNDRV_PCM_TRIGGER_RESUME:
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		/*
-		 * The vendor's three writes -- "descriptor base, size, mode" --
-		 * onto the registers a playing context was MEASURED to hold: the
-		 * head as the NEXT descriptor, nothing left in the current one,
-		 * then the mode word with the run bit. Which of these starts the
-		 * engine is still INFERRED; this is the reading that fits.
+		 * Stock's render_start, register for register: the TX FIFO as
+		 * the destination, the head as the next descriptor, then the
+		 * descriptor's mode word as the control word. The engine sets
+		 * CE5300_DMA_RUN itself. MEASURED 2026-11-03: without the
+		 * destination the engine fetches the head and stalls.
 		 */
+		writel(i2s->phys + CE5300_TX_REG(i2s->tx, CE5300_TX_SATR),
+		       i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_DST));
 		writel(i2s->ring_phys,
 		       i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_NEXT_DESC));
-		writel(0, i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_SIZE));
-		writel(CE5300_DMA_FLAGS_PLAYBACK | CE5300_DMA_RUN,
+		writel(CE5300_DMA_FLAGS_PLAYBACK,
 		       i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_CTRL));
-		ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_RUN_REG),
-			      CE5300_TX_RUN, CE5300_TX_RUN);
 		atomic_set(&i2s->running, 1);
 		hrtimer_start(&i2s->tick, i2s->period, HRTIMER_MODE_REL_SOFT);
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		atomic_set(&i2s->running, 0);
 		if (!hrtimer_callback_running(&i2s->tick))
 			hrtimer_try_to_cancel(&i2s->tick);
-		/* TX0 keeps running, underrunning into silence: the clocks stay. */
-		ce5300_update(i2s, CE5300_DMA_REG(i2s->dma, CE5300_DMA_CTRL),
-			      CE5300_DMA_RUN, 0);
+		/*
+		 * Stop by flow control, never by a register: STOP_AFTER on every
+		 * descriptor halts the engine at the end of the one it is in.
+		 * MEASURED 2026-11-03: it finishes, clears CE5300_DMA_RUN and
+		 * idles. Writing a busy context's registers hung the SoC, twice.
+		 * TX0 keeps running into silence, so the clocks stay.
+		 */
+		for (i = 0; i < ss->runtime->periods; i++)
+			desc_at(i2s, i)->flags_mode =
+				cpu_to_le32(CE5300_DMA_FLAGS_PLAYBACK | CE5300_DMA_STOP_AFTER);
+		wmb();
 		return 0;
 	default:
 		return -EINVAL;
 	}
 }
 
-/* Wait out a tick that was mid-flight when trigger stopped the stream. */
+/*
+ * Wait out a tick that was mid-flight when trigger stopped the stream, then
+ * for the engine to finish its last descriptor, so prepare never rewrites a
+ * ring the engine is still walking.
+ */
 static int ce5300_pcm_sync_stop(struct snd_soc_component *comp,
 				struct snd_pcm_substream *ss)
 {
 	struct ce5300_i2s *i2s = snd_soc_component_get_drvdata(comp);
+	u32 ctrl;
 
 	hrtimer_cancel(&i2s->tick);
+	if (readl_poll_timeout(i2s->base + CE5300_DMA_REG(i2s->dma, CE5300_DMA_CTRL),
+			       ctrl, !(ctrl & CE5300_DMA_RUN), 1000,
+			       2 * ktime_to_us(i2s->period) + 20000))
+		dev_warn(i2s->dev, "DMA%u still running after stop (%#010x)\n",
+			 i2s->dma, ctrl);
 	return 0;
 }
 
@@ -445,7 +440,7 @@ static const struct snd_soc_component_driver ce5300_component = {
 	.channels_min	= 2,						\
 	.channels_max	= 2,						\
 	.rates		= SNDRV_PCM_RATE_48000,				\
-	.formats	= SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,	\
+	.formats	= SNDRV_PCM_FMTBIT_S32_LE,				\
 }
 
 static struct snd_soc_dai_driver ce5300_dai = {
