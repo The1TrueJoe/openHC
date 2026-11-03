@@ -380,11 +380,13 @@ mod tests {
     fn the_ea5_resolves_from_its_stock_c4board_ids() {
         // Read off a live EA-5 V1: /proc/c4board/{type,revision,name} = 3, 4, ea5.
         let id = board::from_c4board(None, Some(3), Some(4));
-        assert_eq!(id.board.unwrap().name, "ea5");
+        assert_eq!(id.board.unwrap().name, "ea5-v1");
         assert!(id.certain());
-        // An unread revision of a type-3 board still lands on it: ea5 is the only
-        // type-3 entry, so there is nothing to be ambiguous with.
-        assert_eq!(board::from_c4board(None, Some(3), Some(9)).board.unwrap().name, "ea5");
+        // Another revision of a type-3 board could be either variant: both are offered.
+        let id = board::from_c4board(None, Some(3), Some(9));
+        assert!(id.board.is_none());
+        let names: Vec<_> = id.candidates.iter().map(|b| b.name).collect();
+        assert_eq!(names, ["ea5-v1", "ea5-v2"]);
     }
 
     #[test]
@@ -421,7 +423,7 @@ mod tests {
                       Memory Type & Speed  : x16 DDR3-1600 (11-11-11)\n\
                       MAC Address          : 00:0f:ff:xx:xx:xx\n";
         let id = board::from_cefdk_banner(banner);
-        assert_eq!(id.board.unwrap().name, "ea5");
+        assert_eq!(id.board.unwrap().name, "ea5-v1");
         assert_eq!(id.running, Running::Cefdk);
     }
 

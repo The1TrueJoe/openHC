@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Control4 EA-1 v2 PoE. Includes mirror ohc.features. */
+/dts-v1/;
+
+#include "ea1.dtsi"
+#include "ea-switch.dtsi"
+#include "ea-gpio-names.dtsi"
+
+/ {
+	model = "Control4 EA-1 v2 PoE";
+	compatible = "control4,ea1-v2-poe", "intel,ce5300";
+};
+
+/* LAN 1 and LAN 2, as on the EA-3. */
+&switch_ports {
+	port@1 {
+		reg = <1>;
+		label = "lan1";
+	};
+	port@2 {
+		reg = <2>;
+		label = "lan2";
+	};
+};

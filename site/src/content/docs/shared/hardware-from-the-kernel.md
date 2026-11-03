@@ -81,7 +81,8 @@ the `plug` in front converts.
 Software defaults, one file per family: `OHC_ID_IFACE`, `OHC_UPLINK_IFACE`,
 `OHC_WIFI_IFACE`, `OHC_TIMEZONE`, `OHC_NET_WATCHDOG`, the Zigbee baud, TCP port,
 radio type and stock-archive path, the restore button's hold time and LED,
-`OHC_AUDIO_RATE`, `OHC_AUDIO_HELPERS`, and the EA's `OHC_KEXEC_CMDLINE_EXTRA`.
+`OHC_AUDIO_RATE` and `OHC_AUDIO_HELPERS`. On the EA these are in
+`board/ea/common/board.env`; its RAM reclaim is in the kernel command line.
 
 The HC-800's file still carries some hardware lines that nothing here has moved
 yet: the ICH GPIO offsets (`OHC_GPIO_*`, which iod reads for the IO-MCU reset),

@@ -24,34 +24,14 @@ BUILDROOT_DIR="${BUILDROOT_DIR:-/opt/buildroot}"
 OUT="${BR2_OUTPUT_DIR:-$REPO/output/build/$BOARD}"
 DL="${BR2_DL_DIR:-$REPO/dl}"
 
-# The shared "family" base is picked by board name: ea* -> ea/common (Intel
-# CE5300, x86). A board with no family base builds from its own defconfig alone
-# — that is ca1 (i.MX6SL), ioxv1 (DM355) and hc800 (Atom D525) today,
-# deliberately: a family with one member in it would be indirection with
-# nothing behind it. Add a ca/common when a second CA-series board lands.
-#
-# hc800 will never get a family base. It is a PC, not a Control4 SoC board, and
-# the only other member of its IO-MCU family (hc250) is ARMv7 and shares
-# nothing else with it.
-#
-# A family keeps its member boards in their own subdirectory: the EA boards live
-# at board/ea/<board>, not board/<board>, so BOARD_DIR — not "$REPO/board/$BOARD"
-# — is what everything below has to use to find a board's files. BOARD stays the
-# bare name (ea3-v2); only where it lives on disk changed.
-case "$BOARD" in
-  # EA display build input: a standalone i386 WPE/SGX tree (not a bootable
-  # board). Bare name (not ea*) so it does NOT inherit the x86_64 EA family
-  # base; COMMON_CFG="" builds it from the fleet base + its own defconfig.
-  gpu-wpe-i386) COMMON_CFG=""; BOARD_DIR="$REPO/board/ea/common/gpu-wpe-i386" ;;
-  ea*)  COMMON_CFG="$REPO/board/ea/common/common_defconfig"; BOARD_DIR="$REPO/board/ea/$BOARD" ;;
-  *)    COMMON_CFG=""; BOARD_DIR="$REPO/board/$BOARD" ;;
-esac
+. "$REPO/build/board-layers.sh"
+COMMON_CFG=${FAMILY_DIR:+$FAMILY_DIR/common_defconfig}
 BOARD_CFG="$BOARD_DIR/${BOARD}_defconfig"
 [ -f "$BOARD_CFG" ] || {
     echo "no such board '$BOARD' — have:" >&2
-    for d in "$REPO"/board/*/ "$REPO"/board/ea/*/; do
-        b=$(basename "$d")
-        [ -f "$d/${b}_defconfig" ] && echo "  $b" >&2
+    for f in "$REPO"/board/*/*_defconfig "$REPO"/board/ea/*/*/*_defconfig; do
+        d=$(basename "$(dirname "$f")")
+        [ "$(basename "$f")" = "${d}_defconfig" ] && echo "  $d" >&2
     done
     exit 1
 }
@@ -146,115 +126,82 @@ fi
     [ -f "$BUILDROOT_DIR/Makefile" ] || { echo "no Buildroot at $BUILDROOT_DIR" >&2; exit 1; }
 mkdir -p "$OUT" "$DL"
 
-# The effective defconfig is the family base + the board's deltas, concatenated.
-# Buildroot/kconfig takes the LAST assignment of a symbol, so the board file
-# extends or overrides the common one just by appearing after it. Buildroot has
-# no include mechanism for defconfigs, hence the concatenation.
+# The effective defconfig concatenates the layers (Buildroot has no include);
+# kconfig takes the last assignment, so later layers override earlier ones.
 EFFECTIVE="$OUT/openhc-${BOARD}.defconfig"
-mkdir -p "$OUT"
-# Three layers now, each overriding the previous (kconfig takes the LAST
-# assignment): common (every board) -> family (ea/common, EA boards only) ->
-# board. Anything true fleet-wide lives in common/common_defconfig so the board
-# files stay short lists of genuine differences.
 ALL_CFG="$REPO/board/common/common_defconfig"
 
-# Feature sets. A feature is a shared capability a board either has or does not,
-# named in an ohc.features file (one word per line or space separated, '#'
-# comments ignored). This is what keeps board files short: ea3-v1 and ea1-v2
-# differ from their siblings by a word here, not by a copied block of
-# wpa_supplicant/ext4 settings.
-#
-# The LIST layers the same way the defconfigs do — family first, then board —
-# so a capability every EA controller has is stated once in
-# board/ea/common/ohc.features rather than five times. Duplicates are harmless
-# and removed.
-FEATURES=""
-for _ff in ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/ohc.features"} "$BOARD_DIR/ohc.features"; do
-    [ -f "$_ff" ] || continue
-    FEATURES="$FEATURES $(sed 's/#.*//' "$_ff" | tr '\n' ' ')"
-done
-FEATURES=$(printf '%s\n' $FEATURES | awk '!seen[$0]++' | tr '\n' ' ')
+rel() { printf '$(BR2_EXTERNAL_OPENHC_PATH)/%s' "${1#"$REPO/board/"}"; }
 
-# A feature may pull in others: features/<name>/requires lists them. Expanded
-# here, before anything reads the list (packages/build.sh does the same).
-_req_round=0
-while [ $_req_round -lt 8 ]; do
-    _more=""
-    for _f in $FEATURES; do
-        for _d in "$REPO/board/common/features/$_f" ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/features/$_f"} "$BOARD_DIR/features/$_f"; do
-            [ -f "$_d/requires" ] && _more="$_more $(sed 's/#.*//' "$_d/requires" | tr '\n' ' ')"
-        done
-    done
-    _new=$(printf '%s\n' $_more $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
-    [ "$_new" = "$FEATURES" ] && break
-    FEATURES=$_new; _req_round=$((_req_round + 1))
-done
-
-# A feature is ONE DIRECTORY holding both of its halves:
-#
-#     features/<name>/defconfig       the userspace half (Buildroot packages)
-#     features/<name>/linux.fragment  the kernel half
-#
-# They used to be features/<name>.defconfig and linux/<name>.fragment, paired
-# only by filename across two directories. That split is how the `switch`
-# feature once shipped its userspace half with no kernel half — the board
-# booted, and the driver simply was not there. Together, a feature cannot
-# half-exist.
-#
-# Features LAYER across the same three scopes the defconfigs do — common,
-# family, board — most general first, every scope that has the feature applied
-# in turn (kconfig takes the last assignment). So `splash` lives once in
-# board/common/features/ and is selected by an HC-800 and an EA3 alike, a family
-# or a board can define one of its own without touching common, and a family can
-# adjust a shared one: board/ea/common/features/storage turns the shared storage
-# drivers into modules to fit CEFDK's bootlinux window.
-feature_dirs() {
-    _found=1
-    for _d in "$REPO/board/common/features/$1" \
-              ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/features/$1"} \
-              "$BOARD_DIR/features/$1"; do
-        [ -d "$_d" ] && { printf '%s\n' "$_d"; _found=0; }
-    done
-    return $_found
-}
-
-# Kernel fragments that accompany the selected features, as BR2_EXTERNAL-relative
-# paths (Buildroot expands $(BR2_EXTERNAL_OPENHC_PATH) itself).
-FEAT_FRAGMENTS=""
+FEAT_FRAGMENTS=""; FEAT_OVERLAYS=""
 for f in $FEATURES; do
     for d in $(feature_dirs "$f"); do
-        [ -f "$d/linux.fragment" ] || continue
-        FEAT_FRAGMENTS="$FEAT_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${d#"$REPO/board/"}/linux.fragment"
+        [ -f "$d/linux.fragment" ] && FEAT_FRAGMENTS="$FEAT_FRAGMENTS $(rel "$d/linux.fragment")"
+        [ -d "$d/rootfs-overlay" ] && FEAT_OVERLAYS="$FEAT_OVERLAYS $(rel "$d/rootfs-overlay")"
     done
 done
 
-# Family baseline, injected by CONVENTION so a board defconfig need not repeat it.
-# Only for a board that HAS a family (COMMON_CFG set — the EA series today); a
-# standalone board like the hc800 or the IO Extender is left exactly as it was.
-# These let an EA board file drop its BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES,
-# BR2_ROOTFS_OVERLAY and BR2_ROOTFS_POST_SCRIPT_ARGS lines entirely and keep only
-# what genuinely differs (hostname, issue). A board MAY still name extra fragments
-# or overlays; they are merged in (deduplicated), never dropped.
-#   fragments: family linux/common.fragment, then the board's own linux/<board>.fragment
-#   overlays:  fleet common/rootfs-overlay, then family rootfs-overlay, then the board's
-BASE_FRAGMENTS=""
-BASE_OVERLAYS=""
-if [ -n "$COMMON_CFG" ]; then
-    _fam=$(dirname "${COMMON_CFG#"$REPO/board/"}")          # e.g. ea/common
-    [ -f "$REPO/board/$_fam/linux/common.fragment" ] &&
-        BASE_FRAGMENTS="\$(BR2_EXTERNAL_OPENHC_PATH)/$_fam/linux/common.fragment"
-    [ -f "$BOARD_DIR/linux/$BOARD.fragment" ] &&
-        BASE_FRAGMENTS="$BASE_FRAGMENTS \$(BR2_EXTERNAL_OPENHC_PATH)/${BOARD_DIR#"$REPO/board/"}/linux/$BOARD.fragment"
-    BASE_OVERLAYS="\$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay"
-    [ -d "$REPO/board/$_fam/rootfs-overlay" ] &&
-        BASE_OVERLAYS="$BASE_OVERLAYS \$(BR2_EXTERNAL_OPENHC_PATH)/$_fam/rootfs-overlay"
-    [ -d "$BOARD_DIR/rootfs-overlay" ] &&
-        BASE_OVERLAYS="$BASE_OVERLAYS \$(BR2_EXTERNAL_OPENHC_PATH)/${BOARD_DIR#"$REPO/board/"}/rootfs-overlay"
+# Family boards get their fragments, overlays, DT and board.env by convention,
+# so a variant only carries what differs:
+#   kernel:   family linux/common.fragment, model + board linux.fragment, features,
+#             then a generated one naming the built-in DTB
+#   overlays: fleet, family, features, model, board, then the generated board.env
+#   board.env: family + model + board board.env, concatenated (later wins)
+#   DT:       the board's .dts plus every .dtsi in the model and board dirs
+BASE_FRAGMENTS=""; BASE_OVERLAYS=""; BOARD_DTS=""
+GEN="$OUT/ohc-generated"
+if [ -n "$FAMILY_DIR" ]; then
+    rm -rf "$GEN"; mkdir -p "$GEN/overlay/opt/ohc"
+    [ -f "$FAMILY_DIR/linux/common.fragment" ] && BASE_FRAGMENTS=$(rel "$FAMILY_DIR/linux/common.fragment")
+    for _s in "$MODEL_DIR" "$BOARD_DIR"; do
+        [ -f "$_s/linux.fragment" ] && BASE_FRAGMENTS="$BASE_FRAGMENTS $(rel "$_s/linux.fragment")"
+    done
+    echo "CONFIG_BUILTIN_DTB_NAME=\"$BOARD\"" > "$GEN/dtb.fragment"
+
+    BASE_OVERLAYS="$(rel "$REPO/board/common/rootfs-overlay")"
+    [ -d "$FAMILY_DIR/rootfs-overlay" ] && BASE_OVERLAYS="$BASE_OVERLAYS $(rel "$FAMILY_DIR/rootfs-overlay")"
+    BASE_OVERLAYS="$BASE_OVERLAYS $FEAT_OVERLAYS"
+    for _s in "$MODEL_DIR" "$BOARD_DIR"; do
+        [ -d "$_s/rootfs-overlay" ] && BASE_OVERLAYS="$BASE_OVERLAYS $(rel "$_s/rootfs-overlay")"
+    done
+
+    for _s in "$FAMILY_DIR" "$MODEL_DIR" "$BOARD_DIR"; do
+        [ -f "$_s/board.env" ] && { echo "# --- ${_s#"$REPO/board/"}/board.env"; cat "$_s/board.env"; }
+    done > "$GEN/overlay/opt/ohc/board.env"
+
+    BOARD_DTS="${BOARD_DIR#"$REPO/board/"}/$BOARD.dts"
+    for _d in "$MODEL_DIR"/*.dtsi "$BOARD_DIR"/*.dtsi; do
+        [ -f "$_d" ] && BOARD_DTS="$BOARD_DTS ${_d#"$REPO/board/"}"
+    done
+
+    # A feature with a DT half (ea-<feature>.dtsi) is included exactly when selected.
+    _dtdir="$FAMILY_DIR/kernel/arch/x86/boot/dts"
+    _incs=""; _todo=$BOARD_DTS
+    while [ -n "$_todo" ]; do
+        _next=""
+        for _d in $_todo; do
+            for _n in $(sed -n 's/^#include "\(.*\)"$/\1/p' "$REPO/board/$_d" 2>/dev/null || true); do
+                case " $_incs " in *" $_n "*) continue;; esac
+                _incs="$_incs $_n"
+                [ -f "$_dtdir/$_n" ] && _next="$_next ${_dtdir#"$REPO/board/"}/$_n"
+            done
+        done
+        _todo=$_next
+    done
+    for _i in "$_dtdir"/ea-*.dtsi; do
+        _f=$(basename "$_i" .dtsi); _f=${_f#ea-}
+        [ -d "$FAMILY_DIR/features/$_f" ] || continue
+        case " $_incs " in *" ea-$_f.dtsi "*) _inc=yes;; *) _inc=no;; esac
+        case " $FEATURES " in *" $_f "*) _sel=yes;; *) _sel=no;; esac
+        [ $_inc = $_sel ] || {
+            echo "build.sh: feature '$_f' selected=$_sel but ea-$_f.dtsi included=$_inc" >&2
+            exit 1; }
+    done
 fi
 
 {
     echo "# GENERATED by build/build.sh — do not edit."
-    echo "# common + ${COMMON_CFG:+${COMMON_CFG##*/board/} + }${FEATURES:+features[$FEATURES] + }$BOARD/${BOARD}_defconfig"
+    echo "# ${SCOPES//$REPO\/board\//} ${FEATURES:+features[$FEATURES]}"
     echo
     if [ -f "$ALL_CFG" ]; then
         cat "$ALL_CFG"
@@ -286,7 +233,7 @@ fi
     fi
     for f in $FEATURES; do
         dirs=$(feature_dirs "$f") || {
-            echo "build.sh: unknown feature '$f' — looked in common, ${COMMON_CFG:+$(basename "$(dirname "$COMMON_CFG")"), }$BOARD" >&2
+            echo "build.sh: unknown feature '$f' (no features/$f in any of: ${SCOPES//$REPO\/board\//})" >&2
             exit 1
         }
         for d in $dirs; do
@@ -296,47 +243,28 @@ fi
             echo
         done
     done
+    [ -f "$MODEL_DIR/defconfig" ] && { echo "# --- model: ${MODEL_DIR#"$REPO/board/"} ---"; cat "$MODEL_DIR/defconfig"; echo; }
     cat "$BOARD_CFG"
-    # Everything below is emitted AFTER the board file so it is the winning
-    # assignment (kconfig takes the last). Deduplication matters: naming a
-    # fragment twice makes Buildroot warn and apply it twice; getting the feature
-    # kernel half wrong is silent and nasty (userspace lands, driver does not —
-    # what happened to `switch` once).
-    if [ -n "$COMMON_CFG" ]; then
-        # Family board (the EA series): assemble the fragment list, the overlay
-        # list and the post-image argument by CONVENTION, so the board file only
-        # carries what differs. Order is family baseline -> board's own ->
-        # features; anything the board still names explicitly is merged in.
-        base=$(sed -n 's/^BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="\(.*\)"$/\1/p' "$BOARD_CFG" | tail -1)
-        merged=""
-        for f in $BASE_FRAGMENTS $base $FEAT_FRAGMENTS; do
-            case " $merged " in *" $f "*) continue;; esac
-            merged="${merged:+$merged }$f"
-        done
-        ovbase=$(sed -n 's/^BR2_ROOTFS_OVERLAY="\(.*\)"$/\1/p' "$BOARD_CFG" | tail -1)
-        ovmerged=""
-        for o in $BASE_OVERLAYS $ovbase; do
-            case " $ovmerged " in *" $o "*) continue;; esac
-            ovmerged="${ovmerged:+$ovmerged }$o"
-        done
-        echo
-        echo "# --- assembled by build.sh (family baseline + board + features) ---"
-        [ -n "$merged" ]   && echo "BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=\"$merged\""
-        [ -n "$ovmerged" ] && echo "BR2_ROOTFS_OVERLAY=\"$ovmerged\""
+    # Emitted after the board file so these assignments win. Lists are
+    # deduplicated: Buildroot applies a fragment named twice twice.
+    base=$(sed -n 's/^BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="\(.*\)"$/\1/p' "$BOARD_CFG" | tail -1)
+    ovbase=$(sed -n 's/^BR2_ROOTFS_OVERLAY="\(.*\)"$/\1/p' "$BOARD_CFG" | tail -1)
+    if [ -n "$FAMILY_DIR" ]; then
+        frags="$BASE_FRAGMENTS $base $FEAT_FRAGMENTS $GEN/dtb.fragment"
+        ovls="$BASE_OVERLAYS $ovbase $GEN/overlay"
+    else
+        frags="$base $FEAT_FRAGMENTS"
+        ovls="$ovbase $FEAT_OVERLAYS"
+    fi
+    dedup() { _o=""; for _x in "$@"; do case " $_o " in *" $_x "*) ;; *) _o="${_o:+$_o }$_x";; esac; done; printf '%s' "$_o"; }
+    merged=$(dedup $frags); ovmerged=$(dedup $ovls)
+    echo
+    echo "# --- assembled by build.sh ---"
+    [ -n "$merged" ]   && echo "BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=\"$merged\""
+    [ -n "$ovmerged" ] && echo "BR2_ROOTFS_OVERLAY=\"$ovmerged\""
+    if [ -n "$FAMILY_DIR" ]; then
         echo "BR2_ROOTFS_POST_SCRIPT_ARGS=\"$BOARD\""
-        echo "BR2_OHC_BOARD_DTS=\"ea/$BOARD/$BOARD.dts\""
-    elif [ -n "$FEAT_FRAGMENTS" ]; then
-        # Standalone board (hc800, IO Extender): unchanged — only the selected
-        # features' kernel fragments are appended to the board's own list.
-        base=$(sed -n 's/^BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="\(.*\)"$/\1/p' "$BOARD_CFG" | tail -1)
-        merged=""
-        for f in $base $FEAT_FRAGMENTS; do
-            case " $merged " in *" $f "*) continue;; esac
-            merged="${merged:+$merged }$f"
-        done
-        echo
-        echo "# --- feature kernel fragments (appended by build.sh) ---"
-        echo "BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=\"$merged\""
+        echo "BR2_OHC_BOARD_DTS=\"$BOARD_DTS\""
     fi
     # openHC's own DSP program for the EA3's ADAU1451, which CI builds in the
     # same run (dsp-program.yml, on Windows, with SigmaStudio+) and hands over
@@ -413,10 +341,9 @@ _pf_check BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES file
 
 # An overlay that exists and is not listed: a warning, not an error, because a
 # downstream tree may legitimately keep one it composes in some other way.
-for _d in "$BOARD_DIR/rootfs-overlay" \
-          ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/rootfs-overlay"}; do
+for _d in $(for _s in $SCOPES; do echo "$_s/rootfs-overlay"; done); do
     [ -d "$_d" ] || continue
-    grep -q "$(basename "$(dirname "$_d")")/rootfs-overlay" "$EFFECTIVE" ||
+    grep -q "${_d#"$REPO/board/"}" "$EFFECTIVE" ||
         echo "build.sh: WARNING $_d exists but no BR2_ROOTFS_OVERLAY entry names it" >&2
 done
 
@@ -707,7 +634,7 @@ done
 #
 # TWO depths, because a family nests its boards: board/<board>/packages/ for a
 # top-level board (hc800) AND board/<family>/<member>/packages/ for a family
-# member (board/ea/common, board/ea/ea3-v2). Miss the second and every EA
+# member (board/ea/common). Miss the second and every EA
 # silicon package silently ships stale.
 #
 # The firmware rules (board/<family>/common/firmware/<kind>/<part>/, e.g. the

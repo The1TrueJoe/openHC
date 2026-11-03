@@ -9,7 +9,7 @@ There are three kinds of EA kernel source, and each has one home:
 
 | Where | What belongs there |
 |---|---|
-| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<board>/<board>.dts` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
+| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<model>/<model>.dtsi` + `board/ea/<model>/<board>/<board>.dts` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
 | `board/ea/common/kernel/drivers/`, `sound/` | new drivers for the SoC's own PCI functions (a copy) |
 | `board/ea/common/patches/linux/` | edits to existing upstream files (a diff) |
 
@@ -31,6 +31,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
 | 0019 | b53 BPDU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode traps BPDUs to the unwired IMP port 8, so STP never sees a loop; mirror them to port 5 (WAN-port select also delivers them but stops lan1↔lan2 forwarding) |
+| 0020 | simple-card `link-name` | name a link's PCM from the DT (`simple-audio-card,link-name` or `link-name` on a dai-link) instead of `<cpu dai>-<codec dai>`, so the EA3's PCMs are `Analog`, `Coax` and `Coax in`; also stops passing the name as a format string |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
@@ -83,7 +84,7 @@ They are gone. Each board's tree is now linked into the kernel:
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
 | `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3 with its firmware and program check, the simple-audio-card, `codec_reset`/`dsp_reset` |
 | `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
-| `board/ea/<board>/<board>.dts` | the board: includes matching its `ohc.features` |
+| `board/ea/<model>/<board>/<board>.dts` | the board: includes matching its `ohc.features` (checked by `build.sh`) |
 
 A GPIO line is hogged by the file for the hardware it serves, so a board without
 that hardware never drives it; an unhogged line keeps whatever CEFDK left it at.

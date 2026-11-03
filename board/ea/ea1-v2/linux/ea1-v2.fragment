@@ -1,4 +1,0 @@
-# EA1 v2 deltas. pci=realloc,nocrs is required (see docs ea/kernel-config).
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
-
-CONFIG_BUILTIN_DTB_NAME="ea1-v2"

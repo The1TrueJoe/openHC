@@ -1,0 +1,32 @@
+ASoC: simple-card: name a link from the DT
+
+The PCM a simple-card link creates is named "<cpu dai>-<codec dai>", which
+means nothing to a user. Take the name from an optional link-name property
+on the link node (or simple-audio-card,link-name on the card node for a
+single link), so a board can name its outputs in the device tree, and pass
+the name as an argument rather than as the format string.
+
+--- a/sound/soc/generic/simple-card.c	2026-11-03 14:37:11
++++ b/sound/soc/generic/simple-card.c	2026-11-03 14:37:11
+@@ -186,6 +186,8 @@
+ 	enum snd_soc_trigger_order trigger_start = SND_SOC_TRIGGER_ORDER_DEFAULT;
+ 	enum snd_soc_trigger_order trigger_stop  = SND_SOC_TRIGGER_ORDER_DEFAULT;
+ 	bool playback_only = 0, capture_only = 0;
++	const char *link_name = NULL;
++	char prop[128];
+ 	int ret;
+ 
+ 	ret = simple_util_parse_daifmt(dev, node, codec,
+@@ -221,7 +223,11 @@
+ 	dai_link->init			= simple_util_dai_init;
+ 	dai_link->ops			= &simple_ops;
+ 
+-	ret = simple_util_set_dailink_name(priv, dai_link, name);
++	snprintf(prop, sizeof(prop), "%slink-name", prefix);
++	of_property_read_string(node, prop, &link_name);
++
++	ret = simple_util_set_dailink_name(priv, dai_link, "%s",
++					   link_name ?: name);
+ end:
+ 	return simple_ret(priv, ret);
+ }

@@ -46,6 +46,7 @@
 
 		simple-audio-card,dai-link@0 {
 			reg = <0>;
+			link-name = "Analog";
 			format = "i2s";
 			bitclock-master = <&i2s_dai>;
 			frame-master = <&i2s_dai>;
@@ -60,6 +61,7 @@
 
 		simple-audio-card,dai-link@1 {
 			reg = <1>;
+			link-name = "Coax";
 
 			cpu {
 				sound-dai = <&audio 1>;
@@ -71,6 +73,7 @@
 
 		simple-audio-card,dai-link@2 {
 			reg = <2>;
+			link-name = "Coax in";
 
 			cpu {
 				sound-dai = <&audio 2>;

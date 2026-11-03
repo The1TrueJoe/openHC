@@ -26,5 +26,7 @@
 		/* ALSA card id "openhcea5" */
 		model = "openhc-ea5";
 		control4,dsps = <&dsp0 &dsp1>;
+		/* One per FPGA stream pair; rename each once its jacks are verified (#128). */
+		control4,link-names = "Audio 1", "Audio 2", "Audio 3", "Audio 4";
 	};
 };
