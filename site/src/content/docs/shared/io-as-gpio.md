@@ -101,7 +101,7 @@ binds it at boot. Nothing in userspace attaches anything, and the UART has no
 `/dev/ttyS*` of its own: a UART with a serdev child belongs to that driver.
 
 **The EA family: its device tree.** Its kernel links a built-in tree (the
-board's own `board/ea/<board>/<board>.dts`), and the part is a child of the UART
+model's `board/ea/<model>/<model>.dtsi`), and the part is a child of the UART
 it is wired to:
 
 ```dts

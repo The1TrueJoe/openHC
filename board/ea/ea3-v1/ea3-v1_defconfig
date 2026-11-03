@@ -1,3 +1,0 @@
-# openHC — Control4 EA3 v1: the ea3-v2 plus Wi-Fi. Unverified on hardware; netboot first (fuse state unknown).
-BR2_TARGET_GENERIC_HOSTNAME="openea3"
-BR2_TARGET_GENERIC_ISSUE="openHC EA3 v1"

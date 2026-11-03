@@ -1,7 +1,0 @@
-# EA1 v1 deltas on board/ea/common/linux/common.fragment.
-# pci=realloc,nocrs is required (unassigned BARs, incomplete ACPI _CRS).
-# The RAM-reclaim memmap is in board.env OHC_KEXEC_CMDLINE_EXTRA: the kexec line
-# replaces this one. See docs ea/kernel-config.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq"
-
-CONFIG_BUILTIN_DTB_NAME="ea1-v1"

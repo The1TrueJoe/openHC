@@ -6,9 +6,10 @@ sidebar:
 ---
 
 Every EA kernel carries its board's device tree built in (`BUILTIN_DTB`, shared
-patch 0015), picked by `CONFIG_BUILTIN_DTB_NAME` in the board's kernel fragment.
-The sources are in `board/ea/common/kernel/arch/x86/boot/dts/`, plus one short
-`.dts` per board in `board/ea/<board>/`. The `.dtsi` files keep only one-line
+patch 0015), picked by `CONFIG_BUILTIN_DTB_NAME`, which `build.sh` sets to the board name.
+The shared sources are in `board/ea/common/kernel/arch/x86/boot/dts/`; each model
+has its `<model>.dtsi` in `board/ea/<model>/` and each variant a short `.dts` in
+`board/ea/<model>/<board>/`. The `.dtsi` files keep only one-line
 comments; this page holds the background.
 
 ## Layout
@@ -17,7 +18,8 @@ comments; this page holds the background.
 |---|---|
 | `ce5300.dtsi` | The SoC: UARTs, the PCI functions board devices hang off, the boot flash. |
 | `ea.dtsi` | What every EA board shares: framebuffer, LEDs, ID button, common GPIO hogs, rear USB power, heatsink sensor, fan and thermal zone, the IO-MCU. |
-| `ea1.dtsi`, `ea3.dtsi`, `ea5.dtsi` | One per model: its IO-MCU jacks, relays and contacts, and model-only lines. |
+| `<model>.dtsi` (in `board/ea/<model>/`) | One per model: everything every variant of it has. Its IO-MCU jacks, relays and contacts, its switch ports, model-only lines, and the includes for the features the whole model has (`ea-switch`, `ea-audio-dsp`, `ea-audio-fpga`). |
+| `<board>.dts` | One per variant: the model's `.dtsi`, `ea-wifi.dtsi` where there is a radio, ports for a variant-only switch, and `ea-gpio-names.dtsi` last. |
 | `ea-wifi.dtsi`, `ea-switch.dtsi`, `ea-audio-dsp.dtsi`, `ea-audio-fpga.dtsi` | One per feature, with that feature's hogs. |
 | `ea-gpio-names.dtsi` | `gpio-line-names` for all 128 lines. **Included last.** |
 
@@ -263,8 +265,10 @@ labels the Health panel shows.
 
 ## The switch
 
-`ea-switch.dtsi` puts the BCM53125 on SSP chip-select 1, for `ea3-v1`, `ea3-v2`,
-`ea1-v2-poe` and `ea5`. The port map and the evidence for it are on the
+`ea-switch.dtsi` puts the BCM53125 on SSP chip-select 1 with its CPU port, for
+the EA3s, the EA-5s and the `ea1-v2-poe`. Each of those declares its own user
+ports under `&switch_ports`: `lan1` and `lan2` on the EA3 and ea1-v2-poe, `lan0`
+to `lan4` on the EA-5. The port map and the evidence for it are on the
 [switch page](/ea/switch/). What the node itself rests on, all measured on a
 live EA3:
 

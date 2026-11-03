@@ -212,7 +212,7 @@ jobs:
           set -euo pipefail
           # The fleet is every board directory with a <name>/<name>_defconfig.
           boards_in() { for d in "$@"; do n=$(basename "$d"); [ "$n" != common ] && [ -f "$d/${n}_defconfig" ] && echo "$n"; done; return 0; }
-          EA_BOARDS=$(boards_in board/ea/*/ | tr '\n' ' ')
+          EA_BOARDS=$(boards_in $(ls -d board/ea/*/*/ | grep -v '^board/ea/common/') | tr '\n' ' ')
           OTHER_BOARDS=$(boards_in board/*/ | tr '\n' ' ')
           printf -v ALL '"%s",' $EA_BOARDS $OTHER_BOARDS
           ALL="[${ALL%,}]"
@@ -328,9 +328,12 @@ jobs:
           if echo "$changed" | grep -qx '.github/workflows/dsp-program.yml'; then
             sel+=(ea3-v1 ea3-v2)
           fi
-          # EA boards live under board/ea/<board>/; the others are top-level.
+          # EA boards live at board/ea/<model>/<board>/; a change in the model
+          # folder outside any board folder rebuilds every board of that model.
           for b in $EA_BOARDS; do
-            echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
+            m=$(basename "$(dirname board/ea/*/"$b")")
+            echo "$changed" | grep -qE "^board/ea/$m/$b/" && sel+=("$b")
+            echo "$changed" | grep -E "^board/ea/$m/" | grep -vqE "^board/ea/$m/$m-[^/]+/" && sel+=("$b")
           done
           for b in $OTHER_BOARDS; do
             echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")

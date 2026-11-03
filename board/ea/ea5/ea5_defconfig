@@ -1,3 +1,0 @@
-# openHC — Control4 EA-5 (V1 and V2).
-BR2_TARGET_GENERIC_HOSTNAME="openea5"
-BR2_TARGET_GENERIC_ISSUE="openHC EA5"

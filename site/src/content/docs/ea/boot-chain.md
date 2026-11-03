@@ -212,7 +212,7 @@ typing back is overrun-prone. Proper fix: set the legacy `uartclk`, or use
 **PCI BARs come up unassigned.** CEFDK only programs the BARs for what it uses,
 so the kernel finds `ath9k` and `e1000` with BAR 0 = `0x00000000` and cannot
 `ioremap` them. Boot with **`pci=realloc,nocrs`**, baked into `CONFIG_CMDLINE`
-with `CMDLINE_EXTEND`.
+(x86 prepends it to the loader's line).
 
 There's a related trap on the 8250 driver. The four legacy ISA declarations
 consume every 8250 slot, so the **real PCI UARTs** can't register at all:

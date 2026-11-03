@@ -76,8 +76,8 @@ address-walk pattern (`0x40000000` reads `0x40000000`) up to near `0x7f000000`.
 The `memmap=exactmap` reclaim that gives the EA3 its 1.7 GB works here too — the
 maps are identical. On this EA1 (10.0.0.127) `MemTotal` goes from 180384 kB to
 1783332 kB, ACPI clean, `mtd0` intact. The EA1 boots through the `S00kexec`
-bootstrap, so the reclaim is carried by `OHC_KEXEC_CMDLINE_EXTRA` in `board.env`,
-which `S00kexec` adds to the real kernel's command line.
+bootstrap; the reclaim was carried by `S00kexec` then and is in the family's
+`CONFIG_CMDLINE` now, which x86 prepends to the line `S00kexec` passes.
 
 ## The serial map
 

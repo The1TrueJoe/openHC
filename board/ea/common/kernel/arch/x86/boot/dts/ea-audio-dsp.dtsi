@@ -29,6 +29,7 @@
 		compatible = "simple-audio-card";
 		/* ALSA card id "openhcea" */
 		simple-audio-card,name = "openhc-ea";
+		simple-audio-card,link-name = "Analog";
 		simple-audio-card,format = "i2s";
 		simple-audio-card,bitclock-master = <&i2s_dai>;
 		simple-audio-card,frame-master = <&i2s_dai>;

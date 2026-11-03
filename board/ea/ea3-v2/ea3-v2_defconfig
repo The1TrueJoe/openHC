@@ -1,3 +1,0 @@
-# openHC — Control4 EA3 (rev 2). Fuse blown: boots via the CEFDK autoscript takeover (/ea/ea3/).
-BR2_TARGET_GENERIC_HOSTNAME="openea3"
-BR2_TARGET_GENERIC_ISSUE="openHC EA3"
