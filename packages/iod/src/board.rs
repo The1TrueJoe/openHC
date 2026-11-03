@@ -45,6 +45,8 @@ pub struct Declared {
     pub baud: u32,
     /// The part answered the driver. False is "declared but silent".
     pub online: bool,
+    /// The part the driver says it is (`tm4c1231d5`); empty if unknown.
+    pub part: String,
     /// Each MCU UART's connector, by UART number (ttyOHC<n>).
     pub ports: Vec<UartPort>,
 }
@@ -115,6 +117,7 @@ impl Declared {
             port: get("port").unwrap_or_default(),
             baud: get("baud").and_then(|v| v.parse().ok()).unwrap_or(0),
             online: get("online").as_deref() == Some("1"),
+            part: get("part").unwrap_or_default(),
             ports: UartPort::read_all(Path::new(crate::jack::TTY_SYSFS), uarts),
         })
     }
@@ -273,11 +276,11 @@ fn iomcu_node(serdev: &Path) -> Option<Vec<String>> {
     })
 }
 
-/// The part from a compatible beside `control4,io-mcu`:
-/// `control4,io-mcu-tm4c1231d5` or `ti,tm4c1231d5` -> `tm4c1231d5`.
+/// The part from the compatible before `control4,io-mcu`, for when the
+/// driver is not bound: `control4,tm4c1231d5-io-mcu` -> `tm4c1231d5`.
 fn mcu_part(compat: &[String]) -> Option<String> {
     compat.iter().filter(|c| *c != IOMCU_COMPATIBLE).find_map(|c| {
-        let p = c.strip_prefix("control4,io-mcu-").or_else(|| c.split_once(',').map(|(_, p)| p))?;
+        let p = c.strip_prefix("control4,")?.strip_suffix("-io-mcu")?;
         (!p.is_empty()).then(|| p.to_string())
     })
 }
@@ -353,11 +356,13 @@ impl Kernel {
         let model = dt_model(Path::new("/proc/device-tree"));
         let hosts = HostPort::discover(Path::new(SERIAL_DIR), udev_props);
         if let Some(compat) = iomcu_node(Path::new(SERDEV_SYSFS)) {
+            let declared = Declared::read(Path::new(IOMCU_SYSFS));
+            let part = declared.as_ref().map(|d| d.part.clone()).filter(|p| !p.is_empty());
             return Kernel {
                 model,
                 backend: Some(Backend::Mcu),
-                mcu_part: mcu_part(&compat),
-                declared: Declared::read(Path::new(IOMCU_SYSFS)),
+                mcu_part: part.or_else(|| mcu_part(&compat)),
+                declared,
                 hosts,
             };
         }
@@ -495,7 +500,7 @@ mod tests {
     fn ea1() -> Declared {
         Declared {
             relays: 0, contacts: 0, ir_out: 4, ir_blaster: 1, ir_in: 1, uarts: 2,
-            port: "serial0-0".into(), baud: 460800, online: true,
+            port: "serial0-0".into(), baud: 460800, online: true, part: String::new(),
             ports: vec![
                 UartPort { jack: 1, label: "IR / Serial 1".into() },
                 UartPort { jack: 2, label: "IR / Serial 2".into() },
@@ -509,11 +514,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for (f, v) in [("relays", "0"), ("contacts", "0"), ("ir_out", "4"), ("ir_blaster", "1"),
                        ("ir_in", "1"), ("uarts", "2"), ("port", "serial0-0"), ("baud", "460800"),
-                       ("online", "1")] {
+                       ("online", "1"), ("part", "tm4c1231d5")] {
             std::fs::write(dir.join(f), format!("{v}\n")).unwrap();
         }
         // No ttyOHC* in this sandbox: the ports read back as plain connectors.
-        let want = Declared { ports: vec![UartPort::default(); 2], ..ea1() };
+        let want = Declared { ports: vec![UartPort::default(); 2], part: "tm4c1231d5".into(), ..ea1() };
         assert_eq!(Declared::read(&dir), Some(want));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(Declared::read(&dir), None);
@@ -630,12 +635,12 @@ mod tests {
     #[test]
     fn the_part_comes_from_the_io_mcu_compatible() {
         let c = compatibles;
-        let dt = c("of:Nio-mcuT(null)Ccontrol4,io-mcu-tm4c1231d5Ccontrol4,io-mcu");
-        assert_eq!(dt, ["control4,io-mcu-tm4c1231d5", "control4,io-mcu"]);
+        let dt = c("of:Nio-mcuT(null)Ccontrol4,tm4c1231d5-io-mcuCcontrol4,io-mcu");
+        assert_eq!(dt, ["control4,tm4c1231d5-io-mcu", "control4,io-mcu"]);
         assert_eq!(mcu_part(&dt).as_deref(), Some("tm4c1231d5"));
         // An ACPI node name with a C in it is not a compatible.
         assert_eq!(c("of:NIOMCT(null)Ccontrol4,io-mcu"), ["control4,io-mcu"]);
-        assert_eq!(mcu_part(&c("of:NIOMCT(null)Cti,lm3s1162Ccontrol4,io-mcu")).as_deref(), Some("lm3s1162"));
+        assert_eq!(mcu_part(&c("of:NIOMCT(null)Ccontrol4,lm3s1162-io-mcuCcontrol4,io-mcu")).as_deref(), Some("lm3s1162"));
         assert_eq!(mcu_part(&c("of:NIOMCT(null)Ccontrol4,io-mcu")), None);
         assert!(compatibles("acpi:PNP0501:").is_empty());
     }
@@ -650,10 +655,10 @@ mod tests {
         assert_eq!(iomcu_node(&dir), Some(vec!["control4,io-mcu".to_string()]));
         // A device-tree node: its own compatible list, NUL-separated.
         std::fs::create_dir_all(dir.join("serial1-0/of_node")).unwrap();
-        std::fs::write(dir.join("serial1-0/of_node/compatible"), b"control4,io-mcu-tm4c1231d5\0control4,io-mcu\0").unwrap();
+        std::fs::write(dir.join("serial1-0/of_node/compatible"), b"control4,tm4c1231d5-io-mcu\0control4,io-mcu\0").unwrap();
         let found = iomcu_node(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(found, Some(vec!["control4,io-mcu-tm4c1231d5".to_string(), "control4,io-mcu".to_string()]));
+        assert_eq!(found, Some(vec!["control4,tm4c1231d5-io-mcu".to_string(), "control4,io-mcu".to_string()]));
         assert_eq!(iomcu_node(&dir), None);
     }
 

@@ -21,7 +21,7 @@ software defaults only.
 | Managed-switch ports | the DSA user ports the kernel created (`DEVTYPE=dsa`), named by their DT `label` | switchd, `S39ea-switch`, `S40net`, `S87ohcswitch` |
 | mDNS interface | every interface that is up, minus loopback, DSA ports and conduits and bridge ports; wired first | `ohc-mdns` |
 | IO backend | a serdev device whose `modalias` has `control4,io-mcu` (DT or ACPI `PRP0001`) means `mcu`; else `relay1..`/`contact1..` lines or `openHC IR out N` lirc devices mean `gpio`; else none | iod |
-| IO-MCU part | a compatible beside `control4,io-mcu`: `control4,io-mcu-<part>` or `<vendor>,<part>` | iod (`/api/io` `part`) |
+| IO-MCU part | `/sys/class/ohc/iomcu/part`; with the driver unbound, the compatible before `control4,io-mcu` (`control4,tm4c1231d5-io-mcu`) | iod (`/api/io` `part`) |
 | IO counts, combo jacks | `/sys/class/ohc/iomcu`, `/sys/class/tty/ttyOHC*/{jack,label,mode}` | iod; see [the IO-MCU](/shared/io-mcu/) |
 | Host serial ports | `/dev/ohc/serial/<n>`, from the board's udev rule | iod |
 | Zigbee and Z-Wave radios | `/dev/zigbee`, `/dev/zwave`, from the board's udev rule | zigbee, `S91ohczigbee` |
