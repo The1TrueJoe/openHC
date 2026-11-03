@@ -1,2 +1,4 @@
 # EA-3 audio: CE5300 I2S -> ADAU1451, as a simple-audio-card (ea-audio-dsp.dtsi).
 CONFIG_SND_SIMPLE_CARD=m
+# The coax jacks' dummy codecs (spdif-dit / spdif-dir).
+CONFIG_SND_SOC_SPDIF=m
