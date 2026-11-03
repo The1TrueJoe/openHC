@@ -173,8 +173,8 @@ if ((*(volatile uint32_t *)(dfx_mbar + 0x60) & BIT(0)) ||  /* SEC_BOOT_FUSE=1 */
 So `+0x14 == 0` says nothing about the shipping check. On an **EA3 (board v2)**
 the fuse is **BLOWN**: writing an openHC kernel to the eMMC container and doing a
 normal boot gives `VERIFY_S3(kernel bzImage): FAIL` and a watchdog boot loop. The
-EA1 (board v1) still boots unsigned kernels, so the fuse likely differs by **board
-revision** — an EA1-v1-versus-EA3-v2 change, not an EA-family constant.
+EA1 (rev 5) does the same; its earlier unsigned boot went through `bootlinux`,
+which does not verify.
 
 **This doesn't block a takeover.** Only CEFDK's *normal* boot verifies. The shell
 `bootlinux` command doesn't, and the `script` autorun runs before the verifying

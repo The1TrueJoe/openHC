@@ -73,9 +73,11 @@ Measured on this EA1: `MemTotal` is only ~176 MB. CEFDK's e820 hands Linux
 carve-out openHC never loads, exactly as on the [EA3](/ea/ea3/). It is real, idle
 DRAM, not bare address space: read read-only it still holds CEFDK's boot-time
 address-walk pattern (`0x40000000` reads `0x40000000`) up to near `0x7f000000`.
-The `memmap=exactmap` reclaim that gives the EA3 its 1.7 GB is written into this
-board's fragment too — the maps are identical — but it has **not** yet been booted
-with on an EA1, so until it is, the EA1 still runs on ~176 MB.
+The `memmap=exactmap` reclaim that gives the EA3 its 1.7 GB works here too — the
+maps are identical. On this EA1 (10.0.0.127) `MemTotal` goes from 180384 kB to
+1783332 kB, ACPI clean, `mtd0` intact. The EA1 boots through the `S00kexec`
+bootstrap, so the reclaim is carried by `OHC_KEXEC_CMDLINE_EXTRA` in `board.env`,
+which `S00kexec` adds to the real kernel's command line.
 
 ## The serial map
 

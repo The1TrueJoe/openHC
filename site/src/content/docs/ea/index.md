@@ -20,11 +20,11 @@ and why the variants are composed rather than copied.
 
 | Board | Wi-Fi | Switch | PoE | Secure boot | Status |
 |---|---|---|---|---|---|
-| **ea1-v1** | ath9k | — | — | **clear** | **proven** — netboots, shell, Wi-Fi + SSH |
+| **ea1-v1** | ath9k | — | — | **blown** | **proven** — netboots, shell, Wi-Fi + SSH |
 | **ea3-v2** | — | BCM53125 | yes | **blown** | **proven** — persistent self-boot from eMMC |
 | ea1-v2 | ath9k | — | — | ? | builds; boot differences unconfirmed |
 | ea1-v2-poe | — | BCM53125 | yes | ? | builds, never booted |
-| ea3-v1 | ath9k | BCM53125 | yes | ? | builds, never booted |
+| ea3-v1 | ath9k | BCM53125 | yes | ? | builds; image never booted (a v1 board has run the ea3-v2 image) |
 
 Each board lists what it has in `board/<board>/ohc.features` — `wifi`, `emmc`,
 `switch`, `audio`, `sgx` — and shared feature sets under
@@ -53,14 +53,12 @@ parsing `/proc/c4board` at all.
 
 ### Secure boot
 
-The EA3 board v2's CEFDK signature fuse is **blown**, so the eMMC normal-boot
-path rejects unsigned kernels. The EA1's is clear.
+The CEFDK signature fuse is **blown** on both the EA3 board v2 and the EA1 rev 5,
+so the eMMC normal-boot path rejects unsigned kernels.
 
 It takes over anyway, because the shell's `bootlinux` command doesn't verify and
 CEFDK's `script` autorun runs *before* the verifying path. See
 [secure boot and the takeover](/ea/secure-boot/).
-
-The EA1 needs none of this, its normal path boots unsigned already.
 
 ### Peripherals
 

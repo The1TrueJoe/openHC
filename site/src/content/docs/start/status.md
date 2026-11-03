@@ -23,13 +23,13 @@ them was invisible while CI only ever built one board. The row below says
 
 | Board | SoC | Status | What that means |
 |---|---|---|---|
-| **ea1-v1** | Intel CE5310 | **Proven** | Netboots Linux 7.1.8, reaches a shell, Wi-Fi and SSH up. Secure-boot fuse clear. Boot SPI-NOR is a writable `/dev/mtd0`; software return-to-stock and the hardware restore button are in place; the Zigbee NCP answers. |
+| **ea1-v1** | Intel CE5310 | **Proven** | Netboots Linux 7.1.8, reaches a shell, Wi-Fi and SSH up. Secure-boot fuse blown (rev 5): boots through `bootlinux`. Boot SPI-NOR is a writable `/dev/mtd0`; software return-to-stock and the hardware restore button are in place; the Zigbee NCP answers. |
 | **ea3-v2** | Intel CE5310 | **Proven** | 7.1.8 via `bootlinux`, e1000 + eMMC + SSH, **persistent self-boot** from eMMC. Fuse blown; takes over via the CEFDK autoscript. |
 | **ca1** | i.MX6SL | **Proven** | Boots our 7.1.8 kernel. openHC on eMMC ext4, Node, Rust dashboard, captive-portal Wi-Fi setup. |
 | **ioxv1** | TI DM355 | **Proven** | Installs to NAND over SSH from stock or openHC, and boots from it; three failed openHC boots fall back to stock on their own. The FPGA loads itself at boot from the unit's own NAND, giving four RS-232 ports (verified both ways against a PC) and eight IR outputs (all eight verified against a GC-IRL learner at 38 kHz). Relays, contacts, the tri-colour status LED, data/link LEDs, iod and the web UI all work. |
 | ea1-v2 | Intel CE5310 | Builds | Never booted; boot differences unconfirmed. `board.env` inherited from the ea1-v1, not read off this variant. |
 | ea1-v2-poe | Intel CE5310 | Builds | Never booted. `board.env` is the EA1's IO with the EA3's networking, per its defconfig — unverified. |
-| ea3-v1 | Intel CE5310 | Builds | Never booted. Its fuse state is unknown and may match the EA1's. `board.env` is the ea3-v2's plus the radio it kept. |
+| ea3-v1 | Intel CE5310 | Builds | This image has never booted, but a v1 board has run the ea3-v2 image durably, with the same RAM reclaim (1.7 GB). Fuse state unknown; assume blown. `board.env` is the ea3-v2's plus the radio it kept. |
 | ea5 | Intel CE53xx | Builds | Never booted. The audio FPGA, both DSPs, eight IR jacks (two combo), four relays and contacts are described from Control4's GPL source and stock rootfs. See [EA-5](/ea/ea5/). |
 | **hc800** | Atom D525 | **Proven** | 7.1.8 booted, then **persistently installed** (GRUB entry on the spare kernel partition, boot-once via `savedefault`). Relays, contacts, six named IR devices, all six front LEDs, web UI, iod and sysmond. No kernel patches at all — the cheapest board here to bring up, as predicted. |
 

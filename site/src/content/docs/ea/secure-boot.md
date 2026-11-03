@@ -36,7 +36,7 @@ secure-boot fuse: CLEAR
 ```
 
 Conclusion at the time: signature enforcement is off, a self-built unsigned
-kernel should boot. And on the EA1 it does.
+kernel should boot.
 
 :::danger[Correction — this reads the wrong register]
 `dfx_mbar + 0x14` is the **pre-patch Intel** location. Control4's CEFDK patch
@@ -66,10 +66,12 @@ VERIFY_S3(kernel bzImage): FAIL
 then a `SOFT_HANG` and a watchdog boot loop. The factory-restore button recovers
 it fully.
 
-**The fuse is blown on this board.** The EA1 (board **v1**) still boots unsigned
-kernels on the normal path, so the fuse likely differs by board revision. That
-also means an **EA3 v1 may behave like the EA1** and could take over via the plain
-eMMC-container path with no autoscript. Untested.
+**The fuse is blown on this board, and on the EA1 too.** The early "the EA1 boots
+an unsigned kernel" came from the wrong register (above). Installing on the EA1
+(rev 5) gave the same `VERIFY_S3` failure from an unsigned container at `0x400`,
+so it boots openHC through `bootlinux` like the EA3. No board revision has been
+seen with the fuse clear; treat an untested board (EA3 v1, EA-5) as blown until
+a netboot says otherwise.
 
 ## The door that was open anyway
 

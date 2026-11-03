@@ -67,9 +67,8 @@ written**:
 - our ext4 rootfs goes on `mmcblk0p1`;
 - on a secure-boot part, the autoscript goes in SPI-NOR as an MFH item.
 
-On an **ea1-v1** the fuse is clear and the plain container path works with no
-autoscript. On an **ea3-v2** the fuse is blown and the autoscript is required —
-see [secure boot](/ea/secure-boot/).
+The fuse is blown on every EA measured so far (the ea3-v2 and an ea1-v1 rev 5),
+so the autoscript is required — see [secure boot](/ea/secure-boot/).
 
 :::caution[Install to the raw gap with CEFDK's `emmc wr`, not Linux `dd`]
 Linux `/dev/mmcblk0` and CEFDK's `emmc` command don't agree on the raw gap's byte

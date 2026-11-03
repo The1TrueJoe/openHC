@@ -25,7 +25,7 @@ and Control4 spec doc DOC-00031-C.
 | RAM | ~1.5 GB | ~1.5 GB | ? | 2 GB | 512 MB | 1 GB |
 | Storage | 7.6 GB eMMC | 7.6 GB eMMC | eMMC ? | **8 GB SATA SSD + eSATA** | ~2 GB ? | **3.7 GB eMMC + 16 MB SPI-NOR** |
 | Boot | CEFDK (no GRUB) | CEFDK 36-34 | CEFDK ? | **AMI BIOS → GRUB 0.97** | U-Boot ? | **U-Boot 2014.04 (SPI-NOR)** |
-| Secure boot | **fuse clear** | **fuse BLOWN** | ? | **none — nothing verified** | ? | **HAB open — not enforced** |
+| Secure boot | **fuse BLOWN** | **fuse BLOWN** | ? | **none — nothing verified** | ? | **HAB open — not enforced** |
 | **IO MCU** | TM4C1231D5 | TM4C1231D5 | TM4C1231D5 | **LM3S1162** | LM3S1162 | **none** |
 | IO MCU UART | ttyS1 @ 460800 | ttyS1 @ 460800 | ttyS1 ? | ttyS3 @ 115200 | ? | n/a |
 | MCU profile block | 2 | 3 | 0/1/4/5 ? | n/a | n/a | n/a |
@@ -128,9 +128,10 @@ board, but "headless" was wrong about the hardware.
 
 ### Secure boot, board by board
 
-The EA1 (board **v1**) boots unsigned kernels on the normal path; the EA3 (board
-**v2**) does not. The fuse was likely blown starting at some board revision,
-which means an **EA3 v1 may behave like the EA1**. Untested.
+Both the EA1 (rev 5) and the EA3 (board v2) reject an unsigned kernel on the
+normal path (`VERIFY_S3: FAIL`); both boot openHC through `bootlinux`, which does
+not verify. No EA has been seen with the fuse clear. See
+[secure boot](/ea/secure-boot/).
 
 The CA-1's HAB is Open on three independent grounds, derived on the
 [CA-1 page](/ca1/#secure-boot-hab-is-open-and-nothing-else-is-verified-either).
