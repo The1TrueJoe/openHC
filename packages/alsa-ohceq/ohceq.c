@@ -2,15 +2,16 @@
  * ohceq — openHC's per-output tone stage, as an ALSA filter plugin.
  *
  * Bass and treble (RBJ shelving biquads at 120 Hz and 8 kHz, +-12 dB) and
- * left/right balance, on 16- or 32-bit stereo (the slave takes the same format:
- * the dmix's, S32_LE for HDMI and S/PDIF). audiod puts one in front of every
- * output, between its level (softvol) and its dmix:
+ * left/right balance, on 16- or 32-bit stereo: `format`, S16_LE (the default)
+ * or S32_LE, both sides, the dmix's (S32_LE for HDMI and S/PDIF). audiod puts
+ * one in front of every output, between its level (softvol) and its dmix:
  *
  *   pcm.ohc_analog2_eq {
  *       type ohceq
  *       slave.pcm "ohc_analog2_dmix"
  *       card "Intel"
  *       control "ohc_analog2"
+ *       format "S16_LE"
  *   }
  *
  * Like softvol, it creates its own mixer controls on the card the first time
@@ -244,6 +245,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ohceq)
 	snd_config_iterator_t i, next;
 	snd_config_t *slave = NULL;
 	const char *card = "0", *base = NULL;
+	snd_pcm_format_t format = SND_PCM_FORMAT_S16;
 	int err;
 
 	snd_config_for_each(i, next, conf) {
@@ -267,6 +269,16 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ohceq)
 		if (!strcmp(id, "control")) {
 			if (snd_config_get_string(n, &base) < 0) {
 				SNDERR("ohceq: control must be a string");
+				return -EINVAL;
+			}
+			continue;
+		}
+		if (!strcmp(id, "format")) {
+			const char *f;
+			if (snd_config_get_string(n, &f) < 0 ||
+			    ((format = snd_pcm_format_value(f)) != SND_PCM_FORMAT_S16 &&
+			     format != SND_PCM_FORMAT_S32)) {
+				SNDERR("ohceq: format must be S16_LE or S32_LE");
 				return -EINVAL;
 			}
 			continue;
@@ -306,9 +318,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ohceq)
 	}
 	snd_pcm_extplug_set_param_minmax(&eq->ext, SND_PCM_EXTPLUG_HW_CHANNELS, 2, 2);
 	snd_pcm_extplug_set_slave_param(&eq->ext, SND_PCM_EXTPLUG_HW_CHANNELS, 2);
-	/* The slave format is left unset, so it follows this one. */
-	static const unsigned int formats[] = { SND_PCM_FORMAT_S16, SND_PCM_FORMAT_S32 };
-	snd_pcm_extplug_set_param_list(&eq->ext, SND_PCM_EXTPLUG_HW_FORMAT, 2, formats);
+	snd_pcm_extplug_set_param(&eq->ext, SND_PCM_EXTPLUG_HW_FORMAT, format);
+	snd_pcm_extplug_set_slave_param(&eq->ext, SND_PCM_EXTPLUG_HW_FORMAT, format);
 	*pcmp = eq->ext.pcm;
 	return 0;
 }
