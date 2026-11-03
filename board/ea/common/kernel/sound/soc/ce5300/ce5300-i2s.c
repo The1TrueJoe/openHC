@@ -262,22 +262,27 @@ static void ce5300_dump(struct ce5300_i2s *i2s)
 }
 
 /*
- * Start the S/PDIF in on a left subframe: read the running FIFO by hand up to
- * a block's flagged right subframe, so the next word, the DMA's first, is a
- * left one. A block is 4 ms; with no input, start unaligned after 10.
+ * Start the S/PDIF in on a left subframe: read the running FIFO by hand
+ * through a block's flagged left subframe and the right one after it, so the
+ * next word, the DMA's first, is a left one. A block is 4 ms; with no input,
+ * start unaligned after 10.
  */
 static void ce5300_spdif_align(struct ce5300_stream *st)
 {
 	void __iomem *ctx = st->i2s->base + st->ctx;
 	u64 end = ktime_get_ns() + 10 * NSEC_PER_MSEC;
+	bool left = false;
 
 	while (ktime_get_ns() < end) {
 		if (!readl(ctx + CE5300_RX_LEVEL)) {
 			cpu_relax();
 			continue;
 		}
-		if (readl(ctx + CE5300_RX_SARR) & CE5300_RX_SPDIF_BLOCK)
+		if (left) {
+			readl(ctx + CE5300_RX_SARR);
 			return;
+		}
+		left = readl(ctx + CE5300_RX_SARR) & CE5300_RX_SPDIF_BLOCK;
 	}
 	dev_dbg(st->i2s->dev, "S/PDIF in: no block start in 10 ms\n");
 }

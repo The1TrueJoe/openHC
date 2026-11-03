@@ -237,9 +237,10 @@
 #define CE5300_RX_SYNC			0x10	/* bit 0, write 1 to clear: no valid S/PDIF stream */
 #define CE5300_RX_SARR			0x18	/* FIFO read port; the DMA source */
 /*
- * S/PDIF in: each word is a subframe, 24 bits in 31:8. Bit 3 marks the right
- * subframe of a block's first frame (MEASURED 2026-11-03, 500 of 500 blocks in
- * four captures); the receiver starts on whichever subframe comes first.
+ * S/PDIF in: each word is a subframe, 24 bits in 31:8. Bit 3 marks the left
+ * subframe of a block's first frame, the Z preamble (MEASURED 2026-11-03,
+ * 1250 of 1250 blocks in three captures); the receiver starts on whichever
+ * subframe comes first.
  */
 #define CE5300_RX_SPDIF_BLOCK		BIT(3)
 #define CE5300_RX_THRESH		0x1c	/* stock's rx_fifo_set_thrsh_level, 0x3f */

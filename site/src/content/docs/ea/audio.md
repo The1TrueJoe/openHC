@@ -333,9 +333,10 @@ destination walking, 128-byte bursts); the position is the destination
   19:17), `+0x0c` and `+0x1c` back to their reset values, so they are set after
   it. Unbound, the DMA reads the FIFO port unpaced and overruns at once.
 - The receiver starts on whichever subframe comes first. Bit 3 of a word marks
-  the right subframe of a block's first frame (every 192 frames), so capture
-  start reads the FIFO by hand up to one, and the DMA's first word is a left
-  subframe. With no input it gives up after 10 ms.
+  the left subframe of a block's first frame (the Z preamble, every 192
+  frames), so capture start reads the FIFO by hand through one and its right
+  partner, and the DMA's first word is a left subframe. With no input it gives
+  up after 10 ms.
 - A capture engine finishes a descriptor only while words arrive, so with the
   coax in dead a stopped stream can sit in one. Prepare refuses with `-EBUSY`
   until it has halted rather than rewrite a ring the engine walks.
