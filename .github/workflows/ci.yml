@@ -808,7 +808,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
           # Built in runner.temp, outside the checkout.
-          wget -q -P "$RUNNER_TEMP" "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          # cdn.kernel.org first; the edge mirror has gone dark under CI before.
+          f="kexec-tools-${KEXEC_VERSION}.tar.xz"
+          for m in cdn.kernel.org mirrors.edge.kernel.org; do
+            wget -q -T 30 -t 2 -P "$RUNNER_TEMP" "https://$m/pub/linux/utils/kernel/kexec/$f" && break
+          done
           tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz"
           ( cd "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
               --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
@@ -1627,7 +1631,9 @@ jobs:
       - name: Fetch kexec-tools
         run: |
           set -e
-          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          for m in cdn.kernel.org mirrors.edge.kernel.org; do
+            wget -q -T 30 -t 2 "https://$m/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz" && break
+          done
           tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
 
       # --host is what selects kexec's i386 architecture support. Building it
