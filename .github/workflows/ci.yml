@@ -185,6 +185,7 @@ jobs:
       contents: read
     outputs:
       boards: ${{ steps.pick.outputs.boards }}
+      all: ${{ steps.pick.outputs.all }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -209,7 +210,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ALL='["ea1-v1","ea1-v2","ea1-v2-poe","ea3-v1","ea3-v2","ioxv1","ca1","hc800"]'
+          # The fleet is every board directory with a <name>/<name>_defconfig.
+          boards_in() { for d in "$@"; do n=$(basename "$d"); [ "$n" != common ] && [ -f "$d/${n}_defconfig" ] && echo "$n"; done; return 0; }
+          EA_BOARDS=$(boards_in board/ea/*/ | tr '\n' ' ')
+          OTHER_BOARDS=$(boards_in board/*/ | tr '\n' ' ')
+          printf -v ALL '"%s",' $EA_BOARDS $OTHER_BOARDS
+          ALL="[${ALL%,}]"
+          echo "all=$ALL" >> "$GITHUB_OUTPUT"
 
           # Explicit request, or a scheduled/dispatch run with no board: build all.
           if [ -n "${{ github.event.inputs.board }}" ]; then
@@ -272,7 +279,7 @@ jobs:
             # "<board>  <crate> <crate> " so a whole-word " <crate> " grep cannot
             # match a board name or a crate substring. No associative arrays —
             # the select runner is bash but this stays portable regardless.
-            ships_table=$(for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
+            ships_table=$(for b in $EA_BOARDS $OTHER_BOARDS; do
               printf '%s  %s \n' "$b" "$(bash packages/build.sh "$b" --crates 2>/dev/null)"
             done)
             # A dependency bump touches only Cargo.lock. Rather than rebuild every
@@ -315,17 +322,17 @@ jobs:
           fi
           # ea/common is shared by the EA family only.
           if echo "$changed" | grep -qE '^board/ea/common/'; then
-            sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
+            sel+=($EA_BOARDS)
           fi
           # The DSP program's workflow goes into the EA3 images (the `dsp` job).
           if echo "$changed" | grep -qx '.github/workflows/dsp-program.yml'; then
             sel+=(ea3-v1 ea3-v2)
           fi
           # EA boards live under board/ea/<board>/; the others are top-level.
-          for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2; do
+          for b in $EA_BOARDS; do
             echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
           done
-          for b in ioxv1 ca1 hc800; do
+          for b in $OTHER_BOARDS; do
             echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")
           done
           # Workflow-only or docs-only change: nothing to build.
@@ -1027,8 +1034,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Same fleet as select's ALL; a board added there is added here.
-        board: [ea1-v1, ea1-v2, ea1-v2-poe, ea3-v1, ea3-v2, ioxv1, ca1, hc800]
+        board: ${{ fromJSON(needs.select.outputs.all) }}
     steps:
       # A board this run built already uploaded openhc-<board>; re-uploading the
       # same artifact name would collide, so carry forward only the rest.

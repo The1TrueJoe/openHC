@@ -1,0 +1,3 @@
+# EA-5 audio: the Spartan-6 audio FPGA on PCIe (snd-soc-ea5-fpga, objs.mk) with
+# the two ADAU1451s as aux devices (ea-audio-fpga.dtsi).
+CONFIG_PCI_MSI=y

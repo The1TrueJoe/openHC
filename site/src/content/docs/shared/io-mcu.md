@@ -279,9 +279,41 @@ immediately. Send the bytes in the one frame.
 driver owns the UART (a serdev device), so nothing in userspace can speak these
 opcodes on it directly. The driver therefore mux-es each MCU-routed port onto a
 `/dev/ttyOHC<n>` tty — the n_gsm pattern — and iod's ordinary host-UART bridge
-opens that. A jack is switched to serial (`UART_SET_CONTROL`) only when its tty
-is opened, so the IR emitter on the same combo jack keeps working until a
-console is actually asked for.
+opens that.
+
+### Combo jacks
+
+Some rear jacks are an IR output and an MCU serial port on one connector, used
+one way at a time: IR 1–2 on the EA-1 (serial 1–2), IR 1–3 on the EA-3
+(serial 1–3), IR 1–2 on the EA-5 (serial 3–4). Each model's device tree
+(`ea1.dtsi`, `ea3.dtsi`, `ea5.dtsi`) lists its jacks under `&io_mcu`:
+
+```dts
+jack@1 {
+	reg = <1>;			/* panel number */
+	label = "IR / Serial 1";
+	control4,ir-channel = <0>;	/* IROUT_SEND bit */
+	control4,uart = <0>;		/* MCU user UART, ttyOHC0 */
+};
+```
+
+A jack with both is a combo jack. Its mode lives in the kernel, in
+`/sys/class/tty/ttyOHC<n>/mode` (`ir` or `serial`, next to `jack` and `label`).
+It starts as `ir`. In `ir`, opening the tty fails with `EBUSY`; in `serial`, its
+IR output's lirc device refuses to send with `EBUSY`. Going back to `ir` sends
+`UART_SET_CONTROL` with enable 0, and is refused while the tty is open.
+
+iod sets it with `PUT /api/io/jacks/<jack>` `{"mode": "serial"}`, saves it, and
+puts it back at boot. A combo jack left as IR gets no serial session; one set to
+serial is opened and held like any other port. Capabilities list the jacks
+under `ir.jacks` with their current mode.
+
+Unconfirmed: that enable 0 hands the jack back to IR, and the null-modem
+option stock offers per port.
+
+Boards without jack nodes (the HC-800's ACPI table) still give
+`control4,ir-outputs` and `control4,uarts` counts: IR jacks 1..N on channels
+0..N-1, UARTs on connectors of their own.
 
 ## The per-board profile table
 

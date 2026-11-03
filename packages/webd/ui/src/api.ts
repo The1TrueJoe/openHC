@@ -61,6 +61,7 @@ export interface Capabilities {
   backend: Backend;
   mcu_linked: boolean;
   ir?: { out: number; blaster: number; total: number; combo: number; receiver: number;
+         jacks?: { jack: number; label: string; serial: number; mode: 'ir' | 'serial' | null }[];
          front?: { send: boolean; receive: boolean };
          /** Always `lirc`: each emitter is its own kernel device. */
          via?: 'lirc';

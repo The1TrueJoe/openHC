@@ -175,6 +175,21 @@ for _ff in ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/ohc.features"} "$BOARD_DIR/oh
 done
 FEATURES=$(printf '%s\n' $FEATURES | awk '!seen[$0]++' | tr '\n' ' ')
 
+# A feature may pull in others: features/<name>/requires lists them. Expanded
+# here, before anything reads the list (packages/build.sh does the same).
+_req_round=0
+while [ $_req_round -lt 8 ]; do
+    _more=""
+    for _f in $FEATURES; do
+        for _d in "$REPO/board/common/features/$_f" ${COMMON_CFG:+"$(dirname "$COMMON_CFG")/features/$_f"} "$BOARD_DIR/features/$_f"; do
+            [ -f "$_d/requires" ] && _more="$_more $(sed 's/#.*//' "$_d/requires" | tr '\n' ' ')"
+        done
+    done
+    _new=$(printf '%s\n' $_more $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+    [ "$_new" = "$FEATURES" ] && break
+    FEATURES=$_new; _req_round=$((_req_round + 1))
+done
+
 # A feature is ONE DIRECTORY holding both of its halves:
 #
 #     features/<name>/defconfig       the userspace half (Buildroot packages)

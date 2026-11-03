@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Control4 EA-5 ("garmadon"). See site/src/content/docs/ea/ea5.md. */
+#include "ea.dtsi"
+
+#define EA_LINE_28	"usb_3_reset"
+
+&gpio {
+	usb-3-reset-hog {
+		gpio-hog;
+		gpios = <28 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb_3_reset";
+	};
+};
+
+/*
+ * Eight IR jacks; IR 1 and 2 double as serial ports 3 and 4 (1 and 2 are the
+ * DB9s, which are not on the MCU).
+ */
+&io_mcu {
+	control4,relays = <4>;
+	control4,contacts = <4>;
+	control4,ir-blaster;
+	control4,ir-receiver;
+
+	jack@1 {
+		reg = <1>;
+		label = "IR 1 / Serial 3";
+		control4,ir-channel = <0>;
+		control4,uart = <0>;
+	};
+	jack@2 {
+		reg = <2>;
+		label = "IR 2 / Serial 4";
+		control4,ir-channel = <1>;
+		control4,uart = <1>;
+	};
+	jack@3 {
+		reg = <3>;
+		label = "IR 3";
+		control4,ir-channel = <2>;
+	};
+	jack@4 {
+		reg = <4>;
+		label = "IR 4";
+		control4,ir-channel = <3>;
+	};
+	jack@5 {
+		reg = <5>;
+		label = "IR 5";
+		control4,ir-channel = <4>;
+	};
+	jack@6 {
+		reg = <6>;
+		label = "IR 6";
+		control4,ir-channel = <5>;
+	};
+	jack@7 {
+		reg = <7>;
+		label = "IR 7";
+		control4,ir-channel = <6>;
+	};
+	jack@8 {
+		reg = <8>;
+		label = "IR 8";
+		control4,ir-channel = <7>;
+	};
+};

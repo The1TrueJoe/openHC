@@ -155,6 +155,20 @@ pub const BOARDS: &[Board] = &[
         netboot: None,
     },
     Board {
+        name: "ea5",
+        family: Family::Ea,
+        desc: "EA5 (V1 Wi-Fi / V2, switch, audio FPGA)",
+        c4_type: None,
+        c4_revs: &[],
+        secure_boot: true,
+        has_switch: true,
+        has_wifi: true,
+        dmi: None,
+        notes: "ids and fuse state not yet read off hardware: installs by the autoscript \
+                path, as a blown-fuse board must. Netboot it first.",
+        netboot: None,
+    },
+    Board {
         name: "ca1",
         family: Family::Ca,
         desc: "CA-1 (i.MX6SL, U-Boot)",
