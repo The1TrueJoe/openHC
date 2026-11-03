@@ -261,6 +261,27 @@ static void ce5300_dump(struct ce5300_i2s *i2s)
 			 readl(i2s->base + CE5300_DMA_REG(i, CE5300_DMA_SIZE)));
 }
 
+/*
+ * Start the S/PDIF in on a left subframe: read the running FIFO by hand up to
+ * a block's flagged right subframe, so the next word, the DMA's first, is a
+ * left one. A block is 4 ms; with no input, start unaligned after 10.
+ */
+static void ce5300_spdif_align(struct ce5300_stream *st)
+{
+	void __iomem *ctx = st->i2s->base + st->ctx;
+	u64 end = ktime_get_ns() + 10 * NSEC_PER_MSEC;
+
+	while (ktime_get_ns() < end) {
+		if (!readl(ctx + CE5300_RX_LEVEL)) {
+			cpu_relax();
+			continue;
+		}
+		if (readl(ctx + CE5300_RX_SARR) & CE5300_RX_SPDIF_BLOCK)
+			return;
+	}
+	dev_dbg(st->i2s->dev, "S/PDIF in: no block start in 10 ms\n");
+}
+
 /* ---- PCM ---------------------------------------------------------------- */
 
 static const struct snd_pcm_hardware ce5300_pcm_hw = {
@@ -298,6 +319,12 @@ static int ce5300_pcm_open(struct snd_soc_component *comp,
 	/* Whole bursts per period: 256 bytes out, 128 in (the mode words'). */
 	snd_pcm_hw_constraint_step(ss->runtime, 0, SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
 				   st->capture ? 128 : 256);
+	/*
+	 * One descriptor per period covers the buffer only if it is whole periods:
+	 * 24000 frames in 6016-frame periods played 3 x 6016 and skipped the rest
+	 * (MEASURED 2026-11-03).
+	 */
+	snd_pcm_hw_constraint_integer(ss->runtime, SNDRV_PCM_HW_PARAM_PERIODS);
 	st->substream = ss;
 	return 0;
 }
@@ -383,6 +410,7 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 			 * the mode word.
 			 */
 			ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, CE5300_TX_RUN);
+			ce5300_spdif_align(st);
 			writel(st->i2s->phys + st->fifo, dma_reg(st, CE5300_DMA_CUR_SRC));
 		} else {
 			/*
