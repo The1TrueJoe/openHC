@@ -8,10 +8,10 @@ sidebar:
 **Status.** [HDMI out](#hdmi-out-every-ea) (every EA): a test tone played
 through an HDMI monitor's speakers on an EA1 under openHC: the driver plays
 music clean and at speed, every stream start intact, at ALSA's default period
-sizes and at the odd ones OpenAL asks for (2026-10-28). The EA3's analog path through the DSP:
-drivers written, not yet proven on hardware. The userspace half is the HC-800's
-audio scheme. Read [what is still unproven](#what-is-still-unproven) before
-trusting the DSP half.
+sizes and at the odd ones OpenAL asks for (2026-10-28). The EA3's analog out
+through the DSP plays (2026-11-03, [the PCM](#the-pcm)), and its
+[coax out and in](#coax-out-and-in) are the CE5300's own S/PDIF, each a PCM of
+its own. The userspace half is the HC-800's audio scheme.
 
 ## HDMI out (every EA)
 
@@ -230,9 +230,9 @@ card 1 [ninjagosmdadau1  "ninjago-smd-adau1451"]
 ```
 
 **No capture devices at all.** The line-in and coax-in jacks aren't reachable
-through ALSA on the stock image. They're wired into the ADAU1451, which mixes
-them internally under DSP program control. Anything wanting them as a capture
-source has to go through the DSP.
+through ALSA on the stock image. The line in reaches the ADAU1451, through the
+AK4621's ADC; the coax in is the CE5300's own S/PDIF receiver, not the DSP's
+([below](#coax-out-and-in)).
 
 Card 1's mixer controls are a full 10-band graphic EQ plus tone and loudness —
 that's the ADAU1451 program, not a generic codec.
@@ -302,6 +302,47 @@ vendor's ASoC link declared (codec master): in the register init stock loads,
 TX0 drives serial input 0's clocks and data. Stock's init points ASRC 0 at
 `SDATA_IN3`, which nothing clocks under openHC; openHC's points it at
 `SDATA_IN0` (channels 0/1), and the PCM reaches the line out at its own level.
+
+## Coax out and in
+
+The coax jacks are the CE5300's S/PDIF transmitter and receiver, and
+`ce5300-i2s` gives each a PCM on the `openhcea` card: device 1 plays to the
+coax out, device 2 records the coax in (device 0 is the analog out). Both are
+S32_LE stereo at 48 kHz, 24 bits in 31:8; audiod has them as the `coax` output
+and the `coaxin` input. They come from stock's context map (`ismdaudio.ko`):
+
+| | Context | DMA | Stock id |
+|---|---|---|---|
+| Coax out | TX2, output select 3 (S/PDIF) | 2 | `0x3d3` |
+| Coax in | RX1, input select 2 (S/PDIF) | 4 | `0x4d3` |
+
+**Out** starts at probe like TX0 (stock's TX0 values, then run and a few zero
+words), so the line carries a stream from boot and a receiver locks once. Its
+`+0x14` is **4**, half TX0's: S/PDIF's biphase line runs at 128 fs where the
+I²S bit clock runs at 64 fs, and at TX0's 8 the coax out ran at exactly half
+TX0's frame rate. Like `TX_CTRL`, it ignores writes while TX2 runs. Playback
+starts and stops as TX0's does.
+
+**In** is stock's `capture_start`: the RX run bit, then the RX FIFO port
+(`+0x3118`) as the DMA's source (`+0x1110`), the head descriptor, and the
+capture mode word, `0x20005569`, render's mirrored (the source fixed, the
+destination walking, 128-byte bursts); the position is the destination
+(`+0x1114`). Three things measured on the way:
+
+- RX1's FIFO reset (`+0x3100` bit 3) puts `+0x04` (its DMA binding, bits
+  19:17), `+0x0c` and `+0x1c` back to their reset values, so they are set after
+  it. Unbound, the DMA reads the FIFO port unpaced and overruns at once.
+- The receiver starts on whichever subframe comes first. Bit 3 of a word marks
+  the left subframe of a block's first frame (the Z preamble, every 192
+  frames), so capture start reads the FIFO by hand through one and its right
+  partner, and the DMA's first word is a left subframe. With no input it gives
+  up after 10 ms.
+- A capture engine finishes a descriptor only while words arrive, so with the
+  coax in dead a stopped stream can sit in one. Prepare refuses with `-EBUSY`
+  until it has halted rather than rewrite a ring the engine walks.
+
+A buffer must be whole periods (one descriptor per period): 24000 frames in
+6016-frame periods played 3 × 6016 and skipped the rest, on every output.
 
 :::danger[Do not poke this device with devmem]
 An unbound PCI function may have memory decode off or sub-blocks unclocked.
@@ -450,8 +491,8 @@ block reads zero; nothing initializes it. It gates no peripheral clock.
   clock on, reset pulsed, every context reset, interrupts cleared), because
   stock keeps its pipeline running too; `ce5300_i2s.clocks=0` leaves TX0 off.
 - **The coax jacks are the CE5300's S/PDIF** (proven 2026-11-02, the EA3's coax
-  out cabled to its own coax in). Out is a TX context with output select 3
-  (`AUDIO_HAL_OUT_SEL_SPDIF`; TX2 here: `+0x2204` `0xf1e0`, `+0x2214` 8,
+  out cabled to its own coax in; now [PCMs](#coax-out-and-in)). Out is a TX context with output select 3
+  (`AUDIO_HAL_OUT_SEL_SPDIF`; TX2 here: `+0x2204` `0xf1e0`, `+0x2214` 8 (half rate; 4 is 48 kHz),
   `+0x221c` `0x3f`, `+0x2200` `0x61`), which, like TX0, starts sending once its
   FIFO (`+0x2218`) has had data. In is RX1 with input select 2, stock's
   `AUDIO_SPDIF_IN` resource: `+0x3100` bits 6:5 = 2, `+0x310c` |= `0x200`,
