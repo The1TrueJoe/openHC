@@ -293,6 +293,20 @@ static void ce5300_spdif_align(struct ce5300_stream *st)
 	dev_dbg(st->i2s->dev, "S/PDIF in: no block start in 10 ms\n");
 }
 
+/*
+ * Start the I2S in on a left sample. Read by hand after its FIFO reset, RX0
+ * gives left first; through the DMA, right came first in every capture
+ * (MEASURED 2026-11-03, 5 of 5). One word read here puts the left first.
+ */
+static void ce5300_i2s_in_align(struct ce5300_stream *st)
+{
+	void __iomem *ctx = st->i2s->base + st->ctx;
+	u32 level;
+
+	if (!readl_poll_timeout_atomic(ctx + CE5300_RX_LEVEL, level, level, 1, 1000))
+		readl(ctx + CE5300_RX_SARR);
+}
+
 /* ---- PCM ---------------------------------------------------------------- */
 
 static const struct snd_pcm_hardware ce5300_pcm_hw = {
@@ -425,6 +439,8 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 			ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, CE5300_TX_RUN);
 			if (st->rx_sel == CE5300_RX_SEL_SPDIF)
 				ce5300_spdif_align(st);
+			else
+				ce5300_i2s_in_align(st);
 			writel(st->i2s->phys + st->fifo, dma_reg(st, CE5300_DMA_CUR_SRC));
 		} else {
 			/*

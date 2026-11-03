@@ -59,9 +59,9 @@
  * master (SND_SOC_DAIFMT_CBM_CFM), but the register init a stock unit loads
  * makes every serial port of the DSP a slave. The CE5300's TX0 drives serial
  * input 0's clocks and data once ce5300-i2s has started it: the core runs on
- * that frame clock, and the stream reaches the program through ASRC 0
- * (ea3.json, "init"). Without it the core never gets a
- * frame. Nothing here generates or gates clocks, and neither DAI ever
+ * that frame clock, and the program reads the stream there directly. ASRC 0
+ * brings the line in (SDATA_IN2) to SDATA_OUT0 for the CE5300's RX0
+ * (ea3.json, "init"). Without TX0 the core never gets a frame. Nothing here generates or gates clocks, and neither DAI ever
  * implemented .set_fmt.
  */
 
