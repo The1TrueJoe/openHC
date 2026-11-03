@@ -338,7 +338,10 @@ codec to drive the cells by hand:
 **SDATA_IN0**: with `ASRC_INPUT0` on channels 0/1, a −12 dBFS 1 kHz / 1.5 kHz
 file measures −12.0 dBFS in modes 0, 1 and 2. On channels 16/17 or 32/33
 (serial inputs 1 and 2; the ASRC locks there too) and on stock's 40/41
-(SDATA_IN3, never clocked) the line stays at the −93 dBFS floor. Which jack
+(SDATA_IN3, never clocked) the line stays at the −93 dBFS floor. The built
+image (this `ea3.json`, the PCM on by default, no register writes) plays the
+same −12.0 dBFS through `ohc_analog` and straight into `hw:` at S32_LE, and 20
+plays killed mid-stream left no hang and the floor back at −93 dBFS. Which jack
 is left is still open: the openSpeakerPoint's line input does not keep its
 channel order from one capture to the next.
 
