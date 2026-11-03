@@ -9,7 +9,7 @@ There are three kinds of EA kernel source, and each has one home:
 
 | Where | What belongs there |
 |---|---|
-| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<board>/<board>.dts` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
+| `board/ea/common/kernel/arch/x86/boot/dts/` + `board/ea/<model>/<model>.dtsi` + `board/ea/<model>/<board>/<board>.dts` | **board description** — which device sits where (shared `.dtsi` + the board's `.dts`) |
 | `board/ea/common/kernel/drivers/`, `sound/` | new drivers for the SoC's own PCI functions (a copy) |
 | `board/ea/common/patches/linux/` | edits to existing upstream files (a diff) |
 
@@ -25,10 +25,13 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
 | 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
+| 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR, and its CS drops whenever the TX FIFO runs dry, so multi-transfer messages are merged and a transfer that fits the FIFO is queued with the clock stopped |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
+| 0019 | b53 BPDU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode traps BPDUs to the unwired IMP port 8, so STP never sees a loop; mirror them to port 5 (WAN-port select also delivers them but stops lan1↔lan2 forwarding) |
+| 0020 | simple-card `link-name` | name a link's PCM from the DT (`simple-audio-card,link-name` or `link-name` on a dai-link) instead of `<cpu dai>-<codec dai>`, so the EA3's PCMs are `Analog`, `Coax` and `Coax in`; also stops passing the name as a format string |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
@@ -81,7 +84,7 @@ They are gone. Each board's tree is now linked into the kernel:
 | `ea-switch.dtsi` | the `switch` feature: BCM53125 on SSP CS1 + `gb_sw_reset`/`gb_eth_reset` |
 | `ea-audio-dsp.dtsi` | the `audio-dsp` feature: ADAU1451 on i2c-3 with its firmware and program check, the simple-audio-card, `codec_reset`/`dsp_reset` |
 | `ea-gpio-names.dtsi` | `gpio-line-names`, included last; feature lines are named only when the feature is included |
-| `board/ea/<board>/<board>.dts` | the board: includes matching its `ohc.features` |
+| `board/ea/<model>/<board>/<board>.dts` | the board: includes matching its `ohc.features` (checked by `build.sh`) |
 
 A GPIO line is hogged by the file for the hardware it serves, so a board without
 that hardware never drives it; an unhogged line keeps whatever CEFDK left it at.
@@ -276,11 +279,26 @@ The switch burned the most time of anything here, so the traps stay recorded:
    (`spi92`), and DSA's platform_data needed `netdev[cpu_port]` set by hand.
    Neither matters with a device tree: the switch is a child of the SSP node and
    the conduit is `ethernet = <&gbe>`.
-5. **The CE5300 SSP has Quark's register layout but not Quark's clock** (0009).
-   It has no DDS: routing it through Quark's DDS_RATE path wedges the SSP
-   (`b53-switch spi92.1: Flush failed / SPI transfer failed: -5`). It is clocked
-   like a CE4100/PXA25x part, a /2 SCR divisor off a 10 MHz input clock, and
-   skips pxa2xx's flush-first, which times out on a stopped SSP.
+5. **The CE5300 SSP is Quark X1000's SSP, clock included** (0009). `+0x28` is
+   Quark's `DDS_RATE` (100 MHz × DDS / 2²⁴ / (SCR+1), measured), and with it at 0
+   the SSP doesn't shift at all. It must be `pxa25x_ssp_comp()`: otherwise
+   spi-pxa2xx writes PXA27x's SSTO, at the same `+0x28`, over the clock. That
+   was the "wedged SSP" (`SSSR = 0x1F14`) on every kexec boot. It must be in
+   `write_SSSR_CS()` too, or every status clear resets the chip select to 0.
+   CEFDK leaves stale words in the TX FIFO, so probe clocks them out once.
+   An earlier note here said the CE5300 "has no DDS". That was wrong: the SSTO
+   writes were clobbering it.
+6. **The chip select drops between transfers** (0009). It is the SSP's frame
+   signal, released whenever the FIFO runs dry. The pads are dedicated (not in
+   the CE5300 GPIO mux), so `cs-gpios` isn't possible. spi-pxa2xx instead merges
+   a CE5X00 message of compatible transfers into one bounce-buffered transfer.
+   Without that, b53_spi's write-then-read gets 0xff.
+7. **…and inside a transfer if the FIFO runs dry** (0009). The IRQ handler's
+   word-at-a-time fill (two ~0.7 µs status reads per word) only usually beats a
+   4.4 µs byte, and about 1 in 2,500 reads came back with trailing 0xff. Even
+   back-to-back posted SSDR writes stall up to 45 µs about once in 100,000
+   fills. So a transfer that fits the 32-entry FIFO is queued with the DDS clock
+   stopped, and the clock starts once every word is in.
 
 Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.

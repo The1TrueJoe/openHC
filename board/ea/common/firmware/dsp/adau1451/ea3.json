@@ -6,8 +6,9 @@
     "idle, and the host loads everything over I2C. init below is the part's",
     "control-register setup (clocks, serial ports, routing), decoded from a",
     "stock unit's registers; mkfw.py puts it in the firmware together with the",
-    "program when one is given (mkfw.py --program). The program is openHC's own,",
-    "built by SigmaStudio+ in CI and never committed.",
+    "program when one is given (mkfw.py --program); ea3-openhc.json, openHC's",
+    "own program's profile, takes it from here. That program is built by",
+    "SigmaStudio+ in CI and never committed.",
     "",
     "The knobs and cells are the parameter side. Their addresses are those of",
     "the program a stock unit runs, read off a running unit: that program reads",
@@ -18,7 +19,7 @@
     "",
     "A cell's value (an integer) or words (8.24 numbers, or \"0x...\" raw) are",
     "written at boot; a run value, if it has one, is what",
-    "ohc-audiod sets once it is up.",
+    "audiod sets once it is up.",
     "",
     "A knob with choices is a selector: the choice's words are written, the",
     "first one at boot. Every other knob is 49 steps with 24 as its neutral,",
@@ -39,9 +40,10 @@
       "consecutive registers, all set to value.",
       "",
       "Clocking: every serial port is a slave, and the core's frame rate is",
-      "serial input 0's (LRCLK_IN0). Serial input 3 alone runs on its own clocks",
-      "(BCLK_IN3/LRCLK_IN3) and reaches the core through ASRC 0: that is the",
-      "asynchronous stream, most likely the CE5300's I2S1. The clock generators",
+      "serial input 0's (LRCLK_IN0), which the CE5300's TX0 drives. Its stream",
+      "arrives on SDATA_IN0 too and reaches the program through ASRC 0. One",
+      "write differs from stock: ASRC_INPUT0, which stock points at SDATA_IN3",
+      "(BCLK_IN3/LRCLK_IN3, never clocked under openHC). The clock generators",
       "feed nothing here: no port is a master and nothing selects them."
     ],
     "writes": [
@@ -63,9 +65,9 @@
       { "reg": "0xf78c", "count": 4, "value": "0x0004", "meaning": "LRCLK_OUT0..3_PIN: slow slew, lowest drive, pull-down off" },
       { "reg": "0xf794", "count": 3, "value": "0x0004", "meaning": "SDATA_OUT0..2_PIN: slow slew, lowest drive, pull-down off" },
       { "reg": "0xf797", "value": "0x000c", "meaning": "SDATA_OUT3_PIN: fastest slew, lowest drive, pull-down off (the one output pin set apart)" },
-      { "reg": "0xf100", "value": "0x00a1", "meaning": "ASRC_INPUT0: ASRC 0 takes serial input channels 40/41, i.e. SDATA_IN3 left/right" },
+      { "reg": "0xf100", "value": "0x0081", "meaning": "ASRC_INPUT0: ASRC 0 takes serial input channels 32/33, SDATA_IN2, the AK4621's ADC, for the program's LineIn (stock: 0x00a1, SDATA_IN3). The program reads the CE5300's TX0 on SDATA_IN0 directly, in its own frame clock" },
       { "reg": "0xf140", "value": "0x0001", "meaning": "ASRC_OUT_RATE0: ASRC 0 converts to SDATA_OUT0's frame rate, the outputs' clock" },
-      { "reg": "0xf180", "count": 24, "value": "0x0002", "meaning": "SOUT_SOURCE0..23: every serial output channel pair comes from the DSP core's outputs" },
+      { "reg": "0xf180", "count": 24, "value": "0x0002", "meaning": "SOUT_SOURCE0..23: every serial output channel pair comes from the DSP core's outputs; pair 0, SDATA_OUT0 to the CE5300's RX0, carries the line in (the program's LineIn, DC-blocked)" },
       { "reg": "0xf20c", "value": "0x6c00", "meaning": "SERIAL_BYTE_3_0: SDATA_IN3 slave to BCLK_IN3/LRCLK_IN3, I2S, 24-bit, 2 x 32-bit slots" },
       { "reg": "0xf20d", "value": "0x0012", "meaning": "SERIAL_BYTE_3_1: SDATA_IN3 at the base rate of clock generator 3 (only a master uses either)" },
       { "reg": "0xf604", "value": "0x0001", "meaning": "SPDIF_RESTART: S/PDIF receiver resumes after relock (powered off: POWER_ENABLE1 is 0)" },
@@ -134,7 +136,7 @@
   "cells": [
     {
       "control": "DSP Volume", "cell": "0x0dd1", "value": 0, "run": 100,
-      "_doc": "0..Max Volume through the program's volume curve. Written 0 at boot so nothing plays while the box comes up; ohc-audiod sets the run value once it has restored the output's saved level and tone. openHC sets each output's level in ALSA, as on the HC-800, so the DSP runs it full"
+      "_doc": "0..Max Volume through the program's volume curve. Written 0 at boot so nothing plays while the box comes up; audiod sets the run value once it has restored the output's saved level and tone. openHC sets each output's level in ALSA, as on the HC-800, so the DSP runs it full"
     },
     { "control": "DSP Max Volume", "cell": "0x0dd2", "value": 100 },
     { "control": "DSP Mute", "cell": "0x0dbd", "words": ["0x00fffe20", "0x01000000"],

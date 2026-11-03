@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * EA-5 audio (`audio-fpga`): the Spartan-6 on PCIe routes the CPU's streams,
+ * the ADCs, DACs, S/PDIF and the two ADAU1451s (one per zone). The FPGA is
+ * found on PCI; this node is the card, with the DSPs as its aux devices.
+ * See site/src/content/docs/ea/ea5.md.
+ */
+#include "ea-adau1451.dtsi"
+
+&i2c3 {
+	dsp0: audio-codec@38 {
+		compatible = "adi,adau1451";
+		reg = <0x38>;
+		sound-name-prefix = "Zone 1";
+	};
+	dsp1: audio-codec@39 {
+		compatible = "adi,adau1451";
+		reg = <0x39>;
+		sound-name-prefix = "Zone 2";
+	};
+};
+
+/ {
+	sound {
+		compatible = "control4,ea5-audio";
+		/* ALSA card id "openhcea5" */
+		model = "openhc-ea5";
+		control4,dsps = <&dsp0 &dsp1>;
+		/* One per FPGA stream pair; rename each once its jacks are verified (#128). */
+		control4,link-names = "Audio 1", "Audio 2", "Audio 3", "Audio 4";
+	};
+};

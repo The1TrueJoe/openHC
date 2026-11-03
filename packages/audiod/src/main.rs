@@ -1,4 +1,4 @@
-//! ohc-audiod — the openHC audio daemon.
+//! audiod — the openHC audio daemon.
 //!
 //! Owns audio end to end, with its own MQTT presence (no IPC through iod):
 //!
@@ -24,7 +24,7 @@
 //!   exist and which output each plays on, and live input routes. webd proxies
 //!   it at `/audio/`.
 //!
-//! On a board with named outputs (board.env OHC_AUDIO_OUTPUTS — the HC-800) it
+//! On a board with ALSA PCMs (board.rs: the HC-800 and the EAs) it
 //! runs every endpoint itself (see runner.rs); elsewhere it reports the stock
 //! single receivers and turns their output/volume knobs (single.rs).
 mod airplay;
@@ -54,7 +54,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "ohc-audiod", description = "Audio: Spotify Connect + AirPlay endpoints and input routes mapped onto outputs. Configuration here; live state and control over MQTT (<base>/state/audio/*, <base>/cmd/audio/*)."),
+    info(title = "audiod", description = "Audio: Spotify Connect + AirPlay endpoints and input routes mapped onto outputs. Configuration here; live state and control over MQTT (<base>/state/audio/*, <base>/cmd/audio/*)."),
     tags((name = "Audio", description = "Outputs, inputs and the endpoint map."))
 )]
 struct ApiDoc;
@@ -259,7 +259,7 @@ type Ctx = State<Arc<App>>;
 
 #[utoipa::path(get, path = "/api/audio", tag = "Audio",
     summary = "Outputs, inputs, the endpoint map and the receivers",
-    description = "`map` is present on boards with named outputs: outputs/inputs (hardware, from board.env), the configured spotify/airplay/routes lists, and `instances` with each one's running state. `outputs`/`receivers`/`selected`/`volume` describe the stock single receivers (boards without named outputs). For drawing a page once — live changes arrive over MQTT.",
+    description = "`map` is present on boards with named outputs: outputs/inputs (the board's ALSA PCMs), the configured spotify/airplay/routes lists, and `instances` with each one's running state. `outputs`/`receivers`/`selected`/`volume` describe the stock single receivers (boards without named outputs). For drawing a page once — live changes arrive over MQTT.",
     responses((status = 200, description = "audio configuration and snapshot")))]
 async fn get_audio(State(app): Ctx) -> Json<Value> {
     Json(json!({
@@ -325,7 +325,7 @@ struct BrowseQuery {
 
 #[utoipa::path(get, path = "/api/audio/library/browse", tag = "Audio",
     summary = "Folders and tracks in one library folder",
-    description = "The music-library player's view of /media (the drives ohc-storaged mounts): `kind` dir|file, `path` (pass a dir back as `path`; give a file or dir to `cmd/audio/library/replace` or `add` to play it), and for tracks title/artist/album/duration_s.",
+    description = "The music-library player's view of /media (the drives storaged mounts): `kind` dir|file, `path` (pass a dir back as `path`; give a file or dir to `cmd/audio/library/replace` or `add` to play it), and for tracks title/artist/album/duration_s.",
     params(BrowseQuery),
     responses((status = 200, description = "entries"), (status = 503, description = "no library player running")))]
 async fn library_browse(State(app): Ctx, axum::extract::Query(q): axum::extract::Query<BrowseQuery>) -> axum::response::Response {
@@ -355,10 +355,10 @@ async fn library_search(State(app): Ctx, axum::extract::Query(q): axum::extract:
     }
 }
 
-#[utoipa::path(get, path = "/api/health", tag = "Audio", summary = "ohc-audiod liveness",
+#[utoipa::path(get, path = "/api/health", tag = "Audio", summary = "audiod liveness",
     responses((status = 200, description = "ok")))]
 async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "service": "ohc-audiod" }))
+    Json(json!({ "ok": true, "service": "audiod" }))
 }
 
 /// Publish everything that changes. Retained drops unchanged values.
@@ -552,9 +552,9 @@ fn main() {
         return;
     }
     let bind = std::env::var("AUDIOD_BIND").unwrap_or_else(|_| "127.0.0.1:7072".into());
-    let mut board = Board::from_env();
+    let mut board = Board::discover();
     tone::fill(&mut board);
-    let endpoints = Endpoints::load();
+    let endpoints = Endpoints::load(&board);
     if board.has_map() {
         if let Err(e) = endpoints.validate(&board) {
             eprintln!("audiod: saved map invalid ({e}); endpoints that do not match the board are skipped");

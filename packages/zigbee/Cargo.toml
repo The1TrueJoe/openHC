@@ -9,5 +9,5 @@ description = "openHC Zigbee NCP bring-up — runs the EM35x application out of 
 libc = "0.2"
 
 [[bin]]
-name = "ohc-zigbee"
+name = "zigbee"
 path = "src/main.rs"

@@ -42,18 +42,23 @@ Buildroot has no include mechanism for defconfigs, so `build/build.sh`
 concatenates them and feeds the result in as `BR2_DEFCONFIG`:
 
 ```
-board/common/common_defconfig          every board
-  + board/ea/common/common_defconfig   EA family only
-  + features listed in ohc.features       wifi, emmc, switch, audio, sgx
-  + board/<board>/<board>_defconfig       the board's own differences
+board/common/common_defconfig                 every board
+  + board/ea/common/common_defconfig          EA family only
+  + features listed in ohc.features           wifi, emmc, switch, audio, sgx
+  + board/ea/<model>/defconfig                the model (EA only)
+  + board/.../<board>/<board>_defconfig       the board's own differences
 ```
+
+EA boards live at `board/ea/<model>/<board>/`; `build/board-layers.sh` resolves
+the layers for both build scripts. The [EA board configuration](/ea/board-config/#layout)
+page has the whole layout, including `board.env` and the device tree.
 
 **Kconfig takes the last assignment**, so a board extends or overrides shared
 settings simply by coming after them, and each board file stays a short list of
 genuine differences rather than a full copy that drifts.
 
-The same layering applies to the kernel: `common.fragment`, then per-feature
-fragments, then the board fragment. Ordering matters and has bitten before — the
+The same layering applies to the kernel: `common.fragment`, then the model's
+and board's fragments, then per-feature fragments. Ordering matters and has bitten before — the
 [SGX feature](/ea/graphics/) sets `CONFIG_DRM=y` while `common.fragment`
 sets `# CONFIG_DRM is not set`, and it works only because feature fragments are
 appended *after* the board file.
@@ -85,16 +90,16 @@ Whatever upstream has fixed, openHC stops carrying. The move to master dropped:
 
 What is still carried:
 
-- **`build/buildroot-patches/0001` and `0004`, both wpewebkit.**
-  - `0001` swaps the wpewebkit dependency from `wpebackend-fdo` to `libwpe`. A
-    test build on 2026-10-27 showed it is no longer needed: the EA's i386 tree
-    builds with `wpebackend-fdo` present, against the SGX EGL, and still
-    selects the PowerVR backend. That costs about 264 KB of unused libraries.
-    It is to be dropped in a follow-up, which boots on an EA and the HC-800
-    first.
-  - `0004` adds the WPE Platform API and its DRM platform as Buildroot options.
-    The HC-800's display needs it, Buildroot has no equivalent, and it is the
-    one candidate to send upstream.
+- **`build/buildroot-patches/0004` and `0005`, both wpewebkit**, sent upstream
+  as one series.
+  - `0004` makes wpewebkit select and depend on `libxkbcommon`, which its CMake
+    requires but which it reached only indirectly, through `libwpe`.
+  - `0005` adds the WPE Platform API and its headless, DRM and Wayland
+    platforms as Buildroot options. The HC-800's display needs the DRM one.
+  - The old `0001`, which swapped wpewebkit's `wpebackend-fdo` dependency for
+    `libwpe`, is gone. The EA's i386 tree builds with `wpebackend-fdo` present,
+    against the SGX EGL, and still loads the PowerVR backend. That costs about
+    264 KB of unused libraries.
 - **The two shairport-sync D-Bus patches** (`board/common/patches/shairport-sync`,
   on `BR2_GLOBAL_PATCH_DIR` for the EA family and the HC-800). They give a
   second receiver its own bus name and make a D-Bus volume set the next
@@ -176,14 +181,15 @@ the Dockerfile, deliberately: the Dockerfile keeps sources off a developer's
 machine, but in CI it actively hurts, because Buildroot's `dl/` and `output/` live
 in BuildKit cache mounts and cache mounts aren't exported by any GitHub cache
 backend. Run it natively and `actions/cache` can hold the one thing worth holding
-— the ~GB of upstream tarballs every board re-downloads, keyed so all eight matrix
-jobs hit the same entry.
+— the ~GB of upstream tarballs every board re-downloads, keyed so every matrix
+job hits the same entry.
 
-Toolchains are deliberately **not** shared between boards. Sharing one means an
-external-toolchain tarball and a second pipeline to maintain; the repository is
-public, so runner minutes are free, and parallel matrix jobs already give the
-wall-clock win.
+The EA boards share one toolchain. They are the same target (x86_64 Bonnell,
+glibc, C++/wchar), so the `images-toolchain` job builds it once per run and each
+EA image job uses it as an external toolchain (`OHC_EA_SDK` in `build/build.sh`).
+The other boards each build their own.
 
-A change under `board/<board>/` builds only that board. A change to `board/common`,
-`packages/`, `build/`, the flasher or the Makefile builds everything. A docs-only
-change builds nothing.
+A change under `board/<board>/` builds only that board; one under
+`board/ea/common/` builds every EA board. A change to `board/common`, `build/`,
+the flasher or the Makefile builds everything. A change under `packages/` builds
+the boards that ship the touched crate. A docs-only change builds nothing.

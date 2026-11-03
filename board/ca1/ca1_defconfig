@@ -95,13 +95,13 @@ BR2_PACKAGE_DNSMASQ=y
 # --- rear RS-232/485 port ---
 # The rear combo port (ttymxc2) is owned by iod, like every other serial/IO
 # resource on the box: iod gives it one shared session and bridges it over MQTT
-# (openhc/box/.../serial/<n>/...) and the in-UI web xterm. It is declared in
-# board.env's OHC_SERIALS, not here. Direction (RS-232 vs RS-485) is fixed at
+# (openhc/box/.../serial/<n>/...) and the in-UI web xterm. It is named by the
+# board's udev rule (/dev/ohc/serial/1), not here. Direction (RS-232 vs RS-485) is fixed at
 # boot by the gpio-hogs in the DTS — switching it at runtime needs those hogs
 # converted to a real consumer first (see the DTS).
 
 # Mosquitto, the broker zigbee2mqtt publishes to, comes from common_defconfig
-# now — every board runs one (iod, sysmond and ohc-audiod are its clients).
+# now — every board runs one (iod, sysmond and audiod are its clients).
 
 # Node.js (zigbee2mqtt / zwave-js) and its C++ toolchain come from the shared
 # 'zigbee' feature (board/common/features/zigbee), which ca1 enables in its

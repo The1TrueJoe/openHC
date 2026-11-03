@@ -1,7 +1,7 @@
 # ADAU1451 SigmaDSP (EA3)
 
 The EA3 routes its analog audio through an Analog Devices **ADAU1451**
-SigmaDSP: CE5300 I²S1 → ADAU1451 → AK4621 → the analog jacks. It sits on
+SigmaDSP: CE5300 I²S (TX0) → ADAU1451 → AK4621 → the analog jacks. It sits on
 **i2c-3 at 0x38**, with reset on `dsp_reset` (gpio101) and the DAC soft mute on
 `dac_mute` (gpio61).
 
@@ -13,26 +13,35 @@ out of one firmware file:
 
 1. **the register init** in `ea3.json` — clocks, serial ports, routing, decoded
    from a stock unit's registers ([below](#the-register-init));
-2. **the program** — openHC's own, built by SigmaStudio+ in CI and handed to the
-   image build. It is never committed;
-3. **the parameters** — the filter tables behind every tone and EQ knob, and the
-   knob cells.
+2. **the program** — openHC's own (`program.json`), built by SigmaStudio+ in CI
+   and handed to the image build. It is never committed;
+3. **the parameters** (`ea3-openhc.json`) — the filter tables behind every tone,
+   EQ and balance knob, the fixed loudness filters, and the knob cells.
 
-Until there is a program the build makes a file with the parameters only,
-byte for byte what it made before, and the driver writes nothing (see
-[No program yet](#no-program-yet)).
+That file is `adau1451-ea3-openhc.bin`, the one the device tree names. An image
+built without the program (a fork, with no SigmaStudio+ secrets) has no such
+file, and the driver leaves the DSP as it came up.
+
+`ea3.json` is the same map for **stock's** program, read off a running stock
+unit ([Where the map came from](#where-the-map-came-from)). It still builds
+`adau1451-ea3.bin`, parameters only, and its register init is the one
+`ea3-openhc.json` uses; nothing loads that file at boot any more.
 
 ## How openHC drives it — all stock Linux
 
 | Piece | What it is |
 |---|---|
-| `ea3.json` | **The configuration, in code.** Every knob: the cell it lives in, the table behind it, and the filter design that fills the table. |
-| `mkfw.py` | Builds `ea3.json`, and the program if given (`--program`), into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2, mainline chunk tags). Standard library Python. |
-| `adau1451-fw.mk`, `Config.in` | The build rule: runs `mkfw.py` at image build and installs the file and the profile. Selected by the `audio-dsp` feature (`BR2_PACKAGE_ADAU1451_FW`); `BR2_PACKAGE_ADAU1451_FW_PROGRAM` is the path of the program, empty for none. |
-| `/lib/firmware/openhc/adau1451-ea3.bin` | That file, on the box. |
-| the board DTB | `firmware-name` names the file; `control4,program-version` is the program's version cell and the value it must hold, checked after the load. The card is a stock `simple-audio-card`. |
+| `ea3-openhc.json` | **The configuration, in code**, for openHC's own program: every knob (the cell it lives in, the table behind it, the filter design that fills the table), the fixed filters and the cells, named by block label (`Bass.GSO_Array`, `Volume.Gain_Channel0`), plus `ea3.json`'s register init. |
+| `ea3.json` | The register init, and the same map for stock's program at its fixed addresses. |
+| `program.json` | **The program's design, in code**: SigmaStudio+ scripting calls, run in order by CI (`dsp-program.yml`) — see [Building the program](#building-the-program). |
+| `export2program.py` | Turns SigmaStudio+'s export into `mkfw.py`'s `--program` input, and its parameter map into `params.json`. Standard library Python. |
+| `mkfw.py` | Builds a profile, and the program if given (`--program`, with `--params` to resolve cell names), into a firmware file in the kernel's own SigmaDSP format (`ADISIGM` v2, mainline chunk tags). Standard library Python. |
+| `adau1451-fw.mk`, `Config.in` | The build rule: runs `mkfw.py` at image build and installs the file and the profile. Selected by the `audio-dsp` feature (`BR2_PACKAGE_ADAU1451_FW`); `BR2_PACKAGE_ADAU1451_FW_PROGRAM` is the folder holding the program (`program.txt`, `params.json`), empty for none; build.sh sets it from `OHC_DSP_PROGRAM`. |
+| `/lib/firmware/openhc/adau1451-ea3-openhc.bin` | That file, on the box: register init + openHC's program + `ea3-openhc.json`'s parameters. |
+| `/lib/firmware/openhc/adau1451-ea3.bin` | `ea3.json`: stock's program's parameters. Not loaded. |
+| the board DTB | `firmware-name` names the file; `control4,program-version` is the program's version cell and the value it must hold, checked after the load. The build fails if it is not the design's `Version` cell. The card is a stock `simple-audio-card`. |
 | `adau1451-c4` | The codec driver. It hands the file to the kernel's **sigmadsp** core (the one the mainline ADAU1701/ADAU17x1 drivers use), which writes it at bind and turns each named cell into an **ALSA control**. Around that the driver does the sequencing: soft reset, hibernate, the wait for PLL lock, start. |
-| ohc-audiod | Reads the knob list from the installed copy of `ea3.json` and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
+| audiod | Reads the knob list from the installed copy of `ea3-openhc.json` (board.env's `dsp=`) and sets the controls with `amixer`, exactly where the HC-800 sets its software tone stage. The web UI shows those knobs. |
 
 So the DSP is tuned with ordinary ALSA tools:
 
@@ -43,7 +52,7 @@ amixer -c openhcea cset name='DSP Bass' 0,0,0,30   # bass +3 dB (index 24 + 3/0.
 
 Every control is 4 bytes, big-endian: an **index 0..48** into a 49-entry table,
 **24 neutral**. Tone and EQ steps are `step_db` apart (0.5 dB → ±12 dB);
-balance is 100/24 % a step. ohc-audiod does that arithmetic; the API and UI
+balance is 100/24 % a step. audiod does that arithmetic; the API and UI
 speak dB and −100..100.
 
 ## Loading the part
@@ -72,6 +81,87 @@ byte array of each memory write a SigmaStudio(+) export contains
 (`Program_Data`, `Param_Data`, `DM1_DATA_Data`). Memory only: control registers
 are `ea3.json`'s, and `mkfw.py` refuses them.
 
+## Building the program
+
+There is no open compiler for the ADAU145x (its instruction set is not public),
+so the program is built by Analog Devices' SigmaStudio+, on a GitHub-hosted
+Windows runner, with no GUI: `.github/workflows/dsp-program.yml` installs it
+through [sigmastudio-plus-action](https://github.com/The1TrueJoe/sigmastudio-plus-action)
+and runs `program.json` with the action's headless scripting host. The calls
+are SigmaStudio+'s own scripting API (`AddShapeV2`, `AddConnectionV2`,
+`UpdatePropertiesV2`, `LinkCompileConnect`, `Export`, …).
+
+The design starts from ADI's *ADAU1452 Filtering Compressed Input Signal*
+example, which ships with SigmaStudio+, because its PC → USBi → DSP link is the
+one part of a system the scripting API cannot add (the compiler refuses a
+processor with no host link; nothing is downloaded over it). It migrates the
+example's processor to the ADAU1451, removes the example's algorithms, and
+builds openHC's chain:
+
+```
+                ┌ Bass → Treble ───────────────┐
+Input (IN0) ───┼ EQ31 → EQ63 → … → EQ16k ─────┼→ Mode ─┬──────────────┬→ Loudness → BalanceLeft ─┐
+                ├ (flat) ──────────────────────┤        └→ LoudnessEQ ─┘            BalanceRight ┴→ Volume → Out*
+                └ TestTone (1 kHz, −20 dB) ────┘
+```
+
+| Block (label) | What |
+|---|---|
+| `Input` | serial input 0's first two channels, read directly: the CE5300's TX0, which also clocks the core |
+| `Bass`, `Treble`, `EQ31` … `EQ16k` | `General2ndOrderIndexSelectable`, stereo: 49 biquads (`GSO_Array`, after a 7-word header — stock's layout exactly), the entry picked by an index cell |
+| `BassIndex`, … , `BalanceIndex` | those index cells: integer DC inputs (`FormatX` 32), 24 = flat |
+| `Mode` | `IndexSelectableMuxStereo`, index `ModeIndex`: 0 Tone, 1 EQ, 2 Flat, 3 Test tone |
+| `TestTone` | a 1 kHz sine at −20 dB, both channels, for the Test tone mode |
+| `LoudnessEQ`, `Loudness` | two fixed shelves (`GenSecondOrder`, 2 stages; mkfw writes them) and the mux that switches them in, index `LoudnessIndex` |
+| `BalanceLeft`, `BalanceRight` | the indexed filter block again, one channel each, as a gain table: one index, `BalanceIndex`, drives both |
+| `Volume` | a stereo volume, linear gain per channel |
+| `Out*`, `Output_0/1` | left and right to the first two channels of **all four** serial outputs (channels 0/1, 16/17, 32/33, 40/41), until it is known which one feeds the AK4621 |
+| `LineIn` | ASRC 0's two channels: the init points ASRC 0 at serial input 2, the AK4621's ADC |
+| `LineInDCBlock` | `GenSecondOrder`, one stage, a first-order 10 Hz high-pass (mkfw writes it) |
+| `Output_0/1` | the DC-blocked line in, to serial output 0 (channels 0/1), which reaches the CE5300's RX0 |
+| `Version` | an integer DC cell holding the program's version (4, at 0x0e02), for the driver's check |
+
+The line in never reaches the DAC: `LineIn → LineInDCBlock → Output_0/1` is a
+path of its own. The DC block is first order on purpose. A second-order 10 Hz
+high-pass put both poles 0.0009 from the unit circle and amplified the
+program's rounding into −34 dBFS of DC and a 5 Hz wander; with one pole the
+line in idles at −97 dBFS of DC and −108 dBFS of noise.
+
+The export becomes two files, `export2program.py`'s output:
+
+* `program.txt`: the memory writes of the export's default download, which is
+  `mkfw.py --program`'s format; and
+* `params.json`: every parameter's address, by block label and parameter name
+  (`Volume.Gain_Channel0` → DM0 20), so a profile can name a cell instead of
+  hard-coding an address that moves whenever the design does.
+
+### Into the image, and nowhere else
+
+Both are code generated by ADI's tools, which ADI's license lets us use only to
+program the products it runs on. This repo is public, and so are its
+artifacts, so the program is never published:
+
+1. `ci.yml`'s `dsp` job runs `dsp-program.yml` in the **same run** as the EA3
+   image builds, alongside the EA toolchain.
+2. It hands the two files over **sealed**: AES-256, the key derived from the
+   `SIGMASTUDIO_TOKEN` secret, which only this repo's own runs can read. The
+   artifact (`adau1451-program-sealed`) is kept one day and is useless to anyone
+   who downloads it.
+3. Each EA3 image job opens it and points `build.sh` at it (`OHC_DSP_PROGRAM`).
+   The image gets `adau1451-ea3-openhc.bin`, built from `ea3-openhc.json`.
+
+Nothing exported, and not the saved project, ever enters git or a readable
+artifact. A design that fails to build fails the EA3 images. A run without the
+SigmaStudio+ secrets (a fork) builds them without the program.
+
+**Every export is checked before an image uses it.** `dsp-program.yml` builds
+`adau1451-ea3-openhc.bin` from it and throws it away: every name in
+`ea3-openhc.json` must be in the program, and the `Version` cell must be the one
+the device tree's `control4,program-version` names. The image build runs the
+same check. A design change that moves the version cell fails there, with the
+cell to put in `ea-audio-dsp.dtsi`, instead of shipping a program the driver
+would stop.
+
 ### No program yet
 
 A file without a program holds parameters only, which mean something only to
@@ -96,15 +186,16 @@ undocumented 0xF431 and 0xF800–0xF847.
   slaves to BCLK_IN0/LRCLK_IN0 (inputs) and BCLK_OUT0/LRCLK_OUT0 (outputs),
   I²S, 24-bit, two 32-bit slots.
 * **Serial input 3 is the odd one out:** slave to its own BCLK_IN3/LRCLK_IN3
-  (`SERIAL_BYTE_3_0` = 0x6c00), and its channels 40/41 feed **ASRC 0**, which
-  converts them to the outputs' rate (`ASRC_INPUT0` = 0xa1, `ASRC_OUT_RATE0` = 1).
-  ASRCs 1–7 are muted. An ASRC is only needed for a source with a clock of its
-  own, so **SDATA_IN3 is almost certainly the CE5300's I2S1**, with the CE5300
-  (not the DSP) driving its clocks, whatever the vendor's ASoC link (codec
-  master) said.
+  (`SERIAL_BYTE_3_0` = 0x6c00), and in stock's init its channels 40/41 feed
+  **ASRC 0**, which converts them to the outputs' rate (`ASRC_INPUT0` = 0xa1,
+  `ASRC_OUT_RATE0` = 1). ASRCs 1–7 are muted. Under openHC nothing ever clocks
+  SDATA_IN3, and the CE5300's stream arrives on **SDATA_IN0** (measured, below),
+  which the program reads directly; openHC's init points ASRC 0 at the line in
+  instead (`ASRC_INPUT0` = 0x81, serial input 2, channels 32/33).
 * **Every output channel comes from the DSP core** (`SOUT_SOURCE0..23` = 2);
   which output pin carries the program's output to the AK4621 is the program's
-  business, not the registers'.
+  business, not the registers'. Measured on pair 0: 1 passes serial input 0
+  straight through, 3 is ASRC 0's output, 4–7 are silence.
 * The clock generators are set (÷8, ÷8, ÷5) but feed nothing: no port is a
   master and neither the core nor an ASRC selects them.
 * **MP6 and MP7** are outputs with pull-ups, driven by the program.
@@ -126,6 +217,29 @@ Not settled by the registers, and left for hardware or the board:
 
 ## The knobs
 
+openHC's program has the same knobs as stock's, so the web UI and audiod do
+not change. Every address comes from the export by name (`ea3-openhc.json`):
+
+| Knob | Index cell | Table / block | Design |
+|---|---|---|---|
+| Mode | `ModeIndex` | `Mode` mux | selector: **Tone** (boot) / EQ / Flat / Test tone |
+| Loudness | `LoudnessIndex` | `Loudness` mux | selector: Off (boot) / On: `LoudnessEQ`, +6 dB below 100 Hz and +3 dB above 10 kHz |
+| Bass | `BassIndex` | `Bass.GSO_Array` | RBJ low shelf, 120 Hz, slope 1 — the HC-800's |
+| Treble | `TrebleIndex` | `Treble.GSO_Array` | RBJ high shelf, 8 kHz, slope 1 — the HC-800's |
+| Balance | `BalanceIndex` | `BalanceLeft/Right.GSO_Array` | linear, one side to silence — the HC-800's, as gain biquads |
+| EQ 31 Hz … 16 kHz | `EQ31Index` … | `EQ31.GSO_Array` … | RBJ peaking, Q 1.414 |
+
+Plus **DSP Volume Left/Right** (linear gains, written 0 at boot; audiod's
+`run` sets 1.0) and a read-only `ReadBack DSP Program` (the version cell).
+
+**The mode decides which knobs act.** Tone (bass and treble), EQ (the ten
+bands), Flat and Test tone are alternatives, not a chain; loudness and balance
+come after whichever is chosen.
+
+### Stock's program
+
+`ea3.json` maps stock's program the same way, at its fixed addresses:
+
 | Knob | Cell | Table | Design (`ea3.json`) |
 |---|---|---|---|
 | Mode | 0x0db5 (8 words) | — | selector: **Tone** (boot) / EQ / Flat / Test tone |
@@ -138,24 +252,20 @@ Not settled by the registers, and left for hardware or the board:
 Plus cells written once at boot: **Volume 0**, Max Volume 100, the
 volume-curve select, Input Gain 24 (0 dB), the test oscillator's level, the
 program's mute (released — stock's own "on" words), and a read-only
-`ReadBack DSP Program` (the version cell).
-
-**The mode decides which knobs act.** The program's output selector has four
-paths, one per channel: Tone (bass and treble), EQ (the ten bands), Flat (stock's
-"Bypass", what stock idles on), and Test tone (the program's oscillator). They
-are alternatives, not a chain. The program boots its right-channel selectors and
-its mute half set, which is why the firmware writes all three.
+`ReadBack DSP Program` (the version cell). Its output selector is one-hot per
+channel, and the program boots its right-channel selectors and its mute half
+set, which is why that profile writes all three.
 
 ## Silent unless something plays
 
 * **At boot** the DSP's Volume is written 0 and the DAC's soft mute is held.
-  ohc-audiod restores the output's saved level and tone, *then* raises Volume to
-  its `run` value (100 — the output's level lives in ALSA, as on the HC-800).
+  audiod restores the output's saved level and tone, *then* raises Volume to
+  its `run` value (1.0 — the output's level lives in ALSA, as on the HC-800).
 * **While idle** the DAC stays muted: the codec's ASoC `mute_stream` releases it
   when a stream is prepared and asserts it again when the last one closes, so
   there is no hiss on the jacks between songs.
 
-To change a design, edit `ea3.json` and rebuild. The bass and treble shelves
+To change a design, edit `ea3-openhc.json` (or the blocks, `program.json`) and rebuild. The bass and treble shelves
 match the HC-800's software stage, so a setting sounds the same on both boxes.
 
 ## Where the map came from
@@ -185,17 +295,97 @@ the mode and loudness selectors (written through the safeload registers at
 0x18–0x1e) and the mute pair; stock's master volume is the Volume cell, which
 the program turns into a gain through its log table at 0x0164.
 
-## Still to confirm on hardware
+## On hardware
 
-* **The load** — none of it has run on a unit yet: the soft reset, the PLL lock
-  wait (and that MCLK reaches the DSP under openHC at all), the program, the
-  start.
-* **Which balance table is the left jack** (assumed 0x0091).
-* **What each mode sounds like** — the names are stock's; whether Tone also
-  carries the EQ is for the ears.
-* **Listening.** Nothing plays until the CE5300 I²S PCM is finished
-  (`ce5300_i2s.enable_pcm`); until then the card has the DSP controls and a
-  PCM that refuses to open.
+**The load works** (EA3, 2026-11-02, image c3cb7d9, booted to RAM). Read back
+over I²C (`i2ctransfer -f -y 3 w2@0x38 <hi> <lo> r4` for a memory word, `r2`
+for a control register):
+
+* The driver logs `DSP program loaded, core status 3`; `PLL_LOCK` reads 1, so
+  MCLK reaches the DSP under openHC.
+* The version cell holds 2 and the card `openhcea` has all 18 controls.
+* The index cells read 0x18 (24) — integers, as the design writes them —
+  and Volume Left/Right read 0x01000000 (1.0) once audiod has run.
+* **The knobs land in DSP memory:** `amixer cset` on Bass, EQ 1 kHz and the
+  mode moved exactly their cells, and back.
+* `PANIC_FLAG` read 1 after one load (c3cb7d9), with `PANIC_CODE` 0x0010, and
+  stayed 0 once cleared (`PANIC_CLEAR` 0xF421, 1 → 0); after another (3d15ec4)
+  it read 0.
+
+**But the core gets no frames.** `CORE_STATUS` 3 is the core asleep, waiting
+for its next start pulse, and it reads 3 whether or not one ever comes; the
+program counter (0xF461) reads a different value every time either way, so it
+proves nothing. What does: sample `CORE_STATUS` many times and count the 1s
+(executing). On the internal start pulse (`START_PULSE` 2, clock generator 1)
+the core executes in 20 reads of 300; on the booted one (8, `LRCLK_IN0`) in
+**none of 300**, and in none of 60 on any other serial input or output port's
+frame clock (9–15) or the S/PDIF receiver's (16). So under openHC **nothing
+drives an LRCLK at the DSP's serial ports**: every port is a slave (as on
+stock), and their master is not running. With no frame clock the program never
+runs, and the AK4621, on the same clocks, has none either: a test tone (mode 3)
+measured nothing above the noise floor (−93 dBFS) on the line out, with the DAC
+mute line at either level.
+
+**The master is the CE5300's I²S, and it runs once started** (same day, same
+image). With [the I²S block brought up](../../../../../../site/src/content/docs/ea/audio.md#what-is-left) — its global
+register to 0x7, TX0 configured as stock has it and started, a few words into
+its FIFO — the core executes on `LRCLK_IN0` (and on serial inputs 0–2 and all
+four outputs; serial input 3, the ASRC's, stays unclocked). Then, unbinding the
+codec to drive the cells by hand:
+
+* **Test tone:** mode 3 puts 1000 Hz at **−20.0 dBFS** on both channels of the
+  line out — the design's level — so the mode mux reads its integer index.
+* **SDATA_OUT1 feeds the AK4621:** switching off `SOUT_SOURCE` pair 8 (channels
+  16/17) alone silences the line out; pairs 0, 16 and 20 change nothing.
+* **The indexed filter blocks act on their index:** balance 0 / 12 / 24 / 36 / 48
+  measures one channel only / the other at −6 dB / centre / the first at −6 dB /
+  the other only — the linear law, exactly.
+* Volume 0.5 is −6 dB; loudness leaves 1 kHz alone, as its shelves should.
+* The DAC mute line (gpio61), high or low, made no difference to the tone.
+* `PANIC_FLAG` 1, `PANIC_CODE` 0x0010 appears once the core runs.
+
+**The PCM plays** (2026-11-03, #132): `aplay` into `hw:openhcea` or audiod's
+`ohc_analog` dmix moves TX0's DMA, and its samples reach the line out through
+**SDATA_IN0**: with `ASRC_INPUT0` on channels 0/1, a −12 dBFS 1 kHz / 1.5 kHz
+file measures −12.0 dBFS in modes 0, 1 and 2. On channels 16/17 or 32/33
+(serial inputs 1 and 2; the ASRC locks there too) and on stock's 40/41
+(SDATA_IN3, never clocked) the line stays at the −93 dBFS floor. The built
+image (this `ea3.json`, the PCM on by default, no register writes) plays the
+same −12.0 dBFS through `ohc_analog` and straight into `hw:` at S32_LE, and 20
+plays killed mid-stream left no hang and the floor back at −93 dBFS. Which jack
+is left is still open: the openSpeakerPoint's line input does not keep its
+channel order from one capture to the next.
+
+**The line in records** (2026-11-03): the AK4621's ADC is serial input 2
+(channels 32/33: as ASRC 0's input it carries analog noise and the line's hum,
+where serial input 1 is digital silence), and SDATA_OUT0 is the pair that
+reaches the CE5300 (switching its `SOUT_SOURCE` off silences RX0; pairs 16 and
+20 change nothing). With the line out cabled to the line in, a −12 dBFS 1 kHz
+left / 1.5 kHz right tone played on `hw:openhcea,0` records on the same
+device's capture at −12.1 dBFS peak, left on left, THD −109 / −104 dB and
+THD+N −88 / −89 dB, through the program's DC block: idle, −97 dBFS of DC and
+−108 dBFS of noise.
+
+The line out was measured end to end by an openSpeakerPoint's line input
+(`cmd/audio/measure`: per-channel RMS, peak and pitch). It also caught, on
+boots of the b53-switch tests only (`ohc.switch=1`), a steady hiss at −66 dBFS
+on one channel — which one changed from boot to boot — that unplugging the
+cable stopped. It did not come back on a boot without the switch, nor after
+loading `b53_spi` by hand, nor on an install without the DSP program; its
+source is open.
+
+**The coax jacks are not on the DSP's S/PDIF**, or not without routing we do
+not know. Stock leaves both halves powered off (`POWER_ENABLE1` = 0). With the
+receiver on (bit 1, `RX_PWR`), an HC-800's coax out at 48, 44.1 and 32 kHz never
+locked it (`SPDIF_LOCK_DET`, `SPDIF_RX_DECODE` and the channel status all 0);
+with the EA3's coax out looped to its coax in, the transmitter on too (bit 2,
+`TX_PWR`, and `SPDIF_TX_EN`), and the core on its internal start pulse, neither.
+
+Still open:
+
+* **What the DAC mute line does**, since it did not mute.
+* **What each mode sounds like** with programme material, and in stock's map,
+  **which balance table is the left jack** (assumed 0x0091).
 
 ## Not used on the EA1, and the AK4621
 

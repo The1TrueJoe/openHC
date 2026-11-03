@@ -11,7 +11,7 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/../packages/*/*.mk))
 #
 # The split: `packages/` at the repo root holds everything SHARED across boards —
 # the Rust service daemons AND the board-agnostic Buildroot packages (figlet,
-# splash, iomcu-attach, librespot). Anything that is BOARD SILICON belongs with
+# splash, librespot). Anything that is BOARD SILICON belongs with
 # the board tree that owns it, and lands here.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/packages/*/*.mk))
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
@@ -101,17 +101,29 @@ ifeq ($(BR2_OHC_IOXV1_KERNEL_DRIVERS),y)
 OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/kernel
 endif
 
+# A driver kept in its own repository maps onto ONE kernel directory instead of
+# mirroring a tree: <source dir>:<kernel dir>. sgx545-ce (the submodule at
+# ea/common/sgx545-ce) holds more than the kernel driver -- srvinit, libpvr, the
+# Mesa driver, RE tools -- and only its kernel/ is kernel source. Its Kconfig and
+# Makefile lines are still registered by ea/common/kernel/objs.mk.
+OHC_KERNEL_DRIVER_REPOS =
+ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
+OHC_KERNEL_DRIVER_REPOS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/sgx545-ce/kernel:drivers/gpu/drm/sgx545ce
+endif
+
 define OHC_KERNEL_MIRROR_HOOK
+	for p in $(foreach m,$(OHC_KERNEL_MIRRORS),$(foreach t,$(OHC_KERNEL_SUBTREES),$(m)/$(t):$(t))) \
+	         $(OHC_KERNEL_DRIVER_REPOS); do \
+		src=$${p%%:*}; t=$${p##*:}; who=$${src##*/board/}; \
+		[ -d "$$src" ] || continue; \
+		( cd "$$src" && \
+		  find . \( -name '*.c' -o -name '*.h' -o -name '*.dts' -o -name '*.dtsi' -o -name 'Makefile' -o -name 'Kbuild' -o -name 'Kconfig' \) | sed 's|^\./||' ) | while read -r f; do \
+			install -D -m644 "$$src/$$f" "$(LINUX_DIR)/$$t/$$f"; \
+			echo "openHC: installed $$t/$$f ($$who)"; \
+		done; \
+	done; \
 	for m in $(OHC_KERNEL_MIRRORS); do \
 		who=$${m##*/board/}; \
-		for t in $(OHC_KERNEL_SUBTREES); do \
-			[ -d "$$m/$$t" ] || continue; \
-			( cd "$$m/$$t" && \
-			  find . \( -name '*.c' -o -name '*.h' -o -name '*.dts' -o -name '*.dtsi' -o -name 'Makefile' -o -name 'Kbuild' -o -name 'Kconfig' \) | sed 's|^\./||' ) | while read -r f; do \
-				install -D -m644 "$$m/$$t/$$f" "$(LINUX_DIR)/$$t/$$f"; \
-				echo "openHC: installed $$t/$$f ($$who)"; \
-			done; \
-		done; \
 		[ -f "$$m/objs.mk" ] || continue; \
 		while IFS='|' read -r mk line; do \
 			case "$$mk" in ''|\#*) continue;; esac; \
@@ -128,18 +140,18 @@ define OHC_KERNEL_MIRROR_HOOK
 endef
 LINUX_POST_PATCH_HOOKS += OHC_KERNEL_MIRROR_HOOK
 
-# A board's own device tree sits at the root of its board folder
-# (board/ea/<board>/<board>.dts, board/hc800/hc800.dts), beside the
-# ohc.features its includes follow, not in a kernel mirror. Copy it next to the
-# shared .dtsi files a mirror just installed; the board fragment names it in
-# CONFIG_BUILTIN_DTB_NAME. BR2_OHC_BOARD_DTS is written by build/build.sh for
-# the EA family and set in the defconfig of a standalone board.
+# A board's own DT files (its .dts, plus the model's .dtsi for the EA family)
+# live in the board folders, not a kernel mirror. Copy them next to the shared
+# .dtsi files the mirror installed. BR2_OHC_BOARD_DTS is written by
+# build/build.sh for the EA family and set in a standalone board's defconfig.
 OHC_BOARD_DTS = $(call qstrip,$(BR2_OHC_BOARD_DTS))
 ifneq ($(OHC_BOARD_DTS),)
 define OHC_BOARD_DTS_HOOK
-	install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/$(OHC_BOARD_DTS) \
-		$(LINUX_DIR)/arch/x86/boot/dts/$(notdir $(OHC_BOARD_DTS))
-	echo "openHC: installed arch/x86/boot/dts/$(notdir $(OHC_BOARD_DTS)) ($(OHC_BOARD_DTS))"
+	for f in $(OHC_BOARD_DTS); do \
+		install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/$$f \
+			$(LINUX_DIR)/arch/x86/boot/dts/$$(basename $$f) || exit 1; \
+		echo "openHC: installed arch/x86/boot/dts/$$(basename $$f)"; \
+	done
 endef
 LINUX_POST_PATCH_HOOKS += OHC_BOARD_DTS_HOOK
 endif

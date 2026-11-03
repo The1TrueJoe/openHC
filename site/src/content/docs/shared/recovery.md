@@ -36,9 +36,9 @@ ohc-flash restore <host>
   appends a copy of entry 0 that `savedefault`s back to the stock entry and sets
   `default saved`. It never writes `default 0`: `restore.sh` reboots without
   touching `menu.lst`, so that would restore forever. Verified on a unit 2026-10-02.
-  An openHC built with the `restore` feature does this itself (`ohc-restore stock`,
+  An openHC built with the `restore` feature does this itself (`restore stock`,
   the same rewrite from the same code); stock Control4 gets it over SSH.
-- **EA family:** runs the box's `ohc-restore stock`, which removes openHC's single
+- **EA family:** runs the box's `restore stock`, which removes openHC's single
   MFH item from SPI-NOR (read-back verified) and kexecs p2's recovery kernel to
   re-image p1, the same reimage the recessed button starts.
 - **CA-1:** deletes openHC's `boot.scr`, zImage and DTB from the FAT partition and
@@ -93,7 +93,7 @@ item to the CEFDK Master Flash Header (MFH) item-table in SPI-NOR — the table 
 offset `0x80000`, SHA-256 protected — redirecting CEFDK to openHC's autoscript.
 The stock kernel item, the stock kernel, and p2's entire factory payload are left
 untouched. So "return to stock" is just removing that one item. The tool is
-`ohc-restore` (the `restore` feature; this is its EA backend, the HC-800's is
+`restore` (the `restore` feature; this is its EA backend, the HC-800's is
 [below](#hc-800)); its MFH edit is
 the byte-for-byte inverse of the installer's append, unit-tested to reproduce the
 known-stock SHA against the real 16 MB backup. Its subcommands:
@@ -103,7 +103,8 @@ known-stock SHA against the real 16 MB backup. Its subcommands:
 | `status` | parse and print the MFH table | no |
 | `revert` | remove openHC's item (stock boot); reversible with `install` while p1 is still openHC | yes — erase + write + read-back verify |
 | `install` | re-append openHC's item (undo `revert`) | yes |
-| `stock` | `revert`, then recovery-kexec p2's kernel to reimage p1 — the full return to Control4 | yes |
+| `stock [--no-reboot]` | stage a one-shot flag on p1 and reboot; boot-init reimages p1 from p2 before it pivots, then `revert`s the MFH — the full return to Control4 | yes (from boot-init) |
+| `recovery-kexec` | kexec p2's recovery kernel to reimage p1 (legacy). Refuses while the GPU driver is bound: a kexec out of a kernel whose GPU driver has run leaves the next kernel without working DMA ([boot chain](/ea/boot-chain/)) | no |
 | `restore-mfh <backup.bin> [--compensate]` | rewrite the MFH block from a full-flash backup (repair a corrupted MFH) | yes |
 | `erasetest` | erase the MFH block and report how much read back `0xff` (diagnostic) | erase only |
 
@@ -118,7 +119,7 @@ here ever claims success without the flash reading back exactly what was intende
 2. **The web UI System panel**, a two-step "Reset to stock" confirm, shown only
    when `status.available`.
 3. **The front ID button.** Holding it for `OHC_RESTORE_BUTTON_HOLD` seconds
-   (default 10) and letting go runs `ohc-restore stock`; the warning LED blinks
+   (default 10) and letting go runs `restore stock`; the warning LED blinks
    while it is held and goes solid once it has been held long enough. The
    button (SoC GPIO 32, active-low, confirmed on an EA1) is a `gpio-keys-polled`
    node in the board device tree, which udev links as `/dev/ohc/input/id-button`.
@@ -140,9 +141,9 @@ fail-safe keeps a wrong polarity inert until they are.
 The `mtd0` **write path is proven**: it rewrote the MFH on a corrupted live EA1
 and read it back verified (the recovery was possible because `kexec` is a soft
 load that never reads the MFH, so a fixed kernel could be kexec'd in to repair the
-flash). The **full `stock` round-trip** — `revert` the MFH *and* recovery-kexec p2
-to reimage p1, all the way back to Control4 — has **not** yet been run end to end
-on hardware.
+flash). The **full `stock` round-trip** — the one-shot flag, the reboot, boot-init
+reimaging p1 from p2 and reverting the MFH, all the way back to Control4 — has
+**not** yet been run end to end on hardware.
 :::
 
 ### Three boot modes, chosen at power-on
@@ -190,15 +191,58 @@ code, and why the ordering is always: **prove it in RAM, then write it.**
 | `/mnt/persistent` (p3) | 32 MB | small, cheap |
 | p2 recovery partition | 1 GB | the thing you are protecting |
 
-Back up the kernel region specifically before touching it:
+#### Taking them from a stock box
+
+Stock has nowhere to hold a 7.6 GB image, so stream everything to another
+machine over root SSH. Stock Dropbear has no `sftp-server`, so `scp` fails; pipe
+`dd`/`cat` through `ssh` instead. Compress on the receiving end, because the
+CE5300 is the bottleneck.
 
 ```sh
-dd if=/dev/mmcblk0 bs=512 count=14000 of=/mnt/backup/kernel-slot.bin
+# the whole user area: partitions, the CEFDK kernel slot below p1, the gaps
+ssh root@BOX 'dd if=/dev/mmcblk0 bs=1M' | gzip -1 > ea-mmcblk0.img.gz
+
+# SPI NOR (MFH + CEFDK) is a separate chip, not on the eMMC
+ssh root@BOX 'cat /dev/mtd0ro' > ea-spinor.bin
+
+# eMMC hardware boot partitions, if `ls /dev/mmcblk0*` shows them
+ssh root@BOX 'cat /dev/mmcblk0boot0' > ea-mmcblk0boot0.bin
+ssh root@BOX 'cat /dev/mmcblk0boot1' > ea-mmcblk0boot1.bin
+```
+
+If the old Dropbear won't negotiate, add
+`-o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`.
+
+Verify each image against the device, not just its size:
+
+```sh
+ssh root@BOX 'md5sum /dev/mmcblk0'
+gunzip -c ea-mmcblk0.img.gz | md5sum
+```
+
+Stock busybox is missing some tools (`od`, for one). Without `md5sum`, stream
+twice and compare the two files.
+
+:::caution[A live stock box gives a crash-consistent image, not an exact one]
+Stock runs with p1 (root) and p3 (`/mnt/persistent`) mounted read-write, and
+Director writes to them. Those two come out as if the power had been cut at that
+moment. Everything unmounted (p2, the kernel slot, the boot partitions, NOR)
+comes out exact. `sync` first and image while nothing is being configured. For a
+byte-perfect copy, run the same `dd` from a system that doesn't mount p1 or p3,
+such as a RAM [netboot](/build/install/#non-destructive-first-netboot), which writes nothing.
+:::
+
+To grab just the region below p1 (the kernel slot) before touching it:
+
+```sh
+ssh root@BOX 'dd if=/dev/mmcblk0 bs=512 count=$(cat /sys/class/block/mmcblk0p1/start)' > ea-below-p1.bin
 ```
 
 Backups are **your device's own data, kept local.** They contain Control4 and
 Intel proprietary code and must never be committed or redistributed — `.gitignore`
-excludes them. They exist so a unit can be put back exactly as it was.
+excludes them. They exist so a unit can be put back exactly as it was. See
+[the GPL drop](/shared/gpl-source/) for what Control4 does and doesn't
+give us rights to.
 
 ## CA-1
 
@@ -236,18 +280,18 @@ file written and read back first. Never `default 0`: `restore.sh` re-images
 `factorydefault` line is missing. The restore takes ~5 minutes and comes back as
 stock Control4 on a new DHCP lease. Proven on a unit 2026-10-02.
 
-On an openHC built with the `restore` feature, `ohc-restore` does it on the box,
+On an openHC built with the `restore` feature, `restore` does it on the box,
 from the same menu rewrite the flasher uses (`flasher/crates/core`, unit-tested):
 
 | Trigger | How |
 |---|---|
-| `ohc-flash restore <host>` | runs `ohc-restore stock --no-reboot`, reads the verified result, then reboots the box; a box without the tool gets the same rewrite over SSH |
-| Web UI → System → **Reset to stock** | iod's `cmd/system/restore` (`confirm`) → `ohc-restore stock` |
+| `ohc-flash restore <host>` | runs `restore stock --no-reboot`, reads the verified result, then reboots the box; a box without the tool gets the same rewrite over SSH |
+| Web UI → System → **Reset to stock** | iod's `cmd/system/restore` (`confirm`) → `restore stock` |
 | Hold the **ID button** at power-on | Control4's GRUB factory-default button, unchanged — no openHC software involved |
 
 The ID button gets no second, runtime meaning: the power-on factory reset already
 returns the box to stock, so a long-press watcher would only add a way to wipe it
-by accident. `ohc-restore status` prints the menu and a `state:` line (`openHC`,
+by accident. `restore status` prints the menu and a `state:` line (`openHC`,
 `stock`, or `restore pending`).
 
 A serial console on `ttyS0` at 115200 sees GRUB itself if that fails.
@@ -284,29 +328,3 @@ If DHCP succeeds but TFTP doesn't answer, U-Boot loops forever — it ignores IC
 port-unreachable. Recovery to stock needs **either** no DHCP (so `tst` aborts)
 **or** a definitive TFTP *error* reply.
 :::
-
-## The clean-room boundary
-
-Stock firmware is read to learn **interfaces**, the boot flow, a wire protocol,
-GPIO names, which UART is which. Control4 and Intel code is not copied into
-anything openHC ships. A netbooted kernel is an independent implementation written
-from observed behaviour.
-
-The genuinely unresolved tension is the vendor Android UI on the EA boards.
-Keeping *Control4's* build is a redistribution problem even though it runs fine.
-Options, cleanest first:
-
-1. build our own AOSP container targeting the same graphics interface;
-2. ship a non-Android UI on that plane;
-3. treat the stock container as *the user's own existing files*, left in place on
-   their unit and never redistributed by us.
-
-Option 3 is fine for personal bring-up on your own box and is what the milestones
-assume. **It isn't distributable.** Decide before publishing images.
-
-The licence position on the kernel side is better than expected, every graphics
-kernel module on the EA boards declares Dual BSD/GPL or Dual MIT/GPL, so the
-kernel modules are redistributable. The proprietary surface shrinks to the
-PowerVR userspace driver and the Android container itself. See
-[the GPL drop](/shared/gpl-source/) for what Control4 does and doesn't
-give us rights to.

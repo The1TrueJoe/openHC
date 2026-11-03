@@ -275,29 +275,62 @@ with no data returns nothing, and `UART_SEND [port, data…]` transmits
 immediately. Send the bytes in the one frame.
 :::
 
-**openHC bridges this in the kernel, not in iod.** The `ohc-iomcu` line
-discipline owns `ttyS1`, so nothing in userspace can speak these opcodes on it
-directly. The discipline therefore mux-es each MCU-routed port onto a
+**openHC bridges this in the kernel, not in iod.** The `gpio-ohc-iomcu`
+driver owns the UART (a serdev device), so nothing in userspace can speak these
+opcodes on it directly. The driver therefore mux-es each MCU-routed port onto a
 `/dev/ttyOHC<n>` tty — the n_gsm pattern — and iod's ordinary host-UART bridge
-opens that. A jack is switched to serial (`UART_SET_CONTROL`) only when its tty
-is opened, so the IR emitter on the same combo jack keeps working until a
-console is actually asked for.
+opens that.
+
+### Combo jacks
+
+Some rear jacks are an IR output and an MCU serial port on one connector, used
+one way at a time: IR 1–2 on the EA-1 (serial 1–2), IR 1–3 on the EA-3
+(serial 1–3), IR 1–2 on the EA-5 (serial 3–4). Each model's device tree
+(`ea1.dtsi`, `ea3.dtsi`, `ea5.dtsi`) lists its jacks under `&io_mcu`:
+
+```dts
+jack@1 {
+	reg = <1>;			/* panel number */
+	label = "IR / Serial 1";
+	control4,ir-channel = <0>;	/* IROUT_SEND bit */
+	control4,uart = <0>;		/* MCU user UART, ttyOHC0 */
+};
+```
+
+A jack with both is a combo jack. Its mode lives in the kernel, in
+`/sys/class/tty/ttyOHC<n>/mode` (`ir` or `serial`, next to `jack` and `label`).
+It starts as `ir`. In `ir`, opening the tty fails with `EBUSY`; in `serial`, its
+IR output's lirc device refuses to send with `EBUSY`. Going back to `ir` sends
+`UART_SET_CONTROL` with enable 0, and is refused while the tty is open.
+
+iod sets it with `PUT /api/io/jacks/<jack>` `{"mode": "serial"}`, saves it, and
+puts it back at boot. A combo jack left as IR gets no serial session; one set to
+serial is opened and held like any other port. Capabilities list the jacks
+under `ir.jacks` with their current mode.
+
+Unconfirmed: that enable 0 hands the jack back to IR, and the null-modem
+option stock offers per port.
+
+Boards without jack nodes (the HC-800's ACPI table) still give
+`control4,ir-outputs` and `control4,uarts` counts: IR jacks 1..N on channels
+0..N-1, UARTs on connectors of their own.
 
 ## The per-board profile table
 
 One image serves ea1, ea3 and ea5. It does that with a table of **six board
 profiles at file offset `0x1fec`, stride `0x4a4`**, selected at runtime. This table
 has been fully decoded and is the authoritative source for per-board IR and serial
-counts.
+counts. Every pin, per board, is on [IO-MCU pin maps](/shared/io-mcu-pinmap/).
 
-Block layout:
+Block layout (full table on the pin-map page):
 
 ```
 +0x000  0x18   IR receiver descriptor
-+0x018  0x1c   IR output, channel 0
-+0x034  0x1c   IR outputs, channels 1..8   (8 x 0x1c)
-...
-+0x3b4         UART records, 0x28 each, first is the host link
++0x018  0x1c   front blaster (gets the LAST channel index)
++0x034  0x1c   rear IR outputs, up to 16 slots, list ends at the first unpopulated
++0x1f4         contacts (inputs)     +0x2f4  relays (outputs)
++0x37c         heartbeat LED         +0x384  combo-jack mux lines A, B
++0x3b4         peripheral records, 0x28 each, first is the host link
 ```
 
 An **IR output descriptor**:
@@ -330,12 +363,12 @@ become board profiles, and the counts match physical hardware exactly:
 
 | Block | IR outputs populated | User UARTs | Board |
 |---|---|---|---|
-| 0 | 9 | 2 | EA5 / TR1 / amp1 ? |
-| 1 | 9 | 2 | EA5 / TR1 / amp1 ? |
-| **2** | **5** | **2** | **EA1** — 4 rear jacks + 1 internal blaster |
-| **3** | **7** | **3** | **EA3** — 6 rear jacks + 1 internal blaster |
-| 4 | 9 | 2 | EA5 / TR1 / amp1 ? |
-| 5 | 9 | 2 | EA5 / TR1 / amp1 ? |
+| 0 | 9 | 2 | unidentified (same as 1 and 5) |
+| 1 | 9 | 2 | unidentified (same as 0 and 5) |
+| **2** | **5** | **2** | **EA1**: 4 rear jacks + 1 internal blaster |
+| **3** | **7** | **3** | **EA3**: 6 rear jacks + 1 internal blaster |
+| 4 | 9 | 2 | **EA5** (inferred): rear jacks 5–8 in EA1/EA3 order |
+| 5 | 9 | 2 | unidentified (same as 0 and 1) |
 
 Two independent facts confirm the EA3 assignment: the owner counts **6 IR jacks**,
 and a live EA3's `ioserver` opens **three** user-serial sockets where an EA1 opens
@@ -344,19 +377,21 @@ two.
 ### The decoded profiles
 
 Channels are listed in `IROUT_SEND` `output_mask` bit order. The receiver is
-`PD6 / WTIMER5A`, identical in all six blocks.
+`PD6 / WTIMER5A`, identical in all six blocks. The rear records are numbered first
+and the `+0x018` record, `PD4`, takes the next index, so the front blaster is the
+last bit, not bit 0 (an earlier version of this table had that backwards).
 
 ```
-ch  pin  timer  irq    EA1 (block 2)   EA3 (block 3)
-0   PD4  WT4    102    populated       populated
-1   PB6  T0      19    populated       populated
-2   PF2  T1      21    populated       populated
-3   PB0  T2      23    populated       populated
-4   PB2  T3      35    populated       populated
-5   PD0  WT2     98    absent          populated
-6   PD2  WT3    100    absent          populated
-7   PC4  WT0     94    absent          absent   (PC4 is UART4 RX on EA3)
-8   PC6  WT1     96    absent          absent
+bit  pin  timer  irq    EA1 (block 2)   EA3 (block 3)
+0    PB6  T0      19    jack 1          jack 1
+1    PF2  T1      21    jack 2          jack 2
+2    PB0  T2      23    jack 3          jack 3
+3    PB2  T3      35    jack 4          jack 4
+4    PD0  WT2     98    —               jack 5
+5    PD2  WT3    100    —               jack 6
+-    PC4  WT0     94    absent          absent   (PC4 is UART4 RX on EA3)
+-    PC6  WT1     96    absent          absent
+4/6  PD4  WT4    102    front blaster   front blaster   (bit 4 on EA1, 6 on EA3)
 ```
 
 ```
@@ -367,8 +402,8 @@ UART7  PE0/PE1      63   user port 2     user port 2
 UART4  PC4/PC5      60   —               user port 3
 ```
 
-Both boards populate a **contiguous run from channel 0**, so `output_mask` is
-dense: `0x1f` on EA1, `0x7f` on EA3.
+Both boards populate a **contiguous run of rear channels from 0**, and the
+blaster follows it, so `output_mask` is dense: `0x1f` on EA1, `0x7f` on EA3.
 
 ### IROUT_SEND, and the field that hard-faults the part
 
@@ -464,36 +499,23 @@ block→board assignment is right:
 - **EA3 populates exactly one from each group**, and an EA3 has one relay and one
   contact, owner-confirmed off the PCB.
 - The 9-output blocks populate all eight, i.e. **4 relays + 4 contacts**, which is
-  the HC800/HC250 complement.
+  the EA5 complement.
 
-**Which group is relays and which is contacts is not established.** Both are four
-wide and nothing in the table distinguishes an output from an input. `PF0` and
-`PA2` are each first in their group, so "relay 0" and "contact 0" is the natural
-reading, but it should be checked before being trusted. The remaining
-always-populated pins are unidentified — LEDs, straps or the front button are all
-plausible. Note `PB4` is absent from every block, consistent with it being the ADC
-board-id input rather than a GPIO.
+**The first group is contacts and the second is relays.** The init code sets
+PF0/PF1/PF3/PF4 up as GPIO inputs, and the contact poll reads them (closed = pin
+low). PA2–PA5 become outputs driven low, and relay-on drives them high. `PC7` is a
+heartbeat. PE2/PE3 and PB1/PB3 (plus PA7/PB5 on EA3) are each user UART's pair of
+combo-jack mux lines. Details and evidence are on
+[IO-MCU pin maps](/shared/io-mcu-pinmap/).
 
 ### The selector, disassembled
 
 The vendor picks its block from an analogue board-ID strap. That function lives at
-runtime address **`0x2878`**, and its literal pool sits immediately before the
-profile table, which is how it was found.
-
-```
-0x2882  ldr  r5,[pc,#0x75c]             ; r5 = ADC0 base (0x40038000)
-0x288e  bl   ...                        ; ADCSequenceConfigure(ADC0, 0, ...)
-0x2896  bl   ...                        ; ADCHardwareOversampleConfigure(ADC0, 8)
-0x289a  movs r3,#0x6a                   ;   0x6a = CH10 | IE | END -> AIN10 (PB4)
-0x28b6  bl   ...; cmp r0,#0; beq 0x28b6 ; spin until conversion done
-0x28d4  bl   ...                        ; ADCSequenceDataGet(ADC0, 0, &scratch)
-0x28dc  cmp  r4,#5;  blt loop           ; five conversions
-0x28e0  ldr  r0,[sp]                    ; ... and only the LAST one is used
-0x28e4  movs r1,#0xfa                   ; 250
-0x28e6  udiv r1,r0,r1                   ; id  = adc / 250
-0x28f4  cmp  r1,#0x7e                   ; 126
-0x28f8  addge r0,r0,#1                  ; round to nearest
-```
+flash address **`0x1878`** (an earlier version of this page said `0x2878`). Its
+literal pool sits immediately before the profile table, which is how it was found.
+It configures ADC0 sequencer 0 with 8× hardware oversampling, makes one step on
+channel 10 (AIN10 = PB4), runs five conversions, and keeps only the last. It then
+divides by 250, rounding up when the remainder is 126 or more.
 
 Two corrections to an earlier reading of this ("five samples averaged"):
 
@@ -511,7 +533,10 @@ multiply it by the `0x4a4` stride. So the strap mapping is fully determined, on 
 |---|---|---|---|
 | 2 | ~500 | ~0.40 V | EA1 |
 | 3 | ~750 | ~0.60 V | EA3 |
+| 4 | ~1000 | ~0.81 V | EA5 (inferred) |
 | N | N × 250 | N × 0.20 V | — |
+
+There is no range check: an id of 6 or more would index past the table.
 
 **Those voltages are predictions from the decoded arithmetic, not measurements.**
 Nobody has put a meter on PB4. Confirm them and our firmware can drop its
@@ -551,10 +576,9 @@ by comparison. Waiting for an unsolicited frame will simply never fire.
 Related MIBs on the same path: `c4.hc.cs` (contact state), `c4.hc.rs` (relay
 state), `c4.hc.fwv` (firmware version).
 
-**Still not bound to a pin.** This tells us the contact is index 0 and how to read
-it. It does **not** say whether index 0 lives on `PA2` or `PF0`. That binding falls
-out at first flash: drive the relay pin, listen for the click, swap the two
-constants if it's silent.
+**Bound to a pin since:** the EA3's contact 0 is `PF0`, a GPIO input (and a
+locked pin the stock firmware unlocks at boot). The relay is `PA2`, an output. See
+[IO-MCU pin maps](/shared/io-mcu-pinmap/#ea3--block-3).
 
 ## IR output — confirmed
 
@@ -714,9 +738,11 @@ Recorded because each of these makes firmware that fails with no diagnostic.
 ## The IR channel pin map, and how the package was settled
 
 The vendor image carries a 10-entry descriptor table at flash **`0x2490`**, stride
-**`0x1c`**:
+**`0x1c`**. It is profile block 1: the receiver, the front blaster, then eight
+rear records. The `ch` column below is record order, **not** the `IROUT_SEND` bit.
+For that, see [IO-MCU pin maps](/shared/io-mcu-pinmap/).
 
-| ch | pin | timer | CCP | IRQ A |
+| rec | pin | timer | CCP | IRQ A |
 |---|---|---|---|---|
 | 0 | PD6 | WTIMER5 | WT5CCP0 | 104 |
 | 1 | PD4 | WTIMER4 | WT4CCP0 | 102 |
@@ -741,10 +767,11 @@ Two things this settles:
 - **The carrier must come from a GPTM CCP output**, consistent with this part
   having no PWM module at all.
 
-**Which physical jack is which channel is still unknown.** It's a PCB fact,
-resolvable by driving one channel at a time and watching which emitter lights.
+**Which physical jack is which bit is the DT's convention (jack N = bit N−1).**
+It's proven on the HC-800 but not yet on an EA. Drive one bit at a time and watch
+which emitter lights.
 
-## The HC-800: mostly resolved
+## The HC-800
 
 An earlier version of this page said the HC-800's LM3S1162 image "uses only
 TIMER0–3 and all three UARTs — UART0 host, UART1/UART2 the two user ports", and
@@ -768,15 +795,17 @@ the host, not routed through the MCU.
 
 So why does the image configure three UARTs? Because **it is the same binary as
 the HC-250**: `.flash.config` maps `hc800` and `hc250` to one pair of files.
-"MultiConfig" in the filename means multi-**processor**, not multi-board — the
-image carries `Processor: LM3S1162 / LM3S615 / LM3S811 / LM3S815 / Undefined`
-and four config blocks to match. A feature present in the image is not
-necessarily a feature of this board.
+"MultiConfig" means multi-**board**. Like the EA image, it reads an analogue strap
+(ADC channel 0, `round(adc / 85)`, routine `0x519c`) and uses the result as the
+index of one of four config blocks. The HC-800 is block 2 and the HC-250 is
+block 1. The `Processor: LM3S…` strings only label a version banner. An earlier
+version of this page read them as the block selector, which was wrong. A feature
+present in the image is not necessarily a feature of this board.
 
 **Consequence for a replacement firmware:** the HC-800's MCU does IR, 4 relays
 and 4 contacts, and no user serial at all.
 
-### Six IR outputs, on PWM — not four, on timers
+### Six IR outputs, gated onto two PWM carriers
 
 The old figure came from counting timer base addresses, which is a lower bound
 rather than a count. The vector table settles it. The stock image's table is 46
@@ -790,56 +819,28 @@ default at `0x7783`:
 | 10, 11, 12 | PWM generators **0, 1, 2** |
 
 **This part has a PWM module and the firmware uses it** — the module's base
-`0x40028000` sits at flash `0x4BA0`, immediately beside those handlers. Three
-generators drive two outputs each, which is six, matching the owner's six rear
-jacks. That is also the sharpest difference from the EA's TM4C1231D5, which has
-no PWM module at all and must synthesise the carrier from a timer CCP.
+`0x40028000` sits at flash `0x4BA0`, immediately beside those handlers. Only two
+PWM pins are used, though: PWM1 on `PD1` (generator 0) and PWM5 on `PF3`
+(generator 2). Each of the seven outputs (six jacks + the front blaster) has its
+own pair of GPIO gate lines that connect it to one carrier or the other. That is
+the sharpest difference from the EA's TM4C1231D5, which has no PWM module and gives
+every jack its own timer CCP.
 
-Note what is *absent*: no timer, GPIO or SysTick interrupt is claimed anywhere.
-Contacts are polled, and burst timing runs off the PWM generator interrupts.
+The static vector table claims no timer, GPIO or SysTick interrupt. Contacts are
+polled. The receiver's record does name TIMER1B (CCP3 on `PD4`), so its handler
+is presumably registered at runtime.
 
-### The pin map: format decoded, assignment still open
+### The pin map
 
-The per-processor config blocks live at flash `0x10B8`, stride `0x3D4`, and the
-record formats are now known:
+Decoded: the jack gates, carriers, receiver, relays (PA5, PA4, PA3, PA2), contacts
+(PB0–PB3) and heartbeat (PF1), with the block layout and evidence, on
+[IO-MCU pin maps](/shared/io-mcu-pinmap/#hc-800--block-2). An earlier reading
+here took `PC7 PC6 PF4 PC5 PC4 PF5` for six IR outputs. They are the first two
+jacks' three-line gate groups.
 
-```
-GPIO pin record    8 bytes   { u32 gpio_base; u32 pin }
-                             bits 0..7 = mask, BIT 8 = POPULATED
-timer record      12 bytes   { u32 timer_base; u32 mask; u32 mask2 }
-                             four per block, always TIMER2, TIMER0, TIMER3, TIMER1
-```
-
-Two things confirm the decoding rather than merely fitting it. First, the **last
-six pins of every block are the three UARTs at their textbook Stellaris
-pinouts** — UART0 `PA0`/`PA1`, UART1 `PD2`/`PD3`, UART2 `PG0`/`PG1`. Second,
-block 3 — the `Undefined` processor — contains *only* those six, which is
-exactly what an unknown part should be given: a host link and nothing else.
-
-Blocks 0, 1 and 2 share the same first thirteen pins, so a profile is a prefix
-length here too:
-
-```
-PD4 PC7 PC6 PF4 PC5 PC4 PF5 PB4 PB5 PA7 PB6 PF2 PA6 ...
-```
-
-The tempting reading is `PD4` = IR receiver (first descriptor, sitting among the
-timer records, mirroring the EA layout) and then `PC7 PC6 PF4 PC5 PC4 PF5` = the
-six IR outputs. Six is the right number in the right place.
-
-**It is not safe to act on yet.** `PC4`–`PC7` are classically the CCP
-(capture/compare) pins on Stellaris, not PWM pins — while the vector table says
-the carrier is on PWM and no timer interrupt is taken. Those two facts do not
-sit together. Resolving it needs the LM3S1162 pin table (the datasheet's
-"Signals by Function", or StellarisWare's `pin_map.h` under `PART_LM3S1162`).
-Which block corresponds to the LM3S1162 is also unproven: the strings run
-LM3S615, LM3S815, LM3S811, LM3S1162, but block 3 is the minimal one, so block
-order is not string order.
-
-Until that is closed, openHC's LM3S firmware keeps `OHC_IR_PINS_KNOWN` and
-`OHC_RELAY_PINS_KNOWN` at `0`: it runs, answers the host and builds correct
-carriers inside the PWM peripheral, but enables no output pin and drives no
-relay. A relay here may be switching a real load.
+openHC's LM3S firmware still keeps `OHC_IR_PINS_KNOWN` and `OHC_RELAY_PINS_KNOWN`
+at `0` until the gate polarity and relay order are checked on hardware. A relay
+here may be switching a real load.
 
 ### The protocol is confirmed on this part
 

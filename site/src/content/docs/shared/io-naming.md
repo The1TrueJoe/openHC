@@ -53,7 +53,7 @@ gpioset $(gpiofind relay1)=1
 gpioget $(gpiofind contact4)
 ```
 
-`board.env` declares **how many**, never **which offset**.
+The kernel says **how many** as well; `board.env` says neither.
 
 ## Front-panel LEDs
 
@@ -94,9 +94,9 @@ udev turns what the kernel reports into `/dev/ohc`, one directory per class:
 /dev/ohc/ir/out1 … outN        rear IR jacks, as labelled
 /dev/ohc/ir/front-blaster      internal emitter behind the front panel
 /dev/ohc/ir/front-receiver     the learner on the same panel
-/dev/ohc/serial/1 … N          user RS-232, in the order board.env declares
-/dev/ohc/radio/zigbee          the NCP, wherever the SoC happens to wire it
-/dev/ohc/radio/zwave
+/dev/ohc/serial/1 … N          user serial ports, numbered by the board's udev rule
+/dev/zigbee                    the NCP, wherever the SoC happens to wire it
+/dev/zwave                     (both also under /dev/ohc/radio/)
 /dev/ohc/input/id-button       a front-panel button, named by its device-tree label
 ```
 
@@ -141,26 +141,26 @@ gpiochip1 - 8 lines:
 The **chip** does get an entry, because a chip *is* a device and its number is
 exactly the sort of thing that moves.
 
-**The IO microcontroller's own tty gets no entry either.** A line discipline
-owns it, and its interface is the gpiochip and the lirc devices — pointing at
-the raw port would only invite a second writer.
+**The IO microcontroller's own UART gets no entry either.** It has no tty at
+all: gpio-ohc-iomcu holds it as a serdev device, and its interface is the
+gpiochip, the lirc devices and the `ttyOHC` ports.
 
-### Why the rules delegate
+### Who says which tty is which
 
-Both udev rules call `ohc-udev-name` rather than matching inline, because
-neither answer is a property of the device itself. The IR label lives on the
-*parent* rc device, not the lirc node. The serial numbering is `board.env`'s
-declaration order. A match expression would be a second copy of each.
+The IR rule calls `ohc-udev-name` rather than matching inline, because the IR
+label lives on the *parent* rc device, not the lirc node.
 
-`OHC_SERIALS` and `OHC_RADIOS` therefore take the **same shape** — a bare kernel
-device name, never a `/dev/` path, because constructing the path is our job:
+Serial ports and radios are the board's to name, in its own
+`60-openhc-board.rules`, by properties the shared rule turns into links:
 
-```sh
-OHC_SERIALS="ttyS1:RS-232_port_1:115200 ttyS2:RS-232_port_2:115200"
-OHC_RADIOS="zigbee:ttyS4"
+```udev
+SUBSYSTEM=="tty", KERNEL=="ttyS*", ATTR{port}=="0x2F8", \
+  ENV{OHC_SERIAL}="1", ENV{OHC_SERIAL_LABEL}="RS-232 port 1", ENV{OHC_SERIAL_MODEM}="1"
+SUBSYSTEM=="tty", KERNEL=="ttyS*", ATTR{port}=="0x2F0", ENV{OHC_RADIO}="zigbee"
 ```
 
-A serial entry may end in `:modem` when its connector carries DTR and RTS (the
+The full list is on [hardware from the kernel](/shared/hardware-from-the-kernel/#the-boards-udev-rules).
+A port gets `OHC_SERIAL_MODEM=1` when its connector carries DTR and RTS (the
 DB9s on the HC-800 and IO Extender). iod holds those lines up from boot, as the
 stock `dtserver` does, because accessories like a GC-IRL learner are powered
 from them. It also offers `serial/N/dtr` and `serial/N/rts` (ON/OFF) to drop

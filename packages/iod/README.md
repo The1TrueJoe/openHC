@@ -197,8 +197,9 @@ Until it is:
 
 * `ir.send` refuses codes over **64 words**, chosen low deliberately. A refused
   send is an error message; a wedged MCU is every other piece of IO down.
-* `mcu.reset` (`<base>/cmd/mcu/reset`, or `POST /api/io/mcu/reset`) pulses
-  `OHC_GPIO_IO_RESET` and re-identifies the part. That is the recovery, and it
+* `mcu.reset` (`<base>/cmd/mcu/reset`, or `POST /api/io/mcu/reset`) unbinds
+  the IO driver, pulses `OHC_GPIO_IO_RESET`, and binds it again, so the driver
+  starts the application from the bootloader and re-identifies the part. That is the recovery, and it
   is why the reset line is worth wiring into the daemon rather than leaving to
   a power cycle.
 

@@ -17,6 +17,10 @@ on:
     workflows: [ci]
     types: [completed]
 
+# One retry decision per CI run at a time.
+concurrency:
+  group: ci-retry-${{ github.event.workflow_run.id }}
+
 permissions:
   actions: write
   checks: read
@@ -64,4 +68,11 @@ jobs:
           [ "$timedout" = 1 ] || { echo "nothing ran out of time"; exit 0; }
 
           echo "re-running the failed jobs of run $RUN (attempt $ATTEMPT -> $((ATTEMPT + 1)))"
-          gh run rerun "$RUN" -R "$R" --failed
+          # Someone (or an earlier retry) may have re-run it while this waited
+          # for a runner: that is the outcome wanted, not a failure.
+          if ! out=$(gh run rerun "$RUN" -R "$R" --failed 2>&1); then
+            case "$out" in
+              *"already running"*) echo "already re-running: $out"; exit 0 ;;
+              *) echo "$out" >&2; exit 1 ;;
+            esac
+          fi

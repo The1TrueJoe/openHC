@@ -1,7 +1,7 @@
 //! Per-output tone: bass, treble, balance — and on a DSP board, its EQ too.
 //!
 //! An output's tone stage is one of two things, and each output says which by
-//! the knobs it carries (`Port::tone`, filled in by `fill` once board.env is
+//! the knobs it carries (`Port::tone`, filled in by `fill` once the board is
 //! read; the map publishes them so the web UI draws exactly those):
 //!
 //! * The software stage: openHC's ALSA plugin (packages/alsa-ohceq, pcm type
@@ -14,7 +14,7 @@
 //!     `<pcm> Bass Playback Volume`, `<pcm> Treble Playback Volume`  -12..12 dB
 //!     `<pcm> Balance Playback Volume`  -100 (left only) .. 100 (right only)
 //!
-//! * The board's DSP, for a port with `dsp=<profile>` in board.env (the EA3's
+//! * The board's DSP, for a port whose codec has a profile (board.rs; the EA3's
 //!   ADAU1451). The profile is the same file the DSP's firmware is built from
 //!   (board/ea/common/firmware/dsp/adau1451/), and its knobs are ALSA controls
 //!   the kernel's sigmadsp core made from that firmware: 4 bytes, big-endian,
@@ -279,6 +279,7 @@ pub fn apply(p: &Port, t: &Tone) {
 mod tests {
     use super::*;
     const EA3: &str = include_str!("../../../board/ea/common/firmware/dsp/adau1451/ea3.json");
+    const EA3_OPENHC: &str = include_str!("../../../board/ea/common/firmware/dsp/adau1451/ea3-openhc.json");
 
     fn port(tone: Vec<Knob>) -> Port {
         Port { id: "analog".into(), label: "Analog".into(), device: "hw:CARD=openhcea,DEV=0".into(), pcm: "ohc_analog".into(), tone, ..Default::default() }
@@ -332,6 +333,24 @@ mod tests {
         let p: serde_json::Value = serde_json::from_str(EA3).unwrap();
         let vol = p["cells"].as_array().unwrap().iter().find(|c| c["control"] == "DSP Volume").unwrap();
         assert_eq!(vol["value"], 0);
+    }
+    #[test]
+    fn openhcs_own_program_has_the_same_knobs() {
+        let stock: Vec<String> = dsp_knobs(EA3).unwrap().into_iter().map(|k| k.id).collect();
+        let k = dsp_knobs(EA3_OPENHC).unwrap();
+        assert_eq!(k.iter().map(|k| k.id.clone()).collect::<Vec<_>>(), stock);
+        assert_eq!(k[0].choices, ["Tone", "EQ", "Flat", "Test tone"]);
+        let p = port(k);
+        // Its selectors are mux indices, its filter knobs table indices.
+        assert_eq!(control(&p, knob(&p, "mode").unwrap(), 1), ("DSP Output Mode".into(), "0,0,0,1".into()));
+        assert_eq!(control(&p, knob(&p, "loudness").unwrap(), 1).1, "0,0,0,1");
+        assert_eq!(control(&p, knob(&p, "bass").unwrap(), 0).1, "0,0,0,24");
+        assert_eq!(control(&p, knob(&p, "balance").unwrap(), -50).1, "0,0,0,12");
+        // Its volume is a linear gain per channel: 0 at boot, 1.0 to run.
+        assert_eq!(dsp_run(EA3_OPENHC).unwrap(), vec![
+            ("DSP Volume Left".to_string(), "1,0,0,0".to_string()),
+            ("DSP Volume Right".to_string(), "1,0,0,0".to_string()),
+        ]);
     }
     #[test]
     fn an_old_saved_tone_still_loads() {

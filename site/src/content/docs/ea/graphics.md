@@ -138,6 +138,24 @@ depends: (none)
 For scale, Control4's stock DDK 1.12 module is 182 KB and depends on two Intel
 shim modules.
 
+`sgx545-ce` is a submodule at `board/ea/common/sgx545-ce`. Its `kernel/` is
+mirrored into the kernel tree as `drivers/gpu/drm/sgx545ce` (`board/external.mk`).
+The rest of it is the open userspace: `srvinit/`, `libpvr/`, the Mesa driver and
+the reverse-engineering tools.
+
+## Bringing the GPU up at boot
+
+The services need one init client per boot before any GL client can connect.
+`S60sgx` runs `srvinit`, our open replacement for the DDK's `libsrv_init`
+(package `sgx545-srvinit`). It's native x86_64 and assembles everything itself
+except the 53,096-byte microkernel. The build cuts that out of the DDK tarball
+into `/lib/firmware`, so the repository holds no Imagination code. The DDK's GL
+clients run on a GPU it started.
+
+The DDK's own `sgxinit` (from `/opt/sgx-i386`) stays for A/B testing: boot with
+`ohc.sgxinit=ddk` on the kernel command line, or put `SGX_INIT=ddk` in
+`/opt/ohc/sgx.conf`.
+
 ## Verified on silicon
 
 ```
@@ -275,6 +293,29 @@ So the UI is SD until someone drives the display controller properly, which mean
 a real modeset driver against the register map in the vendor's `gdl_server.ko`.
 That is a separate project from 3D and is not required for any of the above.
 
+## Keyboards and mice
+
+The on-panel UI takes USB keyboards and mice, plugged in directly or through a
+hub (the `usb-input` feature brings the kernel side: evdev, usbhid, hid-generic).
+A libwpe backend is only ever told what to draw, so on this path nothing in WebKit
+reads input. `webview` does it itself (`packages/webview/src/input.c`). It opens
+every `/dev/input/event*` that is a keyboard or a pointer, watches `/dev/input`
+with inotify so an unplugged keyboard comes back on its own, turns keys into
+keysyms with libxkbcommon and hands everything to WebKit through
+`wpe_view_backend_dispatch_*_event`. Absolute devices (a touch panel, a KVM's
+mouse) are scaled to the view. Game controllers are left alone, and nothing is
+grabbed, so another program reading the same keyboard still gets its keys.
+
+The keymap comes from xkeyboard-config inside the i386 sysroot, so
+`S95ohc-display` points `XKB_CONFIG_ROOT` there. The layout is US unless
+`XKB_DEFAULT_LAYOUT` says otherwise.
+
+fb0 has no cursor plane, so the page draws the cursor itself: `webview` injects a
+small script that keeps a click-through element under the pointer. It shows a hand
+over links and an I-beam over text fields, and hides while you type or after a few
+idle seconds. `WEBVIEW_CURSOR=0` turns it off for a touch-only panel. The HC-800
+uses the same cursor.
+
 ## The constraint that actually decides the UI: RAM
 
 Measured on the live EA3: **186 MB**. That's very likely below what a modern
@@ -388,18 +429,30 @@ access in any state, as measured: `0x0`, `0x8`, `0x80`, `0x12c`, `0x130` and
 
 **The product never kexecs out of the real kernel** (#90).
 
-- `ohc-restore stock` stages its one-shot flag and **reboots through CEFDK**
+- `restore stock` stages its one-shot flag and **reboots through CEFDK**
   into boot-init. Boot-init reimages p1 from the bootstrap kernel, which never
   touched the GPU.
-- `ohc-restore recovery-kexec` **refuses** while a driver is bound to
+- `restore recovery-kexec` **refuses** while a driver is bound to
   `0000:01:02.0`.
 - The flasher's `kexec` command is a developer tool, and the same limit applies
   to it.
 
 **To RAM-test a kernel on an EA,** start from a box that has been power-cycled
-since the GPU last rendered. Two ways to set that up:
+since the GPU last rendered. Three ways to set that up:
 
-- **Proven:** keep the outgoing kernel from binding the GPU at all. Add
+- **Works on the EA3 (measured 2026-11-02, 2 of 2):** kexec at the very start of
+  boot, from the bootstrap kernel, before any service has run. Put a one-shot
+  script that sorts just before `S00kexec` (`/etc/init.d/S00aramboot`) on p1. It
+  deletes itself, then runs `kexec -l` with the kernel, the rootfs as `--initrd`
+  and `ohc.ramboot=1`. A hang recovers with a power-cycle, because the script is
+  already gone.
+- **Failed on the EA3, GPU never used, same image and initrd (each 1 of 1):**
+  a kexec from a running system. That covers the fat kernel after unbind and
+  soft reset, the fat kernel with `PVRSRVDrmInit` blacklisted, and the bootstrap
+  kernel with `pvrsrvkm` never loaded, each after its services had run. So on the
+  EA3 the GPU isn't the only thing that breaks the hand-off. All three showed
+  the HPET symptom; EHCI `-110` was seen on the last two.
+- **Proven on the EA1:** keep the outgoing kernel from binding the GPU at all. Add
   `initcall_blacklist=PVRSRVDrmInit` to `OHC_KEXEC_CMDLINE_EXTRA` in
   `board.env`, then power-cycle.
 - **Proven only before `S60sgx` existed:** set `OHC_DISPLAY_ENABLE=0` and

@@ -59,6 +59,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
         .routes(routes!(restore_status_h))
         .routes(routes!(restore_stock_h))
         .routes(routes!(config_get, config_put))
+        .routes(routes!(jack_put))
         .split_for_parts();
 
     // WebSockets stay out of the OpenAPI document. They are not
@@ -97,10 +98,11 @@ async fn mcu_info(s: Ctx) -> axum::response::Response {
 
 #[utoipa::path(post, path = "/api/io/mcu/reset", tag = "Recovery",
     summary = "Pulse the microcontroller's reset line",
-    description = "Tries both polarities and reports which one revived the part. Available over \
-REST as well as MQTT because a wedged MCU is exactly when you cannot rely on the IO transport to \
-carry the fix.",
-    responses((status = 200, description = "which polarity worked, and whether it answered")))]
+    description = "Unbinds the IO driver, pulses the line, binds it again so the driver starts the \
+application from the bootloader, and reports whether the part answers. Available over REST as \
+well as MQTT because a wedged MCU is exactly when you cannot rely on the IO transport to carry \
+the fix.",
+    responses((status = 200, description = "whether the part answered after the reset")))]
 async fn mcu_reset(s: Ctx) -> axum::response::Response {
     run(s, Cmd::McuReset).await
 }
@@ -322,6 +324,58 @@ async fn config_put(State(c): Ctx, Json(req): Json<ConfigReq>) -> axum::response
     Json(json!({ "ok": true })).into_response()
 }
 
+// ── combo jacks ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, utoipa::ToSchema)]
+struct JackReq {
+    /// "ir" or "serial"
+    mode: String,
+}
+
+#[utoipa::path(put, path = "/api/io/jacks/{jack}", tag = "IO",
+    summary = "Set a combo jack to IR or serial",
+    description = "A combo jack is one connector shared by an IR output and an MCU serial port, \
+used one way at a time. Saved, and put back at boot. Switching to IR closes the port's terminal \
+session; while a jack is serial its IR output refuses to send (409).",
+    params(("jack" = u8, Path, description = "panel jack number")),
+    responses((status = 200, description = "mode set"), (status = 404, description = "not a combo jack")))]
+async fn jack_put(State(c): Ctx, Path(jack): Path<u8>, Json(req): Json<JackReq>) -> axum::response::Response {
+    let Some(mode) = crate::jack::Mode::parse(&req.mode) else {
+        return fault_response(Fault::Bad("mode must be \"ir\" or \"serial\"".into()));
+    };
+    let Some((index, port)) = c.board.io.serials.iter().enumerate().find(|(_, p)| p.jack == Some(jack)) else {
+        return fault_response(Fault::NoSuch(format!("jack {jack} is not a combo jack")));
+    };
+    let Some(uart) = port.uart else {
+        return fault_response(Fault::NoSuch(format!("jack {jack} is not a combo jack")));
+    };
+    if mode == crate::jack::Mode::Ir {
+        c.serial.close(index);
+    }
+    if let Err(f) = crate::jack::set(uart, mode) {
+        return fault_response(f);
+    }
+    if mode == crate::jack::Mode::Serial {
+        if let Some(dev) = &port.dev {
+            if let Err(e) = c.serial.session(index, dev, port.baud, &c.bus) {
+                eprintln!("iod: jack {jack}: cannot open {dev}: {e}");
+            }
+        }
+    }
+    let saved = {
+        let mut s = c.settings.lock().unwrap();
+        s.jacks.insert(jack.to_string(), mode);
+        s.save()
+    };
+    if let Err(e) = saved {
+        return (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("mode set but not saved: {e}"), "code": "save_failed" })))
+            .into_response();
+    }
+    c.bus.set(&format!("jack/{jack}/mode"), json!(mode.as_str()));
+    Json(json!({ "jack": jack, "mode": mode.as_str() })).into_response()
+}
+
 // ── the terminal socket ────────────────────────────────────────────────────
 
 /// `{port}` is the number on the panel, so port 1 is the first one — the same
@@ -340,6 +394,12 @@ async fn ws_serial(State(c): Ctx, Path(port_no): Path<usize>, ws: WebSocketUpgra
         return fault_response(Fault::Todo(format!(
             "port {port_no} is {}-routed; that bridge is not implemented yet", port.transport)));
     };
+    if let (Some(j), Some(u)) = (port.jack, port.uart) {
+        if crate::jack::mode(u) != Some(crate::jack::Mode::Serial) {
+            return fault_response(Fault::Busy(format!(
+                "{} is set to IR; switch jack {j} to serial first", port.label)));
+        }
+    }
     let baud = c
         .bus
         .state

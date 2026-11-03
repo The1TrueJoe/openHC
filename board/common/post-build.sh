@@ -49,10 +49,6 @@ fi
 # script's environment — so the fallback always fired and EVERY image, on every
 # board, was stamped `board=openhc`. The flasher reads this field to work out
 # what a unit is running, so it was answering "openhc" for all eight.
-#
-# Not OHC_MODEL from board.env, which looks like the obvious source and is not:
-# the EA boards set it to a family NUMBER (`OHC_MODEL=1`, `OHC_MODEL=3`), so it
-# would stamp `board=1` and be worse than the bug it replaced.
 b="${2:-}"
 if [ -z "$b" ]; then
     b="${BR2_DEFCONFIG:-openhc}"; b="${b##*/}"
@@ -114,11 +110,11 @@ for spec in "${OHC_SGX_WPE_SYSROOT:-}|/opt/sgx-i386-wpe" \
 done
 
 # ---- EM357 Zigbee NCP image -------------------------------------------------
-# ohc-zigbee reflashes the radio to this image at boot when it runs anything
+# zigbee reflashes the radio to this image at boot when it runs anything
 # older (see board/common/firmware/zigbee/em357). Only where the zigbee feature
-# staged ohc-zigbee; target/ is cached between builds, so clear it otherwise.
+# staged zigbee; target/ is cached between builds, so clear it otherwise.
 EM357="${BR2_EXTERNAL_OPENHC_PATH:-$(dirname "$0")/..}/common/firmware/zigbee/em357"
-if [ -x "$TARGET/opt/ohc/bin/ohc-zigbee" ]; then
+if [ -x "$TARGET/opt/ohc/bin/zigbee" ]; then
     sh "$EM357/install.sh" "$TARGET" "${BR2_DL_DIR:-${BASE_DIR:-$TARGET/..}/dl}"
 else
     rm -rf "$TARGET/usr/share/ohc/zigbee"

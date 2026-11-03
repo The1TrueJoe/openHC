@@ -120,174 +120,232 @@ platform data, which DSA treats as legacy and which silently needed the CPU
 port's conduit filled in by hand.) b53 only binds when `S39ea-switch` loads it,
 which it does with `ohc.switch=1` on the kernel command line.
 
-**DSA's bring-up of the isolated second jack is still unproven on hardware.** If
-DSA doesn't attach, the network init script falls back to DHCP on the master
-interface and the primary jack works as before, which is the behaviour the
-`switch` feature being currently disabled relies on.
 
-The feature is switched off at present to keep an image under the
+**DSA attaches on hardware and carries traffic.** On 2026-10-28, an EA3 booted
+through the durable kexec path with `ohc.switch=1` came up with
+`found switch: BCM53125, rev 4`, `lan1`/`lan2` and `DSA: tree 0 setup`. switchd's
+`br-lan` leased the box's address through `lan2`, and SSH reached it through the
+switch. That happened on three consecutive boots (see below). The CPU port has
+no `fixed-link`: DSA skips phylink for it, and firmware's forced 1000/full link
+on port 5 holds, as `ea-switch.dtsi` expects.
+
+The second jack works too. On a later boot of the same kernel, the one cable
+was moved from `lan2` to `lan1`. `lan1` came up at 1 Gbps full duplex and was
+the only forwarding port. The gateway answered pings through it, and SSH to the
+box crossed it. That is the jack the stock firmware leaves isolated.
+
+:::caution[Don't cable both jacks into one network]
+With `lan1` and `lan2` both plugged into the same LAN, the box dropped off the
+network at once, stayed unreachable after a cable was pulled, and needed a power
+cycle. STP can only block that loop if BPDUs make it from one jack to the other,
+and the unmanaged switch on the bench drops them (below). So keep the second jack
+for a device of its own.
+:::
+
+### STP and the unwired IMP port (patch 0019)
+
+switchd's `br-lan` runs STP, yet it never blocked a port, because no BPDU ever
+reached it. With port 5 as the CPU port, b53 sets En_IMP_Port to `11`, dual-IMP
+mode (Global Management Configuration, page 02h address 00h, reads `0xC2` on the
+box). In that mode the switch traps the frames meant for the CPU, BPDUs
+included, to the IMP port 8 when they come from a LAN port. They reach port 5
+only from ports selected as WAN. On the EA3, port 8 is not connected.
+
+Measured with the Mac sending BPDUs into `lan1` (2026-11-02):
+
+| b53 config | BPDUs reaching the CPU in 15 s (1 sent per second) | `br-lan` root | `lan1`→`lan2` forwarding |
+|---|---|---|---|
+| stock | 0 | itself | yes |
+| WAN Port Select = lan1+lan2 (page 00h, 26h) | 15 | the Mac | **no** |
+| ingress mirror of `01:80:c2:00:00:00` to port 5 | 16 | the Mac | yes |
+
+A WAN port sends all its traffic to the CPU only, so that route breaks the
+bridge between the jacks. Patch 0019 takes the mirror route instead. It costs the
+switch's only mirror, so `tc` mirroring on the ports is refused.
+
+The fix doesn't help on the bench network. The EA3 sends a BPDU out `lan2`
+every 2 s, and none of them reaches the HC-800 on the same unmanaged switch, nor
+the other way round. A switch that drops BPDUs hides any loop through it from
+STP.
+
+If DSA doesn't attach, the network init script falls back to DHCP on the master
+interface and the primary jack works as before.
+
+The feature is switched off by default, partly to keep an image under the
 [copy window](/ea/boot-chain/#the-copy-window). It isn't needed to reach
 the network: the always-applied fake-PHY patch gives `eth0` on the primary jack
 on its own.
 
-## The CE5300 SSP: Quark's registers, not Quark's clock (patch 0009)
+## The CE5300 SSP is Quark's SSP (patch 0009)
 
-The switch hangs off the CE5300's PXA-style SSP (PCI `01:0b.4`, `8086:2e6a`),
-driven by mainline `spi-pxa2xx`. That PCI id is shared with the CE4100, so
-mainline takes it for a CE4100, which it is not. Patch
+The switch hangs off the CE5300's PXA-style SSP (PCI `01:0b.4`, `8086:2e6a`,
+MMIO `0xdffe0a00`), driven by mainline `spi-pxa2xx`. That PCI id is shared with
+the CE4100, so mainline takes it for a CE4100, which it is not. Patch
 `board/ea/common/patches/linux/0009-spi-pxa2xx-ce5x00-ssp.patch` adds a
 `CE5X00_SSP` type, as Control4's GPL kernel does. The type is picked when the SoC
 host bridge at `00:00.0` is `8086:0c40`, so a real CE4100 is unaffected.
 
 | | mainline CE4100 | CE5300 |
 |---|---|---|
-| SSCR1 TFT / RFT | 2-bit fields | 5-bit fields (bits 10:6 / 15:11) |
-| SSSR TFL | bits 9:8 | bits 12:8 |
+| Register layout (SSCR1 TFT/RFT, SSSR TFL) | 2-bit fields | Quark X1000's 5-bit fields |
 | FIFO depth | 4 | 32 |
-| SSP input clock | 3.6864 MHz | **10 MHz** |
-| Bit clock | SCR divisor | SCR divisor, **no DDS** |
+| Bit clock | SCR divisor | Quark's 24-bit `DDS_RATE` at `+0x28`, then SCR |
+| Chip select | in SSSR[1:0] | in SSSR[1:0], like the CE4100 |
 
-The **register layout** is Quark X1000's, so `CE5X00_SSP` falls through to
-`case QUARK_X1000_SSP:` everywhere a layout is chosen. It joins `CE4100_SSP`
-where the chip select is written into SSSR.
+Four things in 0009 make it work. Each was found on the EA3 itself.
 
-**The clock must not be aliased to Quark.** Quark builds its bit clock from a
-24-bit `DDS_RATE` register plus SCR. The CE5300 has no DDS: on its SSP that
-offset is not a clock register, and the vendor driver never touches it. Through
-Quark's clock path the SSP wedges:
+**1. The bit clock is Quark's DDS.** The rate is
+`100 MHz × DDS_RATE / 2^24 / (SCR+1)`. Measured with `DDS_RATE = 1000`,
+`SCR = 9`: 1024 bits took 1.74 s, against 1.72 s predicted. With
+`DDS_RATE = 0` the SSP does not shift at all; it sits with BSY set. So CE5X00
+falls through to the Quark cases everywhere, clock included, and the driver
+writes `DDS_RATE` for it.
+
+**2. CE5X00 is pxa25x-compatible.** Mainline's `pxa25x_ssp_comp()` lists the
+CE4100 and Quark but not a new type, so the driver took CE5X00 for a part with a
+receive-timeout register (SSTO) at `+0x28`. It wrote 1000 there at the start of
+each transfer and 0 at the end. That is `DDS_RATE`: the first transfer worked
+and the second found the clock stopped. **This was the long-running "kexec
+wedge"** (`SSSR = 0x00001F14`, BSY stuck, `probe ... failed with error -22`).
+It never had anything to do with kexec.
+
+**3. The chip select lives in SSSR.** `write_SSSR_CS()` must keep CE5X00's chip
+select bits too. Otherwise every status clear moves it back to CS0, and the
+switch is on CS1.
+
+**4. CEFDK leaves the SSP dirty.** On the way to the kernel CEFDK leaves
+`DDS_RATE = 0` and about 25 stale words in the TX FIFO, which toggling SSE does
+not clear. At probe, 0009 sets a clock briefly and drains the FIFO before the
+first real transfer.
+
+### The chip select drops between transfers
+
+With the clock fixed, b53 still read `0xff`. The SSP's chip select is its frame
+signal, and it releases whenever the TX FIFO runs dry, which is between any two
+`spi_transfer`s. b53's SPI reads are a command transfer followed by a read
+transfer, so the switch sees two separate frames. Driving the SSP by hand proved
+it: the command and the read back to back returned RACK and chip id
+`25 31 05 00`, and the same bytes split in two returned `0xff`. Control4's own
+`spi-bcm53125` driver uses a single full-duplex transfer for exactly this
+reason.
+
+The fix belongs in the controller, not in b53. A GPIO chip select (`cs-gpios`)
+would be the usual answer, but the CE5300's pin mux
+(`ce5300_set_multi_function`) has no GPIO function on the SSP pins. So for
+CE5X00 only, 0009 merges a message's transfers into one bounce-buffer transfer:
+`optimize_message` builds the merged transfer, `prepare_message` gathers the TX
+bytes, and `unprepare_message` scatters the RX bytes back. A message whose
+transfers differ in speed or word size, or that asks for a CS change or delay in
+the middle, is left alone.
+
+### …and inside a transfer, if the FIFO runs dry
+
+Merging closes the gaps between transfers, but the frame also ends if the TX
+FIFO empties partway through one. spi-pxa2xx feeds the FIFO from its interrupt
+handler one word at a time, and checks the status register before each word.
+On the CE5300 a status read takes about 0.7 µs, so a word takes 1.5 to 2 µs to
+queue. At the switch's 1.8 MHz a byte takes 4.4 µs to shift out. That margin
+usually holds, but not always:
+
+| 300,000 reads through b53, idle box | bad |
+| --- | --- |
+| chip id (page 02h, 30h, 32-bit) | 121 |
+| PHY id (page 11h, 04h, 16-bit) | 7, 13 |
+| port override (page 00h, 58h, 8-bit) | 23 |
+
+The bad chip-id reads were `0xffff3125` and `0xff053125`: the first bytes, then
+`0xff`, which is what the switch sends back once CS is gone. They came in
+bursts, and a network stream into the box didn't change the rate (49 in
+100,000). Dropping CS in the middle of a write is worse than a bad read: the rest
+of the frame reaches the switch as a new command.
+
+A bad PHY read also takes the port down for good. phylib treats any MDIO error
+as fatal: it puts the PHY in `PHY_ERROR` and powers it down (`BMCR = 0x1940`),
+and the port stays dark until something bounces it (`ip link set lan1 down/up`
+brings it back). With phylib polling each PHY every second, a port eventually
+loses that bet. This is what took `lan2` and then `lan1` down in the patch-cable
+test.
+
+The first fix (#131) wrote a transfer that fits the 32-entry FIFO straight
+into it, with no status reads and local interrupts off, and left the interrupt
+handler only the RX side. b53's longest frame is 10 bytes. That took the chip-id
+reads from 121 bad in 300,000 to none, and the patch cable then held (see
+below). But a long hammer still found rare bursts of bad reads, shifted rather
+than cut: `0x3125ffff`, `0x25ffff25`, `0xc20001ff`, 73 in about 4.1 million.
+SSDR writes are posted, and a timed test kernel showed that about one fill in
+100,000 still stalls on the way, for up to 45 µs, with interrupts off. That is
+ten bytes' worth of an empty FIFO.
+
+So 0009 now stops the SSP's DDS clock (`DDS_RATE = 0`), queues every word, and
+only then restarts the clock. With the clock stopped, a stalled write delays
+the frame and can't cut it. The same boot ran both fills in turn, 1,000,000
+chip-id reads per run:
+
+| fill | bad reads | fills over 4 µs | longest fill |
+| --- | --- | --- | --- |
+| back to back (#131) | 1 | 2 | 42 µs |
+| clock stopped | 0 | 5 | 41 µs |
+| back to back (#131) | 4 | 40 | 45 µs |
+| clock stopped | 0 | 0 | 3.4 µs |
+
+A third clock-stopped run of 3,000,000 reads (15 million fills, two of them
+stalled for up to 39 µs) had no bad reads either. No clock-stopped fill ever
+lost a word (`TFL` checked after each one).
+
+### How 0009 got there
+
+Earlier versions of 0009 got the clock wrong in every possible direction. An
+early version used `CE4100_SSP`, and every byte read `0xff`. Aliasing only some
+of the Quark cases timed out. The version on main treated CE5X00 as a 10 MHz
+SCR-only part with no DDS (PR #69), and PR #92 then flushed the FIFO without
+bailing. Both rested on the belief that the CE5300 has no DDS, and that belief
+came from the SSTO clobber in point 2: the register was being zeroed by the
+driver, not missing. The pre-kexec register dump that seemed to show a live SSP
+being wedged by the fat kernel's probe was the same clobber.
+
+## Hardware test, 2026-10-28
+
+The EA3 at 10.0.0.113 ran a one-shot kexec boot of the CI kernel from this patch
+(`aef67ed`) with `ohc.switch=1`, three times in a row. The eMMC kernel slot was
+never written.
 
 ```
-b53-switch spi92.1: Flush failed
-b53-switch spi92.1: SPI transfer failed: -5
+pxa2xx_spi_pci 0000:01:0b.4: SSP type CE5X00
+b53-switch spi92.1: found switch: BCM53125, rev 4
+b53-switch spi92.1 lan1 (uninitialized): PHY [dsa-0.0:01] driver [Generic PHY] (irq=POLL)
+b53-switch spi92.1 lan2 (uninitialized): PHY [dsa-0.0:02] driver [Generic PHY] (irq=POLL)
+DSA: tree 0 setup
+b53-switch spi92.1 lan2: Link is Up - 1Gbps/Full - flow control rx/tx
 ```
 
-So CE5X00 is clocked like a CE4100/PXA25x part: an 8-bit SCR, a bit rate of
-`clk / (2 × (SCR+1))`, and a 10 MHz input clock (the vendor's
-`spi_clk_get_rate()`). `ce4100_spi_setup()` registers 10 MHz for a CE5300 and
-3.6864 MHz otherwise.
+b53 bound on all three boots. On the first boot the box got no address, and
+that turned out to be the init scripts:
 
-How 0009 got there:
+- switchd's `br-lan` runs STP, so `lan2` only forwards after 2 × forward_delay,
+  at 36 s. S40net's DHCP had given up 4 s earlier.
+- It then unbound b53, and that doesn't undo b53's switch setup, so plain `eth0`
+  got no lease either.
 
-- An early version set `CE4100_SSP`. The chip select was right but the FIFO
-  layout was wrong, and every byte read back as `0xff`.
-- The next version aliased only five of the twelve Quark sites. The rest fell to
-  `default:` and transfers timed out.
-- Aliasing the clock divider to Quark as well puts CE5X00 on the DDS path,
-  which causes the `Flush failed / -5` wedge above. The version that first
-  reached main avoided that, but gave CE5X00 neither the /2 SCR divisor nor the
-  10 MHz clock. It fell to the generic `clk / (SCR+1)` divider off the CE4100's
-  3.6864 MHz, so the bit rate was wrong.
-- **PR #69** (`aa54ecb`) made it a 10 MHz SCR part with no DDS. It also skipped
-  pxa2xx's flush-first for CE5X00, because that flush polls a stopped SSP until
-  it times out. This came from the never-PR'd branch `ea-switch-ce5x00-clock`
-  (523266d + 2ef53c3).
-- **PR #92** (`b32448c`) changed the skip to "flush but don't bail". It does not
-  fix the switch; see the 2026-10-27 test below.
-
-:::note[Rate nit]
-`ea-switch.dtsi` asks for `spi-max-frequency = <1843200>`, but this SCR divider
-cannot hit 1.8432 MHz from 10 MHz. The divisor rounds up, so SCR = ⌈10 MHz /
-(2 × 1.8432 MHz)⌉ − 1 = 2, and the bus actually runs at 10 MHz / 6 =
-**1.667 MHz**. `SSCR0 = 0x207` has SCR = 2, which agrees. This is harmless, since
-it is under the request, but the number in the tree is not the bus rate.
-:::
-
-## When the switch is enabled, b53 still doesn't probe: the kexec-wedged SSP
-
-Turning the `switch` feature on (`ohc.switch=1`) is necessary but, on an
-installed box, not sufficient. openHC reaches its real kernel on the EA3 by
-**kexec** — the autoscript hands off to the fat kernel past the
-[copy window](/ea/boot-chain/#the-copy-window) — and on every kexec boot the b53
-probe dies:
-
-```
-b53-switch spi92.1: probe with driver b53-switch failed with error -22
-```
-
-with the SSP the switch hangs off (the PXA-style controller at PCI `01:0b.4`,
-MMIO `0xdffe0a00`) stuck busy:
-
-```
-SSSR = 0x00001F14   (BSY, bit 4, set — the bit clock never shifts valid data)
-```
-
-A cold **CEFDK-direct** netboot, by contrast, comes up with the SSP alive (BSY
-clear). So the silicon and the clock divider are fine — the CE5X00 10 MHz/SCR
-clock fix (PR #69) already killed the old `Flush failed / SPI transfer -5` wedge.
-Something about the **kexec hand-off** leaves the SSP dead, and it reproduces on
-every cold boot (8/8 in testing).
-
-### What it is not — ruled out by reading, stock vs openHC
-
-Every candidate gate reads **identical** between a working stock boot and a dead
-openHC boot:
-
-| Suspect | Finding | Verdict |
-|---|---|---|
-| CP_TOP clock/reset unit (`00:00.2`, `0xbfffef00`) | all ~40 registers byte-identical stock vs openHC | not it |
-| P-Unit power islands (`00:1e.0` OSPM) | island word `0x0` — all islands on, same as stock | not it |
-| SSP PCI power state (`01:0b.4`) | `D0`, Mem+/BusMaster+ | not it |
-| SSP private clock reg (its own BAR0, `0x00`–`0xff`) | only SSCR0/SSCR1/SSSR populated, nothing past `0x2c` | not it |
-| `ismdclock` (`01:0c.1`, `0xdffe1000`) | dormant A/V timestamp clock, all-zero on openHC only because no media stack runs it | parallel symptom, not the SSP |
-| CRU `+0x94` / `+0x98` | already at stock values on a dead boot; a write is a no-op and b53 still fails | not it |
-
-### What it is — the fat kernel's SPI probe wedges a live SSP
-
-A guarded dump added to `S00kexec`, reading the SSP in the **boot-init kernel
-immediately before `kexec -e`** (while CEFDK's setup is still intact), caught the
-controller **alive** — and the fat kernel's `spi-pxa2xx` probe then **wedges** it:
-
-```
-              pre-kexec (CEFDK-fresh)      post-kexec (fat kernel, dead)
-SSCR0  +0x00  0x00000007                   0x00000207
-SSCR1  +0x04  0x000003C0                   0x00000000   <- driver clears the FIFO thresholds
-SSSR   +0x08  0x0003E005  (BSY clear)      0x00001F14   (BSY set)
-+0x24         0x00000003                   0x0000000A   (CE reserved/status reg; a wedge symptom)
-CP_TOP        unchanged across the hand-off
-```
-
-CP_TOP is unchanged across the hand-off, so **no clock is lost in transit** — the
-driver is re-initialising the CE5X00 and killing it. The real deltas are `SSCR1`
-going `0x3C0 → 0` (the probe clears the TX/RX FIFO thresholds the vendor sets) and
-the `SSCR0`/SSE reconfiguration; the controller ends up busy-stuck. (The true
-`SSPSP` register, `+0x2C`, reads `0` on both — untouched, as the vendor expects —
-so it is *not* involved; the `+0x24` change is a reserved status reg reflecting
-the wedge, and writes to it bounce.) Restoring those register values at runtime
-does **not** un-wedge it (BSY stays latched in the engine), so it cannot be
-repaired after the fact: the probe has to stop doing the destructive init in the
-first place.
-
-### 2026-10-27: "flush but don't bail" (#92) does not fix it
-
-PR #92 assumed a stale RX FIFO inherited from CEFDK was wedging the first
-transfer, so it flushed for CE5X00 and ignored the result. It was tested on the
-EA3 (10.0.0.113) with its fat kernel booted through the real durable path:
-bootstrap kernel → `S00kexec` → kexec. In that build `spi-pxa2xx` is built in
-and `b53_spi` is a module that loads at about 38 s.
-
-```
-b53-switch spi92.1: probe with driver b53-switch failed with error -22
-
-              pre-kexec (same boot)        after the b53 failure
-SSCR0         0x00000007                   0x00000207
-SSCR1         0x000003C0                   0x00000000
-SSSR          0x0000D905  (live)           0x00001F14  (BSY stuck, TFL=31)
-```
-
-The SSP was live before kexec and wedged after it, the same as before #92. **The
-stale-FIFO flush theory is ruled out.** Two leads remain:
-
-- **H2:** put CE5X00 on the MMP2 TX-FIFO drain path in `spi-pxa2xx`.
-- **H3:** reconfigure a live CE5X00 in place, without the `pxa_ssp_disable()`
-  stop/restart.
+Both are fixed in S40net (PR #110). With that fix, boots 2 and 3 leased
+10.0.0.113 on `br-lan` through `lan2`.
 
 :::note[Status]
-Narrowed to the fat kernel's `spi-pxa2xx` handling of a live CE5X00 SSP after
-kexec. It is not a lost clock, and it is not a stale FIFO (#92 is ruled out).
-The open work is H2 or H3 in patch `0009`, plus a kexec hardware test. Until then the switch
-stays off and `eth0` runs on the primary jack via the fake-PHY path; a switch-off
-boot now falls back cleanly (the `S39ea-switch` / `S87ohcswitch` gating fix, PR
-#85). The register-level narrowing is also recorded alongside the
-[audio bring-up](/ea/audio/), which hit the same closed CE5300 clock-controller
-wall.
+b53 works on the durable kexec boot, and both jacks carry traffic. The switch
+stays opt-in with `ohc.switch=1`, which S00kexec now carries across the kexec
+(PR #110). switchd's `vlan_filtering` call needed the bridge built with
+`CONFIG_BRIDGE_VLAN_FILTERING` (PR #121). STP now receives BPDUs (patch 0019),
+and the SSP no longer drops CS partway through a frame (0009).
+Still open:
+
+- one cable from `lan1` to `lan2` took minutes to link. When it did, a PHY read
+  failed and every register read failed after that until a power cycle. The
+  failed read and the dark port are explained above. Why the reads after it
+  kept failing is not. The switch's SPI port recovers from every truncated
+  frame tried (`60`, `61 ff`, `60 f0`, a lone fast-read opcode, ...), and
+  disabling the SSP empties its TX FIFO, so neither is the cause. Retried on
+  2026-11-03 on a RAM boot of the #131 kernel: the jacks linked within seconds,
+  STP blocked `lan2`, and the loop ran for about 20 minutes, `lan1` bounced
+  once, with no PHY error and no wedge. There was one spontaneous `lan2`
+  down/up;
+- how stock firmware gets a nonzero `DDS_RATE`.
 :::

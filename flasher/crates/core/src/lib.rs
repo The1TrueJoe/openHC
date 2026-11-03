@@ -377,10 +377,32 @@ mod tests {
     }
 
     #[test]
+    fn the_ea5_resolves_from_its_stock_c4board_ids() {
+        // Read off a live EA-5 V1: /proc/c4board/{type,revision,name} = 3, 4, ea5.
+        let id = board::from_c4board(None, Some(3), Some(4));
+        assert_eq!(id.board.unwrap().name, "ea5-v1");
+        assert!(id.certain());
+        // Another revision of a type-3 board could be either variant: both are offered.
+        let id = board::from_c4board(None, Some(3), Some(9));
+        assert!(id.board.is_none());
+        let names: Vec<_> = id.candidates.iter().map(|b| b.name).collect();
+        assert_eq!(names, ["ea5-v1", "ea5-v2"]);
+    }
+
+    #[test]
     fn unknown_revision_stays_ambiguous_rather_than_guessing() {
         let id = board::from_c4board(None, Some(2), Some(99));
         assert!(!id.certain());
         assert!(id.candidates.len() > 1); // ea3-v1 and ea3-v2 both type 2
+    }
+
+    #[test]
+    fn openhc_release_names_the_exact_board() {
+        let id = board::from_release("openHC\nboard=ea1-v2-poe\nversion=abc-dev\n");
+        assert_eq!(id.board.unwrap().name, "ea1-v2-poe");
+        assert_eq!(id.running, Running::Openhc);
+        assert!(board::from_release("openHC\nboard=openhc\n").board.is_none());
+        assert!(board::from_release("").board.is_none());
     }
 
     #[test]
@@ -392,12 +414,25 @@ mod tests {
         let id = board::from_cefdk_banner("Board : Type 1, Rev 5   MAC : 00:0f:ff");
         assert_eq!(id.board.unwrap().name, "ea1-v1");
         assert_eq!(id.running, Running::Cefdk);
+
+        // The EA-5 V1's real CEFDK banner (MAC masked). "Type" also appears later,
+        // in "Memory Type & Speed"; the Board line comes first and is the one taken.
+        let banner = "Silicon SKU          : 0x091\n\
+                      Board                : Type 3, Rev 4\n\
+                      CPU Threads          : 4\n\
+                      Memory Type & Speed  : x16 DDR3-1600 (11-11-11)\n\
+                      MAC Address          : 00:0f:ff:xx:xx:xx\n";
+        let id = board::from_cefdk_banner(banner);
+        assert_eq!(id.board.unwrap().name, "ea5-v1");
+        assert_eq!(id.running, Running::Cefdk);
     }
 
     #[test]
     fn secure_boot_drives_the_autoscript_choice() {
+        // Every EA measured has the fuse blown (ea3-v2 rev 9, ea1-v1 rev 5).
         assert!(board::by_name("ea3-v2").unwrap().needs_autoscript());
-        assert!(!board::by_name("ea1-v1").unwrap().needs_autoscript());
+        assert!(board::by_name("ea1-v1").unwrap().needs_autoscript());
+        assert!(!board::by_name("ca1").unwrap().needs_autoscript());
     }
 
     // ---- method gating: the check that stops writing eMMC to an i.MX6 -------

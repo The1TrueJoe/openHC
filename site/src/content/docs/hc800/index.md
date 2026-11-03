@@ -172,7 +172,7 @@ Points that matter for the port:
 - **Adding a third entry doesn't disturb the first two.** The factory-restore
   path stays byte-identical, so recovery is untouched.
 - **Back to stock from openHC:** `ohc-flash restore` and the web UI's *Reset
-  to stock* both run the box's `ohc-restore stock`, which arms Control4's
+  to stock* both run the box's `restore stock`, which arms Control4's
   factory restore for exactly one boot. The ID button held at power-on is
   still Control4's own factory reset. See [recovery](/shared/recovery/#hc-800).
 
@@ -229,16 +229,16 @@ That is the Control4 mesh it was paired into, stored in the NCP's own flash.
 That firmware decides the stack, and Control4 itself reflashes the NCP from
 images on its rootfs, so openHC does the same. The `zigbee` feature ships
 **EmberZNet 6.7.8** (EZSP 8), the last EmberZNet line for the EM35x, and at
-boot `ohc-zigbee` reads the running version over EZSP. When it's older, it asks
+boot `zigbee` reads the running version over EZSP. When it's older, it asks
 the NCP to launch its standalone serial bootloader, uploads the image over
 XMODEM-CRC, runs it and checks the version again. Later boots only read it. An
 upload that dies part-way leaves the bootloader resident, and the next boot
-finishes the job (`packages/zigbee/src/ncp.rs`; `ohc-zigbee --info` and
+finishes the job (`packages/zigbee/src/ncp.rs`; `zigbee --info` and
 `--flash <image.ebl>` by hand).
 
 For the radio stack: zigbee-herdsman's current `ember` driver needs EZSP 13+
 (EmberZNet 7.4), which no EM35x runs; its deprecated `ezsp` driver needs 8+,
-which 6.7.8 meets. zigpy's **bellows speaks both 4 and 8**. So `ohc-zigbee`
+which 6.7.8 meets. zigpy's **bellows speaks both 4 and 8**. So `zigbee`
 serves the port over TCP (`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA
 drives the radio from there:
 
@@ -248,7 +248,7 @@ drives the radio from there:
   the two keys ZHA's discovery reads.
 - One client at a time. A new connection replaces the old one, so an HA restart
   isn't locked out by its own half-open socket. Connects and disconnects go to
-  syslog (`ohc-zigbee:`).
+  syslog (`zigbee:`).
 - Verified 2026-10-02: `bellows info` over `socket://` read the version, EUI64
   `00:0f:ff:00:00:60:2d:6a` and the existing network, on two back-to-back
   connections.
@@ -274,6 +274,12 @@ timeout instead.
 The rear panel per the owner of this unit: **6 IR outputs, 4 relays, 4 contact
 inputs**, plus the two RS-232 ports. All of that hangs off the LM3S1162. There are
 no host GPIO lines, no `/sys/class` entries and no device nodes for any of it.
+
+Under openHC the kernel binds the part at boot from an ACPI table that ships in
+front of the initrd (`board/hc800/acpi/ssdt-iomcu.asl`): a `control4,io-mcu`
+serdev child of ttyS3, which keeps its IRQ 10. So ttyS3 has no `/dev` node of
+its own, and the relays, contacts and IR appear as a gpiochip and lirc devices
+with nothing in userspace attaching them. See [IO as GPIO](/shared/io-as-gpio/).
 
 The relay and contact counts agree with the decoded TM4C profile table, which
 predicts **4 + 4** for the nine-output blocks. **The IR count doesn't:** the
@@ -431,7 +437,7 @@ the app playing to it.
 
 ### Endpoints
 
-`ohc-audiod` (packages/audiod, started by `S92ohcaudiod`) owns audio. It turns
+`audiod` (packages/audiod, started by `S92ohcaudiod`) owns audio. It turns
 `board.env`'s outputs into ALSA `dmix` devices (`ohc_analog1`, …) and the input
 into a `dsnoop`, all at 44.1 kHz so nothing resamples, and supervises:
 
@@ -611,12 +617,19 @@ zero-copy; see openHC issue #55.)
 Two prerequisites are config, not code:
 
 - The DRM platform (`BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM`, an option openHC
-  adds to Buildroot in `build/buildroot-patches/0004`) depends on
-  `BR2_PACKAGE_HAS_UDEV` (libinput). Every openHC board uses busybox mdev, so
-  this means switching to eudev.
+  adds to Buildroot in `build/buildroot-patches/0005`) depends on GBM with
+  format-modifier support (Mesa's has it) and on `BR2_PACKAGE_HAS_UDEV`
+  (libinput), which the HC-800 has since it moved from busybox mdev to eudev.
 - wpewebkit needs `BR2_TOOLCHAIN_BUILDROOT_CXX`, `BR2_INSTALL_LIBSTDCPP` and
   `BR2_USE_WCHAR`. Without them kconfig drops wpewebkit **silently** — the build
   succeeds and the engine is simply absent.
+
+**Keyboards and mice** need nothing of openHC's own: the DRM platform reads them
+through libinput on eudev's seat, hotplug included, so a USB keyboard and mouse on
+the front port (or a hub on it) drive the page. What it lacks is a cursor. WPE's DRM
+cursor uses the cursor plane through atomic KMS, and i915 leaves atomic off on
+pre-Ironlake parts (`i915.nuclear_pageflip=N`), so the page draws its own cursor,
+the same one as the EAs (see the EA graphics page).
 
 **The caveat is the fragment shader.** From `i915_screen.c` and `i915_reg.h`,
 i915g offers GLSL **1.20** (GL 2.1 / GLES 2.0), **64 ALU + 32 TEX

@@ -13,6 +13,7 @@ mod events;
 mod gpio;
 mod gpio_io;
 mod ir;
+mod jack;
 mod led;
 mod lirc;
 mod mqtt;
@@ -34,7 +35,7 @@ pub struct Config {
     pub pinned: Vec<String>,
     pub settings_tx: tokio::sync::watch::Sender<mqtt::settings::Mqtt>,
     /// Whether the ohc-iomcu gpiochip is present. False means no relay or
-    /// contact can work — the discipline was never attached, or the part did
+    /// contact can work — the driver never bound the part, or the part did
     /// not answer the driver.
     pub gpio_io: bool,
     /// Whether the driver registered IR nodes.
@@ -145,7 +146,9 @@ fn main() {
             Some(false) => eprintln!("iod: gpio-ohc-iomcu is on {} but the part is not answering",
                                      board.io.mcu_tty.as_deref().unwrap_or("?")),
             Some(true) if board.io.relays + board.io.contacts == 0 => {}
-            _ => eprintln!("iod: no {} gpiochip — is gpio-ohc-iomcu attached? (device tree, or S12iomcu)",
+            None => eprintln!("iod: gpio-ohc-iomcu has not bound the IO microcontroller — \
+                               is it in the board's device tree / ACPI table? (dmesg | grep ohc-iomcu)"),
+            _ => eprintln!("iod: no {} gpiochip, though the board declares relays or contacts",
                            gpio_io::CHIP_LABEL),
         }
     }
@@ -195,6 +198,19 @@ fn main() {
             let n = mqtt::topics::label(i);
             cfg.bus.set(&format!("serial/{n}/baud"), serde_json::json!(p.baud));
             cfg.bus.set(&format!("serial/{n}/viewers"), serde_json::json!(0));
+            // A combo jack goes back to its saved mode first; one left as IR
+            // has no serial port to hold.
+            if let (Some(j), Some(u)) = (p.jack, p.uart) {
+                let saved = cfg.settings.lock().unwrap().jacks.get(&j.to_string()).copied();
+                if let Some(m) = saved {
+                    if let Err(e) = jack::set(u, m) {
+                        eprintln!("iod: jack {j}: cannot restore {}: {e}", m.as_str());
+                    }
+                }
+                if jack::mode(u) != Some(jack::Mode::Serial) {
+                    continue;
+                }
+            }
             // Open every host UART now and hold it, as the stock dtserver does:
             // open raises DTR/RTS, which line-powered accessories (a GC-IRL, for
             // one) run on, and serial/N/rx should fire with no terminal attached.
@@ -225,7 +241,7 @@ fn main() {
             tokio::task::spawn_local(poller(cfg.clone()));
         }
 
-        // Audio is ohc-audiod's and health is sysmond's — each its own MQTT
+        // Audio is audiod's and health is sysmond's — each its own MQTT
         // client on the box's broker. What iod still publishes beyond IO is
         // whether a return to stock is available.
         tokio::task::spawn_local(restore_poller(cfg.clone()));

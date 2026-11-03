@@ -1,55 +1,30 @@
 # EA-family kernel config delta on the mainline i386 defconfig.
+# Background for the settings below: docs ea/kernel-config.
 
 # --- serial console + IO-MCU port (CE5300 GEN3 UARTs) ---
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
-# The three SoC UARTs (0x3f8/0x2f8/0x2e8, ttyS1 = the IO microcontroller) are
-# described in the board device tree (ce5300.dtsi) and probed by 8250_of: type
-# XScale, 14.7456 MHz, no interrupt. Each takes over the legacy-table slot at its
-# address, so ttyS numbers do not move; 0x3e8 (the power PIC) stays legacy.
-#
-# IRQ: stock's ACPI link LUAR=GSI 38 fires; here the same declaration registers
-# but never fires (measured irq 38 = 0 across a full transmit), so the ports run
-# TIMER-POLLED (no interrupts in the tree; patch 0010 drives TX off the LSR
-# because the GEN3 block does not reflect THRE in the IIR).
-#
-# The tree also DISABLES the CE5300's PCI serial function (8086:2e66): bound, it
-# switches UART1 to PCI decode and the IO-MCU's legacy 0x2f8 goes dead (tx
-# counts, rx=0 forever — measured on a live EA1). 4 slots are enough: the
-# device-tree ports reuse the legacy ones.
+# SoC UARTs come from the DTB via 8250_of, timer-polled, reusing the legacy slots.
 CONFIG_SERIAL_8250_NR_UARTS=4
 CONFIG_SERIAL_8250_RUNTIME_UARTS=4
 CONFIG_SERIAL_OF_PLATFORM=y
-# DETECT_IRQ (set by the i386 defconfig) adds UPF_AUTO_IRQ, running the legacy
-# ISA IRQ auto-probe on the legacy table's ports. Nothing here wants an IRQ
-# reassigned behind its back, so keep it off.
+# No legacy ISA IRQ auto-probe.
 # CONFIG_SERIAL_8250_DETECT_IRQ is not set
 CONFIG_CMDLINE_BOOL=y
-CONFIG_CMDLINE_EXTEND=y
-# CONFIG_CMDLINE is PER-BOARD — see each board's fragment (`nocrs` is an EA1/EA3
-# E820 fact that does not generalise). CMDLINE_EXTEND appends the bootloader's
-# line AFTER this one, so a later `pci=` on the bootlinux line wins.
+# x86 prepends this to whatever line CEFDK or kexec passes. pci=realloc,nocrs
+# is required; memmap=exactmap reclaims CEFDK's 1.8 GB carve-out and every entry
+# is load-bearing. See docs ea/kernel-config.
+CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
 
 # --- external initrd (Buildroot supplies a separate rootfs.cpio.gz) ---
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_RD_GZIP=y
 
-# Image size: the bzImage must fit CEFDK bootlinux's copy window — it copies
-# protmode to 0x100000 and its own loader sits at ~0x813000 (8.07MB), so a copy
-# reaching that clobbers the loader mid-copy and crashes. Protmode must stay
-# under ~7.0MB; the stock i386 defconfig is ~8.3MB, hence XZ + size-opt + the
-# trims below.
+# Size: the bzImage must fit CEFDK bootlinux's 7,417,856-byte copy window.
 CONFIG_KERNEL_XZ=y
 # CONFIG_KERNEL_GZIP is not set
 CONFIG_CC_OPTIMIZE_FOR_SIZE=y
-# USB HOST: three EHCI controllers (PCI 192e:0101, TransDimension/TDI core). The
-# USB-SERIAL side (cp210x) for the Zigbee NCP lives in the shared 'zigbee'
-# feature. Two things beyond the defaults are load-bearing:
-#   * patch 0014 sets ehci->has_hostpc for this core, without which every port
-#     dies at probe with "can't setup: -110" (reset handshake timeout).
-#   * that quirk also sets hcd->has_tt=1 (embedded transaction translator, NO
-#     companion OHCI/UHCI), so the root-hub TT support below is REQUIRED for the
-#     full-speed CP2104 to enumerate — without it a FS device sits with CCS=0.
+# USB host: TDI EHCI with an embedded TT; root-hub TT is required for full-speed devices.
 CONFIG_USB_SUPPORT=y
 CONFIG_USB=y
 CONFIG_USB_EHCI_HCD=y
@@ -74,62 +49,37 @@ CONFIG_NET=y
 CONFIG_INET=y
 CONFIG_CRYPTO=y
 
-# --- radio: OFF by family default; the `wifi` feature turns it back on ---
-# Disabled once here so a radio-less board (ea1-v2-poe, ea3-v2) does not drag in
-# the wireless stack. Boards WITH a radio list the `wifi` feature, whose fragment
-# is applied AFTER this file (build.sh appends feature fragments last) and sets
-# CONFIG_WLAN/CFG80211/MAC80211 back on.
+# --- radio: off by family default; the `wifi` feature turns it back on ---
 # CONFIG_WLAN is not set
 # CONFIG_CFG80211 is not set
 # CONFIG_MAC80211 is not set
 
-# --- wired NIC: on-board Intel GbE (e1000) CEFDK netboots from. On EA1 a second
-#     path alongside Wi-Fi; on EA3 (no radio) the ONLY path. ---
+# --- wired NIC: on-board Intel GbE (e1000) ---
 CONFIG_E1000=y
 
-# ============================================================================
-# Size trim: the i386 defconfig builds in a lot of dead weight the CE5310 never
-# uses. Each line below is chosen, not sprayed. Goal: keep the bzImage under
-# bootlinux's ~7MB copy window (see the size-budget section lower down).
-# ============================================================================
-
-# Modules ON for the EA family: it is the only real headroom under CEFDK's
-# ~7.07 MiB bootlinux ceiling — large subsystems (SGX/DRM/framebuffer) live on
-# the p1 rootfs instead of the bzImage (CONFIG_DRM builtin alone is ~1.25 MiB),
-# and the GPU driver becomes rmmod/insmod-iterable instead of a reflash.
-#
-# What must stay BUILT-IN: anything needed to reach the rootfs (e1000, sdhci,
-# ext4, 8250), and the SoC drivers the board DTB's devices hang off (gpio-intelce
-# for the LEDs and reset hogs, i2c-pxa for the LM75).
-#
-# Caution when curating: with MODULES=n every `=m` symbol inherited from the
-# i386 defconfig is silently dropped; turning modules on resurrects the whole
-# lot at once (drivers/gpu/drm/i915 etc. — this board's GPU is a PowerVR SGX545),
-# so disable the module families we do not want explicitly.
+# --- size trim ---
+# Modules on: new functionality goes in as a module, not built in (size budget).
 CONFIG_MODULES=y
 CONFIG_MODULE_UNLOAD=y
 
-# Disable the kernel stack protector. The Buildroot musl toolchain's SSP canary
-# and i386-7.1.8's per-CPU canary setup disagree: the secondary CPU's guard
-# doesn't match, so __stack_chk_fail panics the instant swapper/1 enters do_idle
-# ("stack-protector: Kernel stack is corrupted in: do_idle"). Off for bring-up.
+# Stack protector off: the musl canary panics the secondary CPU in do_idle.
 # CONFIG_STACKPROTECTOR is not set
 # CONFIG_STACKPROTECTOR_STRONG is not set
 
-# Boot is CEFDK's legacy 16-bit entry (bootlinux), never EFI. Drop the EFI stack.
+# Boot is CEFDK's legacy 16-bit entry, never EFI.
 # CONFIG_EFI is not set
 
-# Symbol table is a big slice of a small kernel; flip back on to resolve a crash.
+# Symbol table off for size; turn back on to resolve a crash.
 # CONFIG_KALLSYMS is not set
 
-# Bare metal, never a VM guest — drop the paravirt/guest stack.
+# Bare metal, never a VM guest.
 # CONFIG_HYPERVISOR_GUEST is not set
 # CONFIG_PARAVIRT is not set
 # CONFIG_KVM_GUEST is not set
 # CONFIG_XEN is not set
 # CONFIG_VIRTUALIZATION is not set
 
-# No kernel debug/trace/instrumentation in a bring-up firmware image.
+# No debug/trace/instrumentation.
 # CONFIG_FTRACE is not set
 # CONFIG_DEBUG_KERNEL is not set
 # CONFIG_DEBUG_INFO is not set
@@ -140,7 +90,7 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_PROFILING is not set
 # CONFIG_KGDB is not set
 
-# Networking: plain IPv4 for SSH/HTTP. No firewall, IPsec, IPv6, QoS.
+# Networking: plain IPv4.
 # CONFIG_NETFILTER is not set
 # CONFIG_IPV6 is not set
 # CONFIG_NET_SCHED is not set
@@ -148,15 +98,11 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_INET_DIAG is not set
 # CONFIG_WIRELESS_EXT is not set
 
-# No storage stack: rootfs is a RAM initramfs. eMMC/SATA/USB/NVMe/MTD/RAID out.
-# (Features add back what they need, merged after this: 'emmc' its MMC + ext4,
-# 'storage' USB disks, their filesystems and the ksmbd SMB server.)
+# Storage and filesystems: features (emmc, storage) add back what they need.
 # CONFIG_MD is not set
 # CONFIG_NVME_CORE is not set
 # CONFIG_MTD is not set
 
-# Filesystems: initramfs is tmpfs/ramfs (builtin). No on-disk or network FS
-# beyond what a feature adds (see above).
 # CONFIG_EXT3_FS is not set
 # CONFIG_EXT2_FS is not set
 # CONFIG_JBD2 is not set
@@ -166,7 +112,7 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_QUOTA is not set
 # CONFIG_FUSE_FS is not set
 
-# No graphics / sound / media — serial console is the only head.
+# Graphics/sound/media off here; the display, sgx and audio features add them.
 # CONFIG_DRM is not set
 # CONFIG_FB is not set
 # CONFIG_SOUND is not set
@@ -175,150 +121,70 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_VGA_CONSOLE is not set
 # CONFIG_AGP is not set
 
-# No watchdog / power-supply class for bring-up. (The thermal framework is ON,
-# in the SoC bring-up section below: it runs the fan.)
+# The thermal framework stays on (below): it runs the fan.
 # CONFIG_WATCHDOG is not set
 # CONFIG_POWER_SUPPLY is not set
 
-# Crypto: keep only what mac80211/WPA needs (AES/CCM/GCM/ARC4, above).
 # CONFIG_CRYPTO_USER is not set
 # CONFIG_CRYPTO_HW is not set
 
-# ==== CE5310 SoC bring-up (headless controller I/O) ====
-# GPIO controller is PCI 8086:2e67. Mainline's gpio-sodaville binds it with the
-# CE4100 layout (12 lines) — WRONG for the CE5300 (4 banks x 32 = 128 lines for
-# the reset/LED pins). So sodaville is OFF and our gpio-intelce driver binds
-# 8086:2e67 and exposes all 128. NOT the CE4100 platform (X86_INTEL_CE is 32-bit
-# only and replaces ACPI); the EA keeps ACPI and adds a device tree beside it.
-#
-# DEVICE TREE. bootlinux passes no DTB, so the board's own is linked into the
-# kernel (patches/linux/0015, BUILTIN_DTB) and picked per board by
-# CONFIG_BUILTIN_DTB_NAME in board/ea/<board>/linux/<board>.fragment. Shared
-# .dtsi files are in kernel/arch/x86/boot/dts/, each board's .dts at the root
-# of its folder (board/ea/<board>/<board>.dts); they describe the switch, codec, LEDs, reset
-# lines, LM75 and framebuffer that used to be C board files. kexec --dtb
-# overrides the built-in tree, so a test tree needs no rebuild.
+# --- CE5310 SoC ---
+# Built-in board DTB (patch 0015); gpio-intelce, not gpio-sodaville, drives 8086:2e67.
 CONFIG_OF=y
 # CONFIG_X86_INTEL_CE is not set
 CONFIG_BUILTIN_DTB=y
 CONFIG_GPIOLIB=y
 
-# Front-panel LEDs (gpio-leds in ea.dtsi). Needs gpio-intelce above, because
-# three of them sit on GPIOs 99-102, far past what gpio-sodaville exposed.
+# Front-panel LEDs and the ID button (ea.dtsi).
 CONFIG_NEW_LEDS=y
 CONFIG_LEDS_CLASS=y
 CONFIG_LEDS_GPIO=y
 CONFIG_LEDS_TRIGGERS=y
 CONFIG_LEDS_TRIGGER_HEARTBEAT=y
 CONFIG_LEDS_TRIGGER_NETDEV=y
-# The front ID button (gpio-keys-polled in ea.dtsi; ohc-restore-button reads its
-# events). A module, per the size budget below: udev loads it off the node's
-# modalias.
 CONFIG_INPUT_KEYBOARD=y
 CONFIG_KEYBOARD_GPIO_POLLED=m
+# Wrong line count for the CE5300 (12 of 128).
 # CONFIG_GPIO_SODAVILLE is not set
-# GPIO from userspace: libgpiod 1.6.4 (Buildroot 2024.02.9) speaks the v1 chardev
-# ABI, which 7.1.8 gates behind CONFIG_GPIO_CDEV_V1 (deprecated, default off).
-# Without it gpioset/gpioget/gpioinfo fail with EINVAL on a working chip
-# (measured on an EA3). SYSFS_LEGACY keeps /sys/class/gpio/export as a fallback.
+# GPIO_CDEV_V1 is required: libgpiod 1.6 speaks only the v1 ABI.
 CONFIG_GPIO_SYSFS=y
 CONFIG_GPIO_SYSFS_LEGACY=y
 CONFIG_GPIO_CDEV=y
 CONFIG_GPIO_CDEV_V1=y
 
-# I2C: i2c-pxa (REGS_CE4100 variant) behind PCI 8086:2e68. Needs TWO patches on
-# this x86_64 kernel: 0001 enumerates the CE5300's fourth controller and binds
-# each adapter to its node in the board DTB, and 0013 widens
-# I2C_PXA/I2C_PXA_PCI from X86_32 to X86 so the CONFIG_I2C_PXA=y below is not
-# silently dropped — without 0013 there is no i2c bus at all (no LM75/fan, no
-# DS1339 RTC, no codec).
+# I2C: i2c-pxa needs patches 0001 and 0013, or the symbol is dropped on x86_64.
 CONFIG_I2C=y
 CONFIG_I2C_PXA=y
 CONFIG_I2C_CHARDEV=y
 
-# COMMON_CLK must be ON for SPI (derived symbols below depend on it). This SoC
-# registers no clock provider, so patch 0001 makes i2c-pxa's clock optional —
-# with COMMON_CLK a required clock would fail every adapter with -ENOENT.
+# Required for SPI_PXA2XX_PCI (a derived symbol); do not remove.
 CONFIG_COMMON_CLK=y
 
-# LM75 heatsink temp sensor on i2c-0 @ 0x48 -> /sys/class/hwmon/hwmon0/temp1_input.
-# (A DS1339 RTC also sits on i2c-0 @ 0x68 — hwclock candidate later.)
+# LM75 heatsink sensor on i2c-0 @ 0x48.
 CONFIG_HWMON=y
 CONFIG_SENSORS_LM75=y
 
-# Fan PWM framework. The driver (pwm-ce5300.c, binds PCI 8086:089f) is copied in
-# and registered as plain obj-y — so there is deliberately NO CONFIG_PWM_CE5300
-# here: that symbol does not exist, and kconfig would discard the line without a
-# word. Same class of bug as CONFIG_NET_DSA_B53*.
+# Fan PWM. pwm-ce5300 is obj-y with no Kconfig symbol; do not add one.
 CONFIG_PWM=y
 CONFIG_PWM_SYSFS=y
 
-# The fan (pwm-fan + a thermal zone on the LM75, both in ea.dtsi): the kernel
-# runs the fan curve, no daemon. In BOTH kernels, so the fan is never left
-# without a controller. THERMAL_OF reads the zone from the board tree; step_wise
-# (the default governor) runs the curve; user_space is the policy sysmond
-# switches the zone to while the web UI holds the fan manually. pwm-fan needs no
-# regulator core (it treats the fan supply as optional), so the bootstrap kernel,
-# which has none, runs the fan too.
+# The kernel runs the fan curve (pwm-fan + LM75 thermal zone in ea.dtsi).
 CONFIG_THERMAL=y
 CONFIG_THERMAL_OF=y
 CONFIG_THERMAL_GOV_STEP_WISE=y
 CONFIG_THERMAL_GOV_USER_SPACE=y
 CONFIG_SENSORS_PWM_FAN=y
 
-# ── KERNEL SIZE BUDGET — READ BEFORE ADDING ANYTHING ──────────────────────
-#
-# CEFDK's `bootlinux` copies the kernel into a FIXED window:
-#
-#     0x813000 - 0x100000  =  7,417,856 bytes
-#
-# It is CEFDK's own code, cannot be rewritten, and a kernel over it is silently
-# TRUNCATED — the box fails to boot and recovery costs the factory-restore
-# button. Measured 2026-08-31 (x86_64, features = emmc only): bzImage 7,169,024,
-# headroom 248,832 (3.4%). The config is already lean; a 64-bit kernel on this
-# board simply costs ~7 MB against the 7.4 MB wall.
-#
-# THEREFORE, AND THIS IS NOT A STYLE PREFERENCE:
-#
-#   *** New functionality goes in as a MODULE (=m), never built in (=y). ***
-#
-# The switch, audio and SGX feature fragments were written as =y; convert them
-# to =m as they come back or they overrun the window. Only things needed to
-# REACH the rootfs stay built in: e1000, sdhci/mmc, ext4, serial, PCI, ACPI.
-# ESCAPE HATCH if a large kernel is ever unavoidable: a <5 MB bootstrap kernel
-# that kexec's the real one from p1 (kexec has no size limit).
-
-# Trims. Each is safe on this hardware and each buys back window.
-# This board has exactly ONE network interface: the CE5300's e1000 behind the
-# BCM53125. The others were inherited from the generic x86_64 defconfig and
-# have never had anything to bind to.
+# Unused NICs and filesystems: trimmed to buy back copy window.
 # CONFIG_E1000E is not set
 # CONFIG_E1000E_HWTS is not set
 # CONFIG_SKY2 is not set
 # CONFIG_8139TOO is not set
 # CONFIG_R8169 is not set
-# Nothing on this box mounts an optical filesystem.
 # CONFIG_ISO9660_FS is not set
 
-# ── MTD / SPI-NOR: makes the eMMC autoscript rewritable ───────────────────
-#
-# The boot autoscript lives in SPI-NOR (mtd0 @ 0x91000) and hardcodes byte counts
-# for the kernel/initrd, smaller than any x86_64 image we build; exposing the
-# flash lets it be rewritten to read the WHOLE SLOT, leaving bootlinux's
-# 7,417,856 as the only remaining wall.
-#
-# The boot flash is NOT on the pxa2xx SSP (8086:2e6a) the BCM switch rides — once
-# assumed, proven wrong on an EA1 ("SPI transfer failed: -5"). It is on its own
-# block, PCI 01:17.0 8086:08a0 ("FLASH memory"), driven by spi-ea-ce5xx.c; the
-# chip is its flash@0 child in the board DTB, so spi-nor below autodetects the
-# S25FL127S.
-#
-# BACK UP mtd0 BEFORE WRITING TO IT. A bad MFH/autoscript costs the button and
-# the CEFDK shell to recover.
-# SPI first: MTD_SPI_NOR is dropped SILENTLY if SPI is off (happened once — build
-# had CONFIG_MTD=y/MTD_BLOCK=y and no MTD_SPI_NOR because SPI was inherited off).
-# SPI_PXA2XX_PCI is a DERIVED symbol (SPI_PXA2XX && PCI && COMMON_CLK) and cannot
-# be set directly — it comes from satisfying its deps, hence COMMON_CLK above.
+# --- boot SPI-NOR as /dev/mtd0 (spi-ea-ce5xx, PCI 8086:08a0) ---
+# Back up mtd0 before writing it. SPI must be on, or MTD_SPI_NOR is dropped silently.
 CONFIG_SPI=y
 CONFIG_SPI_MASTER=y
 CONFIG_SPI_PXA2XX=y
@@ -327,16 +193,9 @@ CONFIG_MTD=y
 CONFIG_MTD_BLOCK=y
 CONFIG_MTD_SPI_NOR=y
 CONFIG_SPI_MEM=y
-# Named, read-only partitions from the DTB's fixed-partitions (cefdk, mfh,
-# mfh-items: ce5300.dtsi). PARTITIONED_MASTER keeps the whole chip as mtd0
-# beside them -- every offset ohc-restore, boot-init and the flasher write at is
-# a whole-chip offset into /dev/mtd0, and without it mtd0 would become "cefdk".
+# DTB partitions, plus the whole chip kept as mtd0 (all tools write whole-chip offsets).
 CONFIG_MTD_OF_PARTS=y
 CONFIG_MTD_PARTITIONED_MASTER=y
 
-# --- warnings are not errors ---
-# The mainline x86 defconfigs set WERROR. Buildroot used to force it off (its
-# linux.mk fixups through 2025.x); 2026.02 dropped that, so say it here: this
-# kernel builds the vendor SGX DDK (32-bit-era code, hundreds of size/format
-# warnings on x86_64) and a newer gcc must not fail the image over a warning.
+# Warnings are not errors (the vendor SGX DDK code warns a lot on x86_64).
 # CONFIG_WERROR is not set

@@ -73,9 +73,11 @@ Measured on this EA1: `MemTotal` is only ~176 MB. CEFDK's e820 hands Linux
 carve-out openHC never loads, exactly as on the [EA3](/ea/ea3/). It is real, idle
 DRAM, not bare address space: read read-only it still holds CEFDK's boot-time
 address-walk pattern (`0x40000000` reads `0x40000000`) up to near `0x7f000000`.
-The `memmap=exactmap` reclaim that gives the EA3 its 1.7 GB is written into this
-board's fragment too — the maps are identical — but it has **not** yet been booted
-with on an EA1, so until it is, the EA1 still runs on ~176 MB.
+The `memmap=exactmap` reclaim that gives the EA3 its 1.7 GB works here too — the
+maps are identical. On this EA1 (10.0.0.127) `MemTotal` goes from 180384 kB to
+1783332 kB, ACPI clean, `mtd0` intact. The EA1 boots through the `S00kexec`
+bootstrap; the reclaim was carried by `S00kexec` then and is in the family's
+`CONFIG_CMDLINE` now, which x86 prepends to the line `S00kexec` passes.
 
 ## The serial map
 
@@ -193,7 +195,7 @@ anything.
 
 Because `/dev/mtd0` is writable (above), the EA1 has a **software** return-to-stock
 that needs no serial: openHC's install adds exactly one `script` item to the
-SPI-NOR MFH, and `ohc-restore` removes it. It can be triggered from iod (REST/MQTT),
+SPI-NOR MFH, and `restore` removes it. It can be triggered from iod (REST/MQTT),
 the web UI System panel, or by **holding the front ID button** — SoC GPIO 32
 (active-low, confirmed on this EA1), a `gpio-keys-polled` node in the board
 device tree. The watcher times the hold from the button's input events and is

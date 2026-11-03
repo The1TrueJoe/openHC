@@ -44,6 +44,8 @@ pub struct Session {
     /// power a line-powered accessory back up.
     dtr: AtomicBool,
     rts: AtomicBool,
+    /// Tells the pump to close the port (a combo jack going back to IR).
+    stop: tokio::sync::Notify,
 }
 
 impl Session {
@@ -130,6 +132,7 @@ impl Hub {
             clients: AtomicUsize::new(0),
             dtr: AtomicBool::new(true),
             rts: AtomicBool::new(true),
+            stop: tokio::sync::Notify::new(),
         });
         // Prove the port is openable before handing back a session that looks
         // live but never produces a byte.
@@ -144,6 +147,14 @@ impl Hub {
         tokio::spawn(pump(sess.clone(), fd, tx_rx, re_rx, bus.clone()));
         ports.insert(index, sess.clone());
         Ok(sess)
+    }
+
+    /// Close a port's session, if it has one. Viewers see a note and the
+    /// stream ends; the next `session` opens it afresh.
+    pub fn close(&self, index: usize) {
+        if let Some(s) = self.ports.lock().unwrap().remove(&index) {
+            s.stop.notify_one();
+        }
     }
 }
 
@@ -162,6 +173,10 @@ async fn pump(
     let mut buf = [0u8; 2048];
     loop {
         tokio::select! {
+            _ = sess.stop.notified() => {
+                let _ = sess.rx.send(format!("\r\n[iod] {} closed\r\n", sess.dev).into_bytes());
+                return;
+            }
             // Reopen at a new baud. Done by closing and reopening rather than
             // tcsetattr on the live fd so a half-applied termios cannot leave
             // the port in a state nobody asked for.
@@ -234,7 +249,7 @@ pub fn open_serial(dev: &str, baud: u32) -> io::Result<RawFd> {
     // syntax-check the file at all (Homebrew's cargo has no cross std).
     //
     // The high rates are not academic: 460800 is the EA family's IO
-    // microcontroller rate, which the init script hands to the line discipline.
+    // microcontroller rate.
     #[cfg(target_os = "linux")]
     let speed = match baud {
         9600 => libc::B9600,

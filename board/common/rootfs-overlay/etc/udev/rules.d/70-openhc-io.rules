@@ -10,9 +10,9 @@
 #   /dev/ohc/ir/front-blaster   internal emitter behind the front panel
 #   /dev/ohc/ir/front-receiver  the learner on the same panel
 #   /dev/ohc/gpiochip           the chip carrying the relays and contacts
-#   /dev/ohc/serial/1 … N       rear RS-232, in the order board.env declares
-#   /dev/ohc/radio/zigbee       the EmberZNet NCP, wherever it is wired
-#   /dev/ohc/radio/zwave        likewise
+#   /dev/ohc/serial/1 … N       rear serial ports, as numbered on the case
+#   /dev/zigbee                 the EmberZNet NCP, wherever it is wired
+#   /dev/zwave                  likewise (also /dev/ohc/radio/<kind>)
 #   /dev/ohc/input/<name>       a front-panel button, e.g. id-button (EA)
 #
 # RELAYS AND CONTACTS GET NO ENTRY OF THEIR OWN, and that is not a gap we could
@@ -28,30 +28,31 @@
 #   gpioset $(gpiofind relay1)=1
 #   gpioget $(gpiofind contact4)
 #
-# The naming rule itself is in ohc-udev-name, not duplicated here: the serial
-# order comes from board.env and the IR labels come from the driver's DEV_NAME,
-# and neither belongs in a match expression.
+# Which host tty is which serial port or radio is the board's to say, in its
+# own 60-openhc-board.rules, as properties this file turns into names:
+#
+#   OHC_SERIAL=<n>          /dev/ohc/serial/<n>
+#   OHC_SERIAL_LABEL=<text> what iod and the UI call it (default "Serial <n>")
+#   OHC_SERIAL_MODEM=1      DTR/RTS are wired (a DB9)
+#   OHC_RADIO=<kind>        /dev/<kind> and /dev/ohc/radio/<kind>
+#
+# The IR labels come from the driver's DEV_NAME, through ohc-udev-name.
 
 # ONE rule per subsystem, and the helper returns the whole leaf path — so a
 # device costs one exec, not one per thing it might have been.
 #
-# KERNEL!= excludes the virtual consoles. Without it SUBSYSTEM=="tty" matches
-# tty0..tty63 as well as the ports we care about, and every one of them would
-# fork a shell that sources board.env during udevadm settle. That is ~130
-# processes on a 1.8 GHz Atom before the network comes up.
-
 # IR. DEV_NAME lives on the parent rc device, not on the lirc node, so this
 # cannot be an ENV match — the helper reads it out of sysfs.
 SUBSYSTEM=="lirc", PROGRAM="/usr/bin/ohc-udev-name lirc %k", SYMLINK+="ohc/%c"
 
-# User serial ports and radios, both from board.env. On the EA family the user
-# ports are routed through the microcontroller; the ohc-iomcu line discipline
-# now exposes each as a /dev/ttyOHC<n> tty, and ohc-udev-name numbers them
-# straight after any host ports. No KERNEL== prefix match, because which tty
-# naming the SoC uses (ttyS, ttymxc, ttyAMA, ttyOHC) is exactly what
-# board.env + the helper already answer.
-SUBSYSTEM=="tty", KERNEL!="tty", KERNEL!="tty[0-9]*", \
-  PROGRAM="/usr/bin/ohc-udev-name tty %k", SYMLINK+="ohc/%c"
+# Host serial ports and radios, as the board's rules tagged them.
+SUBSYSTEM=="tty", ENV{OHC_SERIAL}=="?*", SYMLINK+="ohc/serial/$env{OHC_SERIAL}"
+SUBSYSTEM=="tty", ENV{OHC_RADIO}=="?*", SYMLINK+="$env{OHC_RADIO} ohc/radio/$env{OHC_RADIO}"
+
+# MCU-routed serial ports: gpio-ohc-iomcu's /dev/ttyOHC<n>, numbered from 1.
+# No board has host user ports as well; one that did would number them here.
+SUBSYSTEM=="tty", KERNEL=="ttyOHC[0-9]*", PROGRAM="/bin/sh -c 'echo $$((%n + 1))'", \
+  SYMLINK+="ohc/serial/%c"
 
 # The gpiochip carrying the relays and contacts.
 SUBSYSTEM=="gpio", KERNEL=="gpiochip*", PROGRAM="/usr/bin/ohc-udev-name gpio %k", SYMLINK+="ohc/%c"

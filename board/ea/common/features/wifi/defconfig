@@ -1,5 +1,4 @@
-# openHC — Wi-Fi userspace, shared by EA variants that HAVE a radio (ea1-v1,
-# ea1-v2, ea3-v1). The ath9k kernel side is the linux.fragment beside this file.
+# wifi: userspace for boards with the ath9k radio. Kernel half: linux.fragment.
 BR2_PACKAGE_WPA_SUPPLICANT=y
 BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
 BR2_PACKAGE_WPA_SUPPLICANT_CLI=y

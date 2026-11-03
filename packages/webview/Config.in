@@ -1,6 +1,8 @@
 config BR2_PACKAGE_WEBVIEW
 	bool "webview"
 	depends on BR2_PACKAGE_WPEWEBKIT
+	select BR2_PACKAGE_LIBXKBCOMMON
+	select BR2_PACKAGE_XKEYBOARD_CONFIG # runtime, keymaps
 	help
 	  Full-screen web surface for openHC.
 
@@ -12,6 +14,11 @@ config BR2_PACKAGE_WEBVIEW
 	  The URL comes from argv[1] or $WEBVIEW_URL, defaulting to
 	  http://localhost/ -- the dashboard webd already serves on :80.
 	  What any other URL serves is not openHC's concern.
+
+	  USB keyboards and mice drive the page: through libinput on WPE
+	  Platform's DRM display, and on the libwpe path by reading
+	  /dev/input directly (keymaps from xkeyboard-config). The page
+	  draws the mouse cursor itself.
 
 comment "webview needs wpewebkit"
 	depends on !BR2_PACKAGE_WPEWEBKIT

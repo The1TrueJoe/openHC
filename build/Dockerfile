@@ -30,15 +30,17 @@ FROM debian:bookworm-slim AS build-env
 # them, because an ARG invalidates the layer cache from its DECLARATION
 # onward, not from first use. Declared here, changing the job count re-ran
 # apt-get and re-cloned Buildroot before reaching any of the real work.
-ARG BUILDROOT_REF=2026.02.3
+# Same Buildroot as .github/workflows/ci.yml (a commit or a tag).
+ARG BUILDROOT_REF=04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential bc bison flex git rsync unzip wget cpio file figlet \
         python3 libncurses-dev libssl-dev libelf-dev pkg-config ca-certificates perl patch xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch "$BUILDROOT_REF" \
-        https://github.com/buildroot/buildroot /opt/buildroot
+RUN git init -q /opt/buildroot \
+    && git -C /opt/buildroot fetch -q --depth 1 https://github.com/buildroot/buildroot "$BUILDROOT_REF" \
+    && git -C /opt/buildroot checkout -q FETCH_HEAD
 
 # Patches to Buildroot ITSELF, as opposed to BR2_GLOBAL_PATCH_DIR which patches
 # package *sources*. Needed when the thing to change is a .mk or a Config.in --

@@ -69,6 +69,7 @@ on:
       - 'Makefile'
       - 'site/**'
       - '.github/workflows/ci.yml'
+      - '.github/workflows/dsp-program.yml'
   pull_request:
   workflow_dispatch:
     inputs:
@@ -103,7 +104,11 @@ permissions:
 
 env:
   # Consumed only by the image jobs' cache keys and Buildroot fetch.
-  BUILDROOT_REF: 2026.02.3
+  # Buildroot master at 04b8e19efd (2026-10-26), ahead of the 2026.11 release:
+  # the first Buildroot with shairport-sync 5.x, host-libplist and nqptp 1.2.9.
+  # Switch to the 2026.11 tag once it is out. A commit or a tag both work here:
+  # the fetch below takes either.
+  BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 jobs:
   # STAGE TOGGLE — the master switch for the two-stage rollout (see the header).
@@ -180,6 +185,7 @@ jobs:
       contents: read
     outputs:
       boards: ${{ steps.pick.outputs.boards }}
+      all: ${{ steps.pick.outputs.all }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -204,7 +210,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ALL='["ea1-v1","ea1-v2","ea1-v2-poe","ea3-v1","ea3-v2","ioxv1","ca1","hc800"]'
+          # The fleet is every board directory with a <name>/<name>_defconfig.
+          boards_in() { for d in "$@"; do n=$(basename "$d"); [ "$n" != common ] && [ -f "$d/${n}_defconfig" ] && echo "$n"; done; return 0; }
+          EA_BOARDS=$(boards_in $(ls -d board/ea/*/*/ | grep -v '^board/ea/common/') | tr '\n' ' ')
+          OTHER_BOARDS=$(boards_in board/*/ | tr '\n' ' ')
+          printf -v ALL '"%s",' $EA_BOARDS $OTHER_BOARDS
+          ALL="[${ALL%,}]"
+          echo "all=$ALL" >> "$GITHUB_OUTPUT"
 
           # Explicit request, or a scheduled/dispatch run with no board: build all.
           if [ -n "${{ github.event.inputs.board }}" ]; then
@@ -223,15 +235,26 @@ jobs:
           changed=$(git diff --name-only "$base" HEAD)
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
 
-          # Shared trees affect every board. build/ and the flasher are in here
-          # because build.sh drives the build and post-image calls ohc-flash.
-          # packages/ is NOT here any more — a daemon change is scoped to the
-          # boards that actually ship it, further down.
-          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|flasher/|Makefile)'; then
+          # Shared trees affect every board. packages/ and flasher/ are scoped
+          # further down to the boards that ship what changed.
+          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|Makefile)'; then
             echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           sel=()
+
+          # flasher/ is its own build (the flasher job). An image carries only
+          # flasher/crates/core, compiled into the restore and update daemons; CI
+          # never runs ohc-flash in an image build (post-image skips the netboot
+          # wrap without it). A PR's daemons-build already compiles those
+          # daemons, so only main rebuilds the images that ship them.
+          if [ "${{ github.event_name }}" = push ] && echo "$changed" | grep -q '^flasher/crates/core/'; then
+            for b in $EA_BOARDS $OTHER_BOARDS; do
+              case " $(bash packages/build.sh "$b" --crates 2>/dev/null) " in
+                *" restore "*|*" update "*) sel+=("$b") ;;
+              esac
+            done
+          fi
 
           # packages/ — the Rust daemons, staged into the overlay. A change here
           # used to rebuild all eight images; instead map it to the boards that
@@ -267,7 +290,7 @@ jobs:
             # "<board>  <crate> <crate> " so a whole-word " <crate> " grep cannot
             # match a board name or a crate substring. No associative arrays —
             # the select runner is bash but this stays portable regardless.
-            ships_table=$(for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
+            ships_table=$(for b in $EA_BOARDS $OTHER_BOARDS; do
               printf '%s  %s \n' "$b" "$(bash packages/build.sh "$b" --crates 2>/dev/null)"
             done)
             # A dependency bump touches only Cargo.lock. Rather than rebuild every
@@ -310,13 +333,20 @@ jobs:
           fi
           # ea/common is shared by the EA family only.
           if echo "$changed" | grep -qE '^board/ea/common/'; then
-            sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
+            sel+=($EA_BOARDS)
           fi
-          # EA boards live under board/ea/<board>/; the others are top-level.
-          for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2; do
-            echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
+          # The DSP program's workflow goes into the EA3 images (the `dsp` job).
+          if echo "$changed" | grep -qx '.github/workflows/dsp-program.yml'; then
+            sel+=(ea3-v1 ea3-v2)
+          fi
+          # EA boards live at board/ea/<model>/<board>/; a change in the model
+          # folder outside any board folder rebuilds every board of that model.
+          for b in $EA_BOARDS; do
+            m=$(basename "$(dirname board/ea/*/"$b")")
+            echo "$changed" | grep -qE "^board/ea/$m/$b/" && sel+=("$b")
+            echo "$changed" | grep -E "^board/ea/$m/" | grep -vqE "^board/ea/$m/$m-[^/]+/" && sel+=("$b")
           done
-          for b in ioxv1 ca1 hc800; do
+          for b in $OTHER_BOARDS; do
             echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")
           done
           # Workflow-only or docs-only change: nothing to build.
@@ -388,8 +418,10 @@ jobs:
         if: steps.sdkcache.outputs.cache-hit != 'true'
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
@@ -434,14 +466,33 @@ jobs:
           if-no-files-found: error
 
 
+  # openHC's own ADAU1451 program for the EA3 images, built from its design
+  # (board/ea/common/firmware/dsp/adau1451/program.json) by SigmaStudio+ on a
+  # Windows runner, alongside the EA toolchain. It is ADI-generated code, which
+  # may go only into the product it programs: dsp-program.yml hands it over
+  # SEALED (readable only with this repo's secrets) and kept a day, and the EA3
+  # image jobs open it and build it into the image. Nowhere else.
+  # Without the SigmaStudio+ secrets (a fork) it reports program=false and the
+  # EA3 images build without it, as before there was one.
+  dsp:
+    needs: [select, config]
+    if: needs.config.outputs.heavy == 'true' && contains(needs.select.outputs.boards, 'ea3')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dsp-program.yml
+    secrets: inherit
+
   images-build:
-    needs: [select, images-toolchain, config]
-    # always(), so a run that selected only non-EA boards (toolchain skipped)
-    # still builds them, and a toolchain failure fails only the EA image jobs
-    # (at their download step), not ioxv1/ca1/hc800. select must have succeeded
-    # and picked at least one board.
+    needs: [select, images-toolchain, config, dsp]
+    # !cancelled(), so a run that selected only non-EA boards (toolchain
+    # skipped) still builds them, and a toolchain failure fails only the EA
+    # image jobs (at their download step), not ioxv1/ca1/hc800. NOT always():
+    # GitHub never cancels an always() job, so a superseded branch run kept its
+    # image jobs going for hours and held the newer run pending behind it in
+    # the concurrency group. select must have succeeded and picked at least
+    # one board.
     # `config.heavy` is the stage-1/stage-2 master switch (see the `config` job).
-    if: always() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' && needs.select.outputs.boards != '[]'
+    if: ${{ !cancelled() && needs.config.outputs.heavy == 'true' && needs.select.result == 'success' && needs.select.outputs.boards != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -454,6 +505,18 @@ jobs:
       matrix:
         board: ${{ fromJSON(needs.select.outputs.boards) }}
     steps:
+      # A warm tree is ~12 GB unpacked on top of dl/ and ccache, which leaves no
+      # margin on a hosted runner (ea5 ran out restoring its tree). Drop the
+      # preinstalled toolchains no board build uses.
+      - name: Free runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/powershell \
+            /usr/share/swift /opt/microsoft /opt/google /usr/lib/jvm
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       # sgx545-ce is a submodule and board/Config.in sources its Config.in
       # unconditionally, so defconfig fails for every board without it.
       - uses: actions/checkout@v4
@@ -463,6 +526,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: packages/webd/ui/package-lock.json
 
@@ -541,7 +605,7 @@ jobs:
       # kernel is safe (linux-dirclean runs every build), but packages are not:
       # r2 forced one clean rebuild after round 2 added dbus, so avahi rebuilt
       # with libavahi-client (shairport-sync needs it) instead of riding the
-      # pre-round-2 dbus-less avahi in the cache. r3 goes with the move to
+      # pre-round-2 dbus-less avahi in the cache. r3 went with the move to
       # Buildroot 2026.02.3 (the ref is in the key too, so this is belt and braces).
       #
       # The tree lives on the `ci-cache` pre-release, not in the Actions cache
@@ -570,7 +634,7 @@ jobs:
       # previous attempt first (the run_id- prefix), then this board's newest
       # from older runs, then any of its family's. restore/save split (not plain
       # actions/cache) so a FAILED build still saves what it compiled — the save
-      # runs on always() — and the next attempt resumes from it.
+      # runs on failure() — and the next attempt resumes from it.
       #
       # This is what lets a PR finish a cold WebKit at all: PRs do not save the
       # output tree (below), so a build that runs out of time keeps nothing but
@@ -599,8 +663,10 @@ jobs:
       - name: Fetch Buildroot
         run: |
           set -e
-          git clone --depth 1 --branch "$BUILDROOT_REF" \
-            https://github.com/buildroot/buildroot "$HOME/buildroot"
+          git init -q "$HOME/buildroot"
+          git -C "$HOME/buildroot" fetch -q --depth 1 \
+            https://github.com/buildroot/buildroot "$BUILDROOT_REF"
+          git -C "$HOME/buildroot" checkout -q FETCH_HEAD
           for p in build/buildroot-patches/*.patch; do
             [ -e "$p" ] || continue
             echo ">> buildroot patch: ${p##*/}"
@@ -669,6 +735,35 @@ jobs:
           grab sgx-wpe.yml wpe-i386-sysroot wpe
           grab sgx-gpu.yml sgx-i386-sysroot i386
 
+      # The EA3's DSP program from the `dsp` job: opened here, built into the
+      # image's DSP firmware, and nowhere else. A design that failed fails the
+      # EA3 images rather than shipping them silently without it.
+      - name: Fetch the DSP program (EA3)
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.result == 'failure'
+        run: |
+          echo "::error::the dsp job failed: no DSP program for ${{ matrix.board }}"
+          exit 1
+      - name: Download the sealed DSP program (EA3)
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.outputs.program == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: adau1451-program-sealed
+          path: ${{ runner.temp }}/dsp-sealed
+      - name: Open the DSP program (EA3)
+        id: dsp
+        if: startsWith(matrix.board, 'ea3') && needs.dsp.outputs.program == 'true'
+        env:
+          KEY: ${{ secrets.SIGMASTUDIO_TOKEN }}
+        run: |
+          set -euo pipefail
+          d="$HOME/adau1451-program"
+          rm -rf "$d"; mkdir -p "$d"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -pass env:KEY \
+            -in "$RUNNER_TEMP/dsp-sealed/adau1451-program.tar.enc" | tar -C "$d" -xf -
+          rm -rf "$RUNNER_TEMP/dsp-sealed"
+          ls -l "$d"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
+
       - name: Build ${{ matrix.board }}
         env:
           BUILDROOT_DIR: ${{ github.workspace }}/../buildroot
@@ -677,6 +772,9 @@ jobs:
           # Consumed by board/common/post-build.sh (empty on non-EA / when absent).
           OHC_SGX_WPE_SYSROOT: ${{ steps.sgxsr.outputs.wpe }}
           OHC_SGX_I386_SYSROOT: ${{ steps.sgxsr.outputs.i386 }}
+          # The EA3's DSP program folder (empty: none); build.sh sets
+          # BR2_PACKAGE_ADAU1451_FW_PROGRAM from it.
+          OHC_DSP_PROGRAM: ${{ steps.dsp.outputs.dir }}
           # The ccache dir (see the restore/save steps; BR2_CCACHE in
           # board/ea/common/common_defconfig and board/hc800/hc800_defconfig).
           # build.sh forwards it to make only when set; a board whose defconfig
@@ -720,12 +818,15 @@ jobs:
         if: success() && matrix.board == 'hc800'
         env:
           KEXEC_VERSION: "2.0.31"
+          KEXEC_SHA256: 8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
         run: |
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
           # Built in runner.temp, outside the checkout.
-          wget -q -P "$RUNNER_TEMP" "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          bash .github/scripts/fetch.sh "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz" "$KEXEC_SHA256" \
+            "https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz" \
+            "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
           tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz"
           ( cd "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
               --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
@@ -955,15 +1056,15 @@ jobs:
 
   images-carry-forward:
     needs: [select, images-build, config]
-    if: always() && needs.config.outputs.heavy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # !cancelled(), not always(): runs after a failed build, stops with a cancel.
+    if: ${{ !cancelled() && needs.config.outputs.heavy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        # Same fleet as select's ALL; a board added there is added here.
-        board: [ea1-v1, ea1-v2, ea1-v2-poe, ea3-v1, ea3-v2, ioxv1, ca1, hc800]
+        board: ${{ fromJSON(needs.select.outputs.all) }}
     steps:
       # A board this run built already uploaded openhc-<board>; re-uploading the
       # same artifact name would collide, so carry forward only the rest.
@@ -1071,7 +1172,7 @@ jobs:
       # features to crates (core + each feature's `packages` file), the same
       # list the image build stages. So a feature's daemon is compiled only for
       # the boards that have the feature — the IO Extender (ARMv5, no 64-bit
-      # atomics) is not held to code it never runs, like ohc-storaged.
+      # atomics) is not held to code it never runs, like storaged.
       - name: Which crates ${{ matrix.board }} ships
         run: |
           crates=$(bash packages/build.sh ${{ matrix.board }} --crates)
@@ -1108,6 +1209,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: packages/webd/ui/package-lock.json
 
@@ -1465,6 +1567,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: site/package-lock.json
 
@@ -1524,6 +1627,7 @@ jobs:
       # root on hardware with no recovery console, so "whatever is newest today"
       # is not an acceptable input.
       KEXEC_VERSION: "2.0.31"
+      KEXEC_SHA256: 8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
     steps:
       - uses: actions/checkout@v4
 
@@ -1544,7 +1648,9 @@ jobs:
       - name: Fetch kexec-tools
         run: |
           set -e
-          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          bash .github/scripts/fetch.sh "kexec-tools-${KEXEC_VERSION}.tar.xz" "$KEXEC_SHA256" \
+            "https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz" \
+            "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
           tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
 
       # --host is what selects kexec's i386 architecture support. Building it
@@ -1592,6 +1698,11 @@ jobs:
   # from deadlocking on an unrelated PR); it passes when every component it
   # needs either passed or was skipped as irrelevant, and FAILS if any of them
   # failed or was cancelled. It is NOT an always-green sentinel.
+  # The one job that keeps always() (every other uses !cancelled() so a cancel
+  # stops it): a SKIPPED required check counts as passing, so under
+  # !cancelled() a cancelled run would leave a mergeable green PR. It costs a
+  # few seconds after the cancel; a superseded run's red ci-ok is replaced by
+  # the newer run's.
   #
   # `needs` lists every GATE and BUILD job. It deliberately OMITS
   # images-carry-forward (best-effort, main-only; a cold cache is not a failure)
@@ -1605,6 +1716,7 @@ jobs:
       - changes
       - select
       - images-toolchain
+      - dsp
       - images-build
       - daemons-build
       - flasher-build

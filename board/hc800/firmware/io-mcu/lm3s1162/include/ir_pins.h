@@ -127,7 +127,7 @@ static const ir_channel IR_CHANNELS[IR_CHANNEL_COUNT] = {
 
 /* ── relays and contacts ───────────────────────────────────────────────────
  * Four of each, confirmed from the panel by the owner and consistent with the
- * host-side board.env (OHC_RELAYS=4, OHC_CONTACTS=4).
+ * host's ACPI table (board/hc800/acpi/ssdt-iomcu.asl: 4 relays, 4 contacts).
  *
  * Pins UNKNOWN, same as the IR table and for the same reason — and the stakes
  * are higher: a relay may be switching a real load. Nothing in this firmware

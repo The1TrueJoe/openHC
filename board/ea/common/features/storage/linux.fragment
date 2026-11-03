@@ -1,12 +1,5 @@
-# openHC feature: storage, EA kernel half — the shared fragment
-# (board/common/features/storage) as modules instead of built in.
-#
-# CEFDK's bootlinux window caps an EA bzImage at 7,417,856 bytes (see
-# board/ea/common/post-image.sh), and the storage stack built in put ea1-v2 at
-# 8.3 MB. As modules it costs the kernel image nothing: eudev loads the USB
-# disk drivers from the device's modalias, mount(2) loads a filesystem by its
-# fs-<type> alias, and ohc-storaged modprobes ksmbd before starting
-# ksmbd.mountd. ext4 stays built in — the 'emmc' feature boots from it.
+# storage, EA kernel half: the shared fragment as modules (copy window).
+# ext4 stays built in for the emmc feature.
 CONFIG_SCSI=m
 CONFIG_BLK_DEV_SD=m
 CONFIG_USB_STORAGE=m
@@ -20,11 +13,7 @@ CONFIG_NLS_ISO8859_1=m
 CONFIG_NLS_UTF8=m
 CONFIG_SMB_SERVER=m
 
-# What switching those menus on resurrects from x86_64_defconfig, built in:
-# CONFIG_NETWORK_FILESYSTEMS (for ksmbd) brings back the NFS v3/v4 client with
-# root-on-NFS and 9P — SUNRPC and its crypto — and MSDOS_FS=y would force FAT
-# itself built in under the VFAT module. That was ~450 KB of the window on
-# ea1-v2, which had 76.8 KB to spare. None of it is used here.
+# Built-ins those menus bring back from the defconfig (~450 KB); unused.
 # CONFIG_NFS_FS is not set
 # CONFIG_NFSD is not set
 # CONFIG_9P_FS is not set

@@ -1,57 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ADAU1451 SigmaDSP analog audio -- the `audio-dsp` feature (EA3 only).
- *
- * The card is the kernel's own simple-audio-card: the CE5300 I2S (the PCI
- * function's node in ce5300.dtsi) into the ADAU1451, the codec the I2S bit-
- * and frame-clock master. No board machine driver.
- *
- * The codec sits at 0x38 on the FOURTH I2C controller (vendor i2c-3); the DAC
- * soft mute is vendor GPIO 61, active high = muted.
- *
- * The DSP has no program of its own; the codec driver loads it. firmware-name
- * is openHC's firmware file (built from
- * board/ea/common/firmware/dsp/adau1451/ea3.json): the part's register init,
- * the program and its parameters, which the sigmadsp core writes and turns into
- * controls. control4,program-version is the program's version cell and the
- * value it holds: checked after a load, and a program that does not hold it is
- * stopped. A file with no program holds only parameters; then the check comes
- * first, and on a part not already running that program the driver writes
- * nothing. A new program brings its own cell and value here.
- *
- * The DSP and codec resets are released here, not in ea.dtsi, so a board
- * without the DSP never drives them.
- *
- * Stock registers its audio devices per board type and revision
- * (ninjago_board_init()): an EA3 from revision 2 on gets the adau1451 plus one
- * "audio-sense" device, platform data { id 0, gpio 10, active_state 0 }.
- * c4audiosense.ko turns that into sig_det0, an IRQ-driven signal-present flag
- * on the analog input, active low. Named here, never driven. gpio61's name is
- * ours: stock only sets it (high = muted) in shutdown_gpio_ea3() and in the
- * adau1451 driver.
+ * EA-3 audio (`audio-dsp`): CE5300 I2S -> ADAU1451 at i2c3 0x38 -> AK4621,
+ * and the CE5300's S/PDIF out and in on the coax jacks.
+ * The CE5300 is the I2S clock master; every DSP serial port is a slave.
+ * See board/ea/common/firmware/dsp/adau1451/README.md.
  */
-#define EA_LINE_10	"audio_sense0"
-#define EA_LINE_24	"codec_reset"
-#define EA_LINE_61	"dac_mute"
-#define EA_LINE_101	"dsp_reset"
+#include "ea-adau1451.dtsi"
 
-&gpio {
-	codec-reset-hog {
-		gpio-hog;
-		gpios = <24 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "codec_reset";
-	};
-	dsp-reset-hog {
-		gpio-hog;
-		gpios = <101 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "dsp_reset";
-	};
-};
+#define EA_LINE_10	"audio_sense0"
+#define EA_LINE_61	"dac_mute"
 
 &audio {
-	#sound-dai-cells = <0>;
+	/* 0: I2S out (the DSP), 1: S/PDIF out (coax out), 2: S/PDIF in (coax in) */
+	#sound-dai-cells = <1>;
 };
 
 &i2c3 {
@@ -60,25 +21,66 @@
 		reg = <0x38>;
 		#sound-dai-cells = <0>;
 		mute-gpios = <&gpio 61 GPIO_ACTIVE_HIGH>;
-		firmware-name = "openhc/adau1451-ea3.bin";
-		control4,program-version = <0x0dd0 10>;
+		firmware-name = "openhc/adau1451-ea3-openhc.bin";
+		control4,program-version = <0x0e02 4>;
 	};
 };
 
 / {
+	spdif_out: spdif-out {
+		compatible = "linux,spdif-dit";
+		#sound-dai-cells = <0>;
+	};
+
+	spdif_in: spdif-in {
+		compatible = "linux,spdif-dir";
+		#sound-dai-cells = <0>;
+	};
+
 	sound {
 		compatible = "simple-audio-card";
-		/* ALSA derives the card id from this: "openhcea". */
+		/* ALSA card id "openhcea"; PCM device n is dai-link n */
 		simple-audio-card,name = "openhc-ea";
-		simple-audio-card,format = "i2s";
-		simple-audio-card,bitclock-master = <&dsp_dai>;
-		simple-audio-card,frame-master = <&dsp_dai>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 
-		simple-audio-card,cpu {
-			sound-dai = <&audio>;
+		simple-audio-card,dai-link@0 {
+			reg = <0>;
+			link-name = "Analog";
+			format = "i2s";
+			bitclock-master = <&i2s_dai>;
+			frame-master = <&i2s_dai>;
+
+			i2s_dai: cpu {
+				sound-dai = <&audio 0>;
+			};
+			codec {
+				sound-dai = <&dsp>;
+			};
 		};
-		dsp_dai: simple-audio-card,codec {
-			sound-dai = <&dsp>;
+
+		simple-audio-card,dai-link@1 {
+			reg = <1>;
+			link-name = "Coax";
+
+			cpu {
+				sound-dai = <&audio 1>;
+			};
+			codec {
+				sound-dai = <&spdif_out>;
+			};
+		};
+
+		simple-audio-card,dai-link@2 {
+			reg = <2>;
+			link-name = "Coax in";
+
+			cpu {
+				sound-dai = <&audio 2>;
+			};
+			codec {
+				sound-dai = <&spdif_in>;
+			};
 		};
 	};
 };

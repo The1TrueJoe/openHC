@@ -1,6 +1,6 @@
 //! Shared MQTT plumbing for openHC daemons.
 //!
-//! Every board runs mosquitto; every daemon (iod, sysmond, ohc-audiod) is a
+//! Every board runs mosquitto; every daemon (iod, sysmond, audiod) is a
 //! client of it and publishes its OWN topics under one tree, `<prefix>/<host>/`.
 //! This crate is the part they must agree on, so it lives in one place:
 //!
