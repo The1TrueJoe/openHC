@@ -3,18 +3,16 @@
 # kernel, and reports the board state that is most likely to be wrong on a first
 # boot — the two radio UARTs, the Z-Wave presence strap and the Wi-Fi module.
 [ "$1" = start ] || exit 0
-OHC_MODEL=
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 
 echo ""
 echo "  openHC Control4 CA-1 (i.MX6SL \"emmet\") — kernel-up bring-up rootfs"
 echo "  kernel: $(uname -r)   $(uname -m)"
 
-# Radio UARTs: their absence means the DTS UART aliases came out wrong, which
-# is the single most likely first-boot failure on this board.
-for tty in "$OHC_ZWAVE_TTY" "$OHC_ZIGBEE_TTY" "$OHC_SERIAL_TTY"; do
-    [ -n "$tty" ] || continue
-    [ -c "$tty" ] && s="present" || s="MISSING"
+# Radio and serial ports, as the board's udev rule names them: their absence
+# means the DTS UARTs came out wrong, the most likely first-boot failure here.
+for tty in /dev/zwave /dev/zigbee /dev/ohc/serial/1; do
+    [ -c "$tty" ] && s="present ($(readlink "$tty"))" || s="MISSING"
     echo "  $tty: $s"
 done
 

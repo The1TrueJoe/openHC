@@ -1,0 +1,11 @@
+# IO Extender: which tty is what (see 70-openhc-io.rules for the properties).
+
+# The four rear RS-232 ports: 16550s in the FPGA, on DB9s with DTR/RTS wired.
+SUBSYSTEM=="tty", KERNELS=="4000240.serial", \
+  ENV{OHC_SERIAL}="1", ENV{OHC_SERIAL_LABEL}="RS-232 port 1", ENV{OHC_SERIAL_MODEM}="1"
+SUBSYSTEM=="tty", KERNELS=="4000250.serial", \
+  ENV{OHC_SERIAL}="2", ENV{OHC_SERIAL_LABEL}="RS-232 port 2", ENV{OHC_SERIAL_MODEM}="1"
+SUBSYSTEM=="tty", KERNELS=="4000260.serial", \
+  ENV{OHC_SERIAL}="3", ENV{OHC_SERIAL_LABEL}="RS-232 port 3", ENV{OHC_SERIAL_MODEM}="1"
+SUBSYSTEM=="tty", KERNELS=="4000270.serial", \
+  ENV{OHC_SERIAL}="4", ENV{OHC_SERIAL_LABEL}="RS-232 port 4", ENV{OHC_SERIAL_MODEM}="1"

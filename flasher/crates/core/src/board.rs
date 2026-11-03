@@ -343,7 +343,21 @@ pub fn from_c4board(name: Option<&str>, btype: Option<u8>, rev: Option<u8>) -> I
     Identity { board, candidates, running: Running::Stock, version: None, raw }
 }
 
-/// Identify from a running openHC `/opt/ohc/board.env` (already parsed).
+/// Identify from a running openHC's `/etc/openhc-release`, whose `board=` its
+/// build stamped with the exact board name.
+pub fn from_release(release: &str) -> Identity {
+    let Some(name) = release.lines().find_map(|l| l.trim().strip_prefix("board=")) else {
+        return Identity::none(Running::Openhc);
+    };
+    let raw = vec![("board".into(), name.trim().to_string())];
+    match by_name(name) {
+        Some(b) => Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw },
+        None => Identity { raw, ..Identity::none(Running::Openhc) },
+    }
+}
+
+/// Identify from a running openHC `/opt/ohc/board.env` (already parsed): images
+/// from before the board's hardware moved to the device tree.
 pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
     let mut raw = vec![];
     if let Some(name) = get("OHC_BOARD") {

@@ -14,7 +14,7 @@
  * gpio_keys_button arrays and confirmed on live hardware against an EBUSY probe
  * of every line and the ICH's GPIO_USE_SEL register (0x1f40f7cd), which has all
  * of them muxed as GPIO. board/hc800/rootfs-overlay/opt/ohc/board.env has the
- * evidence line by line.
+ * evidence line by line. model and compatible name the board to userspace.
  */
 /dts-v1/;
 
@@ -23,6 +23,7 @@
 
 / {
 	model = "Control4 HC-800";
+	compatible = "control4,hc800";
 	#address-cells = <1>;
 	#size-cells = <1>;
 

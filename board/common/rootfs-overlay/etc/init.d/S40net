@@ -1,12 +1,11 @@
 #!/bin/sh
 # openHC network bring-up — SHARED by every board. Board differences come from
-# /opt/ohc/board.env, not from a per-board copy of this script:
+# the kernel and /opt/ohc/board.env, not from a per-board copy of this script:
 #
 #   OHC_UPLINK_IFACE   wired uplink (default eth0)
-#   OHC_DSA_PORTS      DSA switch port netdevs, if the board has a managed
-#                      switch (e.g. "lan1 lan2" on the EA3/EA1-PoE BCM53125).
-#                      Empty on boards whose uplink is a plain single MAC.
 #   OHC_NET_STATIC     optional "addr/cidr[,gw]" to skip DHCP entirely.
+#   DSA switch ports   the user ports the kernel created (ohc-hw dsa-ports),
+#                      e.g. lan1 lan2 on the EA3/EA1-PoE BCM53125.
 #
 # Best-effort throughout: never fail boot. A box with no address is far easier
 # to debug than a box that will not boot.
@@ -21,7 +20,7 @@
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 
 MASTER="${OHC_UPLINK_IFACE:-eth0}"
-PORTS="${OHC_DSA_PORTS:-}"
+PORTS=$(ohc-hw dsa-ports | tr '\n' ' ')
 
 wait_carrier() {               # $1 = iface, $2 = seconds (default 10)
     i=0
@@ -146,8 +145,8 @@ case "$1" in
     done
 
     if [ -z "$have_ports" ]; then
-        [ -n "$PORTS" ] && printf 'Net: no switch ports, falling back to %s: ' "$MASTER" \
-                        || printf 'Net: %s: ' "$MASTER"
+        [ -d "/sys/class/net/$MASTER/dsa" ] && printf 'Net: no switch ports, falling back to %s: ' "$MASTER" \
+                                            || printf 'Net: %s: ' "$MASTER"
         wait_carrier "$MASTER"
         if lease "$MASTER"; then
             echo "up ($(addr_of "$MASTER"))"

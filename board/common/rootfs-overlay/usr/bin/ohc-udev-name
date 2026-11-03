@@ -3,17 +3,12 @@
 # when this device is not ours.
 #
 #   ohc-udev-name lirc lirc3     -> ir/out4
-#   ohc-udev-name tty  ttyS1     -> serial/1
-#   ohc-udev-name tty  ttymxc4   -> radio/zigbee
 #   ohc-udev-name gpio gpiochip1 -> gpiochip
 #
-# It prints the WHOLE leaf path, so one udev rule and one exec cover a device
-# whatever it turns out to be.
-#
-# A helper rather than udev match expressions because both answers come from
-# somewhere that is not the device's own properties: the IR label is on the
-# PARENT rc device, and the serial numbering is board.env's declaration order.
-# Encoding either in a rules file would put a second copy of it in the image.
+# It prints the WHOLE leaf path, so one udev rule and one exec covers a device
+# whatever it turns out to be. A helper rather than a match expression because
+# the IR label is on the PARENT rc device. Serial ports and radios need none:
+# the board's own rules (60-openhc-board.rules) say which tty is which.
 kind=$1
 dev=$2
 [ -n "$dev" ] || exit 1
@@ -31,34 +26,6 @@ lirc)
     slug=$(echo "${name#openHC IR }" | tr "[:upper:] " "[:lower:]-")
     case "$slug" in out-*) slug="out${slug#out-}" ;; esac
     echo "ir/$slug"
-    ;;
-
-tty)
-    [ -r /opt/ohc/board.env ] || exit 1
-    . /opt/ohc/board.env
-    # OHC_SERIALS is dev:label:baud[:modem]. The POSITION is the number the installer
-    # reads on the case, so it is also the name here.
-    n=0
-    for e in $OHC_SERIALS; do
-        n=$((n + 1))
-        [ "${e%%:*}" = "$dev" ] && { echo "serial/$n"; exit 0; }
-    done
-    # MCU-routed user serial ports: the gpio-ohc-iomcu driver exposes each
-    # as /dev/ttyOHC<k> (k 0-based). iod appends them AFTER the host ports, so
-    # they continue the same numbering: ttyOHC0 is serial/(host count + 1).
-    case "$dev" in
-    ttyOHC[0-9]*)
-        k=${dev#ttyOHC}
-        echo "serial/$((n + k + 1))"
-        exit 0
-        ;;
-    esac
-    # OHC_RADIOS is kind:dev — the SAME shape, deliberately. Here the kind is
-    # the name, because a board has at most one of each.
-    for e in $OHC_RADIOS; do
-        [ "${e#*:}" = "$dev" ] && { echo "radio/${e%%:*}"; exit 0; }
-    done
-    exit 1
     ;;
 
 gpio)

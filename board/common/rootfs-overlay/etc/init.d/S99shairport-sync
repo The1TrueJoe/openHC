@@ -3,8 +3,8 @@
 # (this overlay file is copied over it).
 #
 # Two changes from Buildroot's script:
-#  * a board with named outputs (board.env OHC_AUDIO_OUTPUTS) runs its AirPlay
-#    endpoints through audiod instead, so this stands down;
+#  * a board with sound PCMs runs its AirPlay endpoints through audiod
+#    instead, so this stands down;
 #  * otherwise it honours the web UI's output selection the way S95librespot
 #    does: iod's audio.output writes OHC_AUDIO_DEVICE to /etc/ohc/audio-output,
 #    and it is passed to the ALSA backend ("-- -d <device>"). Unset means the
@@ -12,8 +12,7 @@
 #
 # The receiver is AirPlay 2 (Buildroot's shairport-sync), which needs nqptp,
 # its PTP timing daemon, running first; this starts and stops it alongside.
-[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
-[ -n "$OHC_AUDIO_OUTPUTS" ] && exit 0
+[ -x /opt/ohc/bin/audiod ] && ls /proc/asound/card*/pcm*p >/dev/null 2>&1 && exit 0
 [ -r /etc/ohc/audio-output ] && . /etc/ohc/audio-output
 DAEMON=/usr/bin/shairport-sync
 PIDFILE=/var/run/shairport-sync/shairport-sync.pid

@@ -40,8 +40,8 @@
 //! the zigbee feature ships (EmberZNet 6.7.8, the last for the EM35x), the way
 //! Control4 reflashes it: see ncp.rs. Once current, a boot only reads the version.
 //!
-//! Config (board.env): OHC_ZIGBEE_TTY (required; absent => nothing to do),
-//! OHC_ZIGBEE_BAUD (the app's baud, tried first; default 115200),
+//! The radio is [`RADIO`], which the board's udev rule names (absent => no
+//! radio, nothing to do). Config (board.env): OHC_ZIGBEE_BAUD (the app's baud, tried first; default 115200),
 //! OHC_ZIGBEE_TCP_PORT (unset => hold only), OHC_ZIGBEE_TCP_BIND (default
 //! 0.0.0.0), OHC_ZIGBEE_NCP_IMAGE (default /usr/share/ohc/zigbee/em357-ncp.ebl),
 //! OHC_ZIGBEE_NCP_UPDATE (0 = never flash; default 1), OHC_ZIGBEE_BTL_BAUD (the
@@ -145,14 +145,15 @@ fn env_u32(name: &str) -> Option<u32> {
     std::env::var(name).ok().and_then(|s| s.trim().parse().ok())
 }
 
+/// The NCP's port, named by the board's udev rule.
+const RADIO: &str = "/dev/zigbee";
+
 fn main() {
-    let dev = match std::env::var("OHC_ZIGBEE_TTY") {
-        Ok(d) if !d.is_empty() => d,
-        _ => {
-            println!("zigbee: OHC_ZIGBEE_TTY unset — no radio on this board, nothing to do");
-            return;
-        }
-    };
+    if !std::path::Path::new(RADIO).exists() {
+        println!("zigbee: no {RADIO} — no radio on this board, nothing to do");
+        return;
+    }
+    let dev = RADIO.to_string();
     let baud = env_u32("OHC_ZIGBEE_BAUD").unwrap_or(115200);
     // The app is looked for at its configured baud first, then at the rates
     // EM35x NCP images ship with (a reflash can change it: Telegesis-style
