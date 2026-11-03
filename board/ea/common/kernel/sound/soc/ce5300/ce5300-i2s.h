@@ -92,6 +92,7 @@
 #define CE5300_DMA_XBURST_SHIFT		12	/* [15:12] AUDIO_HAL_DMA_XBURST_SIZE */
 #define CE5300_DMA_GAP_SHIFT		16	/* [19:16] gap size; always 0 in every observed site */
 #define   CE5300_BURST_256		6	/* what the vendor render path uses */
+#define   CE5300_BURST_128		5	/* capture: the largest of 4..128 B dividing the buffer */
 #define CE5300_DMA_FLAG_SRC_A		BIT(4)
 #define CE5300_DMA_FLAG_SRC_B		BIT(7)
 #define CE5300_DMA_FLAG_DST_B		BIT(3)
@@ -110,6 +111,7 @@
  * is set and bit 29 cleared on the render path; we copy that verbatim rather
  * than reason about it. */
 #define CE5300_DMA_BIT30		BIT(30)
+#define CE5300_DMA_BIT29		BIT(29)	/* set, and bit 30 clear, on the capture path */
 /*
  * MEASURED: set in the CTRL register while stock plays, never in a descriptor's
  * mode word. The engine sets it when it starts and clears it when it halts on a
@@ -129,6 +131,20 @@
 	 (CE5300_ADDR_FIXED_CONT << CE5300_DMA_DST_MODE_SHIFT) |	\
 	 (CE5300_ADDR_LINEAR << CE5300_DMA_SRC_MODE_SHIFT) |		\
 	 CE5300_DMA_FLAG_SRC_A | CE5300_DMA_FLAG_SRC_B)
+
+/*
+ * Capture flag word, minus the STOP bit: stock's capture_linked_list_dma_setup
+ * tuples, render's mirrored -- the source (the RX FIFO) fixed, the destination
+ * linear. 0x20005569 with 128-byte bursts, the size stock picks for a buffer
+ * that is a multiple of 128 bytes.
+ */
+#define CE5300_DMA_FLAGS_CAPTURE					\
+	(CE5300_DMA_BIT29 |						\
+	 (CE5300_BURST_128 << CE5300_DMA_BURST_SHIFT) |			\
+	 (CE5300_BURST_128 << CE5300_DMA_XBURST_SHIFT) |		\
+	 (CE5300_ADDR_FIXED_CONT << CE5300_DMA_SRC_MODE_SHIFT) |	\
+	 (CE5300_ADDR_LINEAR << CE5300_DMA_DST_MODE_SHIFT) |		\
+	 CE5300_DMA_FLAG_DST_A | CE5300_DMA_FLAG_DST_B)
 
 /* ---- TX block: base 0x2000, 3 contexts, stride 0x100 ------------------- */
 #define CE5300_TX_BASE			0x2000
@@ -185,12 +201,36 @@
 #define CE5300_TX_LEVEL			0x20	/* FIFO level, moving while it plays */
 #define CE5300_TX_IDLE_04		0x000e0000	/* MEASURED: TX1/TX2 while stock plays; reset value */
 
-/* ---- RX block (capture; not used by this driver yet) ------------------- */
+/*
+ * TX/RX +0x00 bits 6:5: the pins a context drives or reads. TX: AUDIO_HAL_OUTPUT_SEL
+ * (I2S1 0, I2S0 1, S/PDIF 3); RX: AUDIO_HAL_INPUT_SEL (I2S1 0, I2S0 1, S/PDIF 2).
+ * TX0's stock 0x21 is I2S0 and run.
+ */
+#define CE5300_CTX_SEL_SHIFT		5
+#define CE5300_CTX_SEL_MASK		(0x3 << CE5300_CTX_SEL_SHIFT)
+#define   CE5300_TX_SEL_SPDIF		3
+#define   CE5300_RX_SEL_SPDIF		2
+
+/*
+ * TX2 as the coax out: TX0's format with output select S/PDIF and DMA 2.
+ * MEASURED 2026-11-02 (EA3, coax out cabled to coax in): with these, words fed
+ * to TX2's FIFO came back on RX1 bit for bit.
+ */
+#define CE5300_TX_SPDIF_14		0x08
+#define CE5300_TX_SPDIF_1C		0x3f
+
+/* ---- RX block: base 0x3000, 2 contexts, stride 0x100 ------------------- */
 #define CE5300_RX_BASE			0x3000
 #define CE5300_RX_STRIDE		0x100
 #define CE5300_RX_CONTEXTS		2
 #define CE5300_RX_REG(rx, off)		(CE5300_RX_BASE + (rx) * CE5300_RX_STRIDE + (off))
-#define CE5300_RX_SARR			0x18
+#define CE5300_RX_CTRL			0x04	/* [19:17] the DMA context, as on TX */
+#define CE5300_RX_INT			0x0c	/* stock ORs its sa_int_mask in at capture start */
+#define   CE5300_RX_INT_SPDIF		0x200	/* 0x4d3, the S/PDIF input's */
+#define CE5300_RX_SYNC			0x10	/* bit 0, write 1 to clear: no valid S/PDIF stream */
+#define CE5300_RX_SARR			0x18	/* FIFO read port; the DMA source */
+#define CE5300_RX_THRESH		0x1c	/* stock's rx_fifo_set_thrsh_level, 0x3f */
+#define CE5300_RX_LEVEL			0x20
 #define CE5300_RX_IDLE_04		0x001e0000	/* MEASURED: RX0 while stock plays; reset value */
 
 /* ---- Interrupts -------------------------------------------------------- */
