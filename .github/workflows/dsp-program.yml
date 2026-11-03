@@ -27,7 +27,7 @@
 # THE EXPORTED PROGRAM IS NEVER PUBLISHED. ADI's license lets generated code be
 # used only to program the products it runs on, and this repo is public, so its
 # artifacts are anyone's to download. The program goes only into the EA image:
-# ci.yml calls this workflow in the same run as the image build, and the hand-
+# images.yml calls this workflow in the same run as the image build, and the hand-
 # over is sealed (AES-256, the key derived from SIGMASTUDIO_TOKEN, which only
 # this repo's own runs can read) and kept one day. Neither it, nor the export,
 # nor the saved project ever enters git or a readable artifact.
@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 on:
-  # ci.yml, for the EA image build.
+  # images.yml, for the EA image build.
   workflow_call:
     outputs:
       program:
@@ -127,7 +127,7 @@ jobs:
           if-no-files-found: ignore
 
       # The program, for the EA image build only: sealed, so the artifact is
-      # unreadable to anyone but this repo's own runs, and kept one day. ci.yml's
+      # unreadable to anyone but this repo's own runs, and kept one day. images.yml's
       # image job opens it with the same key. Git Bash's openssl here, Ubuntu's
       # there; both OpenSSL 3.
       - name: Seal the program for the image build

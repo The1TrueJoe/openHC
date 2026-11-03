@@ -38,7 +38,7 @@ on:
       - build/build.sh
 
 env:
-  # Same Buildroot as ci.yml; keep the two in step.
+  # Same Buildroot as build/buildroot.ref; keep the two in step.
   BUILDROOT_REF: 04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
 jobs:

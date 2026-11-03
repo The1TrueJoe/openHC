@@ -1,0 +1,37 @@
+# IO-MCU firmware host tests (protocol, config frame, IR engine, image tool).
+# The images themselves build inside every iomcu board's image.
+name: io-mcu
+
+# Runs only for its own paths. ci-ok.yml turns the result into the required
+# ci-ok status.
+on:
+  pull_request:
+    paths:
+      - 'board/common/firmware/io-mcu/**'
+      - 'board/common/kernel/drivers/gpio/ohc-iomcu-proto.h'
+      - '.github/workflows/io-mcu.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'board/common/firmware/io-mcu/**'
+      - 'board/common/kernel/drivers/gpio/ohc-iomcu-proto.h'
+      - '.github/workflows/io-mcu.yml'
+  workflow_dispatch:
+
+# A newer push to a branch supersedes the run; main queues instead.
+concurrency:
+  group: io-mcu-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  iomcu-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: make test
+        run: make -C board/common/firmware/io-mcu test

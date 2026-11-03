@@ -98,7 +98,7 @@ userspace: glibc, ICU, harfbuzz, libstdc++ and above all WPE WebKit (about
 compiler, so an object built for ea1-v2 is a hit for ea3-v2 and for the next
 run, the toolchain included.
 
-CI points `BR2_CCACHE_DIR` at a cached directory (`.github/workflows/ci.yml`)
+CI points `BR2_CCACHE_DIR` at a cached directory (`.github/workflows/images.yml`)
 and the whole EA family shares one key, so the first board fills it. Locally,
 with no directory set, it uses Buildroot's default and starts empty. The cap,
 `--max-size=3G`, keeps one family's cache from pushing the others out of

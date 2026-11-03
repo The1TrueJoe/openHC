@@ -12,7 +12,7 @@
 #
 # A restore that finds nothing, or fails part-way, leaves <dir> absent and exits
 # 0: the build then starts cold, which is slow but right. Only main saves (see
-# ci.yml), and main never runs two image builds at once, so there is one writer.
+# images.yml), and main never runs two image builds at once, so there is one writer.
 # The manifest is deleted before the parts are replaced and uploaded after, so a
 # reader never follows a manifest into parts that are mid-replace.
 #

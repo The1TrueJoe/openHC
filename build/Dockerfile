@@ -25,34 +25,18 @@ RUN cargo build --release -p ohc-flash-cli
 
 FROM debian:bookworm-slim AS build-env
 
-# Only BUILDROOT_REF belongs up here: it is consumed by the git clone below.
 # BR2_JLEVEL and BOARD are declared immediately before the one RUN that uses
 # them, because an ARG invalidates the layer cache from its DECLARATION
-# onward, not from first use. Declared here, changing the job count re-ran
+# onward, not from first use. Declared up here, changing the job count re-ran
 # apt-get and re-cloned Buildroot before reaching any of the real work.
-# Same Buildroot as .github/workflows/ci.yml (a commit or a tag).
-ARG BUILDROOT_REF=04b8e19efd4b7085583cdc3fe099890a04abbc9e
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential bc bison flex git rsync unzip wget cpio file figlet \
-        python3 libncurses-dev libssl-dev libelf-dev pkg-config ca-certificates perl patch xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN git init -q /opt/buildroot \
-    && git -C /opt/buildroot fetch -q --depth 1 https://github.com/buildroot/buildroot "$BUILDROOT_REF" \
-    && git -C /opt/buildroot checkout -q FETCH_HEAD
-
-# Patches to Buildroot ITSELF, as opposed to BR2_GLOBAL_PATCH_DIR which patches
-# package *sources*. Needed when the thing to change is a .mk or a Config.in --
-# e.g. a dependency that does not apply to this hardware. Applied with --forward
-# so a patch that upstream has since adopted is skipped rather than fatal.
-COPY build/buildroot-patches /tmp/br-patches
-RUN set -e; for p in /tmp/br-patches/*.patch; do \
-        [ -e "$p" ] || continue; \
-        echo ">> buildroot patch: ${p##*/}"; \
-        patch -d /opt/buildroot -p1 --forward --batch < "$p" || \
-            { echo "!! failed: ${p##*/}" >&2; exit 1; }; \
-    done
+# The same host packages and Buildroot (build/buildroot.ref + its patches) as
+# CI and a native build, from the same scripts.
+COPY build/deps.sh /tmp/br/build/
+RUN bash /tmp/br/build/deps.sh && rm -rf /var/lib/apt/lists/*
+COPY build/buildroot.ref build/fetch-buildroot.sh /tmp/br/build/
+COPY build/buildroot-patches /tmp/br/build/buildroot-patches
+RUN bash /tmp/br/build/fetch-buildroot.sh /opt/buildroot
 
 COPY --from=flasher /f/target/release/ohc-flash /usr/local/bin/ohc-flash
 

@@ -1,0 +1,48 @@
+# A static i686 kexec for the VENDOR userspace (Control4 OS 3.x), the one the
+# flasher pushes to a stock HC-800. Every hc800 image bundles its own copy too.
+name: tools
+
+# Runs only for its own paths. ci-ok.yml turns the result into the required
+# ci-ok status.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tools.yml'
+      - '.github/scripts/fetch.sh'
+      - 'build/kexec-i686.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tools.yml'
+      - '.github/scripts/fetch.sh'
+      - 'build/kexec-i686.sh'
+  workflow_dispatch:
+
+# A newer push to a branch supersedes the run; main queues instead.
+concurrency:
+  group: tools-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  tools-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install a 32-bit toolchain
+        run: bash build/deps.sh --kexec
+
+      - name: Build and verify static i686 kexec
+        run: bash build/kexec-i686.sh kexec-i686-static
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kexec-i686-static
+          path: kexec-i686-static
+          retention-days: 30
+          if-no-files-found: error

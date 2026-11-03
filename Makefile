@@ -54,12 +54,13 @@ NETBOOT_ARGS = --board $(BOARD) \
                $(if $(OFFER_IP),--offer-ip $(OFFER_IP)) \
                $(if $(SERIAL_PORT),--serial-port $(SERIAL_PORT))
 
-.PHONY: help image webd netboot probe serial gui discover flash verify selftest clean distclean
+.PHONY: help image native webd netboot probe serial gui discover flash verify selftest clean distclean
 
 help:
 	@echo "openHC — Control4 EA-series kernel-up build"
 	@echo ""
 	@echo "  make image [BOARD=...]       build the netboot kernel image (Docker Buildroot)"
+	@echo "  make native [BOARD=...]      build it natively on Linux, as CI does (build/image.sh)"
 	@echo "  make webd  [BOARD=...]       build the webd dashboard (Rust+React) into the overlay"
 	@echo "  make netboot                 serve $(IMAGE) to the target (EA CEFDK path)"
 	@echo "  make probe                   drop CEFDK to its shell (cookie, no kernel)"
@@ -93,6 +94,12 @@ image:
 	DOCKER_BUILDKIT=1 docker build -f build/Dockerfile --target artifacts \
 		--build-arg BOARD=$(BOARD) $(if $(JOBS),--build-arg BR2_JLEVEL=$(JOBS)) \
 		--output type=local,dest=output/images .
+
+# The CI build on this machine (Linux): Buildroot, the daemons, the hc800
+# kexec and the flasher bundle, from the same build/ scripts. Host packages
+# first: build/deps.sh. See build/image.sh.
+native:
+	$(if $(JOBS),BR2_JLEVEL=$(JOBS)) build/image.sh $(BOARD)
 
 # Build the webd dashboard (Rust server + embedded React UI) on the host and
 # stage it into board/common/rootfs-overlay/opt/ohc/bin, so the next `make image`

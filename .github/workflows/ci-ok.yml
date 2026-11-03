@@ -1,0 +1,73 @@
+# The one required check, ci-ok, for workflows that run only on their own paths.
+#
+# Each area (docs, flasher, daemons, io-mcu, tools, images) is path-filtered, so
+# a PR starts only the ones it touches, and a check from a workflow that never
+# starts would stay "expected" forever. So ci-ok is a commit STATUS, not a job:
+# this workflow runs when a PR is opened or pushed and again whenever one of the
+# areas finishes for it, looks at the area runs that exist for the PR's head
+# commit, and posts
+#   pending  while any of them is still running,
+#   failure  once any of them failed or was cancelled,
+#   success  when all of them passed, or none was needed.
+# Branch protection requires ci-ok from any source, so the status satisfies it.
+#
+# workflow_run fires only from this file's copy on the default branch: a PR
+# that adds an area gets ci-ok for it once that lands. The area list is the
+# workflow names below and AREAS in the script; keep them in step.
+name: ci-ok
+
+on:
+  pull_request:
+  workflow_run:
+    workflows: [docs, flasher, daemons, io-mcu, tools, images]
+    types: [completed]
+
+# One evaluation per commit at a time. A queued one replaced by a newer event
+# is fine: each reads the current state of every run.
+concurrency:
+  group: ci-ok-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  statuses: write
+
+jobs:
+  status:
+    # Main pushes need no status; a PR's runs do.
+    if: github.event_name == 'pull_request' || github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post ci-ok
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+          EVENT: ${{ github.event_name }}
+          AREAS: docs flasher daemons io-mcu tools images
+        run: |
+          set -euo pipefail
+          # The area runs for this event are created with this one; give the
+          # API a moment so none is missed and ci-ok goes green too early.
+          [ "$EVENT" = pull_request ] && sleep 30
+          names=$(jq -nc --arg a "$AREAS" '$a | split(" ")')
+          # The newest run of each area for this commit (a re-run keeps its id).
+          runs=$(gh api --paginate "repos/$R/actions/runs?head_sha=$SHA&event=pull_request&per_page=100" \
+                   -q '.workflow_runs[]' | jq -sc --argjson n "$names" \
+                   '[.[] | select(.name as $x | $n | index($x))] | group_by(.name) | map(max_by(.id))
+                    | map({name, status, conclusion, url: .html_url})')
+          echo "$runs" | jq -r '.[] | "\(.name): \(.status) \(.conclusion // "")"'
+          state=$(echo "$runs" | jq -r '
+            if any(.[]; .status == "completed" and (.conclusion | IN("success","skipped","neutral","action_required") | not)) then "failure"
+            elif any(.[]; .status != "completed" or .conclusion == "action_required") then "pending"
+            else "success" end')
+          desc=$(echo "$runs" | jq -r '
+            if length == 0 then "no area workflow needed"
+            else map(.name + " " + (if .status != "completed" then "running" else .conclusion end)) | join(", ") end' | cut -c1-140)
+          # Link the first failing (else running, else any) run.
+          url=$(echo "$runs" | jq -r '
+            (map(select(.status == "completed" and (.conclusion | IN("success","skipped","neutral") | not))) +
+             map(select(.status != "completed")) + .)[0].url // empty')
+          echo "ci-ok: $state ($desc)"
+          gh api "repos/$R/statuses/$SHA" -f state="$state" -f context=ci-ok \
+            -f description="$desc" ${url:+-f target_url="$url"} >/dev/null
