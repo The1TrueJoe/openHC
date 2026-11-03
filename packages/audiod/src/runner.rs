@@ -106,9 +106,10 @@ fn output_stages(p: &Port, shared: &str, eq: bool) -> String {
     let below_vol = if eq {
         let name = format!("{}_eq", p.pcm);
         s += &format!(
-            "pcm.{name} {{\n    type ohceq\n    slave.pcm \"{shared}\"\n    card \"{card}\"\n    control \"{pcm}\"\n}}\n",
+            "pcm.{name} {{\n    type ohceq\n    slave.pcm \"{shared}\"\n    card \"{card}\"\n    control \"{pcm}\"\n    format \"{format}\"\n}}\n",
             card = p.card(),
             pcm = p.pcm,
+            format = p.format.as_deref().unwrap_or("S16_LE"),
         );
         name
     } else {
@@ -440,7 +441,7 @@ mod tests {
             inputs: vec![], rate: 44100, helpers: vec![], product: String::new(),
         };
         let a = asound_conf(&b, true);
-        assert!(a.contains("pcm.ohc_analog2_eq {\n    type ohceq\n    slave.pcm \"ohc_analog2_swap\"\n    card \"Intel\"\n    control \"ohc_analog2\"\n}"), "{a}");
+        assert!(a.contains("pcm.ohc_analog2_eq {\n    type ohceq\n    slave.pcm \"ohc_analog2_swap\"\n    card \"Intel\"\n    control \"ohc_analog2\"\n    format \"S16_LE\"\n}"), "{a}");
         assert!(a.contains("pcm.ohc_analog2_vol {\n    type softvol\n    slave.pcm \"ohc_analog2_eq\""));
         assert!(!asound_conf(&b, false).contains("ohceq"));
     }
