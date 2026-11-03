@@ -116,12 +116,16 @@ Input (IN0) ───┼ EQ31 → EQ63 → … → EQ16k ─────┼→ M
 | `BalanceLeft`, `BalanceRight` | the indexed filter block again, one channel each, as a gain table: one index, `BalanceIndex`, drives both |
 | `Volume` | a stereo volume, linear gain per channel |
 | `Out*`, `Output_0/1` | left and right to the first two channels of **all four** serial outputs (channels 0/1, 16/17, 32/33, 40/41), until it is known which one feeds the AK4621 |
-| `Version` | an integer DC cell holding the program's version (3), for the driver's check |
+| `LineIn` | ASRC 0's two channels: the init points ASRC 0 at serial input 2, the AK4621's ADC |
+| `LineInDCBlock` | `GenSecondOrder`, one stage, a first-order 10 Hz high-pass (mkfw writes it) |
+| `Output_0/1` | the DC-blocked line in, to serial output 0 (channels 0/1), which reaches the CE5300's RX0 |
+| `Version` | an integer DC cell holding the program's version (4, at 0x0e02), for the driver's check |
 
-The line in bypasses the program: the init points ASRC 0 at serial input 2
-(the AK4621's ADC) and makes serial output pair 0, SDATA_OUT0, take ASRC 0's
-output (`SOUT_SOURCE0` = 3), so the CE5300's RX0 receives the line in whatever
-the program does. The program's own `Output_0/1` on that pair are overridden.
+The line in never reaches the DAC: `LineIn → LineInDCBlock → Output_0/1` is a
+path of its own. The DC block is first order on purpose. A second-order 10 Hz
+high-pass put both poles 0.0009 from the unit circle and amplified the
+program's rounding into −34 dBFS of DC and a 5 Hz wander; with one pole the
+line in idles at −97 dBFS of DC and −108 dBFS of noise.
 
 The export becomes two files, `export2program.py`'s output:
 
@@ -190,9 +194,8 @@ undocumented 0xF431 and 0xF800–0xF847.
   instead (`ASRC_INPUT0` = 0x81, serial input 2, channels 32/33).
 * **Every output channel comes from the DSP core** (`SOUT_SOURCE0..23` = 2);
   which output pin carries the program's output to the AK4621 is the program's
-  business, not the registers'. openHC's init sets pair 0 to 3, ASRC 0's
-  output, for the line in (measured: 1 is serial input 0 passed straight
-  through, 4–7 silence).
+  business, not the registers'. Measured on pair 0: 1 passes serial input 0
+  straight through, 3 is ASRC 0's output, 4–7 are silence.
 * The clock generators are set (÷8, ÷8, ÷5) but feed nothing: no port is a
   master and neither the core nor an ASRC selects them.
 * **MP6 and MP7** are outputs with pull-ups, driven by the program.
@@ -360,7 +363,8 @@ reaches the CE5300 (switching its `SOUT_SOURCE` off silences RX0; pairs 16 and
 20 change nothing). With the line out cabled to the line in, a −12 dBFS 1 kHz
 left / 1.5 kHz right tone played on `hw:openhcea,0` records on the same
 device's capture at −12.1 dBFS peak, left on left, THD −109 / −104 dB and
-THD+N −88 / −90 dB (the cable's 120 Hz hum, −73 dBFS, sets the noise).
+THD+N −88 / −89 dB, through the program's DC block: idle, −97 dBFS of DC and
+−108 dBFS of noise.
 
 The line out was measured end to end by an openSpeakerPoint's line input
 (`cmd/audio/measure`: per-channel RMS, peak and pitch). It also caught, on

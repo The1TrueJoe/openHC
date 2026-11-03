@@ -307,9 +307,10 @@ own level.
 ## Line in
 
 Device 0 records too: the line in, through the AK4621's ADC, the DSP and back
-to the CE5300. The ADC is the DSP's serial input 2; ASRC 0 takes it to serial
-output 0 (`SOUT_SOURCE0` = 3), which reaches the CE5300's RX0 (stock's
-`0x4d2`: RX0, DMA 3, the I²S1 pins). RX0 runs 24 bits in 32 (`+0x3004` bit 7;
+to the CE5300. The ADC is the DSP's serial input 2; ASRC 0 brings it into the
+program, which takes its DC out (a first-order 10 Hz high-pass) and sends it to
+serial output 0, the pair that reaches the CE5300's RX0 (stock's `0x4d2`: RX0,
+DMA 3, the I²S1 pins). It never reaches the DAC. RX0 runs 24 bits in 32 (`+0x3004` bit 7;
 without it, two 16-bit samples per word), S32_LE at 48 kHz. It follows the
 coax in's capture path (below), with one difference measured on the way:
 read by hand after its FIFO reset RX0 gives the left sample first, but through
@@ -318,8 +319,8 @@ word by hand. audiod has it as the `linein` input.
 
 With the line out cabled to the line in (2026-11-03), a −12 dBFS tone,
 1 kHz left and 1.5 kHz right, played on device 0 records on device 0 at
-−12.1 dBFS peak, left on left, THD −109 / −104 dB, THD+N −88 / −90 dB, the
-noise set by the cable's 120 Hz hum.
+−12.1 dBFS peak, left on left, THD −109 / −104 dB, THD+N −88 / −89 dB. Idle,
+the line in reads −97 dBFS of DC and −108 dBFS of noise.
 
 ## Coax out and in
 
