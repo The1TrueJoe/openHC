@@ -191,15 +191,58 @@ code, and why the ordering is always: **prove it in RAM, then write it.**
 | `/mnt/persistent` (p3) | 32 MB | small, cheap |
 | p2 recovery partition | 1 GB | the thing you are protecting |
 
-Back up the kernel region specifically before touching it:
+#### Taking them from a stock box
+
+Stock has nowhere to hold a 7.6 GB image, so stream everything to another
+machine over root SSH. Stock Dropbear has no `sftp-server`, so `scp` fails; pipe
+`dd`/`cat` through `ssh` instead. Compress on the receiving end, because the
+CE5300 is the bottleneck.
 
 ```sh
-dd if=/dev/mmcblk0 bs=512 count=14000 of=/mnt/backup/kernel-slot.bin
+# the whole user area: partitions, the CEFDK kernel slot below p1, the gaps
+ssh root@BOX 'dd if=/dev/mmcblk0 bs=1M' | gzip -1 > ea-mmcblk0.img.gz
+
+# SPI NOR (MFH + CEFDK) is a separate chip, not on the eMMC
+ssh root@BOX 'cat /dev/mtd0ro' > ea-spinor.bin
+
+# eMMC hardware boot partitions, if `ls /dev/mmcblk0*` shows them
+ssh root@BOX 'cat /dev/mmcblk0boot0' > ea-mmcblk0boot0.bin
+ssh root@BOX 'cat /dev/mmcblk0boot1' > ea-mmcblk0boot1.bin
+```
+
+If the old Dropbear won't negotiate, add
+`-o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`.
+
+Verify each image against the device, not just its size:
+
+```sh
+ssh root@BOX 'md5sum /dev/mmcblk0'
+gunzip -c ea-mmcblk0.img.gz | md5sum
+```
+
+Stock busybox is missing some tools (`od`, for one). Without `md5sum`, stream
+twice and compare the two files.
+
+:::caution[A live stock box gives a crash-consistent image, not an exact one]
+Stock runs with p1 (root) and p3 (`/mnt/persistent`) mounted read-write, and
+Director writes to them. Those two come out as if the power had been cut at that
+moment. Everything unmounted (p2, the kernel slot, the boot partitions, NOR)
+comes out exact. `sync` first and image while nothing is being configured. For a
+byte-perfect copy, run the same `dd` from a system that doesn't mount p1 or p3,
+such as a RAM [netboot](/build/install/#non-destructive-first-netboot), which writes nothing.
+:::
+
+To grab just the region below p1 (the kernel slot) before touching it:
+
+```sh
+ssh root@BOX 'dd if=/dev/mmcblk0 bs=512 count=$(cat /sys/class/block/mmcblk0p1/start)' > ea-below-p1.bin
 ```
 
 Backups are **your device's own data, kept local.** They contain Control4 and
 Intel proprietary code and must never be committed or redistributed — `.gitignore`
-excludes them. They exist so a unit can be put back exactly as it was.
+excludes them. They exist so a unit can be put back exactly as it was. See
+[the GPL drop](/shared/gpl-source/) for what Control4 does and doesn't
+give us rights to.
 
 ## CA-1
 
@@ -285,29 +328,3 @@ If DHCP succeeds but TFTP doesn't answer, U-Boot loops forever — it ignores IC
 port-unreachable. Recovery to stock needs **either** no DHCP (so `tst` aborts)
 **or** a definitive TFTP *error* reply.
 :::
-
-## The clean-room boundary
-
-Stock firmware is read to learn **interfaces**, the boot flow, a wire protocol,
-GPIO names, which UART is which. Control4 and Intel code is not copied into
-anything openHC ships. A netbooted kernel is an independent implementation written
-from observed behaviour.
-
-The genuinely unresolved tension is the vendor Android UI on the EA boards.
-Keeping *Control4's* build is a redistribution problem even though it runs fine.
-Options, cleanest first:
-
-1. build our own AOSP container targeting the same graphics interface;
-2. ship a non-Android UI on that plane;
-3. treat the stock container as *the user's own existing files*, left in place on
-   their unit and never redistributed by us.
-
-Option 3 is fine for personal bring-up on your own box and is what the milestones
-assume. **It isn't distributable.** Decide before publishing images.
-
-The licence position on the kernel side is better than expected, every graphics
-kernel module on the EA boards declares Dual BSD/GPL or Dual MIT/GPL, so the
-kernel modules are redistributable. The proprietary surface shrinks to the
-PowerVR userspace driver and the Android container itself. See
-[the GPL drop](/shared/gpl-source/) for what Control4 does and doesn't
-give us rights to.

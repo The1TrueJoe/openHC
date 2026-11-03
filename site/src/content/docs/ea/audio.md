@@ -375,6 +375,60 @@ audiod's tone stage, `ohceq`, used to take 16-bit samples only, so no output
 with `format=S32_LE` (HDMI on every EA, the coax out) opened through audiod at
 all; it now takes the output's format from its config.
 
+## Coax out and in
+
+The coax jacks are the CE5300's S/PDIF transmitter and receiver, and
+`ce5300-i2s` gives each a PCM on the `openhcea` card: device 1 plays to the
+coax out, device 2 records the coax in (device 0 is the analog out). Both are
+S32_LE stereo at 48 kHz, 24 bits in 31:8; audiod has them as the `coax` output
+and the `coaxin` input. They come from stock's context map (`ismdaudio.ko`):
+
+| | Context | DMA | Stock id |
+|---|---|---|---|
+| Coax out | TX2, output select 3 (S/PDIF) | 2 | `0x3d3` |
+| Coax in | RX1, input select 2 (S/PDIF) | 4 | `0x4d3` |
+
+**Out** starts at probe like TX0 (stock's TX0 values, then run and a few zero
+words), so the line carries a stream from boot and a receiver locks once. Its
+`+0x14` is **4**, half TX0's: S/PDIF's biphase line runs at 128 fs where the
+I²S bit clock runs at 64 fs, and at TX0's 8 the coax out ran at exactly half
+TX0's frame rate. Like `TX_CTRL`, it ignores writes while TX2 runs. Playback
+starts and stops as TX0's does.
+
+**In** is stock's `capture_start`: the RX run bit, then the RX FIFO port
+(`+0x3118`) as the DMA's source (`+0x1110`), the head descriptor, and the
+capture mode word, `0x20005569`, render's mirrored (the source fixed, the
+destination walking, 128-byte bursts); the position is the destination
+(`+0x1114`). Three things measured on the way:
+
+- RX1's FIFO reset (`+0x3100` bit 3) puts `+0x04` (its DMA binding, bits
+  19:17), `+0x0c` and `+0x1c` back to their reset values, so they are set after
+  it. Unbound, the DMA reads the FIFO port unpaced and overruns at once.
+- The receiver starts on whichever subframe comes first. Bit 3 of a word marks
+  the left subframe of a block's first frame (the Z preamble, every 192
+  frames), so capture start reads the FIFO by hand through one and its right
+  partner, and the DMA's first word is a left subframe. With no input it gives
+  up after 10 ms.
+- A capture engine finishes a descriptor only while words arrive, so with the
+  coax in dead a stopped stream can sit in one. Prepare refuses with `-EBUSY`
+  until it has halted rather than rewrite a ring the engine walks.
+
+A buffer must be whole periods (one descriptor per period): 24000 frames in
+6016-frame periods played 3 × 6016 and skipped the rest, on every output.
+
+**Measured on an EA3** (2026-11-03, coax out cabled to coax in, RAM boot): a
+5 s counting pattern (24-bit counter left, its complement right) played into
+device 1 and recorded on device 2 came back as one unbroken run, every frame
+bit for bit and left on left, in 3 of 3 captures; the only difference is the
+block flag in the low byte. An S16 tone through audiod's `ohc_coax` (softvol,
+`ohceq`, dmix) arrives at its own level, 1 kHz left and 1.5 kHz right. Twelve
+plays and recordings killed mid-stream left every DMA context idle, with no
+warning.
+
+audiod's tone stage, `ohceq`, used to take 16-bit samples only, so no output
+with `format=S32_LE` (HDMI on every EA, the coax out) opened through audiod at
+all; it now takes the output's format from its config.
+
 :::danger[Do not poke this device with devmem]
 An unbound PCI function may have memory decode off or sub-blocks unclocked.
 Doing exactly that at offsets `0xc000`/`0xf000` **hung an EA3 hard** and cost a
