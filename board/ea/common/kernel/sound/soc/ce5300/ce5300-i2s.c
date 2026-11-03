@@ -224,7 +224,13 @@ static void ce5300_rx_setup(struct ce5300_stream *st)
 {
 	struct ce5300_i2s *i2s = st->i2s;
 
-	/* An empty FIFO, so no stale words lead the stream; it resets the rest. */
+	/*
+	 * Stopped (a stop that timed out on a dead input leaves it running, so a
+	 * returning signal can finish the descriptor), with an empty FIFO and its
+	 * sync error cleared; the FIFO reset resets the rest.
+	 */
+	ce5300_update(i2s, st->ctx, CE5300_TX_RUN, 0);
+	writel(1, i2s->base + st->ctx + CE5300_RX_SYNC);
 	ce5300_update(i2s, st->ctx, CE5300_CTX_FIFO_RESET, CE5300_CTX_FIFO_RESET);
 	ce5300_update(i2s, st->ctx, CE5300_CTX_FIFO_RESET, 0);
 	ce5300_update(i2s, st->ctx, CE5300_CTX_SEL_MASK, st->rx_sel << CE5300_CTX_SEL_SHIFT);
