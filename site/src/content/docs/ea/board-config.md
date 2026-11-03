@@ -39,8 +39,9 @@ generated from the board name. The composition order is on the
 [build page](/build/#how-the-configuration-is-assembled).
 
 A feature is one directory, `features/<name>/`, at any layer: `defconfig`
-(packages), `linux.fragment` (kernel), `rootfs-overlay/` (files) and `requires`
-(other features). A feature with a device-tree half, `ea-<name>.dtsi`, must be
+(packages), `linux.fragment` (kernel), `rootfs-overlay/` (files), `board.env`
+(placed after the family's), `packages` (Rust crates) and `requires` (other
+features). A feature with a device-tree half, `ea-<name>.dtsi`, must be
 included exactly when the board selects it; `build/build.sh` refuses a board
 where the two disagree.
 
@@ -190,7 +191,7 @@ Which board gets which feature is in the family, model and variant
 | `restore` | kexec | The `restore` package edits the MFH over `/dev/mtd0` and, for a full restore, kexecs p2's recovery kernel. MTD is already in `common.fragment`. See [recovery](/shared/recovery/#openhcs-own-software-return-to-stock) |
 | `sgx` | `sgx545-srvinit` | The kernel driver (PCI `01:02.0`, `8086:089b`, ported from Intel's Cedarview GPL DDK 1.7) is the `kernel/` of the `board/ea/common/sgx545-ce` submodule, built as `CONFIG_SGX545_CE=m`, giving `/dev/dri/card0`. srvinit is the open GPU bring-up, run once by `S60sgx`. See [graphics](/ea/graphics/#bringing-the-gpu-up-at-boot) |
 | `switch` | iproute2, bridge-utils | switchd needs iproute2: `bridge vlan` is how 802.1Q filtering is offloaded to the b53, and `brctl` cannot filter VLANs at all. bridge-utils is only kept for habit and scripts |
-| `wifi` | wpa_supplicant (nl80211, CLI, passphrase), iw, `S40wifi` | Boards with the ath9k radio |
+| `wifi` | wpa_supplicant (nl80211, CLI, passphrase), iw, the setup portal; from `board/common/features/wifi`: hostapd, dnsmasq, the setup-AP templates, `OHC_WIFI_IFACE=wlan0` | Boards with the ath9k radio. No network is built in: see [Wi-Fi](#wi-fi) |
 | `wpe` | `sgx545-um`, wpewebkit, `wpebackend-pvr`, `webview` | The proprietary half of 3D: DDK 1.7 EGL + GLES2, fetched at build, not vendored. It must be the same DDK version as the driver, which refuses a mismatch on connect. Buildroot also builds wpebackend-fdo and Wayland for wpewebkit; nothing uses them. `wpebackend-pvr` is the libwpe backend that reaches the display; `webview` puts a page on screen (WebKit is built without MiniBrowser). Split from `sgx` so the open driver and the blobs are separable |
 
 **`BR2_PACKAGE_SHAIRPORT_SYNC_ALSA` does not exist.** shairport-sync always
@@ -233,6 +234,16 @@ is one description that cannot disagree with itself. The combo jacks are the
 MCU-routed UARTs: a jack is IR or serial, never both. `OHC_SERIALS` is empty on
 all EA boards. See [the IO-MCU](/shared/io-mcu/) and
 [IO naming](/shared/io-naming/).
+
+### Wi-Fi
+
+No Wi-Fi network is built into any image. A board with the `wifi` feature runs
+the shared `S41wifi-ap`: with no wired network it joins the saved network in
+`/etc/wpa_supplicant/wpa_supplicant-wlan0.conf`, and with none saved it raises an
+open setup AP named for the hostname, whose captive portal saves the network
+(webd's `/api/wifi/connect` does the same over the wired link). `S45netmon`
+switches back to Ethernet when a cable comes up. The saved file is on p1, so a
+fresh install of p1 needs the network set again.
 
 ### Zigbee
 

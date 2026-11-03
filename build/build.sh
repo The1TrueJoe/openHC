@@ -146,7 +146,7 @@ done
 #   kernel:   family linux/common.fragment, model + board linux.fragment, features,
 #             then a generated one naming the built-in DTB
 #   overlays: fleet, family, features, model, board, then the generated board.env
-#   board.env: family + model + board board.env, concatenated (later wins)
+#   board.env: family, features, model, board board.env, concatenated (later wins)
 #   DT:       the board's .dts plus every .dtsi in the model and board dirs
 BASE_FRAGMENTS=""; BASE_OVERLAYS=""; BOARD_DTS=""
 GEN="$OUT/ohc-generated"
@@ -165,7 +165,9 @@ if [ -n "$FAMILY_DIR" ]; then
         [ -d "$_s/rootfs-overlay" ] && BASE_OVERLAYS="$BASE_OVERLAYS $(rel "$_s/rootfs-overlay")"
     done
 
-    for _s in "$FAMILY_DIR" "$MODEL_DIR" "$BOARD_DIR"; do
+    _envs="$FAMILY_DIR"
+    for f in $FEATURES; do _envs="$_envs $(feature_dirs "$f")"; done
+    for _s in $_envs "$MODEL_DIR" "$BOARD_DIR"; do
         [ -f "$_s/board.env" ] && { echo "# --- ${_s#"$REPO/board/"}/board.env"; cat "$_s/board.env"; }
     done > "$GEN/overlay/opt/ohc/board.env"
 
