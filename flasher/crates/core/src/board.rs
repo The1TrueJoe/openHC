@@ -158,14 +158,15 @@ pub const BOARDS: &[Board] = &[
         name: "ea5",
         family: Family::Ea,
         desc: "EA5 (V1 Wi-Fi / V2, switch, audio FPGA)",
-        c4_type: None,
-        c4_revs: &[],
+        c4_type: Some(3),
+        c4_revs: &[4],
         secure_boot: true,
         has_switch: true,
         has_wifi: true,
         dmi: None,
-        notes: "ids and fuse state not yet read off hardware: installs by the autoscript \
-                path, as a blown-fuse board must. Netboot it first.",
+        notes: "ids read off a V1 (/proc/c4board type 3, revision 4); the V2's ids (type and \
+                revision) are not read yet. Fuse not boot-tested: installs by the autoscript path, as a \
+                blown-fuse board must. Netboot it first.",
         netboot: None,
     },
     Board {
