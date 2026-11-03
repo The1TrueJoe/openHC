@@ -106,6 +106,12 @@ def biquad(f, db, fs):
         alpha = s / (2 * f["q"])
         b = ((1 + c) / 2, -(1 + c), (1 + c) / 2)
         a = (1 + alpha, -2 * c, 1 - alpha)
+    elif kind == "highpass1":
+        # First order, bilinear. A DC blocker: one pole near 1 amplifies the
+        # program's rounding by 1/(1 - r); two would square it.
+        k = math.tan(math.pi * f["freq"] / fs)
+        b = (1, -1, 0)
+        a = (1 + k, k - 1, 0)
     elif kind in ("lowshelf", "highshelf"):
         alpha = s / 2 * math.sqrt((A + 1 / A) * (1 / f["slope"] - 1) + 2)
         sa = 2 * math.sqrt(A) * alpha
