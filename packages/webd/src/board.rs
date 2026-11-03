@@ -1,4 +1,4 @@
-//! Board IDENTITY and NETWORK, parsed from /opt/ohc/board.env.
+//! Board IDENTITY (the device tree's `model`) and NETWORK defaults (board.env).
 //!
 //! Deliberately does NOT model radios, serial ports or any other IO. Those moved
 //! to iod when it took ownership of the devices — webd describing ports it can
@@ -38,16 +38,23 @@ pub fn hostname() -> String {
         .unwrap_or_else(|_| "openhc".into())
 }
 
+/// The device tree's `model` (NUL-terminated); the HC-800 has a built-in tree too.
+pub fn model() -> String {
+    std::fs::read("/proc/device-tree/model")
+        .map(|m| String::from_utf8_lossy(&m).trim_end_matches('\0').trim().to_string())
+        .ok()
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "unknown".into())
+}
+
 impl Board {
     pub fn load(env_path: &str) -> Board {
         let e = read_env(env_path);
         Board {
-            model: e.get("OHC_MODEL").cloned().unwrap_or_else(|| "unknown".into()),
+            model: model(),
             hostname: hostname(),
             uplink_iface: e.get("OHC_UPLINK_IFACE").cloned().unwrap_or_else(|| "eth0".into()),
             wifi_iface: e.get("OHC_WIFI_IFACE").cloned().unwrap_or_default(),
         }
     }
-
-
 }

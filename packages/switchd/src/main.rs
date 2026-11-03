@@ -12,8 +12,7 @@
 //! `/switch`, so the browser sees one origin.
 //!
 //! "A service with nothing behind it does not appear": on a board with no
-//! managed switch `OHC_DSA_PORTS` is empty, and switchd exits 0 at once. The
-//! init script guards on the same variable, so this is belt-and-suspenders.
+//! managed switch the kernel has no DSA user ports, and switchd exits 0 at once.
 //!
 //! Two ways to run:
 //!   switchd apply   one-shot: load config, reconcile the kernel, write the
@@ -158,7 +157,7 @@ fn main() {
     // A board with no managed switch: nothing to own. Exit cleanly so neither
     // the boot nor the supervisor treats it as a failure.
     if ports.is_empty() {
-        eprintln!("switchd: no OHC_DSA_PORTS — this board has no managed switch, nothing to do");
+        eprintln!("switchd: no DSA user ports — no managed switch (or its driver is not bound), nothing to do");
         return;
     }
 

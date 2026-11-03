@@ -384,6 +384,15 @@ mod tests {
     }
 
     #[test]
+    fn openhc_release_names_the_exact_board() {
+        let id = board::from_release("openHC\nboard=ea1-v2-poe\nversion=abc-dev\n");
+        assert_eq!(id.board.unwrap().name, "ea1-v2-poe");
+        assert_eq!(id.running, Running::Openhc);
+        assert!(board::from_release("openHC\nboard=openhc\n").board.is_none());
+        assert!(board::from_release("").board.is_none());
+    }
+
+    #[test]
     fn openhc_and_cefdk_identify_too() {
         let id = board::from_board_env(|k| (k == "OHC_BOARD").then(|| "ea3-v2".into()));
         assert_eq!(id.board.unwrap().name, "ea3-v2");

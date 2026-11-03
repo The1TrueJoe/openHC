@@ -12,7 +12,7 @@
 #
 # WHY before S40net (S39 < S40): once the b53 driver binds, the SoC MAC becomes
 # the switch's DSA CPU port and the real jacks appear as lan1/lan2. S40net brings
-# those up (OHC_DSA_PORTS) and, if DSA has NOT attached, falls back to the master
+# those up (the DSA user ports the kernel created) and, if DSA has NOT attached, falls back to the master
 # — so loading here gives DSA the chance to attach first. modprobe b53_spi pulls
 # b53, dsa_core and the Broadcom tag module via modules.dep.
 #
@@ -66,7 +66,7 @@ start() {
 # S40net (S40) leases, so the bridge is the interface that gets the address.
 # switchd apply is idempotent, best-effort, and writes the L3 handoff
 # (/run/ohc/net.conf) that S40net reads. A no-op where switchd is not shipped
-# (boards without the `switch` feature) or OHC_DSA_PORTS is empty.
+# (boards without the `switch` feature) or the kernel created no DSA user ports.
 apply_topology() {
     # Switch-off gate, same as start(): the case below calls apply_topology
     # UNCONDITIONALLY after start() (start only `return`s from the function when
@@ -79,9 +79,7 @@ apply_topology() {
         *) return 0 ;;
     esac
     [ -x /opt/ohc/bin/switchd ] || return 0
-    [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
-    export OHC_DSA_PORTS
-    [ -n "$OHC_DSA_PORTS" ] || return 0
+    [ -n "$(ohc-hw dsa-ports)" ] || return 0
     /opt/ohc/bin/switchd apply
 }
 

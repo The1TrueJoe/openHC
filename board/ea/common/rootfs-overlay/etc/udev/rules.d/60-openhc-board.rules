@@ -1,0 +1,6 @@
+# EA family: which tty is what (see 70-openhc-io.rules for the properties).
+
+# EM357 Zigbee NCP behind a CP2104 (10c4:ea60) on an internal USB host (01:0d.2
+# on an EA1). The rear USB port is 01:0d.1, so a CP210x plugged in there is not it.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ENV{OHC_RADIO}="zigbee"
+SUBSYSTEM=="tty", KERNELS=="0000:01:0d.1", ENV{OHC_RADIO}=""

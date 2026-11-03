@@ -170,7 +170,8 @@ points at the firmware node and dmesg.
 The IO Extender has no microcontroller, and the same rule holds there: iod
 counts the `relay1..N` / `contact1..N` lines its device tree names and the
 `openHC IR out N` lirc devices its IR driver registers. No board's `board.env`
-counts IO; it only says how the IO is reached (`OHC_IO_BACKEND`).
+says anything about IO: iod tells the backends apart by what the kernel
+registered (see [hardware from the kernel](/shared/hardware-from-the-kernel/)).
 
 ## What each board actually gets
 
