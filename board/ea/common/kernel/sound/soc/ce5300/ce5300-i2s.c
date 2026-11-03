@@ -23,14 +23,12 @@
  * card, so the codec's DSP controls exist and can be tuned, while anything
  * opening the PCM gets -ENODEV at once rather than reaching a TX register.
  *
- * CORRECTION, measured 2026-08-30: this file used to claim pcim_enable_device()
- * made a full register dump safe. It does not. With the device bound and
- * enabled, reading the TX block at 0x2004 still hangs the SoC dead -- same
- * failure as poking it with devmem while unbound. BAR0 +0x00 answers, so the
- * function decodes, but the TX/DMA sub-blocks appear to be clock-gated or held
- * in reset behind the Clock and Reset Controller (00:00.2, 8086:2e52) that
- * CEFDK never ungates. Ungating that is a prerequisite for audio, and is not
- * done yet. See ce5300_dump().
+ * The block itself does come up, and probe brings it up whatever enable_pcm
+ * says, because the I2S clocks are what the rest of the EA3's audio runs on
+ * (ce5300_hw_start()). Reading the TX block used to hang the SoC dead (measured
+ * 2026-08-30): CEFDK leaves the block clocked but held in its own reset,
+ * +0x00 bit 1, and the TX/DMA sub-blocks do not answer until that is released
+ * (measured 2026-11-02, with the release stock's driver does first).
  *
  * Pass ce5300_i2s.enable_pcm=1 once the inferred fields are confirmed.
  *
@@ -101,43 +99,101 @@ static void ce5300_update(struct ce5300_i2s *i2s, u32 off, u32 mask, u32 val)
 	writel(v, i2s->base + off);
 }
 
+static bool clocks = true;
+module_param(clocks, bool, 0444);
+MODULE_PARM_DESC(clocks,
+		 "Start TX0 at probe so the I2S clocks run, as stock does (the EA3's DSP and DAC have no clock otherwise)");
+
 /*
- * Dump the registers we care about.
+ * A context's reset, the vendor's tx_reset/rx_reset: control word set, FIFO
+ * reset pulsed (+0x00 bit 3), then bits of +0x10 cleared -- 0x120 for a TX
+ * context, 0x100 for an RX one. TX and RX lay these out the same way. The
+ * vendor writes 0 to the control word; the idle contexts of a playing stock
+ * unit read 0x000e0000 (TX) and 0x001e0000 (RX) instead -- also their reset
+ * values, with the DMA-context field at 7, none -- so that is what goes in,
+ * rather than binding every idle context to DMA 0.
+ */
+static void ce5300_ctx_reset(struct ce5300_i2s *i2s, u32 ctx, u32 ctrl, u32 clear10)
+{
+	writel(ctrl, i2s->base + ctx + 0x04);
+	ce5300_update(i2s, ctx, CE5300_CTX_FIFO_RESET, CE5300_CTX_FIFO_RESET);
+	ce5300_update(i2s, ctx, CE5300_CTX_FIFO_RESET, 0);
+	ce5300_update(i2s, ctx + 0x10, clear10, 0);
+}
+
+/*
+ * Bring the block out of reset and, with clocks=1, start TX0.
  *
- * DANGER, MEASURED ON HARDWARE 2026-08-30: reading the TX block at 0x2004
- * HANGS THE SoC DEAD. The kernel printed the BAR0 word below and never printed
- * another line -- no panic, no timeout, the machine simply stopped:
+ * The CE5300 is the bit- and frame-clock master of the EA3's I2S: every
+ * serial port of the ADAU1451 is a slave, and the AK4621 behind it is
+ * strapped standalone. Stock keeps its render pipeline running when nothing
+ * plays, so those clocks never stop. Stopped, as CEFDK leaves them, the DSP
+ * core sleeps waiting for a first frame and nothing reaches the jacks, not
+ * even the DSP's own test tone. MEASURED 2026-11-02 on an EA3 (the DSP
+ * README): with TX0 started this way the core runs, and the tone plays.
  *
- *     ce5300-i2s 0000:01:06.2: BAR0 phys 0xdfa80000, +0x00 = 0x00000001
- *     <end of kernel log>
- *
- * pcim_enable_device() is NOT sufficient, which this file previously claimed.
- * BAR0 +0x00 answers, so the function decodes; the TX/DMA sub-blocks do not,
- * and the most likely reason is that they are still clock-gated or in reset
- * behind the SoC's Clock and Reset Controller (PCI 00:00.2, 8086:2e52). CEFDK
- * never ungates them because Control4's media stack is what used them.
- *
- * So the wide dump is opt-in and the default probe touches exactly one register
- * that is known to answer. Turning dump_regs on before the clock question is
- * settled will hang the box, and it takes a power cycle to get back.
+ * The order is stock's: audio_ce53xx_hal_io_reset_hw (clock on, reset pulsed,
+ * every DMA/TX/RX context reset, interrupts cleared and masked), then the
+ * render path's pin and clock setup. TX0's own registers take the values a
+ * playing stock unit holds. Its clocks start only once the FIFO has had data
+ * and run on through underruns, so a few zero words prime it.
+ */
+#define CE5300_PRIME_WORDS	32
+
+static void ce5300_hw_start(struct ce5300_i2s *i2s)
+{
+	u32 tx = CE5300_TX_REG(i2s->tx, 0);
+	unsigned int i;
+
+	ce5300_update(i2s, CE5300_GLOBAL, CE5300_GLOBAL_CLK_EN, CE5300_GLOBAL_CLK_EN);
+	ce5300_update(i2s, CE5300_GLOBAL, CE5300_GLOBAL_RUN, 0);
+	ce5300_update(i2s, CE5300_GLOBAL, CE5300_GLOBAL_RUN, CE5300_GLOBAL_RUN);
+
+	for (i = 0; i < CE5300_DMA_CONTEXTS; i++)
+		writel(0, i2s->base + CE5300_DMA_REG(i, CE5300_DMA_CTRL));
+	for (i = 0; i < CE5300_TX_CONTEXTS; i++)
+		ce5300_ctx_reset(i2s, CE5300_TX_REG(i, 0), CE5300_TX_IDLE_04, 0x120);
+	for (i = 0; i < CE5300_RX_CONTEXTS; i++)
+		ce5300_ctx_reset(i2s, CE5300_RX_REG(i, 0), CE5300_RX_IDLE_04, 0x100);
+	writel(CE5300_IRQ_STATUS_ALL, i2s->base + CE5300_IRQ_STATUS);
+	writel(0, i2s->base + CE5300_IMRX);
+
+	if (!clocks)
+		return;
+
+	ce5300_update(i2s, CE5300_GLOBAL, CE5300_GLOBAL_I2S0_OUT, CE5300_GLOBAL_I2S0_OUT);
+	writel(CE5300_I2S_CFG_STOCK, i2s->base + CE5300_I2S_CFG);
+
+	writel(CE5300_TX0_STOCK_04, i2s->base + tx + CE5300_TX_CTRL);
+	writel(CE5300_TX0_STOCK_08, i2s->base + tx + 0x08);
+	writel(CE5300_TX0_STOCK_10, i2s->base + tx + 0x10);
+	writel(CE5300_TX0_STOCK_14, i2s->base + tx + 0x14);
+	writel(CE5300_TX0_STOCK_1C, i2s->base + tx + 0x1c);
+	writel(CE5300_TX0_STOCK_00, i2s->base + tx + CE5300_TX_RUN_REG);
+	for (i = 0; i < CE5300_PRIME_WORDS; i++)
+		writel(0, i2s->base + tx + CE5300_TX_SATR);
+
+	dev_info(i2s->dev, "TX%u running: I2S clocks on\n", i2s->tx);
+}
+
+/*
+ * Dump the registers we care about. Safe since ce5300_hw_start(): before the
+ * block's reset is released, reading the TX block HANGS THE SoC DEAD (measured
+ * 2026-08-30, the kernel log simply stopped after the BAR0 line).
  */
 static bool dump_regs;
 module_param(dump_regs, bool, 0444);
-MODULE_PARM_DESC(dump_regs,
-		 "Dump TX/DMA registers at probe. HANGS THE SoC unless the audio block has been ungated first -- see the comment above ce5300_dump()");
+MODULE_PARM_DESC(dump_regs, "Dump TX/DMA registers at probe");
 
 static void ce5300_dump(struct ce5300_i2s *i2s)
 {
 	unsigned int i;
 
-	/* Proven to answer: this is the device's own ID/capability word. */
 	dev_info(i2s->dev, "BAR0 phys %pa, +0x00 = %#010x\n",
 		 &i2s->phys, readl(i2s->base));
 
 	if (!dump_regs)
 		return;
-
-	dev_warn(i2s->dev, "dump_regs=1: reading TX/DMA -- this hangs the SoC if the block is still gated\n");
 	for (i = 0; i < CE5300_TX_CONTEXTS; i++)
 		dev_info(i2s->dev, "  TX%u run=%#010x ctrl=%#010x level=%#010x\n", i,
 			 readl(i2s->base + CE5300_TX_REG(i, CE5300_TX_RUN_REG)),
@@ -234,8 +290,10 @@ static int ce5300_pcm_prepare(struct snd_soc_component *comp,
 	i2s->period = ns_to_ktime(div_u64((u64)rt->period_size * NSEC_PER_SEC, rt->rate));
 
 	/* TX0's other registers as a playing stock unit has them (ce5300-i2s.h),
-	 * all but the run bit, which only trigger sets. */
-	writel(CE5300_TX0_STOCK_00 & ~CE5300_TX_RUN,
+	 * the run bit included: TX0 runs from probe on, because the DSP and DAC
+	 * take their clocks from it (ce5300_hw_start()), and only DMA starts and
+	 * stops with the stream. */
+	writel(CE5300_TX0_STOCK_00,
 	       i2s->base + CE5300_TX_REG(i2s->tx, CE5300_TX_RUN_REG));
 	writel(CE5300_TX0_STOCK_08, i2s->base + CE5300_TX_REG(i2s->tx, 0x08));
 	writel(CE5300_TX0_STOCK_10, i2s->base + CE5300_TX_REG(i2s->tx, 0x10));
@@ -296,8 +354,7 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 		atomic_set(&i2s->running, 0);
 		if (!hrtimer_callback_running(&i2s->tick))
 			hrtimer_try_to_cancel(&i2s->tick);
-		ce5300_update(i2s, CE5300_TX_REG(i2s->tx, CE5300_TX_RUN_REG),
-			      CE5300_TX_RUN, 0);
+		/* TX0 keeps running, underrunning into silence: the clocks stay. */
 		ce5300_update(i2s, CE5300_DMA_REG(i2s->dma, CE5300_DMA_CTRL),
 			      CE5300_DMA_RUN, 0);
 		return 0;
@@ -379,8 +436,9 @@ static const struct snd_soc_component_driver ce5300_component = {
 /*
  * The CPU DAI. The vendor's equivalent is a pure stub -- every callback is a
  * debug print and a return 0 -- because the CE5300 I2S has no per-DAI state
- * worth setting: the codec is the I2S master, so we neither generate clocks nor
- * choose a direction. Keeping it equally empty is deliberate, not lazy.
+ * worth setting: it is the I2S master, its outputs always drive their clocks
+ * (the HAL has no render master/slave bit), and probe has already started
+ * them. Keeping it equally empty is deliberate, not lazy.
  */
 #define CE5300_DAI_PLAYBACK {						\
 	.stream_name	= "Playback",					\
@@ -448,6 +506,7 @@ static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id
 	pci_set_master(pdev);
 	dev_set_drvdata(&pdev->dev, i2s);
 
+	ce5300_hw_start(i2s);
 	ce5300_dump(i2s);
 
 	if (!enable_pcm) {

@@ -351,8 +351,8 @@ with the EA3's coax out looped to its coax in, the transmitter on too (bit 2,
 
 Still open:
 
-* **Starting the I²S at boot** (in `ce5300-i2s`), then the PCM, which feeds
-  serial input 3; until then nothing but the test tone plays.
+* **The PCM**, which feeds serial input 3; `ce5300-i2s` starts the clocks at
+  boot now, but until the PCM plays nothing but the test tone does.
 * **What the DAC mute line does**, since it did not mute.
 * **What each mode sounds like** with programme material, and in stock's map,
   **which balance table is the left jack** (assumed 0x0091).
