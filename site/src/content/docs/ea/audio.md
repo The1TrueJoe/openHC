@@ -17,7 +17,7 @@ trusting the DSP half.
 
 The HDMI transmitter (`01:08.2`, `8086:2e63`) carries its **own** audio DMA
 engine, which reads PCM from memory straight into its audio FIFO. HDMI audio
-never touches the I²S block below, the one that hangs on access. Stock drives
+never touches the I²S block below. Stock drives
 it from Intel's closed `pd_hdmi.ko`; its HAL's function names survive, and the
 map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
 (`hw:HDMI`), loaded by udev off the PCI id, from the `audio-hdmi` feature
@@ -290,8 +290,9 @@ interrupt is needed. Two things are still inferred:
    never in a descriptor) into the control register; the TX run bit as bit 0 of
    TX0 `+0x00`, the register that reads `0x21` while stock plays (bit 0 of
    `TX_CTRL`, the old guess, reads 0 there).
-2. **The ungate** — why the TX and DMA blocks hang on access under openHC when
-   stock reads them freely. The plan is below.
+2. ~~**The ungate**~~ — solved: the block was held in its own reset (global
+   `+0x00` bit 1), and `ce5300-i2s` now releases it and starts TX0 at probe,
+   which is what clocks the DSP ([below](#what-is-left)).
 
 Master/slave is not settled from the SoC side: the render path exposes **no**
 clock-direction control at all. The DSP side says the opposite of what the
@@ -373,9 +374,10 @@ that and sound:
   loads everything over I²C at boot from a userspace SigmaStudio download
   (`/control4/bin/ea3_dsploader`). openHC's own program is being built with
   SigmaStudio+ in CI, and the driver gains a load path for it.
-- **The CE5300 I²S block hangs on access.** Reading its TX/DMA registers
-  (`0x2004` and beyond) hangs the SoC under openHC, where stock reads them
-  freely. The register dump stays off until the cause below is found.
+- ~~**The CE5300 I²S block hangs on access.**~~ It was held in its own reset;
+  `ce5300-i2s` releases it at probe and starts TX0, the I²S clock master for
+  the DSP and DAC, so the DSP runs from boot and its test tone plays. What is
+  left is the PCM itself (`enable_pcm`), which feeds the DSP's `SDATA_IN3`.
 
 ## The CE5300's power and clock controllers
 
@@ -435,11 +437,34 @@ block reads zero; nothing initializes it. It gates no peripheral clock.
 
 ### What is left
 
-- **`AUD_IO +0x00`** is the one audio register that differs: `0x1` under
-  openHC, `0x7` on a playing stock unit. Its bits 1–2 are the prime suspects
-  for the I²S block's own sub-block enables, and the next test is to set them
-  and read one TX register (`0xdfa82000`), on a RAM-booted openHC, expecting a
-  possible hang.
+- **`AUD_IO +0x00` is the ungate (proven 2026-11-02 on an EA3).** Writing
+  stock's `0x7` over openHC's `0x1` makes the TX, RX and DMA blocks answer:
+  after it, `+0x2000` and the rest read their reset values instead of hanging
+  the SoC. The I²S clocks then start with TX0 configured as stock has it
+  (`+0x2004` `0xf1e0`, `+0x2008` 5, `+0x2010` `0x100`, `+0x2014` 8, `+0x201c`
+  `0x3f`), its run bit (`+0x2000` = `0x21`), and **a few words written to its
+  FIFO** (`+0x2018`); without data, no clocks. They keep running after the FIFO
+  drains, and the ADAU1451's core runs on them — the test tone reaches the
+  analog out ([DSP README](https://github.com/The1TrueJoe/openHC/tree/main/board/ea/common/firmware/dsp/adau1451)).
+  Global `+0x2c` (`0x180` on stock) is not needed for this. `ce5300-i2s`
+  now does all of it at probe, in stock's order (`audio_ce53xx_hal_io_reset_hw`:
+  clock on, reset pulsed, every context reset, interrupts cleared), because
+  stock keeps its pipeline running too; `ce5300_i2s.clocks=0` leaves TX0 off.
+- **The coax jacks are the CE5300's S/PDIF** (proven 2026-11-02, the EA3's coax
+  out cabled to its own coax in). Out is a TX context with output select 3
+  (`AUDIO_HAL_OUT_SEL_SPDIF`; TX2 here: `+0x2204` `0xf1e0`, `+0x2214` 8,
+  `+0x221c` `0x3f`, `+0x2200` `0x61`), which, like TX0, starts sending once its
+  FIFO (`+0x2218`) has had data. In is RX1 with input select 2, stock's
+  `AUDIO_SPDIF_IN` resource: `+0x3100` bits 6:5 = 2, `+0x310c` |= `0x200`,
+  `+0x311c` = `0x3f`, then `+0x3100` |= 1. Words fed into TX2 came back on RX1
+  bit for bit (24-bit samples in bits 31:8). There is no lock, rate or
+  channel-status register; RX1 `+0x3110` bit 0 (write 1 to clear) is a sync
+  error, 0 while a valid stream arrives and 1 without one. Its FIFO is 0x80
+  words deep and overruns at once, so pulse its reset (`+0x3100` bit 3) and read
+  `+0x3118` only while the level (`+0x3120`) is non-zero. `ce5300-i2s` ungates
+  the block at probe; on an image from before that, **with global `+0x00` still
+  at `0x1`, a read anywhere past it hangs the SoC**: ungate first, and put it
+  back last.
 - **The master clock's rate.** The ADAU1451 runs from the SoC's MCLK0 (enabled
   on both). Its rate may come from the A/V DDS or audio PLL that stock's media
   stack programs, and that stack never runs under openHC. If the DSP's PLL

@@ -281,10 +281,10 @@ card's controls. It boots silent and stays muted while idle: the DSP volume
 starts at 0 until audiod restores the saved level and tone, and the DAC unmutes
 only while a stream plays.
 
-The analog card is `openhcea`, the board device tree's simple-audio-card. Until
-the CE5300 I²S PCM is finished (`ce5300_i2s.enable_pcm`) it has the DSP
-controls but no playable PCM, so the analog endpoints come up and cannot play
-yet. See [what is still unproven](/ea/audio/#what-is-still-unproven).
+The analog card is `openhcea`, the board device tree's simple-audio-card. The
+CE5300 I²S clocks the DSP from boot, but until its PCM is finished
+(`ce5300_i2s.enable_pcm`) the card has the DSP controls and no playable PCM, so
+the analog endpoints come up and cannot play yet. See [what is still unproven](/ea/audio/#what-is-still-unproven).
 
 ### Switch ports
 

@@ -137,12 +137,36 @@ box crossed it. That is the jack the stock firmware leaves isolated.
 :::caution[Don't cable both jacks into one network]
 With `lan1` and `lan2` both plugged into the same LAN, the box dropped off the
 network at once, stayed unreachable after a cable was pulled, and needed a power
-cycle. switchd's bridge runs STP, which should have blocked one port. Why it
-didn't is not known. One suspect is that the switch traps STP's BPDUs to its IMP
-port 8, which is not connected (the CPU is on port 5), so the bridge never sees
-the loop. Another is the upstream switch's own loop protection. The image has no
-`tcpdump` to check.
+cycle. STP can only block that loop if BPDUs make it from one jack to the other,
+and the unmanaged switch on the bench drops them (below). So keep the second jack
+for a device of its own.
 :::
+
+### STP and the unwired IMP port (patch 0019)
+
+switchd's `br-lan` runs STP, yet it never blocked a port, because no BPDU ever
+reached it. With port 5 as the CPU port, b53 sets En_IMP_Port to `11`, dual-IMP
+mode (Global Management Configuration, page 02h address 00h, reads `0xC2` on the
+box). In that mode the switch traps the frames meant for the CPU, BPDUs
+included, to the IMP port 8 when they come from a LAN port. They reach port 5
+only from ports selected as WAN. On the EA3, port 8 is not connected.
+
+Measured with the Mac sending BPDUs into `lan1` (2026-11-02):
+
+| b53 config | BPDUs reaching the CPU in 15 s (1 sent per second) | `br-lan` root | `lan1`→`lan2` forwarding |
+|---|---|---|---|
+| stock | 0 | itself | yes |
+| WAN Port Select = lan1+lan2 (page 00h, 26h) | 15 | the Mac | **no** |
+| ingress mirror of `01:80:c2:00:00:00` to port 5 | 16 | the Mac | yes |
+
+A WAN port sends all its traffic to the CPU only, so that route breaks the
+bridge between the jacks. Patch 0019 takes the mirror route instead. It costs the
+switch's only mirror, so `tc` mirroring on the ports is refused.
+
+The fix doesn't help on the bench network. The EA3 sends a BPDU out `lan2`
+every 2 s, and none of them reaches the HC-800 on the same unmanaged switch, nor
+the other way round. A switch that drops BPDUs hides any loop through it from
+STP.
 
 If DSA doesn't attach, the network init script falls back to DHCP on the master
 interface and the primary jack works as before.
@@ -255,8 +279,11 @@ Both are fixed in S40net (PR #110). With that fix, boots 2 and 3 leased
 b53 works on the durable kexec boot, and both jacks carry traffic. The switch
 stays opt-in with `ohc.switch=1`, which S00kexec now carries across the kexec
 (PR #110). switchd's `vlan_filtering` call needed the bridge built with
-`CONFIG_BRIDGE_VLAN_FILTERING` (PR #121). Still open:
+`CONFIG_BRIDGE_VLAN_FILTERING` (PR #121). STP now receives BPDUs (patch 0019).
+Still open:
 
-- why STP doesn't stop a loop between the two jacks (see the caution above);
+- one cable from `lan1` to `lan2` took minutes to link. When it did, the switch's
+  SPI interface wedged: a PHY read returned `-EIO`, every register read 0 after
+  that, and the box needed a power cycle. Not understood;
 - how stock firmware gets a nonzero `DDS_RATE`.
 :::

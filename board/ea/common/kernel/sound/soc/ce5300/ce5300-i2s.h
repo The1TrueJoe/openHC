@@ -29,13 +29,32 @@
 
 /* ---- Global block ------------------------------------------------------ */
 /*
- * +0x00 reads 0x7 on a playing stock unit and 0x1 under openHC, where the TX
- * and DMA blocks hang on access. Bits 1-2 are the prime suspects for the
- * sub-block enables; nothing here writes them until that is proven (see the
- * bring-up steps in the audio docs).
+ * +0x00 reads 0x7 on a playing stock unit and 0x1 as CEFDK leaves it: the
+ * block clocked but held in reset, which is why every TX/DMA access used to
+ * hang the SoC. Stock's audio_ce53xx_hal_io_reset_hw sets the clock enable,
+ * then pulses the reset bit clear-and-set before it touches anything at 0x1000
+ * or above; io_alloc_resource later sets bit 2 for the I2S0 render stream.
+ * MEASURED 2026-11-02 on an EA3: with bit 1 set, +0x2000 and the rest read
+ * their reset values instead of hanging.
  */
 #define CE5300_GLOBAL			0x0000
+#define CE5300_GLOBAL_CLK_EN		BIT(0)	/* audio_hal_io_clock_enable */
+#define CE5300_GLOBAL_RUN		BIT(1)	/* 0 = sub-blocks held in reset */
+#define CE5300_GLOBAL_I2S0_OUT		BIT(2)	/* the shared I2S0 pins to TX0 */
 #define CE5300_GLOBAL_STOCK		0x7	/* MEASURED, stock while playing */
+
+/* Interrupt status, write 1 to clear; reset_hw clears all of it. */
+#define CE5300_IRQ_STATUS		0x0004
+#define CE5300_IRQ_STATUS_ALL		0xe807f8
+
+/*
+ * +0x2c: bits 8 and 7 invert the I2S0/I2S1 bit clocks (stock sets both, so
+ * 0x180), bit 10 picks the word-select edge; bits 4:2 and 0 are what
+ * render/capture_set_power_mode set and clear (0 at reset, and TX0 runs with
+ * them 0). From the audio_hal_*_set_* callers; stock reads 0x180.
+ */
+#define CE5300_I2S_CFG			0x002c
+#define CE5300_I2S_CFG_STOCK		0x180
 
 /* ---- DMA block: base 0x1000, 5 contexts, stride 0x40 ------------------- */
 #define CE5300_DMA_BASE			0x1000
@@ -146,6 +165,8 @@
  */
 #define CE5300_TX_RUN_REG		0x00
 #define CE5300_TX_RUN			BIT(0)
+/* Context +0x00 bit 3, TX and RX alike: pulsed by tx_reset/rx_reset. */
+#define CE5300_CTX_FIFO_RESET		BIT(3)
 
 /*
  * The rest of TX0 as a playing stock unit has it, MEASURED. Their fields are
@@ -154,16 +175,21 @@
  * its decoded fields instead, and matches.
  */
 #define CE5300_TX0_STOCK_00		0x21	/* incl. CE5300_TX_RUN */
+#define CE5300_TX0_STOCK_04		0xf1e0	/* TX_CTRL: pin0, stereo, as decoded */
 #define CE5300_TX0_STOCK_08		0x05
 #define CE5300_TX0_STOCK_10		0x100
-#define CE5300_TX0_STOCK_14		0x08
-#define CE5300_TX0_STOCK_1C		0x3f
+#define CE5300_TX0_STOCK_14		0x08	/* [6:0] bit-clock divider, MCLK / (64 x fs) */
+#define CE5300_TX0_STOCK_1C		0x3f	/* FIFO threshold */
 #define CE5300_TX_LEVEL			0x20	/* FIFO level, moving while it plays */
+#define CE5300_TX_IDLE_04		0x000e0000	/* MEASURED: TX1/TX2 while stock plays; reset value */
 
 /* ---- RX block (capture; not used by this driver yet) ------------------- */
 #define CE5300_RX_BASE			0x3000
 #define CE5300_RX_STRIDE		0x100
+#define CE5300_RX_CONTEXTS		2
+#define CE5300_RX_REG(rx, off)		(CE5300_RX_BASE + (rx) * CE5300_RX_STRIDE + (off))
 #define CE5300_RX_SARR			0x18
+#define CE5300_RX_IDLE_04		0x001e0000	/* MEASURED: RX0 while stock plays; reset value */
 
 /* ---- Interrupts -------------------------------------------------------- */
 /*

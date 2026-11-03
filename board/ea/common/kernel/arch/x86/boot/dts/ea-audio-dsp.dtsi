@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * EA-3 audio (`audio-dsp`): CE5300 I2S -> ADAU1451 at i2c3 0x38 -> AK4621.
+ * The CE5300 is the I2S clock master; every DSP serial port is a slave.
  * See board/ea/common/firmware/dsp/adau1451/README.md.
  */
 #include "ea-adau1451.dtsi"
@@ -29,10 +30,10 @@
 		/* ALSA card id "openhcea" */
 		simple-audio-card,name = "openhc-ea";
 		simple-audio-card,format = "i2s";
-		simple-audio-card,bitclock-master = <&dsp_dai>;
-		simple-audio-card,frame-master = <&dsp_dai>;
+		simple-audio-card,bitclock-master = <&i2s_dai>;
+		simple-audio-card,frame-master = <&i2s_dai>;
 
-		simple-audio-card,cpu {
+		i2s_dai: simple-audio-card,cpu {
 			sound-dai = <&audio>;
 		};
 		dsp_dai: simple-audio-card,codec {
