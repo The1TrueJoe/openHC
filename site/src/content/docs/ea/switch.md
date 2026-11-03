@@ -266,12 +266,31 @@ brings it back). With phylib polling each PHY every second, a port eventually
 loses that bet. This is what took `lan2` and then `lan1` down in the patch-cable
 test.
 
-So for a CE5X00 transfer that fits the 32-entry FIFO, 0009 writes all of it
-straight into the FIFO after enabling the SSP, with no status reads and local
-interrupts off, and leaves the interrupt handler only the RX side. b53's
-longest frame is 10 bytes. On the same EA3, a RAM boot with that change read all
-three registers 300,000 times each with no bad reads, then the chip id 100,000
-more times during a network stream, also with no bad reads.
+The first fix (#131) wrote a transfer that fits the 32-entry FIFO straight
+into it, with no status reads and local interrupts off, and left the interrupt
+handler only the RX side. b53's longest frame is 10 bytes. That took the chip-id
+reads from 121 bad in 300,000 to none, and the patch cable then held (see
+below). But a long hammer still found rare bursts of bad reads, shifted rather
+than cut: `0x3125ffff`, `0x25ffff25`, `0xc20001ff`, 73 in about 4.1 million.
+SSDR writes are posted, and a timed test kernel showed that about one fill in
+100,000 still stalls on the way, for up to 45 µs, with interrupts off. That is
+ten bytes' worth of an empty FIFO.
+
+So 0009 now stops the SSP's DDS clock (`DDS_RATE = 0`), queues every word, and
+only then restarts the clock. With the clock stopped, a stalled write delays
+the frame and can't cut it. The same boot ran both fills in turn, 1,000,000
+chip-id reads per run:
+
+| fill | bad reads | fills over 4 µs | longest fill |
+| --- | --- | --- | --- |
+| back to back (#131) | 1 | 2 | 42 µs |
+| clock stopped | 0 | 5 | 41 µs |
+| back to back (#131) | 4 | 40 | 45 µs |
+| clock stopped | 0 | 0 | 3.4 µs |
+
+A third clock-stopped run of 3,000,000 reads (15 million fills, two of them
+stalled for up to 39 µs) had no bad reads either. No clock-stopped fill ever
+lost a word (`TFL` checked after each one).
 
 ### How 0009 got there
 
@@ -328,9 +347,5 @@ Still open:
   STP blocked `lan2`, and the loop ran for about 20 minutes, `lan1` bounced
   once, with no PHY error and no wedge. There was one spontaneous `lan2`
   down/up;
-- rare misaligned reads remain after #131. A continuous b53 read hammer
-  (~3,300 reads/s) saw a burst of 1–22 bad reads every few minutes, 73 in
-  about 4.1 million. They are shifted rather than cut: `0x3125ffff`, `0x25ffff25`,
-  `0xc20001ff` for a chip id of `0x00053125`. The cause is not known;
 - how stock firmware gets a nonzero `DDS_RATE`.
 :::
