@@ -344,6 +344,19 @@ destination walking, 128-byte bursts); the position is the destination
 A buffer must be whole periods (one descriptor per period): 24000 frames in
 6016-frame periods played 3 × 6016 and skipped the rest, on every output.
 
+**Measured on an EA3** (2026-11-03, coax out cabled to coax in, RAM boot): a
+5 s counting pattern (24-bit counter left, its complement right) played into
+device 1 and recorded on device 2 came back as one unbroken run, every frame
+bit for bit and left on left, in 3 of 3 captures; the only difference is the
+block flag in the low byte. An S16 tone through audiod's `ohc_coax` (softvol,
+`ohceq`, dmix) arrives at its own level, 1 kHz left and 1.5 kHz right. Twelve
+plays and recordings killed mid-stream left every DMA context idle, with no
+warning.
+
+audiod's tone stage, `ohceq`, used to take 16-bit samples only, so no output
+with `format=S32_LE` (HDMI on every EA, the coax out) opened through audiod at
+all; it now takes the output's format from its config.
+
 :::danger[Do not poke this device with devmem]
 An unbound PCI function may have memory decode off or sub-blocks unclocked.
 Doing exactly that at offsets `0xc000`/`0xf000` **hung an EA3 hard** and cost a
