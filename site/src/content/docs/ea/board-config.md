@@ -317,12 +317,12 @@ recoverable: power-cycle and the bootstrap kernel comes back.
 
 | Board | Hostname | Features beyond the family | Status |
 |---|---|---|---|
-| ea1-v1 | `openea1` | `wifi` | Proven. Secure-boot fuse clear, boots an unsigned kernel; Wi-Fi is the reachability path |
+| ea1-v1 | `openea1` | `wifi` | Proven. Fuse blown (rev 5): boots through `bootlinux`; Wi-Fi is the reachability path |
 | ea1-v2 | `openea1` | `wifi` | Unverified on hardware |
 | ea1-v2-poe | `openea1` | `switch` | Unverified on hardware, fuse included |
-| ea3-v1 | `openea3` | `wifi switch audio-dsp` | Unverified on hardware |
+| ea3-v1 | `openea3` | `wifi switch audio-dsp` | Image unverified; a v1 board has run the ea3-v2 image |
 | ea3-v2 | `openea3` | `switch audio-dsp` | Proven. Fuse blown; takeover via autoscript |
-| ea5 | `openea5` | `wifi switch audio-fpga` | See [EA-5](/ea/ea5/#bring-up-checklist) |
+| ea5 | `openea5` | `wifi switch audio-fpga` | See [EA-5](/ea/ea5/#bring-up) |
 
 ### ea1-v1
 
@@ -362,8 +362,8 @@ RAM reclaim.
 The ea3-v2 plus the Wi-Fi radio the v2 dropped. The only `board.env` line that
 differs is `OHC_MDNS_IFACE`.
 
-Open: the fuse. The ea3-v2's is blown and the ea1-v1's is clear. Netboot first;
-if the fuse is clear it can be flashed the plain way with no autoscript. See
+Open: the fuse. Every EA measured so far (the ea3-v2, an ea1-v1 rev 5) is blown,
+so assume the autoscript takeover; netboot first. See
 [secure boot](/ea/secure-boot/).
 
 ### ea3-v2
