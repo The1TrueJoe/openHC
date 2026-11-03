@@ -2,7 +2,8 @@
  * ohceq — openHC's per-output tone stage, as an ALSA filter plugin.
  *
  * Bass and treble (RBJ shelving biquads at 120 Hz and 8 kHz, +-12 dB) and
- * left/right balance, on 16-bit stereo. audiod puts one in front of every
+ * left/right balance, on 16- or 32-bit stereo (the slave takes the same format:
+ * the dmix's, S32_LE for HDMI and S/PDIF). audiod puts one in front of every
  * output, between its level (softvol) and its dmix:
  *
  *   pcm.ohc_analog2_eq {
@@ -27,6 +28,7 @@
 #include <alsa/asoundlib.h>
 #include <alsa/pcm_external.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -113,11 +115,23 @@ static void check(ohceq_t *eq)
 		rebuild(eq);
 }
 
-static inline short clip(float v)
+/* The largest float below 2^31: S32's top, as a float that converts back. */
+#define S32_TOP 2147483520.0f
+
+static inline float load(const void *base, int s32, snd_pcm_uframes_t i)
 {
-	if (v > 32767.0f) return 32767;
-	if (v < -32768.0f) return -32768;
-	return (short)lrintf(v);
+	return s32 ? (float)((const int32_t *)base)[i] : (float)((const int16_t *)base)[i];
+}
+
+static inline void store(void *base, int s32, snd_pcm_uframes_t i, float v)
+{
+	if (s32) {
+		v = v > S32_TOP ? S32_TOP : v < -S32_TOP ? -S32_TOP : v;
+		((int32_t *)base)[i] = (int32_t)lrintf(v);
+	} else {
+		v = v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v;
+		((int16_t *)base)[i] = (int16_t)lrintf(v);
+	}
 }
 
 static snd_pcm_sframes_t ohceq_transfer(snd_pcm_extplug_t *ext,
@@ -131,18 +145,20 @@ static snd_pcm_sframes_t ohceq_transfer(snd_pcm_extplug_t *ext,
 		eq->since_check = 0;
 		check(eq);
 	}
+	int s32 = ext->format == SND_PCM_FORMAT_S32;
+	unsigned bits = s32 ? 32 : 16;
 	for (int ch = 0; ch < 2; ch++) {
-		const short *in = (const short *)((const char *)src[ch].addr + (src[ch].first + soff * src[ch].step) / 8);
-		short *out = (short *)((char *)dst[ch].addr + (dst[ch].first + doff * dst[ch].step) / 8);
-		unsigned is = src[ch].step / 16, os = dst[ch].step / 16;
+		const char *in = (const char *)src[ch].addr + (src[ch].first + soff * src[ch].step) / 8;
+		char *out = (char *)dst[ch].addr + (dst[ch].first + doff * dst[ch].step) / 8;
+		unsigned is = src[ch].step / bits, os = dst[ch].step / bits;
 		if (eq->bypass) {
 			for (snd_pcm_uframes_t n = 0; n < size; n++)
-				out[n * os] = in[n * is];
+				memcpy(out + n * os * bits / 8, in + n * is * bits / 8, bits / 8);
 			continue;
 		}
 		float g = eq->pre * eq->gain[ch];
 		for (snd_pcm_uframes_t n = 0; n < size; n++) {
-			float x = in[n * is] * g;
+			float x = load(in, s32, n * is) * g;
 			for (int f = 0; f < 2; f++) {
 				const biquad_t *q = &eq->shelf[f];
 				float *z = eq->z[f][ch];
@@ -151,7 +167,7 @@ static snd_pcm_sframes_t ohceq_transfer(snd_pcm_extplug_t *ext,
 				z[1] = q->b2 * x - q->a2 * y;
 				x = y;
 			}
-			out[n * os] = clip(x);
+			store(out, s32, n * os, x);
 		}
 	}
 	return size;
@@ -290,8 +306,9 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ohceq)
 	}
 	snd_pcm_extplug_set_param_minmax(&eq->ext, SND_PCM_EXTPLUG_HW_CHANNELS, 2, 2);
 	snd_pcm_extplug_set_slave_param(&eq->ext, SND_PCM_EXTPLUG_HW_CHANNELS, 2);
-	snd_pcm_extplug_set_param(&eq->ext, SND_PCM_EXTPLUG_HW_FORMAT, SND_PCM_FORMAT_S16);
-	snd_pcm_extplug_set_slave_param(&eq->ext, SND_PCM_EXTPLUG_HW_FORMAT, SND_PCM_FORMAT_S16);
+	/* The slave format is left unset, so it follows this one. */
+	static const unsigned int formats[] = { SND_PCM_FORMAT_S16, SND_PCM_FORMAT_S32 };
+	snd_pcm_extplug_set_param_list(&eq->ext, SND_PCM_EXTPLUG_HW_FORMAT, 2, formats);
 	*pcmp = eq->ext.pcm;
 	return 0;
 }
