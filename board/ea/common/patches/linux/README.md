@@ -25,11 +25,12 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
 | 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
-| 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR, and its CS drops between transfers, so multi-transfer messages are merged |
+| 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR, and its CS drops whenever the TX FIFO runs dry, so multi-transfer messages are merged and a transfer that fits the FIFO is queued with the clock stopped |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
+| 0019 | b53 BPDU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode traps BPDUs to the unwired IMP port 8, so STP never sees a loop; mirror them to port 5 (WAN-port select also delivers them but stops lan1↔lan2 forwarding) |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
@@ -291,6 +292,12 @@ The switch burned the most time of anything here, so the traps stay recorded:
    the CE5300 GPIO mux), so `cs-gpios` isn't possible. spi-pxa2xx instead merges
    a CE5X00 message of compatible transfers into one bounce-buffered transfer.
    Without that, b53_spi's write-then-read gets 0xff.
+7. **…and inside a transfer if the FIFO runs dry** (0009). The IRQ handler's
+   word-at-a-time fill (two ~0.7 µs status reads per word) only usually beats a
+   4.4 µs byte, and about 1 in 2,500 reads came back with trailing 0xff. Even
+   back-to-back posted SSDR writes stall up to 45 µs about once in 100,000
+   fills. So a transfer that fits the 32-entry FIFO is queued with the DDS clock
+   stopped, and the clock starts once every word is in.
 
 Port map (measured, see `ea-switch.dtsi`): CPU = port 5, jacks = ports 1 and
 2, and port 1 is isolated in the stock configuration.

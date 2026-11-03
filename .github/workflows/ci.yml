@@ -185,6 +185,7 @@ jobs:
       contents: read
     outputs:
       boards: ${{ steps.pick.outputs.boards }}
+      all: ${{ steps.pick.outputs.all }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -209,7 +210,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ALL='["ea1-v1","ea1-v2","ea1-v2-poe","ea3-v1","ea3-v2","ioxv1","ca1","hc800"]'
+          # The fleet is every board directory with a <name>/<name>_defconfig.
+          boards_in() { for d in "$@"; do n=$(basename "$d"); [ "$n" != common ] && [ -f "$d/${n}_defconfig" ] && echo "$n"; done; return 0; }
+          EA_BOARDS=$(boards_in board/ea/*/ | tr '\n' ' ')
+          OTHER_BOARDS=$(boards_in board/*/ | tr '\n' ' ')
+          printf -v ALL '"%s",' $EA_BOARDS $OTHER_BOARDS
+          ALL="[${ALL%,}]"
+          echo "all=$ALL" >> "$GITHUB_OUTPUT"
 
           # Explicit request, or a scheduled/dispatch run with no board: build all.
           if [ -n "${{ github.event.inputs.board }}" ]; then
@@ -272,7 +279,7 @@ jobs:
             # "<board>  <crate> <crate> " so a whole-word " <crate> " grep cannot
             # match a board name or a crate substring. No associative arrays —
             # the select runner is bash but this stays portable regardless.
-            ships_table=$(for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2 ioxv1 ca1 hc800; do
+            ships_table=$(for b in $EA_BOARDS $OTHER_BOARDS; do
               printf '%s  %s \n' "$b" "$(bash packages/build.sh "$b" --crates 2>/dev/null)"
             done)
             # A dependency bump touches only Cargo.lock. Rather than rebuild every
@@ -315,17 +322,17 @@ jobs:
           fi
           # ea/common is shared by the EA family only.
           if echo "$changed" | grep -qE '^board/ea/common/'; then
-            sel+=(ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2)
+            sel+=($EA_BOARDS)
           fi
           # The DSP program's workflow goes into the EA3 images (the `dsp` job).
           if echo "$changed" | grep -qx '.github/workflows/dsp-program.yml'; then
             sel+=(ea3-v1 ea3-v2)
           fi
           # EA boards live under board/ea/<board>/; the others are top-level.
-          for b in ea1-v1 ea1-v2 ea1-v2-poe ea3-v1 ea3-v2; do
+          for b in $EA_BOARDS; do
             echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
           done
-          for b in ioxv1 ca1 hc800; do
+          for b in $OTHER_BOARDS; do
             echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")
           done
           # Workflow-only or docs-only change: nothing to build.
@@ -484,6 +491,18 @@ jobs:
       matrix:
         board: ${{ fromJSON(needs.select.outputs.boards) }}
     steps:
+      # A warm tree is ~12 GB unpacked on top of dl/ and ccache, which leaves no
+      # margin on a hosted runner (ea5 ran out restoring its tree). Drop the
+      # preinstalled toolchains no board build uses.
+      - name: Free runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/powershell \
+            /usr/share/swift /opt/microsoft /opt/google /usr/lib/jvm
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       # sgx545-ce is a submodule and board/Config.in sources its Config.in
       # unconditionally, so defconfig fails for every board without it.
       - uses: actions/checkout@v4
@@ -493,6 +512,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: packages/webd/ui/package-lock.json
 
@@ -784,12 +804,15 @@ jobs:
         if: success() && matrix.board == 'hc800'
         env:
           KEXEC_VERSION: "2.0.31"
+          KEXEC_SHA256: 8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
         run: |
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
           # Built in runner.temp, outside the checkout.
-          wget -q -P "$RUNNER_TEMP" "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          bash .github/scripts/fetch.sh "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz" "$KEXEC_SHA256" \
+            "https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz" \
+            "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
           tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz"
           ( cd "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
               --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
@@ -1027,8 +1050,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Same fleet as select's ALL; a board added there is added here.
-        board: [ea1-v1, ea1-v2, ea1-v2-poe, ea3-v1, ea3-v2, ioxv1, ca1, hc800]
+        board: ${{ fromJSON(needs.select.outputs.all) }}
     steps:
       # A board this run built already uploaded openhc-<board>; re-uploading the
       # same artifact name would collide, so carry forward only the rest.
@@ -1173,6 +1195,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: packages/webd/ui/package-lock.json
 
@@ -1530,6 +1553,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: site/package-lock.json
 
@@ -1589,6 +1613,7 @@ jobs:
       # root on hardware with no recovery console, so "whatever is newest today"
       # is not an acceptable input.
       KEXEC_VERSION: "2.0.31"
+      KEXEC_SHA256: 8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
     steps:
       - uses: actions/checkout@v4
 
@@ -1609,7 +1634,9 @@ jobs:
       - name: Fetch kexec-tools
         run: |
           set -e
-          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          bash .github/scripts/fetch.sh "kexec-tools-${KEXEC_VERSION}.tar.xz" "$KEXEC_SHA256" \
+            "https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz" \
+            "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
           tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
 
       # --host is what selects kexec's i386 architecture support. Building it

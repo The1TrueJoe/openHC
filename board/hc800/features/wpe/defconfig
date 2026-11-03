@@ -27,7 +27,7 @@ BR2_PACKAGE_MESA3D_OPENGL_ES=y
 BR2_PACKAGE_MESA3D_GBM=y
 
 # WPE WebKit with the WPE Platform API and its DRM platform (an option added by
-# build/buildroot-patches/0004; 2.50 builds it only in developer mode otherwise).
+# build/buildroot-patches/0005; 2.50 builds it only in developer mode otherwise).
 # The DRM platform reads input through libinput on the eudev the board already
 # runs. No multimedia: video in a page is not this surface's job, and GStreamer
 # is a large build.

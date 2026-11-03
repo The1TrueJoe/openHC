@@ -51,11 +51,12 @@ pub fn asound_conf(b: &Board, eq: bool) -> String {
         for p in ports {
             key += 1;
             s += &format!(
-                "\n# {label}\npcm.{pcm}_{kind} {{\n    type {kind}\n    ipc_key {key}\n    ipc_perm 0666\n    slave {{\n        pcm \"{dev}\"\n        rate {rate}\n        format S16_LE\n        channels 2\n        period_size 1024\n        buffer_size 8192\n    }}\n}}\n",
+                "\n# {label}\npcm.{pcm}_{kind} {{\n    type {kind}\n    ipc_key {key}\n    ipc_perm 0666\n    slave {{\n        pcm \"{dev}\"\n        rate {rate}\n        format {format}\n        channels 2\n        period_size 1024\n        buffer_size 8192\n    }}\n}}\n",
                 label = p.label.replace('"', "'"),
                 pcm = p.pcm,
                 dev = p.device,
                 rate = b.rate,
+                format = p.format.as_deref().unwrap_or("S16_LE"),
             );
             // A swapped port gets a route plugin between plug and the shared
             // dmix/dsnoop, so everything that plays to it (or records from it)
@@ -106,9 +107,10 @@ fn output_stages(p: &Port, shared: &str, eq: bool) -> String {
     let below_vol = if eq {
         let name = format!("{}_eq", p.pcm);
         s += &format!(
-            "pcm.{name} {{\n    type ohceq\n    slave.pcm \"{shared}\"\n    card \"{card}\"\n    control \"{pcm}\"\n}}\n",
+            "pcm.{name} {{\n    type ohceq\n    slave.pcm \"{shared}\"\n    card \"{card}\"\n    control \"{pcm}\"\n    format \"{format}\"\n}}\n",
             card = p.card(),
             pcm = p.pcm,
+            format = p.format.as_deref().unwrap_or("S16_LE"),
         );
         name
     } else {
@@ -423,6 +425,17 @@ mod tests {
         assert!(a.contains("pcm \"hw:CARD=Intel,DEV=3\""));
         assert!(a.contains("pcm.!default \"ohc_analog1\""));
         assert_eq!(a.matches("ipc_key").count(), 3);
+        assert_eq!(a.matches("format S16_LE").count(), 3);
+    }
+    #[test]
+    fn a_port_can_name_its_hardware_format() {
+        let b = Board {
+            outputs: vec![Port { id: "hdmi".into(), label: "HDMI".into(), device: "hw:CARD=HDMI,DEV=0".into(), pcm: "ohc_hdmi".into(), format: Some("S32_LE".into()), ..Default::default() }],
+            inputs: vec![], rate: 48000, helpers: vec![],
+        };
+        let a = asound_conf(&b, false);
+        assert!(a.contains("rate 48000\n        format S32_LE\n"), "{a}");
+        assert!(!a.contains("S16_LE"));
     }
     #[test]
     fn librespot_hook_runs_this_binary() {
@@ -437,7 +450,7 @@ mod tests {
             inputs: vec![], rate: 44100, helpers: vec![],
         };
         let a = asound_conf(&b, true);
-        assert!(a.contains("pcm.ohc_analog2_eq {\n    type ohceq\n    slave.pcm \"ohc_analog2_swap\"\n    card \"Intel\"\n    control \"ohc_analog2\"\n}"), "{a}");
+        assert!(a.contains("pcm.ohc_analog2_eq {\n    type ohceq\n    slave.pcm \"ohc_analog2_swap\"\n    card \"Intel\"\n    control \"ohc_analog2\"\n    format \"S16_LE\"\n}"), "{a}");
         assert!(a.contains("pcm.ohc_analog2_vol {\n    type softvol\n    slave.pcm \"ohc_analog2_eq\""));
         assert!(!asound_conf(&b, false).contains("ohceq"));
     }

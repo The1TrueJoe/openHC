@@ -22,7 +22,7 @@ on:
   push:
     branches: [ea1-gpu-2026]
     paths:
-      - board/ea/common/kernel/drivers/gpu/drm/sgx545ce
+      - board/ea/common/sgx545-ce
       - .github/workflows/sgx-module.yml
 
 env:

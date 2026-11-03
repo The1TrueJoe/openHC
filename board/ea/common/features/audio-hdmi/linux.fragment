@@ -1,0 +1,11 @@
+# HDMI audio (sound/x86/ce5300-hdmi.c, objs.mk): no Kconfig symbol of its own,
+# it builds whenever SND is set. Modules, for the copy window.
+CONFIG_SOUND=m
+CONFIG_SND=m
+
+# The loopback card is here to select SND_PCM, which has no prompt.
+CONFIG_SND_DRIVERS=y
+CONFIG_SND_ALOOP=m
+
+# sound/x86 is gated by this menu (default y, but say so).
+CONFIG_SND_X86=y

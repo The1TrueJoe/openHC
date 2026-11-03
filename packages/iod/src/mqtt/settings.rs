@@ -74,6 +74,8 @@ impl Default for Mqtt {
 #[serde(default)]
 pub struct Settings {
     pub mqtt: Mqtt,
+    /// Combo jack modes by panel number ("1" -> "serial"), put back at boot.
+    pub jacks: std::collections::BTreeMap<String, crate::jack::Mode>,
 }
 
 impl Settings {

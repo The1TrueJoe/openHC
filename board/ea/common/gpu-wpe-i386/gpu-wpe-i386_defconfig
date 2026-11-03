@@ -72,13 +72,12 @@ BR2_KERNEL_HEADERS_6_18=y
 BR2_TARGET_ROOTFS_TAR=y
 
 # --- the WPE WebKit UI stack (same set as board/ea/common/features/wpe) ---
-# libwpe is pulled in automatically (wpebackend-pvr and the 0001 buildroot patch
-# both select/depend on it). wpewebkit's own long dependency chain — icu,
+# libwpe is pulled in automatically (wpebackend-pvr selects it, and wpewebkit
+# depends on it through wpebackend-fdo). wpewebkit's own long dependency chain — icu,
 # harfbuzz, freetype, fontconfig, libsoup3, libepoxy, libgcrypt, webp, jpeg,
 # libpng, libtasn1, libxslt, glib ... — is pulled in by its Config.in selects.
-# The 0001-wpewebkit-do-not-require-wpebackend-fdo buildroot patch (applied by
-# the workflow) removes the Wayland/fdo requirement so this builds on an EGL
-# with no Wayland support, which the SGX545 DDK is.
+# That chain includes Wayland and wpebackend-fdo, which build against this EGL
+# but are never loaded: libWPEBackend-default.so is the PowerVR backend.
 # wpewebkit's bundled Skia JPEG codec (Source/ThirdParty/skia/src/codec/
 # SkJpeg*.cpp) is written against libjpeg-turbo: it uses the extended colorspaces
 # JCS_EXT_RGBA/JCS_EXT_BGRA/JCS_RGB565 and the libjpeg-v8 API jpeg_skip_scanlines

@@ -127,8 +127,46 @@ through the durable kexec path with `ohc.switch=1` came up with
 `br-lan` leased the box's address through `lan2`, and SSH reached it through the
 switch. That happened on three consecutive boots (see below). The CPU port has
 no `fixed-link`: DSA skips phylink for it, and firmware's forced 1000/full link
-on port 5 holds, as `ea-switch.dtsi` expects. Traffic on the second jack
-(`lan1`) has not been tested yet; it had no cable.
+on port 5 holds, as `ea-switch.dtsi` expects.
+
+The second jack works too. On a later boot of the same kernel, the one cable
+was moved from `lan2` to `lan1`. `lan1` came up at 1 Gbps full duplex and was
+the only forwarding port. The gateway answered pings through it, and SSH to the
+box crossed it. That is the jack the stock firmware leaves isolated.
+
+:::caution[Don't cable both jacks into one network]
+With `lan1` and `lan2` both plugged into the same LAN, the box dropped off the
+network at once, stayed unreachable after a cable was pulled, and needed a power
+cycle. STP can only block that loop if BPDUs make it from one jack to the other,
+and the unmanaged switch on the bench drops them (below). So keep the second jack
+for a device of its own.
+:::
+
+### STP and the unwired IMP port (patch 0019)
+
+switchd's `br-lan` runs STP, yet it never blocked a port, because no BPDU ever
+reached it. With port 5 as the CPU port, b53 sets En_IMP_Port to `11`, dual-IMP
+mode (Global Management Configuration, page 02h address 00h, reads `0xC2` on the
+box). In that mode the switch traps the frames meant for the CPU, BPDUs
+included, to the IMP port 8 when they come from a LAN port. They reach port 5
+only from ports selected as WAN. On the EA3, port 8 is not connected.
+
+Measured with the Mac sending BPDUs into `lan1` (2026-11-02):
+
+| b53 config | BPDUs reaching the CPU in 15 s (1 sent per second) | `br-lan` root | `lan1`→`lan2` forwarding |
+|---|---|---|---|
+| stock | 0 | itself | yes |
+| WAN Port Select = lan1+lan2 (page 00h, 26h) | 15 | the Mac | **no** |
+| ingress mirror of `01:80:c2:00:00:00` to port 5 | 16 | the Mac | yes |
+
+A WAN port sends all its traffic to the CPU only, so that route breaks the
+bridge between the jacks. Patch 0019 takes the mirror route instead. It costs the
+switch's only mirror, so `tc` mirroring on the ports is refused.
+
+The fix doesn't help on the bench network. The EA3 sends a BPDU out `lan2`
+every 2 s, and none of them reaches the HC-800 on the same unmanaged switch, nor
+the other way round. A switch that drops BPDUs hides any loop through it from
+STP.
 
 If DSA doesn't attach, the network init script falls back to DHCP on the master
 interface and the primary jack works as before.
@@ -200,6 +238,60 @@ bytes, and `unprepare_message` scatters the RX bytes back. A message whose
 transfers differ in speed or word size, or that asks for a CS change or delay in
 the middle, is left alone.
 
+### …and inside a transfer, if the FIFO runs dry
+
+Merging closes the gaps between transfers, but the frame also ends if the TX
+FIFO empties partway through one. spi-pxa2xx feeds the FIFO from its interrupt
+handler one word at a time, and checks the status register before each word.
+On the CE5300 a status read takes about 0.7 µs, so a word takes 1.5 to 2 µs to
+queue. At the switch's 1.8 MHz a byte takes 4.4 µs to shift out. That margin
+usually holds, but not always:
+
+| 300,000 reads through b53, idle box | bad |
+| --- | --- |
+| chip id (page 02h, 30h, 32-bit) | 121 |
+| PHY id (page 11h, 04h, 16-bit) | 7, 13 |
+| port override (page 00h, 58h, 8-bit) | 23 |
+
+The bad chip-id reads were `0xffff3125` and `0xff053125`: the first bytes, then
+`0xff`, which is what the switch sends back once CS is gone. They came in
+bursts, and a network stream into the box didn't change the rate (49 in
+100,000). Dropping CS in the middle of a write is worse than a bad read: the rest
+of the frame reaches the switch as a new command.
+
+A bad PHY read also takes the port down for good. phylib treats any MDIO error
+as fatal: it puts the PHY in `PHY_ERROR` and powers it down (`BMCR = 0x1940`),
+and the port stays dark until something bounces it (`ip link set lan1 down/up`
+brings it back). With phylib polling each PHY every second, a port eventually
+loses that bet. This is what took `lan2` and then `lan1` down in the patch-cable
+test.
+
+The first fix (#131) wrote a transfer that fits the 32-entry FIFO straight
+into it, with no status reads and local interrupts off, and left the interrupt
+handler only the RX side. b53's longest frame is 10 bytes. That took the chip-id
+reads from 121 bad in 300,000 to none, and the patch cable then held (see
+below). But a long hammer still found rare bursts of bad reads, shifted rather
+than cut: `0x3125ffff`, `0x25ffff25`, `0xc20001ff`, 73 in about 4.1 million.
+SSDR writes are posted, and a timed test kernel showed that about one fill in
+100,000 still stalls on the way, for up to 45 µs, with interrupts off. That is
+ten bytes' worth of an empty FIFO.
+
+So 0009 now stops the SSP's DDS clock (`DDS_RATE = 0`), queues every word, and
+only then restarts the clock. With the clock stopped, a stalled write delays
+the frame and can't cut it. The same boot ran both fills in turn, 1,000,000
+chip-id reads per run:
+
+| fill | bad reads | fills over 4 µs | longest fill |
+| --- | --- | --- | --- |
+| back to back (#131) | 1 | 2 | 42 µs |
+| clock stopped | 0 | 5 | 41 µs |
+| back to back (#131) | 4 | 40 | 45 µs |
+| clock stopped | 0 | 0 | 3.4 µs |
+
+A third clock-stopped run of 3,000,000 reads (15 million fills, two of them
+stalled for up to 39 µs) had no bad reads either. No clock-stopped fill ever
+lost a word (`TFL` checked after each one).
+
 ### How 0009 got there
 
 Earlier versions of 0009 got the clock wrong in every possible direction. An
@@ -238,11 +330,22 @@ Both are fixed in S40net (PR #110). With that fix, boots 2 and 3 leased
 10.0.0.113 on `br-lan` through `lan2`.
 
 :::note[Status]
-b53 works on the durable kexec boot. The switch stays opt-in with `ohc.switch=1`,
-which S00kexec now carries across the kexec (PR #110). Still open:
+b53 works on the durable kexec boot, and both jacks carry traffic. The switch
+stays opt-in with `ohc.switch=1`, which S00kexec now carries across the kexec
+(PR #110). switchd's `vlan_filtering` call needed the bridge built with
+`CONFIG_BRIDGE_VLAN_FILTERING` (PR #121). STP now receives BPDUs (patch 0019),
+and the SSP no longer drops CS partway through a frame (0009).
+Still open:
 
-- traffic on the second jack (`lan1`);
-- switchd's `vlan_filtering 0` call, which this kernel answers with
-  `Operation not supported`;
+- one cable from `lan1` to `lan2` took minutes to link. When it did, a PHY read
+  failed and every register read failed after that until a power cycle. The
+  failed read and the dark port are explained above. Why the reads after it
+  kept failing is not. The switch's SPI port recovers from every truncated
+  frame tried (`60`, `61 ff`, `60 f0`, a lone fast-read opcode, ...), and
+  disabling the SSP empties its TX FIFO, so neither is the cause. Retried on
+  2026-11-03 on a RAM boot of the #131 kernel: the jacks linked within seconds,
+  STP blocked `lan2`, and the loop ran for about 20 minutes, `lan1` bounced
+  once, with no PHY error and no wedge. There was one spontaneous `lan2`
+  down/up;
 - how stock firmware gets a nonzero `DDS_RATE`.
 :::

@@ -42,6 +42,32 @@ pub struct Declared {
     pub baud: u32,
     /// The part answered the driver. False is "declared but silent".
     pub online: bool,
+    /// Each MCU UART's connector, by UART number (ttyOHC<n>).
+    pub ports: Vec<UartPort>,
+}
+
+/// What the kernel says about one MCU UART's connector.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UartPort {
+    /// The IR jack it shares, by panel number; 0 = a connector of its own.
+    pub jack: u8,
+    pub label: String,
+}
+
+impl UartPort {
+    /// /sys/class/tty/ttyOHC<n>/{jack,label}, for n in 0..uarts.
+    pub fn read_all(tty_dir: &Path, uarts: u8) -> Vec<UartPort> {
+        (0..uarts)
+            .map(|i| {
+                let d = tty_dir.join(format!("ttyOHC{i}"));
+                let get = |f: &str| std::fs::read_to_string(d.join(f)).map(|s| s.trim().to_string());
+                UartPort {
+                    jack: get("jack").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+                    label: get("label").unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
 }
 
 impl Declared {
@@ -75,16 +101,18 @@ impl Declared {
         // relays is the attribute every version of the directory has; its
         // absence means there is no directory, not a board with no relays.
         get("relays")?;
+        let uarts = n("uarts");
         Some(Declared {
             relays: n("relays"),
             contacts: n("contacts"),
             ir_out: n("ir_out"),
             ir_blaster: n("ir_blaster"),
             ir_in: n("ir_in"),
-            uarts: n("uarts"),
+            uarts,
             port: get("port").unwrap_or_default(),
             baud: get("baud").and_then(|v| v.parse().ok()).unwrap_or(0),
             online: get("online").as_deref() == Some("1"),
+            ports: UartPort::read_all(Path::new(crate::jack::TTY_SYSFS), uarts),
         })
     }
 }
@@ -131,6 +159,12 @@ pub struct SerialPort {
     /// be a switch connected to nothing. Declared per port in OHC_SERIALS as a
     /// fourth `:modem` field.
     pub modem: bool,
+    /// The IR jack this port shares (a combo jack): it is serial only while
+    /// that jack's mode is serial. `None` for a connector of its own.
+    pub jack: Option<u8>,
+    /// The MCU UART number (ttyOHC<n>), for the jack mode.
+    #[serde(skip)]
+    pub uart: Option<usize>,
 }
 
 #[derive(Serialize, Clone)]
@@ -152,9 +186,8 @@ pub struct Io {
 
     /// Rear IR jacks.
     pub ir_out: u8,
-    /// How many of `ir_out` can be switched to SERIAL instead. On the EA family
-    /// the combo ports are the same physical connectors as the user UARTs, so
-    /// these two counts share one budget: a port is IR or serial, never both.
+    /// How many of `ir_out` can be switched to SERIAL instead (combo jacks, the
+    /// serial ports with a `jack`): a jack is IR or serial, never both.
     pub ir_combo: u8,
     /// Internal front blaster, counted separately from the rear jacks.
     pub ir_blaster: u8,
@@ -266,6 +299,8 @@ impl Board {
                             transport: "host",
                             bauds: host_bauds.clone(),
                             modem: p.get(3) == Some(&"modem"),
+                            jack: None,
+                            uart: None,
                         }
                     })
                     .collect()
@@ -286,15 +321,19 @@ impl Board {
         let kernel = kernel.filter(|_| backend != Backend::None);
         let k = kernel.clone().unwrap_or_default();
         for i in 0..k.uarts {
+            let kp = k.ports.get(i as usize).cloned().unwrap_or_default();
             serials.push(SerialPort {
                 dev: Some(format!("/dev/ttyOHC{i}")),
-                label: format!("Serial {}", i + 1),
+                label: if kp.label.is_empty() { format!("Serial {}", i + 1) } else { kp.label },
                 baud: 115200,
                 transport: "mcu",
                 bauds: mcu_bauds.clone(),
                 modem: false,
+                jack: Some(kp.jack).filter(|&j| j > 0),
+                uart: Some(i as usize),
             });
         }
+        let ir_combo = serials.iter().filter(|p| p.jack.is_some()).count() as u8;
 
         Board {
             model: e.get("OHC_MODEL").cloned().unwrap_or_else(|| "unknown".into()),
@@ -308,9 +347,7 @@ impl Board {
                 declared_by: "kernel",
                 mcu_online: kernel.as_ref().filter(|_| mcu).map(|k| k.online),
                 ir_out: k.ir_out,
-                // The combo jacks ARE the MCU-routed UARTs (see Io::ir_combo),
-                // so the kernel's uart count is also the combo count.
-                ir_combo: k.uarts,
+                ir_combo,
                 ir_blaster: k.ir_blaster,
                 ir_in: k.ir_in,
                 relays: k.relays,
@@ -348,6 +385,10 @@ mod tests {
         Declared {
             relays: 0, contacts: 0, ir_out: 4, ir_blaster: 1, ir_in: 1, uarts: 2,
             port: "serial0-0".into(), baud: 460800, online: true,
+            ports: vec![
+                UartPort { jack: 1, label: "IR / Serial 1".into() },
+                UartPort { jack: 2, label: "IR / Serial 2".into() },
+            ],
         }
     }
 
@@ -360,9 +401,38 @@ mod tests {
                        ("online", "1")] {
             std::fs::write(dir.join(f), format!("{v}\n")).unwrap();
         }
-        assert_eq!(Declared::read(&dir), Some(ea1()));
+        // No ttyOHC* in this sandbox: the ports read back as plain connectors.
+        let want = Declared { ports: vec![UartPort::default(); 2], ..ea1() };
+        assert_eq!(Declared::read(&dir), Some(want));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(Declared::read(&dir), None);
+    }
+
+    #[test]
+    fn reads_each_uart_connector() {
+        let dir = std::env::temp_dir().join(format!("iod-tty-{}", std::process::id()));
+        for (i, jack, label) in [(0, "1", "IR 1 / Serial 3"), (1, "0", "")] {
+            let d = dir.join(format!("ttyOHC{i}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("jack"), format!("{jack}\n")).unwrap();
+            std::fs::write(d.join("label"), format!("{label}\n")).unwrap();
+        }
+        let ports = UartPort::read_all(&dir, 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(ports, [
+            UartPort { jack: 1, label: "IR 1 / Serial 3".into() },
+            UartPort { jack: 0, label: String::new() },
+        ]);
+    }
+
+    #[test]
+    fn combo_jacks_come_from_the_kernel() {
+        let mut d = ea1();
+        d.ports[1] = UartPort::default(); // a UART on a connector of its own
+        let b = Board::from_env(env(&[("OHC_IO_BACKEND", "mcu")]), Some(d));
+        assert_eq!(b.io.ir_combo, 1);
+        let s: Vec<_> = b.io.serials.iter().map(|p| (p.label.as_str(), p.jack, p.uart)).collect();
+        assert_eq!(s, [("IR / Serial 1", Some(1), Some(0)), ("Serial 2", None, Some(1))]);
     }
 
     #[test]

@@ -1,0 +1,4 @@
+# Intel's Cedarview DDK 1.7.862890 userspace, the same tarball and hash as
+# sgx545-um (carried by the PGP-signed .dsc published alongside it). Only the
+# microkernel is taken from it; fetch-firmware.sh checks that by sha256 too.
+sha256  c23e7261631860f3bc132c294e269ea982e34e37b5e838fafea0e7070da8fd83  cedarview-graphics-drivers_20120717.orig.tar.gz

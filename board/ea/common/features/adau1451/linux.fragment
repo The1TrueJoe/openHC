@@ -1,0 +1,14 @@
+# ADAU1451 SigmaDSP for EA-3 (audio-dsp) and EA-5 (audio-fpga). Modules (copy window).
+CONFIG_SOUND=m
+CONFIG_SND=m
+CONFIG_SND_PCM=m
+CONFIG_SND_SOC=m
+CONFIG_SND_SOC_I2C_AND_SPI=m
+CONFIG_SND_MIXER_OSS=n
+CONFIG_SND_HRTIMER=m
+
+# adau1451-c4 is copied in (objs.mk), so it has no Kconfig entry to select these.
+CONFIG_REGMAP=y
+CONFIG_REGMAP_I2C=y
+# Only way to get the prompt-less sigmadsp core built.
+CONFIG_SND_SOC_ADAU1701=m

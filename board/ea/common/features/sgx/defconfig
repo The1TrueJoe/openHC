@@ -1,10 +1,3 @@
-# openHC feature: sgx — the PowerVR SGX545 KERNEL driver for the CE5300 GPU (PCI
-# 01:02.0, 8086:089b), ported from Intel's Cedarview GPL DDK 1.7.
-#
-# There are NO Buildroot packages here. The driver is in-tree — a submodule at
-# board/ea/common/kernel/drivers/gpu/drm/sgx545ce, mirrored into the kernel and
-# built as a module via CONFIG_SGX545_CE=m (see linux.fragment + objs.mk). It
-# gives /dev/dri/card0; that is all the kernel half does.
-#
-# The proprietary GLES userspace blobs + WPE WebKit (what actually draws on the
-# HDMI display) are the SEPARATE `wpe` feature, enabled fleet-EA alongside this.
+# sgx: PowerVR SGX545 kernel driver (from the sgx545-ce submodule, linux.fragment).
+# srvinit is the open GPU bring-up S60sgx runs. The DDK blobs are the `wpe` feature.
+BR2_PACKAGE_SGX545_SRVINIT=y

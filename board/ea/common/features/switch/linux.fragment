@@ -1,40 +1,12 @@
-# openHC — BCM53125 managed switch (DSA/b53) kernel side. Shared by EA variants
-# that HAVE the switch: ea3-v1, ea3-v2, ea1-v2-poe.
-#
-# Three pieces: (1) the SPI master spi-pxa2xx-pci on PCI 8086:2e6a; (2) the b53
-# switch driver; (3) the switch node in the board DTB (kernel/arch/x86/boot/dts/
-# ea-switch.dtsi): CS 1, SPI mode 3, port map CPU=5, jacks=1 and 2. DSA's bring-up of port 1 is still UNVERIFIED (the stock config
-# isolates it); if DSA does not attach, S40net falls back to the master and only
-# the primary jack works, so the board stays reachable either way.
-#
-# COMMON_CLK is NOT optional: SPI_PXA2XX_PCI is a derived symbol
-# (def_tristate SPI_PXA2XX && PCI && COMMON_CLK), so setting CONFIG_SPI_PXA2XX_PCI
-# directly is silently DROPPED. Without COMMON_CLK the SPI master never binds
-# 8086:2e6a, the board_info never instantiates, and b53 never probes (measured:
-# 01:0b.4 with no driver, empty /sys/class/spi_master). Do not "clean up" below.
+# BCM53125 switch (DSA/b53 over SPI). See docs ea/kernel-config and ea/switch.
+# COMMON_CLK is required: SPI_PXA2XX_PCI is derived from it. Do not remove.
 CONFIG_COMMON_CLK=y
 CONFIG_SPI=y
 CONFIG_SPI_MASTER=y
 CONFIG_SPI_PXA2XX=y
-#
-# The b53 symbols are CONFIG_B53 / CONFIG_B53_SPI_DRIVER — NOT CONFIG_NET_DSA_B53*,
-# which this fragment said for a long time: those names do not exist, kconfig
-# dropped them silently, and b53 was never built (spi92.1 appeared with modalias
-# spi:bcm53125 but /sys/bus/spi/drivers/ was empty). B53 selects the BRCM tags.
-#
-# MODULES, not built-in: an x86_64 EA-3 bzImage is right at CEFDK's 7,417,856-byte
-# window and DSA + b53 + tag codecs are the slice that pushes it over; as modules
-# they load from p1 after mount. SAFE because the device comes from the DTB, so
-# nothing built in calls a b53/dsa symbol; the module binds the already-created
-# spi device when it loads (S39ea-switch, and only with ohc.switch=1). S39ea-switch modprobes b53_spi BEFORE
-# S40net so DSA still attaches at boot. The SPI master stays =y (the bus the
-# device sits on).
-#
-# BRIDGE + VLAN_8021Q are =m too: the bigger Buildroot 2026.02 toolchain compiles
-# the 7.1.8 kernel ~100 KB larger and the switch boards (ea3-v1, ea1-v2-poe) ran
-# over CEFDK's 7,417,856-byte bzImage window; CONFIG_BRIDGE built in is ~60 KB.
-# They are on-demand network features, so they move to p1 — S39ea-switch modprobes
-# them (DSA wants bridging present; loading before S40net keeps that true).
+
+# Modules (copy window); S39ea-switch loads them before S40net. The symbols are
+# B53 / B53_SPI_DRIVER: the NET_DSA_B53 names do not exist.
 CONFIG_NET_DSA=m
 CONFIG_B53=m
 CONFIG_B53_SPI_DRIVER=m
@@ -42,12 +14,5 @@ CONFIG_NET_DSA_TAG_BRCM=m
 CONFIG_NET_DSA_TAG_BRCM_PREPEND=m
 CONFIG_BRIDGE=m
 CONFIG_VLAN_8021Q=m
-#
-# VLAN_FILTERING is a bool compiled INTO bridge.ko (depends on BRIDGE && VLAN_8021Q),
-# so =y here costs nothing against the bzImage window that forced BRIDGE=m — the code
-# rides along in the module on p1. Without it the kernel ships a stub that fails
-# `ip link set <br> type bridge vlan_filtering 1` with -EOPNOTSUPP (measured on EA3
-# 10.0.0.113: the toggle returns "Operation not supported"), so switchd's managed-mode
-# VLAN programming (program_vlans / `bridge vlan add`) can never engage and the b53's
-# per-port 802.1Q table stays unused. =y makes switchd's vlan_filtering knob real.
+# Compiled into bridge.ko; switchd's VLAN programming needs it.
 CONFIG_BRIDGE_VLAN_FILTERING=y

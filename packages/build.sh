@@ -64,6 +64,19 @@ for ff in ${FAM:+"$FAM/ohc.features"} "$BOARD_DIR/ohc.features"; do
   [ -f "$ff" ] && FEATURES="$FEATURES $(sed 's/#.*//' "$ff" | tr '\n' ' ')"
 done
 FEATURES=$(printf '%s\n' $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+# features/<name>/requires pulls in more, as in build/build.sh.
+i=0
+while [ $i -lt 8 ]; do
+  more=""
+  for f in $FEATURES; do
+    for d in "$REPO/board/common/features/$f" ${FAM:+"$FAM/features/$f"} "$BOARD_DIR/features/$f"; do
+      [ -f "$d/requires" ] && more="$more $(sed 's/#.*//' "$d/requires" | tr '\n' ' ')"
+    done
+  done
+  new=$(printf '%s\n' $more $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+  [ "$new" = "$FEATURES" ] && break
+  FEATURES=$new; i=$((i + 1))
+done
 
 # Every scope's copy of a feature, most general first (as build/build.sh layers them).
 feature_dirs() {

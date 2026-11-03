@@ -37,14 +37,26 @@ drivers/gpu/Makefile|obj-y += ce5300-sgx-quiesce.o
 # ea3 bzImage stays inside CEFDK's bootlinux window — udev loads them from p1 off
 # their devices' modaliases (same move as the switch's b53). See
 # features/audio-dsp/linux.fragment.
+# ce5300/ is gated on CONFIG_SND_SOC (a real upstream symbol): sound/soc is
+# descended whenever CONFIG_SND is set, which audio-hdmi turns on for boards with
+# no ASoC core (the EA1), and an ungated obj-m there builds ce5300-i2s without
+# snd-soc-core (modpost: devm_snd_soc_register_component undefined). codecs/ is
+# already reached only through CONFIG_SND_SOC.
 sound/soc/codecs/Makefile|obj-m += adau1451-c4.o
-sound/soc/Makefile|obj-m += ce5300/
+sound/soc/Makefile|obj-$(CONFIG_SND_SOC) += ce5300/
+# EA-5 audio FPGA + its card (features/audio-fpga).
+sound/soc/Makefile|obj-$(CONFIG_SND_SOC) += control4/
+# HDMI audio is the HDMI transmitter's own DMA, not the I2S block, and is a plain
+# ALSA card rather than ASoC, so it sits in sound/x86 (descended whenever
+# CONFIG_SND is set). Every EA has HDMI; features/audio-hdmi turns ALSA on.
+sound/x86/Makefile|obj-m += ce5300-hdmi.o
 
-# --- GPU: PowerVR SGX545 (the sgx545ce submodule mirrored in beside it) ---
+# --- GPU: PowerVR SGX545 (the sgx545-ce submodule's kernel/, mirrored in) ---
 # Unlike the drivers above (openHC's own single .c files, obj-y), this is a large
 # vendored DDK with its own Kbuild + Kconfig, so it is gated by a REAL symbol and
 # built as a MODULE (=m, set in features/sgx/linux.fragment) to keep ~1.25 MiB of
-# DRM core out of the bzImage. The hook copies its Kbuild/Kconfig + src/ tree in
-# (find now matches Kbuild/Kconfig) and wires both lines below.
+# DRM core out of the bzImage. The hook copies ea/common/sgx545-ce/kernel's
+# Kbuild/Kconfig + src/ tree to drivers/gpu/drm/sgx545ce (OHC_KERNEL_DRIVER_REPOS
+# in external.mk) and wires both lines below.
 drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/sgx545ce/Kconfig"
 drivers/gpu/drm/Makefile|obj-$(CONFIG_SGX545_CE) += sgx545ce/

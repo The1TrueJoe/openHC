@@ -194,9 +194,9 @@ strings /control4/bin/* | grep spidev  -> none  no vendor binary mentions spidev
 only thing anyone does to the codec is release its reset at boot.
 
 So the part is **strapped into standalone/hardware mode**: reset is deasserted,
-I²S1 feeds it, and nothing ever configures it over a control port. For an open
-image that's good news: the codec needs **no driver**, only `codec_reset` high
-and I²S1 running.
+the DSP's `SDATA_OUT1` feeds it, and nothing ever configures it over a control
+port. For an open image that's good news: the codec needs **no driver**, only
+`codec_reset` high and the CE5300's I²S running.
 
 ## There is no FPGA on this board
 
@@ -215,7 +215,7 @@ manifest         names garmadon-fpga-45t-spi-rev8.bin
 The "ninjago" kernel is one build shared across the EA family, the FPGA audio
 drivers ship unconditionally, and on an EA3 nothing probes. The image is
 `garmadon-*`, and **garmadon is the EA5's codename**, which is where that
-hardware lives. On an EA3 the ADAU1451 does the job the FPGA does on an EA5.
+hardware lives (see [EA-5](/ea/ea5/)).
 
 **`snd_ninjago_fpga*` in an `lsmod` isn't evidence of an FPGA.** Check
 `/sys/bus/*/drivers/ninjago-fpga*/` for bound devices instead.
