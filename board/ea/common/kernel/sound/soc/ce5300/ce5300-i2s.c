@@ -418,7 +418,8 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 			 * the mode word.
 			 */
 			ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, CE5300_TX_RUN);
-			ce5300_spdif_align(st);
+			if (st->rx_sel == CE5300_RX_SEL_SPDIF)
+				ce5300_spdif_align(st);
 			writel(st->i2s->phys + st->fifo, dma_reg(st, CE5300_DMA_CUR_SRC));
 		} else {
 			/*
