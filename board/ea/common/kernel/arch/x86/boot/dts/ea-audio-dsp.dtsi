@@ -22,7 +22,7 @@
 		#sound-dai-cells = <0>;
 		mute-gpios = <&gpio 61 GPIO_ACTIVE_HIGH>;
 		firmware-name = "openhc/adau1451-ea3-openhc.bin";
-		control4,program-version = <0x0dfd 3>;
+		control4,program-version = <0x0dfd 4>;
 	};
 };
 

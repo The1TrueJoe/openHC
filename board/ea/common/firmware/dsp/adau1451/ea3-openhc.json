@@ -29,7 +29,7 @@
   "step_db": 0.5,
   "version": {
     "param": "Version.DCValue",
-    "value": 3
+    "value": 4
   },
   "knobs": [
     {
@@ -302,6 +302,15 @@
         "db": 3
       },
       "_design": "loudness: +3 dB above 10 kHz"
+    },
+    {
+      "stage": "LineInDCBlock.Stage0_",
+      "filter": {
+        "type": "highpass",
+        "freq": 10,
+        "q": 0.7071
+      },
+      "_design": "line in: the ADC's DC offset out, 2nd-order Butterworth at 10 Hz"
     }
   ],
   "cells": [
