@@ -57,7 +57,8 @@ status reads per word at ~0.7 us each, against a 4.4 us byte at the switch's
 back with their last bytes 0xff, in bursts. A cut frame can also turn the tail
 of a write into a stray command. So a CE5X00 transfer that fits the 32-entry
 FIFO is written in one go, with no status reads and interrupts off, and the
-handler only drains RX.
+handler only drains RX. With that, 1,000,000 reads on the same EA3, idle and
+under network load, had no bad reads.
 
 The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
 rather than by the SSP function's own id, which it shares with the CE4100, so
