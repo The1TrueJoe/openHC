@@ -300,8 +300,26 @@ clock-direction control at all. The DSP side says the opposite of what the
 vendor's ASoC link declared (codec master): in the register init stock loads,
 **every serial port of the ADAU1451 is a slave**, and the CE5300 is the master:
 TX0 drives serial input 0's clocks and data. Stock's init points ASRC 0 at
-`SDATA_IN3`, which nothing clocks under openHC; openHC's points it at
-`SDATA_IN0` (channels 0/1), and the PCM reaches the line out at its own level.
+`SDATA_IN3`, which nothing clocks under openHC; openHC's program reads
+`SDATA_IN0` (channels 0/1) directly, and the PCM reaches the line out at its
+own level.
+
+## Line in
+
+Device 0 records too: the line in, through the AK4621's ADC, the DSP and back
+to the CE5300. The ADC is the DSP's serial input 2; ASRC 0 takes it to serial
+output 0 (`SOUT_SOURCE0` = 3), which reaches the CE5300's RX0 (stock's
+`0x4d2`: RX0, DMA 3, the I²S1 pins). RX0 runs 24 bits in 32 (`+0x3004` bit 7;
+without it, two 16-bit samples per word), S32_LE at 48 kHz. It follows the
+coax in's capture path (below), with one difference measured on the way:
+read by hand after its FIFO reset RX0 gives the left sample first, but through
+the DMA the right came first in every capture, so capture start reads one
+word by hand. audiod has it as the `linein` input.
+
+With the line out cabled to the line in (2026-11-03), a −12 dBFS tone,
+1 kHz left and 1.5 kHz right, played on device 0 records on device 0 at
+−12.1 dBFS peak, left on left, THD −109 / −104 dB, THD+N −88 / −90 dB, the
+noise set by the cable's 120 Hz hum.
 
 ## Coax out and in
 

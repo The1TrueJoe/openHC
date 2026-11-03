@@ -100,14 +100,14 @@ builds openHC's chain:
 
 ```
                 ┌ Bass → Treble ───────────────┐
-Input (ASRC 0) ─┼ EQ31 → EQ63 → … → EQ16k ─────┼→ Mode ─┬──────────────┬→ Loudness → BalanceLeft ─┐
+Input (IN0) ───┼ EQ31 → EQ63 → … → EQ16k ─────┼→ Mode ─┬──────────────┬→ Loudness → BalanceLeft ─┐
                 ├ (flat) ──────────────────────┤        └→ LoudnessEQ ─┘            BalanceRight ┴→ Volume → Out*
                 └ TestTone (1 kHz, −20 dB) ────┘
 ```
 
 | Block (label) | What |
 |---|---|
-| `Input` | ASRC 0's two channels: serial input 0, the CE5300's TX0, converted to the core's rate |
+| `Input` | serial input 0's first two channels, read directly: the CE5300's TX0, which also clocks the core |
 | `Bass`, `Treble`, `EQ31` … `EQ16k` | `General2ndOrderIndexSelectable`, stereo: 49 biquads (`GSO_Array`, after a 7-word header — stock's layout exactly), the entry picked by an index cell |
 | `BassIndex`, … , `BalanceIndex` | those index cells: integer DC inputs (`FormatX` 32), 24 = flat |
 | `Mode` | `IndexSelectableMuxStereo`, index `ModeIndex`: 0 Tone, 1 EQ, 2 Flat, 3 Test tone |
@@ -116,7 +116,12 @@ Input (ASRC 0) ─┼ EQ31 → EQ63 → … → EQ16k ─────┼→ Mode
 | `BalanceLeft`, `BalanceRight` | the indexed filter block again, one channel each, as a gain table: one index, `BalanceIndex`, drives both |
 | `Volume` | a stereo volume, linear gain per channel |
 | `Out*`, `Output_0/1` | left and right to the first two channels of **all four** serial outputs (channels 0/1, 16/17, 32/33, 40/41), until it is known which one feeds the AK4621 |
-| `Version` | an integer DC cell holding the program's version (2), for the driver's check |
+| `Version` | an integer DC cell holding the program's version (3), for the driver's check |
+
+The line in bypasses the program: the init points ASRC 0 at serial input 2
+(the AK4621's ADC) and makes serial output pair 0, SDATA_OUT0, take ASRC 0's
+output (`SOUT_SOURCE0` = 3), so the CE5300's RX0 receives the line in whatever
+the program does. The program's own `Output_0/1` on that pair are overridden.
 
 The export becomes two files, `export2program.py`'s output:
 
@@ -181,10 +186,13 @@ undocumented 0xF431 and 0xF800–0xF847.
   **ASRC 0**, which converts them to the outputs' rate (`ASRC_INPUT0` = 0xa1,
   `ASRC_OUT_RATE0` = 1). ASRCs 1–7 are muted. Under openHC nothing ever clocks
   SDATA_IN3, and the CE5300's stream arrives on **SDATA_IN0** (measured, below),
-  so openHC's init points ASRC 0 there instead (`ASRC_INPUT0` = 0x01).
+  which the program reads directly; openHC's init points ASRC 0 at the line in
+  instead (`ASRC_INPUT0` = 0x81, serial input 2, channels 32/33).
 * **Every output channel comes from the DSP core** (`SOUT_SOURCE0..23` = 2);
   which output pin carries the program's output to the AK4621 is the program's
-  business, not the registers'.
+  business, not the registers'. openHC's init sets pair 0 to 3, ASRC 0's
+  output, for the line in (measured: 1 is serial input 0 passed straight
+  through, 4–7 silence).
 * The clock generators are set (÷8, ÷8, ÷5) but feed nothing: no port is a
   master and neither the core nor an ASRC selects them.
 * **MP6 and MP7** are outputs with pull-ups, driven by the program.
@@ -344,6 +352,15 @@ same −12.0 dBFS through `ohc_analog` and straight into `hw:` at S32_LE, and 20
 plays killed mid-stream left no hang and the floor back at −93 dBFS. Which jack
 is left is still open: the openSpeakerPoint's line input does not keep its
 channel order from one capture to the next.
+
+**The line in records** (2026-11-03): the AK4621's ADC is serial input 2
+(channels 32/33: as ASRC 0's input it carries analog noise and the line's hum,
+where serial input 1 is digital silence), and SDATA_OUT0 is the pair that
+reaches the CE5300 (switching its `SOUT_SOURCE` off silences RX0; pairs 16 and
+20 change nothing). With the line out cabled to the line in, a −12 dBFS 1 kHz
+left / 1.5 kHz right tone played on `hw:openhcea,0` records on the same
+device's capture at −12.1 dBFS peak, left on left, THD −109 / −104 dB and
+THD+N −88 / −90 dB (the cable's 120 Hz hum, −73 dBFS, sets the noise).
 
 The line out was measured end to end by an openSpeakerPoint's line input
 (`cmd/audio/measure`: per-channel RMS, peak and pitch). It also caught, on
