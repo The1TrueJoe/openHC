@@ -55,10 +55,13 @@ dry inside one. The interrupt handler feeds it a word at a time, with two
 status reads per word at ~0.7 us each, against a 4.4 us byte at the switch's
 1.8 MHz. That is usually enough. On an EA3, 121 of 300,000 chip-id reads came
 back with their last bytes 0xff, in bursts. A cut frame can also turn the tail
-of a write into a stray command. So a CE5X00 transfer that fits the 32-entry
-FIFO is written in one go, with no status reads and interrupts off, and the
-handler only drains RX. With that, 1,000,000 reads on the same EA3, idle and
-under network load, had no bad reads.
+of a write into a stray command. Writing the words back to back, interrupts
+off, cut that to a rare burst, because SSDR writes are posted and about one
+fill in 100,000 still stalls on the way for up to 45 us. So for a CE5X00
+transfer that fits the 32-entry FIFO, the DDS clock is stopped, every word is
+queued, and only then does the clock start. The handler only drains RX. On the
+EA3, back-to-back fills had 5 bad reads in 2,000,000; clock-gated fills had
+none in 5,000,000, including fills that stalled for 41 us.
 
 The CE5300 is identified by the SoC host bridge (8086:0c40 at 0000:00:00.0)
 rather than by the SSP function's own id, which it shares with the CE4100, so
@@ -162,10 +165,11 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		return;
  
  	/* Wait until SSP becomes idle before deasserting the CS */
-@@ -468,7 +474,66 @@
+@@ -467,6 +473,71 @@
+ 	write_SSSR_CS(drv_data, SSSR_ROR);
  
  	return limit;
- }
++}
 +
 +/*
 + * CEFDK leaves the CE5300's SSP with its DDS clock stopped and stale words in
@@ -175,7 +179,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +static void ce5x00_drain_tx_fifo(struct driver_data *drv_data)
 +{
 +	unsigned int i;
- 
++
 +	/* 100 MHz * 0x40000 / 2^24 = 1.5625 MHz with SCR = 0 */
 +	pxa2xx_spi_write(drv_data, DDS_RATE, 0x40000);
 +	pxa_ssp_enable(drv_data->ssp);
@@ -198,10 +202,11 @@ Author: Joseph Telaak <joseph@telaak.dev>
 + * The chip select is the SSP frame, so it also drops whenever the TX FIFO runs
 + * dry mid-transfer. The interrupt handler feeds the FIFO one word at a time,
 + * with two status reads (~0.7 us each on the CE5300) per word, which keeps
-+ * ahead of a 4.4 us byte only most of the time: on an EA3, about 1 in 2500
-+ * BCM53125 reads lost CS mid-frame and returned trailing 0xff bytes. So when
-+ * a transfer fits the FIFO, write all of it at once, with no status reads and
-+ * interrupts off, and leave the handler only the RX side.
++ * ahead of a 4.4 us byte only most of the time. Writing the words back to back
++ * isn't enough either: SSDR writes are posted, and about one fill in 100,000
++ * stalls on the way for up to 45 us. So stop the DDS clock, queue the whole
++ * transfer, and only then start the clock, so that the frame starts with
++ * every word in the FIFO. The interrupt handler only drains RX.
 + */
 +static void ce5x00_fill_tx_fifo(struct driver_data *drv_data,
 +				struct spi_transfer *xfer, u32 *cr1)
@@ -209,7 +214,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +	unsigned int n = drv_data->n_bytes, words = xfer->len / n, i;
 +	const u8 *p = xfer->tx_buf;
 +	unsigned long flags;
-+	u32 w = 0;
++	u32 w = 0, dds;
 +
 +	if (words > CE5X00_SSP_FIFO_DEPTH)
 +		return;
@@ -218,18 +223,21 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +	*cr1 &= ~SSCR1_TIE;
 +
 +	local_irq_save(flags);
++	dds = pxa2xx_spi_read(drv_data, DDS_RATE);
++	pxa2xx_spi_write(drv_data, DDS_RATE, 0);
 +	for (i = 0; i < words; i++, p += n) {
 +		if (xfer->tx_buf)
 +			w = n == 1 ? *p : n == 2 ? *(const u16 *)p : *(const u32 *)p;
 +		pxa2xx_spi_write(drv_data, SSDR, w);
 +	}
++	/* a read completes only after the posted writes ahead of it */
++	pxa2xx_spi_read(drv_data, SSSR);
++	pxa2xx_spi_write(drv_data, DDS_RATE, dds);
 +	local_irq_restore(flags);
-+}
-+
+ }
+ 
  static void pxa2xx_spi_off(struct driver_data *drv_data)
- {
- 	/* On MMP, disabling SSE seems to corrupt the Rx FIFO */
-@@ -583,6 +648,7 @@
+@@ -583,6 +654,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -237,7 +245,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		mask |= QUARK_X1000_SSCR1_RFT;
  		break;
-@@ -909,6 +975,7 @@
+@@ -909,6 +981,7 @@
  	unsigned int clk_div;
  
  	switch (drv_data->ssp_type) {
@@ -245,7 +253,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		clk_div = quark_x1000_get_clk_div(rate, &chip->dds_rate);
  		break;
-@@ -1036,7 +1103,7 @@
+@@ -1036,7 +1109,7 @@
  		pxa2xx_spi_update(drv_data, SFIFOTT, mask, thresh);
  	}
  
@@ -254,17 +262,17 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		pxa2xx_spi_update(drv_data, DDS_RATE, GENMASK(23, 0), chip->dds_rate);
  
  	/* Stop the SSP */
-@@ -1076,6 +1143,9 @@
- 			gpiod_set_value(drv_data->gpiod_ready, 0);
+@@ -1077,6 +1150,9 @@
  		}
  	}
-+
+ 
 +	if (drv_data->ssp_type == CE5X00_SSP && !dma_mapped)
 +		ce5x00_fill_tx_fifo(drv_data, transfer, &cr1);
- 
++
  	/*
  	 * Release the data by enabling service requests and interrupts,
-@@ -1091,7 +1161,129 @@
+ 	 * without changing any mode bits.
+@@ -1091,10 +1167,132 @@
  	struct driver_data *drv_data = spi_controller_get_devdata(controller);
  
  	int_error_stop(drv_data, "transfer aborted", -EINTR);
@@ -306,7 +314,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +			return 0;
 +		len += xfer->len;
 +	}
-+
+ 
 +	m = kzalloc(sizeof(*m), GFP_KERNEL);
 +	if (!m)
 +		return -ENOMEM;
@@ -333,9 +341,9 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +	list_add(&m->xfer.transfer_list, &msg->transfers);
 +	msg->opt_state = m;
 +
-+	return 0;
-+}
-+
+ 	return 0;
+ }
+ 
 +static int ce5x00_unoptimize_message(struct spi_message *msg)
 +{
 +	struct ce5x00_merged_msg *m = msg->opt_state;
@@ -383,7 +391,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +
 +	if (!m)
 +		return 0;
- 
++
 +	p = m->rx;
 +	list_for_each_entry(xfer, &m->orig, transfer_list) {
 +		if (xfer->rx_buf)
@@ -391,10 +399,13 @@ Author: Joseph Telaak <joseph@telaak.dev>
 +		p += xfer->len;
 +	}
 +
- 	return 0;
- }
- 
-@@ -1135,6 +1327,7 @@
++	return 0;
++}
++
+ static void pxa2xx_spi_handle_err(struct spi_controller *controller,
+ 				 struct spi_message *msg)
+ {
+@@ -1135,6 +1333,7 @@
  	uint tx_thres, tx_hi_thres, rx_thres;
  
  	switch (drv_data->ssp_type) {
@@ -402,7 +413,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tx_thres = TX_THRESH_QUARK_X1000_DFLT;
  		tx_hi_thres = 0;
-@@ -1173,7 +1366,7 @@
+@@ -1173,7 +1372,7 @@
  		break;
  	}
  
@@ -411,7 +422,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		if (spi_get_chipselect(spi, 0) > 4) {
  			dev_err(&spi->dev, "failed setup: cs number must not be > 4.\n");
  			return -EINVAL;
-@@ -1208,6 +1401,7 @@
+@@ -1208,6 +1407,7 @@
  	}
  
  	switch (drv_data->ssp_type) {
@@ -419,7 +430,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		chip->threshold = (QUARK_X1000_SSCR1_RxTresh(rx_thres)
  				   & QUARK_X1000_SSCR1_RFT)
-@@ -1307,8 +1501,16 @@
+@@ -1307,8 +1507,16 @@
  
  	drv_data->ssp_type = ssp->type;
  
@@ -436,7 +447,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  		case QUARK_X1000_SSP:
  			controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
  			break;
-@@ -1372,6 +1574,7 @@
+@@ -1372,6 +1580,7 @@
  
  	/* Load default SSP configuration */
  	switch (drv_data->ssp_type) {
@@ -444,7 +455,7 @@ Author: Joseph Telaak <joseph@telaak.dev>
  	case QUARK_X1000_SSP:
  		tmp = QUARK_X1000_SSCR1_RxTresh(RX_THRESH_QUARK_X1000_DFLT) |
  		      QUARK_X1000_SSCR1_TxTresh(TX_THRESH_QUARK_X1000_DFLT);
-@@ -1409,6 +1612,9 @@
+@@ -1409,6 +1618,9 @@
  		break;
  	}
  
