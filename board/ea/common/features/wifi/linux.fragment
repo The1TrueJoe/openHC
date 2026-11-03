@@ -1,13 +1,5 @@
-# openHC — Wi-Fi (Atheros AR9485 on PCIe) kernel side, shared by EA variants that
-# HAVE a radio: ea1-v1, ea1-v2, ea3-v1. Fully mainline ath9k, no firmware blob.
-#
-# BUILT AS MODULES, not optional: CEFDK's bootlinux window is 7,417,856 bytes and
-# an EA kernel with only `emmc` is already 7,037,952 — cfg80211+mac80211+ath9k are
-# ~a megabyte, so builtin makes a kernel that does not boot (looks like dead
-# hardware). Nothing here is needed to REACH the rootfs (the radio comes up from
-# S41wifi-ap after p1 mounts), so modules cost nothing and lift the ceiling.
-# CFG80211/MAC80211 must be =m too: a built-in cannot depend on a module, so =y
-# would drag ath9k back in with them.
+# Wi-Fi: AR9485, mainline ath9k. Modules, not optional: built in (~1 MB) the
+# kernel overruns the copy window and does not boot. See docs ea/kernel-config.
 CONFIG_CFG80211=m
 CONFIG_MAC80211=m
 CONFIG_WLAN=y
@@ -16,9 +8,7 @@ CONFIG_ATH_COMMON=m
 CONFIG_ATH9K=m
 CONFIG_ATH9K_PCI=y
 
-# crypto mac80211/WPA needs. Left BUILT IN deliberately: small, several already
-# pulled in elsewhere, and a missing algorithm fails as an unexplained
-# association failure rather than a load error.
+# WPA crypto built in: a missing one fails as an unexplained association failure.
 CONFIG_CRYPTO_AES=y
 CONFIG_CRYPTO_CCM=y
 CONFIG_CRYPTO_GCM=y

@@ -10,7 +10,7 @@
 BOARD ?= ea3-v2
 # ea1-*/ea3-*: Intel CE5300 (x86), companion TM4C IO-MCU, CEFDK netboot.
 #          Variants differ by wifi / BCM53125 switch / PoE / secure-boot fuse:
-#          ea1-v1 (wifi, no switch, fuse CLEAR — plain flash, no takeover)
+#          ea1-v1 (wifi, no switch, fuse BLOWN on rev 5 — autoscript takeover)
 #          ea1-v2 (wifi; boot differences unconfirmed)
 #          ea1-v2-poe (no wifi, switch, PoE)
 #          ea3-v1 (wifi, switch, PoE)
