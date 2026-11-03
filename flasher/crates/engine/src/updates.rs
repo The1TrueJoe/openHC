@@ -123,17 +123,18 @@ pub fn resolve_executable(downloaded: &Path) -> Result<PathBuf> {
         .find(|&i| {
             zip.by_index(i)
                 .map(|e| {
-                    let n = e.name();
                     e.is_file()
-                        && n.contains("/Contents/MacOS/")
-                        && !n.contains("__MACOSX")
-                        && !n.rsplit('/').next().unwrap_or("").starts_with("._")
+                        && e.name().is_ok_and(|n| {
+                            n.contains("/Contents/MacOS/")
+                                && !n.contains("__MACOSX")
+                                && !n.rsplit('/').next().unwrap_or("").starts_with("._")
+                        })
                 })
                 .unwrap_or(false)
         })
         .context("no Contents/MacOS/ executable inside the downloaded bundle")?;
     let mut entry = zip.by_index(idx)?;
-    let name = entry.name().rsplit('/').next().unwrap_or("ohc-flasher").to_string();
+    let name = entry.name()?.rsplit('/').next().unwrap_or("ohc-flasher").to_string();
     let dest = std::env::temp_dir().join(name);
     let mut out = std::fs::File::create(&dest)
         .with_context(|| format!("writing {}", dest.display()))?;
