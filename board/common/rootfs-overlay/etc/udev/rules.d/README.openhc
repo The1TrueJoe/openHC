@@ -3,7 +3,7 @@ Both 80-net-name-slot.rules and 80-net-setup-link.rules are symlinks to
 
 They disable PREDICTABLE INTERFACE NAMING. Without it the device manager renames
 eth0 to enp2s0 on the HC-800, and every board.env in the tree names eth0 —
-OHC_ID_IFACE, OHC_MDNS_IFACE, OHC_UPLINK_IFACE — so S40net finds nothing and the
+OHC_ID_IFACE, OHC_UPLINK_IFACE — so S40net finds nothing and the
 box boots perfectly with no network. It looks exactly like a hang and is not.
 
 TWO FILENAMES, because the rule lives in a different file depending on who

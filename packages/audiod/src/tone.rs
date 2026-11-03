@@ -1,7 +1,7 @@
 //! Per-output tone: bass, treble, balance — and on a DSP board, its EQ too.
 //!
 //! An output's tone stage is one of two things, and each output says which by
-//! the knobs it carries (`Port::tone`, filled in by `fill` once board.env is
+//! the knobs it carries (`Port::tone`, filled in by `fill` once the board is
 //! read; the map publishes them so the web UI draws exactly those):
 //!
 //! * The software stage: openHC's ALSA plugin (packages/alsa-ohceq, pcm type
@@ -14,7 +14,7 @@
 //!     `<pcm> Bass Playback Volume`, `<pcm> Treble Playback Volume`  -12..12 dB
 //!     `<pcm> Balance Playback Volume`  -100 (left only) .. 100 (right only)
 //!
-//! * The board's DSP, for a port with `dsp=<profile>` in board.env (the EA3's
+//! * The board's DSP, for a port whose codec has a profile (board.rs; the EA3's
 //!   ADAU1451). The profile is the same file the DSP's firmware is built from
 //!   (board/ea/common/firmware/dsp/adau1451/), and its knobs are ALSA controls
 //!   the kernel's sigmadsp core made from that firmware: 4 bytes, big-endian,

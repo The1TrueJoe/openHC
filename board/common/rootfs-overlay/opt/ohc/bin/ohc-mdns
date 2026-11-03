@@ -37,7 +37,8 @@ SERVICES="$CONF_DIR/services"
 # reading those advertised "unknown" on every unit.
 rel() { sed -n "s/^$1=//p" /etc/openhc-release 2>/dev/null | head -1; }
 OHC_VERSION=$(rel version); OHC_VERSION=${OHC_VERSION:-unknown}
-OHC_BOARD=${OHC_BOARD:-$(rel board)}
+OHC_BOARD=$(rel board)
+OHC_MODEL=$(ohc-hw model)
 BACKUP=/opt/ohc/backup
 
 mdns_name() {
@@ -48,15 +49,16 @@ running() { ps w | grep -v grep | grep -q "avahi-daemon: running"; }
 
 # Which interface should carry the identity.
 #
-# Wired first: it is the faster and more stable path, and on this box both
-# interfaces sit on the SAME subnet, so advertising on both publishes two
-# addresses for one host. Clients then pick one at random and some cache the
-# wrong one. Pick a single interface and stick to it.
+# Wired first (ohc-hw lan-ifaces lists them so): it is the faster and more
+# stable path, and on this box both interfaces sit on the SAME subnet, so
+# advertising on both publishes two addresses for one host. Clients then pick
+# one at random and some cache the wrong one. Pick a single interface and stick
+# to it.
 #
 # br0 and the veth pair belong to the Android container and must never carry
 # service records onto the LAN.
 preferred_iface() {
-    for i in ${OHC_MDNS_IFACE:-eth0 wlan0}; do
+    for i in $(ohc-hw lan-ifaces); do
         [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = "1" ] || continue
         ip -4 addr show "$i" 2>/dev/null | grep -q "inet " || continue
         echo "$i"; return 0
@@ -155,7 +157,7 @@ cat > "$SERVICES/openhc.service" <<EOF
     <type>_http._tcp</type>
     <port>${OHC_WEB_PORT:-80}</port>
     <txt-record>board=${OHC_BOARD:-unknown}</txt-record>
-    <txt-record>model=${OHC_MODEL:-0}</txt-record>
+    <txt-record>model=${OHC_MODEL:-unknown}</txt-record>
     <txt-record>version=${OHC_VERSION}</txt-record>
   </service>
   <!-- how the ohc tool finds controllers -->
@@ -163,7 +165,7 @@ cat > "$SERVICES/openhc.service" <<EOF
     <type>_openhc._tcp</type>
     <port>${OHC_WEB_PORT:-80}</port>
     <txt-record>board=${OHC_BOARD:-unknown}</txt-record>
-    <txt-record>model=${OHC_MODEL:-0}</txt-record>
+    <txt-record>model=${OHC_MODEL:-unknown}</txt-record>
     <txt-record>version=${OHC_VERSION}</txt-record>
   </service>
 </service-group>

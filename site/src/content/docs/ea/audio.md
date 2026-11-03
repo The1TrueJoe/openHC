@@ -47,12 +47,11 @@ is pd_hdmi's `hdmi_dma_custom_start`: head descriptor into `+0x0c`, 0 into
 `+0x18`, the placeholder into `+0x14`, the mode word into `+0x1c`, then audio
 enable.
 
-**As an output.** Every EA's `board.env` names it, `OHC_AUDIO_OUT_hdmi=
-"hw:CARD=HDMI,DEV=0|HDMI|format=S32_LE"`: the EA1's only output, the EA3's
-second next to its analog one. audiod then treats it like any other output
-(Spotify and AirPlay endpoints, level, tone, routes) and makes it the
-`/etc/asound.conf` `default` where it is first. `format=` is the port option
-that opens the dmix at the 32-bit words the FIFO takes, instead of S16_LE.
+**As an output.** audiod finds the card's one PCM, `HDMI`, like any other: the
+EA1's only output, the EA3's second next to its analog one. It gets Spotify
+and AirPlay endpoints, level, tone and routes, and is the `/etc/asound.conf`
+`default` where it is first. The dmix opens it at the 32-bit words the FIFO
+takes: it asks for S16_LE, which the driver refuses, and takes S32_LE.
 
 **The clock.** MCLK is the SoC's audio PLL, IOSF sideband port `0x8b`, eight
 registers (`apll_cr[0..7]`). Stock's `ismdaudio` programs it per mode; CEFDK

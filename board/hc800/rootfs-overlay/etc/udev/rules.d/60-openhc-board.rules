@@ -1,0 +1,21 @@
+# HC-800: which tty and PCM is what (see 70-openhc-io.rules for the tty
+# properties, audiod's board.rs for the PCM ones). The UARTs are ACPI's, so
+# they are told apart by I/O port.
+
+# Rear RS-232: host 16550As on DB9s with DTR/RTS wired.
+SUBSYSTEM=="tty", KERNEL=="ttyS*", ATTR{port}=="0x2F8", \
+  ENV{OHC_SERIAL}="1", ENV{OHC_SERIAL_LABEL}="RS-232 port 1", ENV{OHC_SERIAL_MODEM}="1"
+SUBSYSTEM=="tty", KERNEL=="ttyS*", ATTR{port}=="0x3E8", \
+  ENV{OHC_SERIAL}="2", ENV{OHC_SERIAL_LABEL}="RS-232 port 2", ENV{OHC_SERIAL_MODEM}="1"
+
+# EM357 Zigbee NCP; ttySZigbee is the vendor's name for it.
+SUBSYSTEM=="tty", KERNEL=="ttyS*", ATTR{port}=="0x2F0", ENV{OHC_RADIO}="zigbee", SYMLINK+="ttySZigbee"
+
+# ALC888 PCMs as the rear panel labels them; the HDA codec names them only
+# "ALC888-VD Analog" and so on. Analog 2 (the headphone pin) is wired to its
+# RCA jacks left<->right.
+SUBSYSTEM=="sound", KERNEL=="pcmC*D0p", ATTRS{id}=="Intel", ENV{OHC_AUDIO_LABEL}="Analog 1"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D2p", ATTRS{id}=="Intel", ENV{OHC_AUDIO_LABEL}="Analog 2", ENV{OHC_AUDIO_SWAP}="1"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D1p", ATTRS{id}=="Intel", ENV{OHC_AUDIO_LABEL}="Coax (S/PDIF)"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D3p", ATTRS{id}=="Intel", ENV{OHC_AUDIO_LABEL}="HDMI"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D0c", ATTRS{id}=="Intel", ENV{OHC_AUDIO_LABEL}="Line in"

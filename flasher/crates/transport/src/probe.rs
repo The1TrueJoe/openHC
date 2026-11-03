@@ -38,7 +38,15 @@ fn version_of(ssh: &Ssh) -> Option<String> {
 }
 
 pub fn identify(ssh: &Ssh) -> Identity {
-    // openHC: /opt/ohc/board.env
+    // openHC: the board its build stamped into /etc/openhc-release.
+    if let Some(rel) = ssh.read_file("/etc/openhc-release") {
+        let mut id = board::from_release(&rel);
+        if id.board.is_some() {
+            id.version = version_of(ssh);
+            return id;
+        }
+    }
+    // An older openHC: /opt/ohc/board.env
     if let Some(env) = ssh.read_file("/opt/ohc/board.env") {
         let get = |key: &str| env_value(&env, key);
         let mut id = board::from_board_env(get);

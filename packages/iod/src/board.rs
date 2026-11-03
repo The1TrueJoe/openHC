@@ -1,18 +1,21 @@
-//! The IO model: board.env for what only it knows, the kernel for the rest.
+//! The IO model, read from the kernel.
 //!
 //! This is the whole reason one binary runs the fleet. Every board answers the
 //! same questions — how is the IO reached, how many of each thing is there —
 //! and nothing above this module knows what a HC-800 or an IO Extender is.
 //!
-//! **What the IO is comes from the kernel, never from board.env.** board.env says
-//! HOW it is reached (`OHC_IO_BACKEND`); the counts are read back from what the
-//! board's firmware made the kernel register:
+//! **Everything here comes from what the board's firmware made the kernel
+//! register; board.env holds software defaults only:**
 //!
-//! - behind an IO microcontroller, gpio-ohc-iomcu publishes what the part's
-//!   firmware node declares (device tree on EA, an ACPI table on the HC-800) at
-//!   [`IOMCU_SYSFS`] — before the part even answers;
-//! - on native GPIO (the IO Extender), the lines its device tree names
-//!   (`relay1..N`, `contact1..N`) and the lirc devices its IR driver labels.
+//! - the model is the device tree's `model`;
+//! - an IO microcontroller is a serdev device whose compatible is
+//!   `control4,io-mcu` (device tree on EA, an ACPI table on the HC-800), and
+//!   gpio-ohc-iomcu publishes what its node declares at [`IOMCU_SYSFS`] —
+//!   before the part even answers;
+//! - native GPIO IO (the IO Extender) is the lines its device tree names
+//!   (`relay1..N`, `contact1..N`) and the lirc devices its IR driver labels;
+//! - host serial ports are the ones the board's udev rules name
+//!   `/dev/ohc/serial/N` (label and DB9 modem lines as udev properties).
 //!
 //! There is no second copy to disagree with: a driver that did not bind means
 //! the board declares nothing, and the diagnosis says why.
@@ -156,8 +159,8 @@ pub struct SerialPort {
     pub bauds: Vec<u32>,
     /// DTR and RTS are wired to the connector (a DB9), so they can be driven.
     /// A 3.5 mm jack carries TX/RX/GND only; offering line control there would
-    /// be a switch connected to nothing. Declared per port in OHC_SERIALS as a
-    /// fourth `:modem` field.
+    /// be a switch connected to nothing. Set by the board's udev rule
+    /// (`OHC_SERIAL_MODEM=1`).
     pub modem: bool,
     /// The IR jack this port shares (a combo jack): it is serial only while
     /// that jack's mode is serial. `None` for a connector of its own.
@@ -240,27 +243,144 @@ fn read_env(path: &str) -> HashMap<String, String> {
     m
 }
 
-fn backend_of(e: &HashMap<String, String>) -> Backend {
-    match e.get("OHC_IO_BACKEND").map(String::as_str) {
-        Some("mcu") => Backend::Mcu,
-        Some("gpio") => Backend::Gpio,
-        _ => Backend::None,
+/// Where serdev devices live, bound or not; the io-mcu is one of them.
+pub const SERDEV_SYSFS: &str = "/sys/bus/serial/devices";
+/// The stable names the board's udev rules give its user serial ports.
+pub const SERIAL_DIR: &str = "/dev/ohc/serial";
+const IOMCU_COMPATIBLE: &str = "control4,io-mcu";
+
+/// The compatibles in a device's `modalias` (`of:N<name>T<type>C<compat>…`),
+/// which an ACPI PRP0001 node writes the same way; every one has a vendor
+/// prefix, which the name and type pieces do not.
+fn compatibles(modalias: &str) -> Vec<String> {
+    let Some(m) = modalias.strip_prefix("of:") else { return vec![] };
+    m.split('C').skip(1).filter(|c| c.contains(',')).map(str::to_string).collect()
+}
+
+/// A device's compatibles: its device-tree node's, else its modalias's (ACPI).
+fn device_compatibles(dev: &Path) -> Vec<String> {
+    match std::fs::read(dev.join("of_node/compatible")) {
+        Ok(b) => b.split(|&c| c == 0).filter(|c| !c.is_empty()).map(|c| String::from_utf8_lossy(c).into_owned()).collect(),
+        Err(_) => compatibles(std::fs::read_to_string(dev.join("modalias")).unwrap_or_default().trim()),
+    }
+}
+
+/// The io-mcu's compatibles, if the board describes one.
+fn iomcu_node(serdev: &Path) -> Option<Vec<String>> {
+    std::fs::read_dir(serdev).ok()?.flatten().find_map(|d| {
+        let c = device_compatibles(&d.path());
+        c.iter().any(|s| s == IOMCU_COMPATIBLE).then_some(c)
+    })
+}
+
+/// The part from a compatible beside `control4,io-mcu`:
+/// `control4,io-mcu-tm4c1231d5` or `ti,tm4c1231d5` -> `tm4c1231d5`.
+fn mcu_part(compat: &[String]) -> Option<String> {
+    compat.iter().filter(|c| *c != IOMCU_COMPATIBLE).find_map(|c| {
+        let p = c.strip_prefix("control4,io-mcu-").or_else(|| c.split_once(',').map(|(_, p)| p))?;
+        (!p.is_empty()).then(|| p.to_string())
+    })
+}
+
+/// The device tree's `model`, NUL-terminated in the blob.
+pub fn dt_model(dt: &Path) -> Option<String> {
+    let m = std::fs::read(dt.join("model")).ok()?;
+    let m = String::from_utf8_lossy(&m).trim_end_matches('\0').trim().to_string();
+    (!m.is_empty()).then_some(m)
+}
+
+/// A host user port: what `/dev/ohc/serial/N` points at, and its udev properties.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HostPort {
+    pub n: u32,
+    pub dev: String,
+    pub label: String,
+    pub modem: bool,
+}
+
+impl HostPort {
+    /// `/dev/ohc/serial/*` in panel order, minus the MCU-routed ttyOHC ports.
+    pub fn discover(dir: &Path, props: impl Fn(&Path) -> String) -> Vec<HostPort> {
+        let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+        let mut v: Vec<HostPort> = rd
+            .flatten()
+            .filter_map(|d| {
+                let n: u32 = d.file_name().to_str()?.parse().ok()?;
+                let target = std::fs::read_link(d.path()).ok()?;
+                if target.file_name()?.to_str()?.starts_with("ttyOHC") {
+                    return None;
+                }
+                Some(HostPort::from_props(n, &d.path(), &props(&d.path())))
+            })
+            .collect();
+        v.sort_by_key(|p| p.n);
+        v
+    }
+
+    /// `udevadm info -q property` output: OHC_SERIAL_LABEL, OHC_SERIAL_MODEM.
+    fn from_props(n: u32, dev: &Path, props: &str) -> HostPort {
+        let get = |k: &str| props.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')).map(str::to_string);
+        HostPort {
+            n,
+            dev: dev.display().to_string(),
+            label: get("OHC_SERIAL_LABEL").unwrap_or_else(|| format!("Serial {n}")),
+            modem: get("OHC_SERIAL_MODEM").as_deref() == Some("1"),
+        }
+    }
+}
+
+fn udev_props(dev: &Path) -> String {
+    std::process::Command::new("udevadm")
+        .args(["info", "--query=property", "--name"])
+        .arg(dev)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// What the kernel found, before it is turned into a [`Board`].
+#[derive(Clone, Debug, Default)]
+pub struct Kernel {
+    pub model: Option<String>,
+    pub backend: Option<Backend>,
+    pub mcu_part: Option<String>,
+    pub declared: Option<Declared>,
+    pub hosts: Vec<HostPort>,
+}
+
+impl Kernel {
+    pub fn read() -> Kernel {
+        let model = dt_model(Path::new("/proc/device-tree"));
+        let hosts = HostPort::discover(Path::new(SERIAL_DIR), udev_props);
+        if let Some(compat) = iomcu_node(Path::new(SERDEV_SYSFS)) {
+            return Kernel {
+                model,
+                backend: Some(Backend::Mcu),
+                mcu_part: mcu_part(&compat),
+                declared: Declared::read(Path::new(IOMCU_SYSFS)),
+                hosts,
+            };
+        }
+        let d = Declared::discover();
+        let gpio = d.relays + d.contacts + d.ir_out + d.ir_blaster + d.ir_in > 0;
+        Kernel {
+            model,
+            backend: Some(if gpio { Backend::Gpio } else { Backend::None }),
+            mcu_part: None,
+            declared: gpio.then_some(d),
+            hosts,
+        }
     }
 }
 
 impl Board {
     pub fn load(env_path: &str) -> Board {
-        let e = read_env(env_path);
-        let kernel = match backend_of(&e) {
-            Backend::Mcu => Declared::read(Path::new(IOMCU_SYSFS)),
-            Backend::Gpio => Some(Declared::discover()),
-            Backend::None => None,
-        };
-        Board::from_env(e, kernel)
+        Board::from_env(read_env(env_path), Kernel::read())
     }
 
-    fn from_env(e: HashMap<String, String>, kernel: Option<Declared>) -> Board {
-        let backend = backend_of(&e);
+    fn from_env(e: HashMap<String, String>, k: Kernel) -> Board {
+        let backend = k.backend.clone().unwrap_or(Backend::None);
+        let kernel = k.declared;
 
         // Rates a port may be set to. Overridable per transport in board.env,
         // because these are hardware facts and boards differ.
@@ -283,29 +403,20 @@ impl Board {
         let mcu_bauds = bauds("OHC_SERIAL_BAUDS_MCU",
             &[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]);
 
-        // Host UARTs: "dev:label:baud", space separated. Labels use underscores
-        // so the field itself stays whitespace-free.
-        let mut serials: Vec<SerialPort> = e
-            .get("OHC_SERIALS")
-            .map(|s| {
-                s.split_whitespace()
-                    .filter(|t| !t.is_empty())
-                    .map(|t| {
-                        let p: Vec<&str> = t.split(':').collect();
-                        SerialPort {
-                            dev: Some(format!("/dev/{}", p.first().unwrap_or(&""))),
-                            label: p.get(1).map(|x| x.replace('_', " ")).unwrap_or_default(),
-                            baud: p.get(2).and_then(|x| x.parse().ok()).unwrap_or(115200),
-                            transport: "host",
-                            bauds: host_bauds.clone(),
-                            modem: p.get(3) == Some(&"modem"),
-                            jack: None,
-                            uart: None,
-                        }
-                    })
-                    .collect()
+        let mut serials: Vec<SerialPort> = k
+            .hosts
+            .iter()
+            .map(|h| SerialPort {
+                dev: Some(h.dev.clone()),
+                label: h.label.clone(),
+                baud: 115200,
+                transport: "host",
+                bauds: host_bauds.clone(),
+                modem: h.modem,
+                jack: None,
+                uart: None,
             })
-            .unwrap_or_default();
+            .collect();
 
         // MCU-routed user UARTs. gpio-ohc-iomcu mux-es each one
         // onto a /dev/ttyOHC<n> tty (its own 0-based index, independent of any
@@ -319,9 +430,9 @@ impl Board {
         // with no IO, declares nothing.
         let mcu = backend == Backend::Mcu;
         let kernel = kernel.filter(|_| backend != Backend::None);
-        let k = kernel.clone().unwrap_or_default();
-        for i in 0..k.uarts {
-            let kp = k.ports.get(i as usize).cloned().unwrap_or_default();
+        let d = kernel.clone().unwrap_or_default();
+        for i in 0..d.uarts {
+            let kp = d.ports.get(i as usize).cloned().unwrap_or_default();
             serials.push(SerialPort {
                 dev: Some(format!("/dev/ttyOHC{i}")),
                 label: if kp.label.is_empty() { format!("Serial {}", i + 1) } else { kp.label },
@@ -336,22 +447,22 @@ impl Board {
         let ir_combo = serials.iter().filter(|p| p.jack.is_some()).count() as u8;
 
         Board {
-            model: e.get("OHC_MODEL").cloned().unwrap_or_else(|| "unknown".into()),
+            model: k.model.unwrap_or_else(|| "unknown".into()),
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|_| "openhc".into()),
             io: Io {
-                mcu_part: e.get("OHC_IO_MCU_PART").filter(|s| !s.is_empty()).cloned(),
-                mcu_tty: Some(k.port.clone()).filter(|s| !s.is_empty()),
-                mcu_baud: k.baud,
+                mcu_part: k.mcu_part,
+                mcu_tty: Some(d.port.clone()).filter(|s| !s.is_empty()),
+                mcu_baud: d.baud,
                 declared_by: "kernel",
                 mcu_online: kernel.as_ref().filter(|_| mcu).map(|k| k.online),
-                ir_out: k.ir_out,
+                ir_out: d.ir_out,
                 ir_combo,
-                ir_blaster: k.ir_blaster,
-                ir_in: k.ir_in,
-                relays: k.relays,
-                contacts: k.contacts,
+                ir_blaster: d.ir_blaster,
+                ir_in: d.ir_in,
+                relays: d.relays,
+                contacts: d.contacts,
                 contacts_active_low: backend == Backend::Gpio,
                 gpio_chip: e.get("OHC_GPIO_CHIP_LABEL").filter(|s| !s.is_empty()).cloned(),
                 io_reset_gpio: e.get("OHC_GPIO_IO_RESET").and_then(|v| v.parse().ok()),
@@ -425,11 +536,15 @@ mod tests {
         ]);
     }
 
+    fn mcu(d: Declared) -> Kernel {
+        Kernel { backend: Some(Backend::Mcu), declared: Some(d), ..Kernel::default() }
+    }
+
     #[test]
     fn combo_jacks_come_from_the_kernel() {
         let mut d = ea1();
         d.ports[1] = UartPort::default(); // a UART on a connector of its own
-        let b = Board::from_env(env(&[("OHC_IO_BACKEND", "mcu")]), Some(d));
+        let b = Board::from_env(env(&[]), mcu(d));
         assert_eq!(b.io.ir_combo, 1);
         let s: Vec<_> = b.io.serials.iter().map(|p| (p.label.as_str(), p.jack, p.uart)).collect();
         assert_eq!(s, [("IR / Serial 1", Some(1), Some(0)), ("Serial 2", None, Some(1))]);
@@ -437,7 +552,10 @@ mod tests {
 
     #[test]
     fn kernel_counts_win_and_need_no_board_env() {
-        let b = Board::from_env(env(&[("OHC_IO_BACKEND", "mcu")]), Some(ea1()));
+        let k = Kernel { model: Some("Control4 EA-1 v2".into()), mcu_part: Some("tm4c1231d5".into()), ..mcu(ea1()) };
+        let b = Board::from_env(env(&[]), k);
+        assert_eq!(b.model, "Control4 EA-1 v2");
+        assert_eq!(b.io.mcu_part.as_deref(), Some("tm4c1231d5"));
         assert_eq!(b.io.declared_by, "kernel");
         assert_eq!((b.io.ir_out, b.io.ir_blaster, b.io.ir_in, b.io.ir_combo), (4, 1, 1, 2));
         assert_eq!((b.io.relays, b.io.contacts), (0, 0));
@@ -449,30 +567,104 @@ mod tests {
     }
 
     #[test]
+    fn hardware_lines_left_in_board_env_are_ignored() {
+        // An EA board.env still carrying the old hardware lines.
+        let e = env(&[("OHC_MODEL", "3"), ("OHC_IO_BACKEND", "gpio"), ("OHC_IO_MCU_PART", "lm3s1162"),
+                      ("OHC_SERIALS", "ttyS1:Port:115200:modem")]);
+        let b = Board::from_env(e, Kernel { model: Some("Control4 EA-3 v1".into()), ..mcu(ea1()) });
+        assert_eq!(b.model, "Control4 EA-3 v1");
+        assert_eq!(b.io.backend, Backend::Mcu);
+        assert_eq!(b.io.mcu_part, None);
+        assert!(b.io.serials.iter().all(|p| p.transport == "mcu"));
+    }
+
+    #[test]
     fn an_unbound_driver_declares_nothing() {
-        // Counts left in an old board.env are not a second opinion.
-        let e = env(&[("OHC_IO_BACKEND", "mcu"), ("OHC_RELAYS", "4"), ("OHC_IO_UARTS", "2")]);
-        let b = Board::from_env(e, None);
+        let b = Board::from_env(env(&[]), Kernel { backend: Some(Backend::Mcu), ..Kernel::default() });
         assert_eq!(b.io.declared_by, "kernel");
         assert_eq!((b.io.relays, b.io.contacts, b.io.ir_out), (0, 0, 0));
         assert!(b.io.serials.is_empty());
         assert_eq!(b.io.mcu_online, None);
         assert_eq!(b.io.mcu_tty, None);
+        assert_eq!(b.model, "unknown");
     }
 
     #[test]
     fn a_native_gpio_board_counts_what_its_kernel_named() {
         // The IO Extender: eight named relays and contacts, eight labelled
-        // emitters, no blaster or receiver — and board.env counts ignored.
+        // emitters, no blaster or receiver.
         let lirc: Vec<String> = (1..=8).map(|i| format!("openHC IR out {i}")).collect();
         let d = Declared::from_names(8, 8, &lirc);
-        let e = env(&[("OHC_IO_BACKEND", "gpio"), ("OHC_RELAYS", "2")]);
-        let b = Board::from_env(e, Some(d));
+        let b = Board::from_env(env(&[]), Kernel { backend: Some(Backend::Gpio), declared: Some(d), ..Kernel::default() });
         assert_eq!((b.io.relays, b.io.contacts, b.io.ir_out), (8, 8, 8));
         assert_eq!((b.io.ir_blaster, b.io.ir_in, b.io.ir_combo), (0, 0, 0));
         assert!(b.io.contacts_active_low);
         assert_eq!(b.io.mcu_online, None);
         assert!(b.io.serials.is_empty());
+    }
+
+    #[test]
+    fn host_ports_come_from_dev_ohc_serial() {
+        let dir = std::env::temp_dir().join(format!("iod-serial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, t) in [("2", "../../ttyS2"), ("1", "../../ttyS1"), ("3", "../../ttyOHC0")] {
+            std::os::unix::fs::symlink(t, dir.join(n)).unwrap();
+        }
+        let props = |p: &Path| match p.file_name().unwrap().to_str().unwrap() {
+            "1" => "DEVNAME=/dev/ttyS1\nOHC_SERIAL_LABEL=RS-232 port 1\nOHC_SERIAL_MODEM=1\n".to_string(),
+            _ => "DEVNAME=/dev/ttyS2\n".to_string(),
+        };
+        let hosts = HostPort::discover(&dir, props);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let got: Vec<_> = hosts.iter().map(|h| (h.n, h.label.as_str(), h.modem)).collect();
+        assert_eq!(got, [(1, "RS-232 port 1", true), (2, "Serial 2", false)]);
+        assert!(hosts[0].dev.ends_with("/1"));
+
+        let b = Board::from_env(env(&[]), Kernel { hosts, ..Kernel::default() });
+        assert_eq!(b.io.backend, Backend::None);
+        assert!(b.io.has_any());
+        assert_eq!(b.io.serials[0].transport, "host");
+        assert!(b.io.serials[0].modem);
+    }
+
+    #[test]
+    fn the_part_comes_from_the_io_mcu_compatible() {
+        let c = compatibles;
+        let dt = c("of:Nio-mcuT(null)Ccontrol4,io-mcu-tm4c1231d5Ccontrol4,io-mcu");
+        assert_eq!(dt, ["control4,io-mcu-tm4c1231d5", "control4,io-mcu"]);
+        assert_eq!(mcu_part(&dt).as_deref(), Some("tm4c1231d5"));
+        // An ACPI node name with a C in it is not a compatible.
+        assert_eq!(c("of:NIOMCT(null)Ccontrol4,io-mcu"), ["control4,io-mcu"]);
+        assert_eq!(mcu_part(&c("of:NIOMCT(null)Cti,lm3s1162Ccontrol4,io-mcu")).as_deref(), Some("lm3s1162"));
+        assert_eq!(mcu_part(&c("of:NIOMCT(null)Ccontrol4,io-mcu")), None);
+        assert!(compatibles("acpi:PNP0501:").is_empty());
+    }
+
+    #[test]
+    fn the_io_mcu_is_found_by_compatible_bound_or_not() {
+        let dir = std::env::temp_dir().join(format!("iod-serdev-{}", std::process::id()));
+        for (d, m) in [("serial0-0", "of:NbtT(null)Cbrcm,bcm43438-bt"), ("serial1-0", "of:NIOMCT(null)Ccontrol4,io-mcu")] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+            std::fs::write(dir.join(d).join("modalias"), format!("{m}\n")).unwrap();
+        }
+        assert_eq!(iomcu_node(&dir), Some(vec!["control4,io-mcu".to_string()]));
+        // A device-tree node: its own compatible list, NUL-separated.
+        std::fs::create_dir_all(dir.join("serial1-0/of_node")).unwrap();
+        std::fs::write(dir.join("serial1-0/of_node/compatible"), b"control4,io-mcu-tm4c1231d5\0control4,io-mcu\0").unwrap();
+        let found = iomcu_node(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, Some(vec!["control4,io-mcu-tm4c1231d5".to_string(), "control4,io-mcu".to_string()]));
+        assert_eq!(iomcu_node(&dir), None);
+    }
+
+    #[test]
+    fn the_model_is_the_device_tree_string() {
+        let dir = std::env::temp_dir().join(format!("iod-dt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("model"), b"Control4 HC-800\0").unwrap();
+        assert_eq!(dt_model(&dir).as_deref(), Some("Control4 HC-800"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(dt_model(&dir), None);
     }
 
     #[test]
@@ -485,7 +677,7 @@ mod tests {
 
     #[test]
     fn a_board_with_no_io_declares_none() {
-        let b = Board::from_env(env(&[("OHC_IO_BACKEND", "none")]), Some(ea1()));
+        let b = Board::from_env(env(&[]), Kernel { backend: Some(Backend::None), declared: Some(ea1()), ..Kernel::default() });
         assert_eq!((b.io.relays, b.io.ir_out), (0, 0));
         assert!(!b.io.contacts_active_low);
     }

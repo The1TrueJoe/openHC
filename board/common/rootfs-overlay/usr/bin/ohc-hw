@@ -1,0 +1,51 @@
+#!/bin/sh
+# The board's hardware, as the kernel describes it. One answer per line.
+#
+#   ohc-hw model       device-tree model         Control4 EA-3 v1
+#   ohc-hw board       openHC board name         ea3-v1 (control4,ea3-v1)
+#   ohc-hw dsa-ports   DSA user ports            lan1 lan2
+#   ohc-hw lan-ifaces  interfaces that are up, minus loopback, DSA ports and
+#                      conduits and bridge ports; wired before wireless
+NET=/sys/class/net
+
+dt_str() { [ -r "/proc/device-tree/$1" ] && tr '\0' '\n' < "/proc/device-tree/$1"; }
+
+is_dsa_port() { grep -qx DEVTYPE=dsa "$NET/$1/uevent" 2>/dev/null; }
+
+case "$1" in
+model)
+    dt_str model | head -1
+    ;;
+board)
+    b=$(dt_str compatible | sed -n 's/^control4,//p' | head -1)
+    [ -n "$b" ] || b=$(sed -n 's/^board=//p' /etc/openhc-release 2>/dev/null)
+    echo "${b:-unknown}"
+    ;;
+dsa-ports)
+    for d in "$NET"/*; do
+        n=${d##*/}
+        is_dsa_port "$n" && echo "$n"
+    done
+    ;;
+lan-ifaces)
+    for pass in wired wireless; do
+        for d in "$NET"/*; do
+            n=${d##*/}
+            [ "$n" = lo ] && continue
+            [ "$(cat "$d/operstate" 2>/dev/null)" = down ] && continue
+            is_dsa_port "$n" && continue
+            [ -d "$d/dsa" ] && continue          # a DSA conduit carries tagged frames
+            [ -e "$d/brport" ] && continue       # its bridge carries the address
+            if [ -d "$d/wireless" ] || [ -e "$d/phy80211" ]; then
+                [ $pass = wireless ] && echo "$n"
+            else
+                [ $pass = wired ] && echo "$n"
+            fi
+        done
+    done
+    ;;
+*)
+    echo "usage: ohc-hw {model|board|dsa-ports|lan-ifaces}" >&2
+    exit 1
+    ;;
+esac

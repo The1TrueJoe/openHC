@@ -4,8 +4,8 @@
 # the audio-dsp feature, the HC-800's HDA codec is in its own fragment).
 #
 # The daemon is audiod (packages/audiod, staged by this feature's
-# `packages` file). With OHC_AUDIO_OUTPUTS in board.env it runs N Spotify Connect
-# and N AirPlay instances mapped onto named outputs; without it, the single
+# `packages` file). On a board with sound PCMs it runs N Spotify Connect and N
+# AirPlay instances mapped onto the outputs the kernel names; without any, the single
 # S95librespot / S99shairport-sync instances run and audiod reports them and
 # turns their output/volume knobs. Its state and control are MQTT
 # (<base>/state/audio/*, <base>/cmd/audio/*), its configuration REST (:7072,
