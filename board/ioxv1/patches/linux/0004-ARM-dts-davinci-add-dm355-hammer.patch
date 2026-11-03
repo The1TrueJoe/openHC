@@ -53,7 +53,7 @@ See https://the1truejoe.github.io/openHC/iox/kernel-port/.
 +
 +/ {
 +	model = "Control4 IO Extender V1 (DM355 hammer)";
-+	compatible = "ti,dm355-hammer", "ti,dm355";
++	compatible = "control4,ioxv1", "ti,dm355-hammer", "ti,dm355";
 +
 +	chosen {
 +		stdout-path = "serial0:115200n8";

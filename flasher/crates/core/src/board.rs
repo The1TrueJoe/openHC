@@ -158,28 +158,29 @@ pub const BOARDS: &[Board] = &[
         name: "ea5-v1",
         family: Family::Ea,
         desc: "EA5 V1 (Wi-Fi, switch, audio FPGA)",
-        c4_type: None,
-        c4_revs: &[],
+        c4_type: Some(3),
+        c4_revs: &[4],
         secure_boot: true,
         has_switch: true,
         has_wifi: true,
         dmi: None,
-        notes: "ids and fuse state not yet read off hardware: installs by the autoscript \
-                path, as a blown-fuse board must. Netboot it first.",
+        notes: "ids read off a V1 (/proc/c4board type 3, revision 4). Fuse not boot-tested: \
+                installs by the autoscript path, as a blown-fuse board must. Netboot it first.",
         netboot: None,
     },
     Board {
         name: "ea5-v2",
         family: Family::Ea,
         desc: "EA5 V2 (no internal radio, switch, audio FPGA)",
-        c4_type: None,
+        c4_type: Some(3),
         c4_revs: &[],
         secure_boot: true,
         has_switch: true,
         has_wifi: false,
         dmi: None,
-        notes: "ids and fuse state not yet read off hardware: installs by the autoscript \
-                path, as a blown-fuse board must. Netboot it first.",
+        notes: "assumed type 3 like the V1; its revision is not read yet, so an unread \
+                revision offers both. The V1 image also runs here (the radio is just absent). \
+                Installs by the autoscript path; netboot it first.",
         netboot: None,
     },
     Board {
@@ -343,7 +344,21 @@ pub fn from_c4board(name: Option<&str>, btype: Option<u8>, rev: Option<u8>) -> I
     Identity { board, candidates, running: Running::Stock, version: None, raw }
 }
 
-/// Identify from a running openHC `/opt/ohc/board.env` (already parsed).
+/// Identify from a running openHC's `/etc/openhc-release`, whose `board=` its
+/// build stamped with the exact board name.
+pub fn from_release(release: &str) -> Identity {
+    let Some(name) = release.lines().find_map(|l| l.trim().strip_prefix("board=")) else {
+        return Identity::none(Running::Openhc);
+    };
+    let raw = vec![("board".into(), name.trim().to_string())];
+    match by_name(name) {
+        Some(b) => Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw },
+        None => Identity { raw, ..Identity::none(Running::Openhc) },
+    }
+}
+
+/// Identify from a running openHC `/opt/ohc/board.env` (already parsed): images
+/// from before the board's hardware moved to the device tree.
 pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
     let mut raw = vec![];
     if let Some(name) = get("OHC_BOARD") {

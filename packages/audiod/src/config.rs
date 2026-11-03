@@ -2,10 +2,10 @@
 //!
 //! Configuration, so it is REST (`PUT /api/audio/endpoints`), stored as JSON with
 //! serde at `$OHC_DATA/ohc/audio.json` (default `/data/ohc/audio.json`, which on
-//! the HC-800 is real storage — see S08ohcdata). Absent file = board.env's
-//! defaults. Structured data end to end, so a name can hold any printable text
-//! without escaping games.
-use crate::board::{parse_list, Board};
+//! the HC-800 is real storage — see S08ohcdata). Absent file = the defaults
+//! below, from the product and the outputs' labels. Structured data end to end,
+//! so a name can hold any printable text without escaping games.
+use crate::board::Board;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -46,36 +46,39 @@ pub fn path() -> PathBuf {
     }
 }
 
-fn eps(var: &str) -> Vec<Endpoint> {
-    parse_list(&std::env::var(var).unwrap_or_default())
-        .into_iter()
-        .map(|(name, output)| Endpoint { name, output })
-        .collect()
-}
-
 impl Endpoints {
-    /// board.env's defaults.
-    pub fn defaults() -> Endpoints {
+    /// One Spotify Connect and one AirPlay device per output, so every jack is
+    /// reachable from a phone with no setup ("HC-800 Analog 1", or just "EA-1"
+    /// on a one-output board), and the library player on the first output.
+    /// Inputs are not routed (one would play whatever is plugged in).
+    pub fn defaults(b: &Board) -> Endpoints {
+        let name = |label: &str| {
+            if b.outputs.len() == 1 { b.product.clone() } else { format!("{} {label}", b.product) }
+        };
+        let each: Vec<Endpoint> =
+            b.outputs.iter().map(|o| Endpoint { name: name(&o.label), output: o.id.clone() }).collect();
         Endpoints {
-            spotify: eps("OHC_SPOTIFY"),
-            airplay: eps("OHC_AIRPLAY"),
-            routes: parse_list(&std::env::var("OHC_AUDIO_ROUTES").unwrap_or_default())
+            spotify: each.clone(),
+            airplay: each,
+            routes: Vec::new(),
+            library: b
+                .outputs
+                .first()
+                .map(|o| Endpoint { name: format!("{} Library", b.product), output: o.id.clone() })
                 .into_iter()
-                .map(|(input, output)| Route { input, output })
                 .collect(),
-            library: eps("OHC_LIBRARY"),
         }
     }
 
     /// The saved map, or the defaults when nothing has been saved (or the file
     /// does not parse — said loudly, then defaults).
-    pub fn load() -> Endpoints {
+    pub fn load(b: &Board) -> Endpoints {
         match std::fs::read_to_string(path()) {
-            Ok(t) => Endpoints::from_saved(&t).unwrap_or_else(|e| {
+            Ok(t) => Endpoints::from_saved(&t, b).unwrap_or_else(|e| {
                 eprintln!("audiod: {} is not valid ({e}); using board defaults", path().display());
-                Endpoints::defaults()
+                Endpoints::defaults(b)
             }),
-            Err(_) => Endpoints::defaults(),
+            Err(_) => Endpoints::defaults(b),
         }
     }
 
@@ -83,11 +86,11 @@ impl Endpoints {
     /// for it, and gets the board's default for that kind (an explicitly empty
     /// list stays empty) — so a box that saved its map before the library
     /// player existed still gets one.
-    fn from_saved(text: &str) -> Result<Endpoints, serde_json::Error> {
+    fn from_saved(text: &str, b: &Board) -> Result<Endpoints, serde_json::Error> {
         let raw: serde_json::Value = serde_json::from_str(text)?;
         let mut e: Endpoints = serde_json::from_value(raw.clone())?;
         if raw.get("library").is_none() {
-            e.library = Endpoints::defaults().library;
+            e.library = Endpoints::defaults(b).library;
         }
         Ok(e)
     }
@@ -142,15 +145,39 @@ mod tests {
     use crate::board::Port;
     fn board() -> Board {
         let p = |id: &str, pcm: &str| Port { id: id.into(), label: id.into(), device: "hw:0".into(), pcm: pcm.into(), swap: false, ..Default::default() };
-        Board { outputs: vec![p("analog1", "ohc_analog1"), p("hdmi", "ohc_hdmi")], inputs: vec![p("linein", "ohc_in_linein")], rate: 44100, helpers: vec![] }
+        Board {
+            outputs: vec![p("analog1", "ohc_analog1"), p("hdmi", "ohc_hdmi")],
+            inputs: vec![p("linein", "ohc_in_linein")],
+            rate: 44100,
+            helpers: vec![],
+            product: "HC-800".into(),
+        }
     }
     #[test]
     fn a_map_saved_before_the_library_gets_the_default() {
-        std::env::set_var("OHC_LIBRARY", "Library@analog1");
-        let old = Endpoints::from_saved(r#"{"spotify":[],"airplay":[],"routes":[]}"#).unwrap();
-        assert_eq!(old.library, vec![Endpoint { name: "Library".into(), output: "analog1".into() }]);
-        let none = Endpoints::from_saved(r#"{"spotify":[],"airplay":[],"routes":[],"library":[]}"#).unwrap();
+        let b = board();
+        let old = Endpoints::from_saved(r#"{"spotify":[],"airplay":[],"routes":[]}"#, &b).unwrap();
+        assert_eq!(old.library, vec![Endpoint { name: "HC-800 Library".into(), output: "analog1".into() }]);
+        let none = Endpoints::from_saved(r#"{"spotify":[],"airplay":[],"routes":[],"library":[]}"#, &b).unwrap();
         assert!(none.library.is_empty());
+    }
+    #[test]
+    fn defaults_name_every_output_after_the_product() {
+        let mut b = board();
+        b.outputs[0].label = "Analog 1".into();
+        b.outputs[1].label = "HDMI".into();
+        let d = Endpoints::defaults(&b);
+        let names: Vec<_> = d.spotify.iter().map(|e| (e.name.as_str(), e.output.as_str())).collect();
+        assert_eq!(names, [("HC-800 Analog 1", "analog1"), ("HC-800 HDMI", "hdmi")]);
+        assert_eq!(d.airplay, d.spotify);
+        assert!(d.routes.is_empty());
+        assert!(d.validate(&b).is_ok());
+        b.outputs.truncate(1);
+        b.product = "EA-1".into();
+        assert_eq!(Endpoints::defaults(&b).spotify[0].name, "EA-1");
+        b.outputs.clear();
+        let none = Endpoints::defaults(&b);
+        assert!(none.spotify.is_empty() && none.library.is_empty());
     }
     #[test]
     fn validates_against_the_board() {

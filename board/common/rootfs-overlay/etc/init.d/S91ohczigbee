@@ -10,7 +10,7 @@
 #   * the zigbee binary is installed — only the 'zigbee' feature stages it
 #     (packages/build.sh gates the crate on the feature), so an IO Extender never
 #     has it; and
-#   * board.env names a radio port (OHC_ZIGBEE_TTY).
+#   * the board's udev rule named a radio port (/dev/zigbee).
 # Runs after S90ohcweb; the radio owner starts later and connects to the live NCP.
 #
 # With OHC_ZIGBEE_TCP_PORT set, zigbee also serves the port over TCP (a
@@ -44,13 +44,13 @@ EOF
 
 start() {
     [ -x "$BIN" ] || return 0                # no zigbee feature on this board
-    [ -n "$OHC_ZIGBEE_TTY" ] || return 0     # no radio configured
-    export OHC_ZIGBEE_TTY OHC_ZIGBEE_BAUD OHC_ZIGBEE_TCP_PORT OHC_ZIGBEE_TCP_BIND \
+    [ -e /dev/zigbee ] || return 0           # no radio on this board
+    export OHC_ZIGBEE_BAUD OHC_ZIGBEE_TCP_PORT OHC_ZIGBEE_TCP_BIND \
         OHC_ZIGBEE_NCP_IMAGE OHC_ZIGBEE_NCP_UPDATE OHC_ZIGBEE_BTL_BAUD
     # stdout to syslog so "NCP up" / client connects are visible in logread.
     start-stop-daemon -S -q -b -m -p /var/run/zigbee.pid --exec /bin/sh -- \
         -c "exec $BIN 2>&1 | logger -t zigbee" \
-        && echo "zigbee: NCP bring-up on $OHC_ZIGBEE_TTY${OHC_ZIGBEE_TCP_PORT:+, tcp :$OHC_ZIGBEE_TCP_PORT}"
+        && echo "zigbee: NCP bring-up on /dev/zigbee${OHC_ZIGBEE_TCP_PORT:+, tcp :$OHC_ZIGBEE_TCP_PORT}"
     advertise
 }
 stop() {

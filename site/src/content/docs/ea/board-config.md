@@ -200,40 +200,32 @@ word, the same kind of silent miss as `CONFIG_PWM_CE5300` or `NET_DSA_B53`.
 
 ## board.env
 
-`board.env` is sourced by `/opt/ohc/bin/ohc` and the init scripts, and iod and
-audiod parse it line by line as `KEY=value` with anything after `#` stripped.
-Shell assignments only, one per line. It is assembled from the family, model
-and variant files, later lines winning. The hardware facts in it are moving to
-the device tree and the kernel ([#134](https://github.com/The1TrueJoe/openHC/issues/134)).
+`board.env` is sourced by `/opt/ohc/bin/ohc` and the init scripts and exported
+into the daemons. Shell assignments only, one per line. It is assembled from the family, model and variant `board.env` files, later
+lines winning, and holds software defaults; the hardware (model, switch ports, IO, radios, audio) comes from the
+device tree and the family's udev rules, as listed on
+[hardware from the kernel](/shared/hardware-from-the-kernel/). Lines for those
+that an EA `board.env` still carries are ignored.
 
 ### Identity
 
 | Key | Meaning |
 |---|---|
-| `OHC_MODEL` | 1, 3 or 5. The ea1-v2-poe is 1 despite carrying the EA3's switch |
 | `OHC_ID_IFACE` | The interface whose MAC names the box; always the wired one |
-| `OHC_MDNS_IFACE` | Interface order for the mDNS identity. Unset on EA boards: the default, `eth0 wlan0`, skips an interface that does not exist |
 | `OHC_TIMEZONE` | Host timezone; change it with `ohc-tz <Zone>` |
+
+The model is the device tree's (`Control4 EA-3 v1`), and mDNS picks among the
+interfaces that are up, wired first.
 
 ### IO
 
-`OHC_IO_BACKEND` is the only thing ohc-iod branches on:
-
-| Value | Meaning |
-|---|---|
-| `mcu` | Relays, contacts and IR are behind a microcontroller on a serial port, spoken to with DLE/STX |
-| `gpio` | They are native SoC GPIO lines |
-| `none` | No local IO |
-
-Every EA is `mcu` with `OHC_IO_MCU_PART=tm4c1231d5`. What sits behind the part
-(relays, contacts, IR jacks, the front blaster and receiver, the MCU-routed
-serial ports) and its UART and line rate are not in `board.env`. They are in the
-model's device tree (`&io_mcu` in `<model>.dtsi`); the kernel binds the part from
-it at boot and iod reads the counts back from `/sys/class/ohc/iomcu`, so there
-is one description that cannot disagree with itself. The combo jacks are the
-MCU-routed UARTs: a jack is IR or serial, never both. `OHC_SERIALS` is empty on
-all EA boards. See [the IO-MCU](/shared/io-mcu/) and
-[IO naming](/shared/io-naming/).
+Every EA's IO microcontroller is the `&io_mcu` node (`control4,io-mcu`) on
+uart1. What sits behind the part (relays, contacts, IR jacks, the front blaster
+and receiver, the MCU-routed serial ports) and its line rate are in the model's
+device tree (`<model>.dtsi`); the kernel binds the part from it at boot and iod reads the counts
+back from `/sys/class/ohc/iomcu`. The combo jacks are the MCU-routed UARTs: a
+jack is IR or serial, never both. No EA has a host serial port. See
+[the IO-MCU](/shared/io-mcu/) and [IO naming](/shared/io-naming/).
 
 ### Wi-Fi
 
@@ -247,21 +239,22 @@ fresh install of p1 needs the network set again.
 
 ### Zigbee
 
-`OHC_RADIOS` lists home-automation radios as `type:dev`; the UI shows a panel
-for each. Every EA has only Zigbee (no Z-Wave), from the shared `zigbee` feature
-(node + cp210x). Boards without Wi-Fi still have it.
+Every EA has Zigbee (no Z-Wave), from the shared `zigbee` feature (node +
+cp210x). Boards without Wi-Fi still have it.
 
-The radio is an EM357 NCP behind a CP2104 USB bridge (`/dev/ttyUSB0`), not a
-host UART, at 115200 8N1 with no RTS/CTS. Unlike the CA-1, which resets the NCP
-on DTR, the EA holds it on `zigbee_reset` (gpio29), which the board device tree
-hogs high (released) at boot. The chip runs its application from power-on and
+The radio is an EM357 NCP behind a CP2104 USB bridge (`10c4:ea60`) on an
+internal USB host (`01:0d.2` on an EA1). The family's udev rule
+(`board/ea/common/rootfs-overlay/etc/udev/rules.d/60-openhc-board.rules`) names
+it `/dev/zigbee`, and not a CP210x plugged into the rear port (`01:0d.1`). 115200 8N1, no RTS/CTS. Unlike the CA-1, which resets the NCP on DTR,
+the EA holds it on `zigbee_reset` (gpio29), which the board device tree hogs
+high (released) at boot. The chip runs its application from power-on and
 answers EZSP/ASH directly, so opening the port does not drop it into the
 bootloader. On an EA1 a bare ASH `RST` returns `RSTACK` (`0xc1`). See
 [EA-1: Zigbee](/ea/ea1/#zigbee-the-bootloader-trap).
 
 | Key | Meaning |
 |---|---|
-| `OHC_ZIGBEE_TTY`, `OHC_ZIGBEE_BAUD` | `/dev/ttyUSB0`, `115200` |
+| `OHC_ZIGBEE_BAUD` | `115200` |
 | `OHC_ZIGBEE_TCP_PORT` | `6638`. The NCP ships on EmberZNet EZSP v4; the zigbee daemon reflashes it at boot to the feature's 6.7.8 image (EZSP v8, `packages/zigbee/src/ncp.rs`). zigpy's bellows speaks both. The daemon holds the port and relays it over TCP, and `S91ohczigbee` advertises `_zigbee-coordinator._tcp` (ser2net style) so ZHA attaches as `socket://<box>:6638` |
 | `OHC_ZIGBEE_RADIO_TYPE` | `ezsp` |
 | `OHC_ZIGBEE_STOCK_ARCHIVE` | `/dev/mmcblk0p2:/recfs.tar.xz`. A return to stock first puts Control4's own NCP image back, unpacked from p2's factory rootfs (`zigbee --restore-stock`). Same member path as the HC-800's; checked on an EA1 on 2026-10-26 |
@@ -293,21 +286,23 @@ Full detail on [recovery](/shared/recovery/#openhcs-own-software-return-to-stock
 ### Audio
 
 The scheme is the HC-800's: audiod runs Spotify Connect and AirPlay endpoints
-onto named outputs, each output's level is an ALSA softvol, and it writes
+onto the board's outputs, each output's level is an ALSA softvol, and it writes
 `/etc/asound.conf`, whose `default` is the first output so any other ALSA
-program plays there too. `OHC_LIBRARY` is the music-library player (mpd over the
-drives storaged mounts on `/media`). See [audio](/ea/audio/).
+program plays there too. The outputs are the kernel's PCMs, labelled with their
+names; see [hardware from the kernel](/shared/hardware-from-the-kernel/#sound-cards).
+The library player (mpd over the drives storaged mounts on `/media`) defaults
+to the first output. See [audio](/ea/audio/).
 
-| Board | Outputs | Rate |
+| Board | Outputs | `OHC_AUDIO_RATE` |
 |---|---|---|
-| EA1 (all three) | `hdmi` only | 48000, the HDMI clock's one rate |
-| EA3 (both) | `analog`, then `hdmi` | 48000, the DSP program's one rate (HDMI matches it) |
-| EA-5 | see [EA-5](/ea/ea5/) | 48000 |
+| EA1 (all three) | HDMI only | 48000, the HDMI clock's one rate |
+| EA3 (both) | the analog card's link, then HDMI | 48000, the DSP program's one rate (HDMI matches it) |
+| EA-5 | the FPGA card's four links, then HDMI; see [EA-5](/ea/ea5/) | 48000 |
 
-**HDMI** (`hw:CARD=HDMI,DEV=0|HDMI|format=S32_LE`) is the HDMI transmitter's own
-audio DMA (`ce5300-hdmi`). Its FIFO takes 32-bit words, hence `format=`, and its
-clock gives 48 kHz only. Playing switches the link from DVI to HDMI mode if
-CEFDK left it in DVI. See [HDMI out](/ea/audio/#hdmi-out-every-ea).
+**HDMI** is the HDMI transmitter's own audio DMA (`ce5300-hdmi`), card `HDMI`,
+PCM `HDMI`. Its FIFO takes 32-bit words, so audiod runs it at S32_LE (it asks
+the hardware), and its clock gives 48 kHz only. Playing switches the link from DVI
+to HDMI mode if CEFDK left it in DVI. See [HDMI out](/ea/audio/#hdmi-out-every-ea).
 
 Each card names its PCMs in the device tree: the EA3's three links are `Analog`,
 `Coax` and `Coax in` (`link-name` on each `simple-audio-card,dai-link`, from
@@ -315,26 +310,26 @@ openHC's patch `0020`), and the EA-5's four stream pairs are `Audio 1` to
 `Audio 4` (`control4,link-names`) until each jack is checked on hardware.
 
 **EA3 analog** is CE5300 I2S1 → ADAU1451 SigmaDSP → AK4621. Tone is done by the
-DSP, not audiod's software stage: `dsp=` names the profile describing the DSP's
-knobs (`adau1451-ea3-openhc.json`, the same file the DSP firmware is built from
-in `board/ea/common/firmware/dsp/adau1451/`), and audiod sets them as the
-card's controls. It boots silent and stays muted while idle: the DSP volume
-starts at 0 until audiod restores the saved level and tone, and the DAC unmutes
-only while a stream plays.
+DSP, not audiod's software stage: the codec's `firmware-name`
+(`openhc/adau1451-ea3-openhc.bin`) names the profile describing the DSP's knobs
+(`/usr/share/openhc/dsp/adau1451-ea3-openhc.json`, the same file the DSP
+firmware is built from in `board/ea/common/firmware/dsp/adau1451/`), and audiod
+sets them as the card's controls. It boots silent and stays muted while idle:
+the DSP volume starts at 0 until audiod restores the saved level and tone, and
+the DAC unmutes only while a stream plays.
 
-The analog card is `openhcea`, the board device tree's simple-audio-card. The
-CE5300 I²S clocks the DSP from boot, but until its PCM is finished
-(`ce5300_i2s.enable_pcm`) the card has the DSP controls and no playable PCM, so
-the analog endpoints come up and cannot play yet. See [what is still unproven](/ea/audio/#what-is-still-unproven).
+The analog card is `openhcea`, the board device tree's simple-audio-card. Its
+output takes its label from the card's link name.
 
 ### Switch ports
 
-`OHC_DSA_PORTS` lists the BCM53125's DSA port netdevs (`lan1 lan2` on the EA3s
-and the ea1-v2-poe, `lan0`-`lan4` on the EA-5). The ports themselves are in each
-model's device tree; `ea-switch.dtsi` has only the chip and the CPU port. `S39ea-switch`, the shared `S40net` and `S87ohcswitch` use
-it; it is unset on a board with one plain MAC. DSA only attaches with
-`ohc.switch=1` on the kernel command line. See [Ethernet and the
-switch](/ea/switch/).
+The switch ports are the DSA user ports the kernel creates from the BCM53125's
+device-tree `ports` (`lan1 lan2` on the EA3s and the ea1-v2-poe, `lan0`-`lan4` on the EA-5;
+each model declares its own, `ea-switch.dtsi` only the chip and the CPU port). `S39ea-switch`,
+the shared `S40net`, `S87ohcswitch` and switchd read them from
+`/sys/class/net` (`ohc-hw dsa-ports`); a board with one plain MAC has none. DSA
+only attaches with `ohc.switch=1` on the kernel command line. See [Ethernet and
+the switch](/ea/switch/).
 
 ### RAM reclaim
 
@@ -392,9 +387,8 @@ BCM53125 switch, so it is wired-only:
 | Networking | ea3-v2: DSA switch ports, no Wi-Fi |
 | IO | ea1-v1: it is still an EA1, 4 IR out, no relays or contacts |
 
-Open: the fuse, the DSA port names (`OHC_DSA_PORTS` must match what b53
-registers on this board, and nobody has watched it come up), Zigbee, and the
-RAM reclaim.
+Open: the fuse, the DSA ports (the device tree's labels are what b53 registers,
+and nobody has watched it come up on this board), Zigbee, and the RAM reclaim.
 
 ### ea3-v1
 
@@ -420,7 +414,7 @@ Each "unverified" above comes down to one of these on a running box:
 
 | Check | Command | Expect |
 |---|---|---|
-| Zigbee radio (ea1-v2-poe, both EA3s) | `ls /dev/ttyUSB0`, then the `S91ohczigbee` log | The node exists and the log shows `RSTACK` |
+| Zigbee radio (ea1-v2-poe, both EA3s) | `ls -l /dev/zigbee`, then the `S91ohczigbee` log | The link exists and the log shows `RSTACK` |
 | Restore button polarity (EA3) | `od -An -tx1 /dev/ohc/input/id-button` | Events on press and on release |
 | RAM reclaim (ea1-v2, ea1-v2-poe) | `grep MemTotal /proc/meminfo` | About 1.7 GB |
 | Switch ports (ea1-v2-poe) | boot with `ohc.switch=1`, `ip link` | `lan1` and `lan2` |

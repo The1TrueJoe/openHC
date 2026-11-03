@@ -103,8 +103,8 @@ fn load(cfg: &Config) -> Board {
 
 #[utoipa::path(get, path = "/api/board", tag = "Board",
     summary = "Board identity and capabilities",
-    description = "Read from /opt/ohc/board.env — the one file that differs between an HC-800, an \
-EA3, an IO Extender and a CA-1.",
+    description = "The model from the device tree; the uplink and Wi-Fi interface names from \
+/opt/ohc/board.env.",
     responses((status = 200, description = "board")))]
 async fn board(State(c): State<Arc<Config>>) -> Json<Board> {
     Json(load(&c))
