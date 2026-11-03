@@ -91,11 +91,12 @@ pub const BOARDS: &[Board] = &[
         desc: "EA1 (board v1, Wi-Fi, no switch)",
         c4_type: Some(1),
         c4_revs: &[5],
-        secure_boot: false,
+        secure_boot: true,
         has_switch: false,
         has_wifi: true,
         dmi: None,
-        notes: "fuse clear: an unsigned container at 0x400 boots, so no autoscript is needed.",
+        notes: "fuse BLOWN on rev 5 (measured): an unsigned container at 0x400 fails \
+                VERIFY_S3, so it boots through the autoscript + bootlinux path.",
         netboot: None,
     },
     Board {
@@ -104,11 +105,12 @@ pub const BOARDS: &[Board] = &[
         desc: "EA1 (board v2, Wi-Fi, no switch)",
         c4_type: Some(1),
         c4_revs: &[],
-        secure_boot: false,
+        secure_boot: true,
         has_switch: false,
         has_wifi: true,
         dmi: None,
-        notes: "ids not yet read off hardware; boot behaviour assumed to match v1 and NOT verified.",
+        notes: "ids and fuse not yet read off hardware; assumed to match the v1 (blown). The \
+                autoscript path boots a clear-fuse unit too.",
         netboot: None,
     },
     Board {
@@ -117,11 +119,12 @@ pub const BOARDS: &[Board] = &[
         desc: "EA1 v2 PoE (switch, no Wi-Fi)",
         c4_type: Some(1),
         c4_revs: &[],
-        secure_boot: false,
+        secure_boot: true,
         has_switch: true,
         has_wifi: false,
         dmi: None,
-        notes: "CEFDK's own enum calls this board_ea1p = 5, which is not /proc/c4board/type.",
+        notes: "CEFDK's own enum calls this board_ea1p = 5, which is not /proc/c4board/type. \
+                Fuse not yet read; assumed blown like every EA measured.",
         netboot: None,
     },
     Board {

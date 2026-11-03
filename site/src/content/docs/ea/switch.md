@@ -238,6 +238,60 @@ bytes, and `unprepare_message` scatters the RX bytes back. A message whose
 transfers differ in speed or word size, or that asks for a CS change or delay in
 the middle, is left alone.
 
+### …and inside a transfer, if the FIFO runs dry
+
+Merging closes the gaps between transfers, but the frame also ends if the TX
+FIFO empties partway through one. spi-pxa2xx feeds the FIFO from its interrupt
+handler one word at a time, and checks the status register before each word.
+On the CE5300 a status read takes about 0.7 µs, so a word takes 1.5 to 2 µs to
+queue. At the switch's 1.8 MHz a byte takes 4.4 µs to shift out. That margin
+usually holds, but not always:
+
+| 300,000 reads through b53, idle box | bad |
+| --- | --- |
+| chip id (page 02h, 30h, 32-bit) | 121 |
+| PHY id (page 11h, 04h, 16-bit) | 7, 13 |
+| port override (page 00h, 58h, 8-bit) | 23 |
+
+The bad chip-id reads were `0xffff3125` and `0xff053125`: the first bytes, then
+`0xff`, which is what the switch sends back once CS is gone. They came in
+bursts, and a network stream into the box didn't change the rate (49 in
+100,000). Dropping CS in the middle of a write is worse than a bad read: the rest
+of the frame reaches the switch as a new command.
+
+A bad PHY read also takes the port down for good. phylib treats any MDIO error
+as fatal: it puts the PHY in `PHY_ERROR` and powers it down (`BMCR = 0x1940`),
+and the port stays dark until something bounces it (`ip link set lan1 down/up`
+brings it back). With phylib polling each PHY every second, a port eventually
+loses that bet. This is what took `lan2` and then `lan1` down in the patch-cable
+test.
+
+The first fix (#131) wrote a transfer that fits the 32-entry FIFO straight
+into it, with no status reads and local interrupts off, and left the interrupt
+handler only the RX side. b53's longest frame is 10 bytes. That took the chip-id
+reads from 121 bad in 300,000 to none, and the patch cable then held (see
+below). But a long hammer still found rare bursts of bad reads, shifted rather
+than cut: `0x3125ffff`, `0x25ffff25`, `0xc20001ff`, 73 in about 4.1 million.
+SSDR writes are posted, and a timed test kernel showed that about one fill in
+100,000 still stalls on the way, for up to 45 µs, with interrupts off. That is
+ten bytes' worth of an empty FIFO.
+
+So 0009 now stops the SSP's DDS clock (`DDS_RATE = 0`), queues every word, and
+only then restarts the clock. With the clock stopped, a stalled write delays
+the frame and can't cut it. The same boot ran both fills in turn, 1,000,000
+chip-id reads per run:
+
+| fill | bad reads | fills over 4 µs | longest fill |
+| --- | --- | --- | --- |
+| back to back (#131) | 1 | 2 | 42 µs |
+| clock stopped | 0 | 5 | 41 µs |
+| back to back (#131) | 4 | 40 | 45 µs |
+| clock stopped | 0 | 0 | 3.4 µs |
+
+A third clock-stopped run of 3,000,000 reads (15 million fills, two of them
+stalled for up to 39 µs) had no bad reads either. No clock-stopped fill ever
+lost a word (`TFL` checked after each one).
+
 ### How 0009 got there
 
 Earlier versions of 0009 got the clock wrong in every possible direction. An
@@ -279,11 +333,19 @@ Both are fixed in S40net (PR #110). With that fix, boots 2 and 3 leased
 b53 works on the durable kexec boot, and both jacks carry traffic. The switch
 stays opt-in with `ohc.switch=1`, which S00kexec now carries across the kexec
 (PR #110). switchd's `vlan_filtering` call needed the bridge built with
-`CONFIG_BRIDGE_VLAN_FILTERING` (PR #121). STP now receives BPDUs (patch 0019).
+`CONFIG_BRIDGE_VLAN_FILTERING` (PR #121). STP now receives BPDUs (patch 0019),
+and the SSP no longer drops CS partway through a frame (0009).
 Still open:
 
-- one cable from `lan1` to `lan2` took minutes to link. When it did, the switch's
-  SPI interface wedged: a PHY read returned `-EIO`, every register read 0 after
-  that, and the box needed a power cycle. Not understood;
+- one cable from `lan1` to `lan2` took minutes to link. When it did, a PHY read
+  failed and every register read failed after that until a power cycle. The
+  failed read and the dark port are explained above. Why the reads after it
+  kept failing is not. The switch's SPI port recovers from every truncated
+  frame tried (`60`, `61 ff`, `60 f0`, a lone fast-read opcode, ...), and
+  disabling the SSP empties its TX FIFO, so neither is the cause. Retried on
+  2026-11-03 on a RAM boot of the #131 kernel: the jacks linked within seconds,
+  STP blocked `lan2`, and the loop ran for about 20 minutes, `lan1` bounced
+  once, with no PHY error and no wedge. There was one spontaneous `lan2`
+  down/up;
 - how stock firmware gets a nonzero `DDS_RATE`.
 :::

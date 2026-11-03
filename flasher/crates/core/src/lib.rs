@@ -396,8 +396,10 @@ mod tests {
 
     #[test]
     fn secure_boot_drives_the_autoscript_choice() {
+        // Every EA measured has the fuse blown (ea3-v2 rev 9, ea1-v1 rev 5).
         assert!(board::by_name("ea3-v2").unwrap().needs_autoscript());
-        assert!(!board::by_name("ea1-v1").unwrap().needs_autoscript());
+        assert!(board::by_name("ea1-v1").unwrap().needs_autoscript());
+        assert!(!board::by_name("ca1").unwrap().needs_autoscript());
     }
 
     // ---- method gating: the check that stops writing eMMC to an i.MX6 -------
