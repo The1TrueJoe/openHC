@@ -235,15 +235,26 @@ jobs:
           changed=$(git diff --name-only "$base" HEAD)
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
 
-          # Shared trees affect every board. build/ and the flasher are in here
-          # because build.sh drives the build and post-image calls ohc-flash.
-          # packages/ is NOT here any more — a daemon change is scoped to the
-          # boards that actually ship it, further down.
-          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|flasher/|Makefile)'; then
+          # Shared trees affect every board. packages/ and flasher/ are scoped
+          # further down to the boards that ship what changed.
+          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|Makefile)'; then
             echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           sel=()
+
+          # flasher/ is its own build (the flasher job). An image carries only
+          # flasher/crates/core, compiled into the restore and update daemons; CI
+          # never runs ohc-flash in an image build (post-image skips the netboot
+          # wrap without it). A PR's daemons-build already compiles those
+          # daemons, so only main rebuilds the images that ship them.
+          if [ "${{ github.event_name }}" = push ] && echo "$changed" | grep -q '^flasher/crates/core/'; then
+            for b in $EA_BOARDS $OTHER_BOARDS; do
+              case " $(bash packages/build.sh "$b" --crates 2>/dev/null) " in
+                *" restore "*|*" update "*) sel+=("$b") ;;
+              esac
+            done
+          fi
 
           # packages/ — the Rust daemons, staged into the overlay. A change here
           # used to rebuild all eight images; instead map it to the boards that
