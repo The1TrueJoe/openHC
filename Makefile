@@ -54,14 +54,13 @@ NETBOOT_ARGS = --board $(BOARD) \
                $(if $(OFFER_IP),--offer-ip $(OFFER_IP)) \
                $(if $(SERIAL_PORT),--serial-port $(SERIAL_PORT))
 
-.PHONY: help image mcu webd netboot probe serial gui discover flash verify selftest clean distclean
+.PHONY: help image webd netboot probe serial gui discover flash verify selftest clean distclean
 
 help:
 	@echo "openHC — Control4 EA-series kernel-up build"
 	@echo ""
 	@echo "  make image [BOARD=...]       build the netboot kernel image (Docker Buildroot)"
 	@echo "  make webd  [BOARD=...]       build the webd dashboard (Rust+React) into the overlay"
-	@echo "  make mcu   [BOARD=ea1|ea3]   build the TM4C IO-MCU firmware (EA only)"
 	@echo "  make netboot                 serve $(IMAGE) to the target (EA CEFDK path)"
 	@echo "  make probe                   drop CEFDK to its shell (cookie, no kernel)"
 	@echo "  make gui                     run the installer GUI from this repo"
@@ -106,26 +105,6 @@ webd:
 # build model builds non-interactively. Edit the board defconfigs + the linux
 # fragments instead, or run buildroot menuconfig by hand against output/ if you
 # need it.
-
-# IO-MCU firmware builds with an arm-none-eabi toolchain; its own Makefile
-# documents the prerequisites. The board profile is compile-time — see
-# board/ea/common/firmware/io-mcu/tm4c1231d5/include/board_profile.h.
-mcu:
-	@case "$(BOARD)" in \
-	  ea*) : ;; \
-	  hc800) : ;; \
-	  *) echo "mcu: $(BOARD) has native on-board IO — no companion MCU to build"; exit 1 ;; \
-	esac
-# hc800's IO-MCU is a Stellaris LM3S1162 (Cortex-M3), not the EA family's TM4C
-# (M4F) — a different part, a different image, and its own source tree. It also
-# builds a FLASHABLE image rather than a bare .bin, because Control4's
-# bootloader wants the 256-byte header + CRC-16/ARC container; `image` does that
-# wrapping, `fw` alone would leave a file the bootloader rejects.
-ifeq ($(BOARD),hc800)
-	$(MAKE) -C board/hc800/firmware/io-mcu/lm3s1162 image BOARD=hc800
-else
-	$(MAKE) -C board/ea/common/firmware/io-mcu/tm4c1231d5 fw BOARD=$(BOARD)
-endif
 
 # Serve the built kernel over BOOTP+TFTP. Needs root (binds :67/:69); run the
 # printed command yourself if make cannot get privileges. EA/CEFDK only — the

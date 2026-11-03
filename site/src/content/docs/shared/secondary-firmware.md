@@ -9,34 +9,27 @@ The main SoC isn't the only processor on these boards. Each controller carries
 one or more auxiliary chips running their own firmware, and they differ by model.
 
 ```
-board/ea/common/firmware/
-  io-mcu/tm4c1231d5/   EA1 / EA3 / EA5  — TI Tiva, Cortex-M4F      (implemented)
-  dsp/adau1451/        EA3 / EA5        — Analog Devices SigmaDSP  (placeholder)
-board/hc800/firmware/
-  io-mcu/lm3s1162/     HC800 / HC250    — TI Stellaris, Cortex-M3  (placeholder)
 board/common/firmware/
+  io-mcu/              EA1 / EA3 / EA5 + HC800 — TI Tiva TM4C1231D5 (M4) and
+                       Stellaris LM3S1162 (M3), one image per part  (implemented)
   zigbee/em357/        every board except the IOX                  (host-side tools)
+board/ea/common/firmware/
+  dsp/adau1451/        EA3 / EA5        — Analog Devices SigmaDSP
 ```
 
-Firmware lives under the board tree that owns it, alongside everything else that
-is board-specific. **Zigbee is the exception** and sits in `board/common`, because
-every controller except the IO Extender carries an EM357.
+Firmware lives under the board tree that owns it. The IO microcontroller's and
+the Zigbee radio's sit in `board/common`, because more than one family carries
+the part.
 
-## The caveat this layout accepts
+## One source tree, two parts
 
 The IO MCU speaks the same host protocol — [DLE/STX over a
-UART](/shared/io-mcu/) — across the whole line, but **the silicon
-underneath isn't the same part**: a Cortex-M4F on the EA family, a Cortex-M3 on
-the HC family. The linker script, startup code and peripheral map differ and
-can't share a build.
-
-Keeping each MCU in its own directory lets the shared protocol live in one place
-while the hardware layer stays honest about which chip it targets.
-
-The trade is real and worth naming: if the LM3S1162 is ever implemented for the HC
-family it will need `ohc_proto.h`, which now lives in the EA tree. Copy it or
-factor it out at that point — **do not let the two drift**, because the whole
-reason the host side needs no changes is that both speak the identical protocol.
+UART](/shared/io-mcu/) — across the whole line, but the silicon underneath isn't
+the same part: a Cortex-M4 on the EA family, a Cortex-M3 on the HC-800. So the
+tree is a hardware-free core (protocol, pin-table checks, IR engine, the
+application) plus a HAL per part, and the constants it shares with the kernel
+driver live in one header beside the driver. Neither image carries a board: the
+driver tells it the pins at run time. See [IO-MCU firmware](/shared/io-mcu-firmware/).
 
 ## Relationship to the main firmware
 
@@ -53,15 +46,10 @@ processors, flashed over their own links:
 
 ## What is implemented
 
-Only `io-mcu/tm4c1231d5`, the EA family's clean-room replacement. The other
-directories are stubs that record what a given board needs, so the structure is
-ready when those boards are.
-
-The board profile for the Tiva firmware is currently **compile-time**, selected in
-`board_profile.h`. It could be runtime-selected the way the vendor does it, from
-the [ADC board-ID strap](/shared/io-mcu/#the-selector-disassembled), the
-arithmetic is fully decoded and the constants are already in that header. What
-stops it is that the predicted strap voltages have never been measured.
+`io-mcu`: both images build in every image with the `iomcu` feature and pass the
+host tests; none has run on a part yet, and the driver writes one only to a board
+whose node names it. The DSP has its own program and parameter file (see
+[audio](/ea/audio/)).
 
 ## The DSP and the Zigbee radio, on redistribution
 

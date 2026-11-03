@@ -27,9 +27,12 @@
 
 #include <linux/cdev.h>
 #include <linux/completion.h>
+#include <linux/crc32.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/firmware.h>
 #include <linux/fs.h>
+#include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/math64.h>
 #include <media/rc-core.h>
@@ -46,6 +49,7 @@
 #include <linux/tty_flip.h>
 #include <linux/tty_port.h>
 #include <linux/uaccess.h>
+#include <linux/unaligned.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 
@@ -53,37 +57,25 @@ static int poll_ms = 200;
 module_param(poll_ms, int, 0644);
 MODULE_PARM_DESC(poll_ms, "contact poll interval in milliseconds (0 disables)");
 
-/* Framing. */
-#define DLE 0x10
-#define STX 0x02
-
-/* Opcodes, established against live hardware. */
-#define OP_PRODUCT_NAME     0x24
-#define OP_FIRMWARE_VERSION 0x34
-#define OP_RELAY_GET        0x54
-#define OP_RELAY_TOGGLE     0x56
-#define OP_CONTACT_GET      0x74
-#define OP_IROUT_SEND       0x66
-#define OP_IRIN_SET_CAPTURE 0x77
-#define OP_IRIN_CAPTURED    0x97
 /*
- * User-serial opcodes, verified on a live EA3. All three are UNACKNOWLEDGED —
- * UART_SET_CONTROL and UART_SEND get no reply, and received bytes arrive
- * asynchronously as UART_RECEIVE — which is why the serial path uses ohc_send
- * (fire-and-forget) throughout and never ohc_request.
+ * The wire protocol, the config frame, the image header and the TI bootloader
+ * commands, shared with openHC's firmware (board/common/firmware/io-mcu).
  */
-#define OP_UART_SET_CONTROL 0xa0
-#define OP_UART_SEND        0xa1
-#define OP_UART_RECEIVE     0xa2
+#include "ohc-iomcu-proto.h"
 
-#define OHC_MAX_PAYLOAD 512
+#define DLE OHC_DLE
+#define STX OHC_STX
+
+/* Largest payload this side sends or keeps: a 249-burst IR code. */
+#define OHC_MAX_PAYLOAD_DRV 512
 #define OHC_TIMEOUT_MS  600
 
 /*
  * UART_SET_CONTROL takes a baud INDEX, not a rate. 0..6 are the rates below;
  * anything else the firmware treats as 115200, and 7 is the first such value.
  * One UART_SEND carries [port, data...]; it is chunked so a long write cannot
- * overrun one frame.
+ * overrun one frame. All three UART opcodes are unacknowledged, so the serial
+ * path uses ohc_send throughout.
  */
 #define OHC_UART_TX_CHUNK 256
 static const u32 ohc_uart_baud_table[] = {
@@ -100,26 +92,12 @@ static u8 ohc_uart_baud_index(u32 baud)
 }
 
 /*
- * The IR side, decoded from the vendor firmware.
- *
- * IROUT_SEND takes 14 fixed bytes then one u16 per burst duration. The output
- * selector is a 24-bit BITMASK — on an HC-800, bits 0..5 are the rear jacks and
- * bit 6 is the internal front blaster.
- *
- * The mask travels in the same frame as the durations, so choosing an output is
- * per-transmission and not a mode the part sits in. Hence one lirc device per
- * output with its bit fixed, rather than one device plus s_tx_mask: with a mask
- * the second process to set it silently redirects the first.
- *
- * The carrier field is a Pronto word, and the firmware DIVIDES BY IT. Zero
- * there is a divide-by-zero: UsageFault, HardFault, and a part that answers
- * nothing until it is power cycled. Never send 0.
+ * IROUT_SEND: 14 fixed bytes then one u16 per burst, in carrier periods. The
+ * output is a 24-bit bitmask in the frame, so one lirc device per output
+ * with its bit fixed, rather than s_tx_mask. The carrier is a Pronto word the
+ * stock firmware DIVIDES BY: zero hard-faults it until a power cycle. Never 0.
  */
-#define IR_PRONTO_HZ    4145146u  /* 1e6 / 0.241246 */
-#define IR_SYS_HZ       50000000u /* LM3S system clock, for capture periods */
-#define IR_FIXED_BYTES  14
-/* Derived: a longer durations array overruns one frame. */
-#define IR_MAX_DURATIONS ((OHC_MAX_PAYLOAD - IR_FIXED_BYTES) / 2)
+#define IR_MAX_DURATIONS ((OHC_MAX_PAYLOAD_DRV - OHC_IR_FIXED) / 2)
 
 enum rx_state {
 	RX_IDLE,	/* hunting for DLE */
@@ -129,6 +107,8 @@ enum rx_state {
 };
 
 struct ohc_iomcu;
+struct ohc_geometry;
+static int ohc_blaster_bit(const struct ohc_geometry *geo);
 
 /*
  * One MCU-routed user serial port: a tty whose bytes travel as UART_SEND /
@@ -162,17 +142,43 @@ struct ohc_emitter {
  * One rear jack from the firmware node: an IR output, an MCU UART, or both
  * (a combo jack, IR or serial at any one time).
  */
+/* An MCU pin from the binding: <port pin>, port A..H = 0..7. */
+struct ohc_pin {
+	bool set;
+	u8 port, pin;
+};
+
+/* A line routing shared carrier @carrier onto an output: control4,ir-gates. */
+struct ohc_gate {
+	struct ohc_pin pin;
+	u8 carrier;
+};
+
+#define OHC_MAX_GATES 4
+
 struct ohc_jack {
 	u32 num;		/* panel number */
 	const char *label;
 	int ir;			/* IR channel (IROUT_SEND bit), -1 = none */
 	int uart;		/* MCU user UART, -1 = none */
+	struct ohc_pin ir_pin;	/* control4,ir-pin: its own carrier output */
+	struct ohc_gate gate[OHC_MAX_GATES];
+	int n_gates;
+	struct ohc_pin rx, tx;	/* control4,uart-pins */
+	struct ohc_pin mux_a, mux_b;	/* control4,uart-mux-pins: IR/serial lines */
+};
+
+/* A relay or contact node: its pin, if given, and OHC_CFG_F_* flags. */
+struct ohc_line {
+	bool seen;
+	struct ohc_pin pin;
+	u8 flags;
 };
 
 struct ohc_frame {
 	u8 opcode;
 	u8 seq;
-	u8 payload[OHC_MAX_PAYLOAD];
+	u8 payload[OHC_MAX_PAYLOAD_DRV];
 	int len;
 };
 
@@ -188,6 +194,26 @@ struct ohc_geometry {
 	int uarts;		/* MCU-routed user serial ports */
 	struct ohc_jack *jacks;
 	int n_jacks;
+	int blaster_ch;		/* its IROUT_SEND bit, -1 = after the last jack */
+	struct ohc_pin blaster_pin;
+	struct ohc_gate blaster_gate[OHC_MAX_GATES];
+	int n_blaster_gates;
+	struct ohc_pin carrier[OHC_CFG_CARRIERS];	/* control4,ir-carriers */
+	bool gates_active_low;
+	struct ohc_pin hold[16];	/* control4,hold-low-pins */
+	int n_hold;
+	struct ohc_pin heartbeat;
+	struct ohc_pin rx_pin;	/* the receiver */
+	u8 rx_flags;
+	struct ohc_line *relay;	/* [relays], by wire index */
+	struct ohc_line *contact;
+};
+
+/* The firmware image the loader writes: its header, then flash bytes. */
+struct ohc_img {
+	u32 part, load, size;
+	char version[OHC_IMG_VERSION_LEN];
+	const u8 *data;
 };
 
 struct ohc_iomcu {
@@ -210,7 +236,7 @@ struct ohc_iomcu {
 
 	/* Decoder. */
 	enum rx_state state;
-	u8 body[OHC_MAX_PAYLOAD + 8];
+	u8 body[OHC_MAX_PAYLOAD_DRV + 8];
 	int body_len;
 
 	/*
@@ -254,12 +280,33 @@ struct ohc_iomcu {
 	struct device *info;
 	u32 baud;
 	bool online;		/* answered FIRMWARE_VERSION */
+	bool registered;	/* chip, lirc and ttys are up */
+	char fw_version[OHC_IMG_VERSION_LEN];	/* what FIRMWARE_VERSION said */
+
+	/*
+	 * The loader. part comes from the compatible, fw_name from
+	 * firmware-name; without fw_name nothing is ever written to the part.
+	 * in_boot: the bootloader answered and nothing started. updating: a
+	 * write is in progress and every request is refused.
+	 */
+	u32 part;
+	const char *fw_name;
+	struct gpio_desc *reset;
+	bool in_boot;
+	bool updating;
+	bool fw_cancel;
+	int fw_tries;
+	struct mutex fw_lock;
+	struct delayed_work fw_work;
+	struct fw_upload *fwl;
+	struct ohc_img upload;
 
 	/* One lirc device per emitter; the receiver is separate, because it is
 	 * the only one that should present an input device. */
 	struct ohc_emitter *emitters;
 	int n_emitters;
 	struct rc_dev *rx;
+	struct delayed_work rx_idle;
 
 	/*
 	 * MCU-routed user serial ports, exposed as /dev/ttyOHC<n>. A port is
@@ -311,39 +358,34 @@ static int ohc_xmit(struct ohc_iomcu *mcu, const u8 *buf, int len)
 static int ohc_write_frame(struct ohc_iomcu *mcu, u8 opcode, u8 seq,
 			   const u8 *payload, int len)
 {
-	u8 body[8 + OHC_MAX_PAYLOAD];
-	u8 *out;
-	int body_len = 0, n = 0, i, ret;
-	u8 ck;
+	u8 hdr[OHC_HDR_LEN] = { opcode, seq, 0, (u8)(len >> 8), (u8)len };
+	u8 *out, sum = 0;
+	int n = 0, i, ret;
 
-	if (len > OHC_MAX_PAYLOAD)
+	if (len > OHC_MAX_PAYLOAD_DRV)
 		return -EINVAL;
 
-	body[body_len++] = opcode;
-	body[body_len++] = seq;
-	body[body_len++] = 0;			/* flags */
-	body[body_len++] = (u8)(len >> 8);
-	body[body_len++] = (u8)len;
-	if (len)
-		memcpy(body + body_len, payload, len);
-	body_len += len;
-	ck = ohc_checksum(body, body_len);
-
 	/* Worst case every byte is DLE and gets stuffed. */
-	out = kmalloc(2 + (body_len + 1) * 2, GFP_KERNEL);
+	out = kmalloc(2 + (OHC_HDR_LEN + len + 1) * 2, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
 	out[n++] = DLE;
 	out[n++] = STX;
-	for (i = 0; i < body_len; i++) {
-		out[n++] = body[i];
-		if (body[i] == DLE)
+	for (i = 0; i < OHC_HDR_LEN + len + 1; i++) {
+		u8 b;
+
+		if (i < OHC_HDR_LEN)
+			b = hdr[i];
+		else if (i < OHC_HDR_LEN + len)
+			b = payload[i - OHC_HDR_LEN];
+		else
+			b = (u8)-sum;	/* negated 8-bit sum */
+		sum += b;
+		out[n++] = b;
+		if (b == DLE)
 			out[n++] = DLE;
 	}
-	out[n++] = ck;
-	if (ck == DLE)
-		out[n++] = DLE;
 
 	ret = ohc_xmit(mcu, out, n);
 	kfree(out);
@@ -360,6 +402,8 @@ static int ohc_send(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload, int len
 {
 	int ret;
 
+	if (READ_ONCE(mcu->updating) || READ_ONCE(mcu->in_boot))
+		return -EBUSY;
 	mutex_lock(&mcu->io_lock);
 	ret = ohc_write_frame(mcu, opcode, ++mcu->seq, payload, len);
 	mutex_unlock(&mcu->io_lock);
@@ -367,8 +411,8 @@ static int ohc_send(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload, int len
 }
 
 /* Ask, and wait for the answer with the matching sequence number. */
-static int ohc_request(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload,
-		       int len, struct ohc_frame *out)
+static int __ohc_request(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload,
+			 int len, struct ohc_frame *out, int ms)
 {
 	unsigned long flags;
 	long left;
@@ -389,7 +433,7 @@ static int ohc_request(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload,
 		goto out;
 
 	left = wait_for_completion_interruptible_timeout(
-		&mcu->reply, msecs_to_jiffies(OHC_TIMEOUT_MS));
+		&mcu->reply, msecs_to_jiffies(ms));
 	if (left <= 0) {
 		ret = left == 0 ? -ETIMEDOUT : -ERESTARTSYS;
 		goto out;
@@ -402,6 +446,18 @@ out:
 	spin_unlock_irqrestore(&mcu->rx_lock, flags);
 	mutex_unlock(&mcu->io_lock);
 	return ret;
+}
+
+/*
+ * Everything but the loader goes through here: nothing while it writes, and
+ * never a frame to the bootloader, which would leave it deaf.
+ */
+static int ohc_request(struct ohc_iomcu *mcu, u8 opcode, const u8 *payload,
+		       int len, struct ohc_frame *out)
+{
+	if (READ_ONCE(mcu->updating) || READ_ONCE(mcu->in_boot))
+		return -EBUSY;
+	return __ohc_request(mcu, opcode, payload, len, out, OHC_TIMEOUT_MS);
 }
 
 /*
@@ -419,7 +475,7 @@ static int ohc_relay_get(struct ohc_iomcu *mcu, int index, bool *on)
 	u8 sel = (u8)index;
 	int ret;
 
-	ret = ohc_request(mcu, OP_RELAY_GET, &sel, 1, &f);
+	ret = ohc_request(mcu, OHC_OP_RELAY_GET, &sel, 1, &f);
 	if (ret)
 		return ret;
 	if (f.len < 2)
@@ -436,7 +492,7 @@ static int ohc_relay_toggle(struct ohc_iomcu *mcu, int index, bool *now)
 	u8 sel = (u8)index;
 	int ret;
 
-	ret = ohc_request(mcu, OP_RELAY_TOGGLE, &sel, 1, &f);
+	ret = ohc_request(mcu, OHC_OP_RELAY_TOGGLE, &sel, 1, &f);
 	if (ret)
 		return ret;
 	if (f.len < 2 || f.payload[0] != sel)
@@ -458,7 +514,7 @@ static int ohc_contacts_get(struct ohc_iomcu *mcu, u32 *mask)
 	struct ohc_frame f;
 	int ret;
 
-	ret = ohc_request(mcu, OP_CONTACT_GET, NULL, 0, &f);
+	ret = ohc_request(mcu, OHC_OP_CONTACT_GET, NULL, 0, &f);
 	if (ret)
 		return ret;
 	if (f.len < 4)
@@ -479,6 +535,7 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 {
 	struct ohc_emitter *em = rcdev->priv;
 	struct ohc_iomcu *mcu = em->mcu;
+	struct ohc_frame f;
 	unsigned int i, n;
 	u32 carrier, word;
 	u8 *payload;
@@ -488,7 +545,7 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 		return -EBUSY;		/* the jack is in serial mode */
 
 	carrier = em->carrier ? em->carrier : 38000;
-	word = IR_PRONTO_HZ / carrier;
+	word = OHC_IR_PRONTO_HZ / carrier;
 	if (!word)
 		return -EINVAL;		/* would be a divide-by-zero in the firmware */
 
@@ -496,7 +553,7 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 	if (count > IR_MAX_DURATIONS)
 		return -EMSGSIZE;
 	n = count;
-	payload = kzalloc(IR_FIXED_BYTES + n * 2, GFP_KERNEL);
+	payload = kzalloc(OHC_IR_FIXED + n * 2, GFP_KERNEL);
 	if (!payload)
 		return -ENOMEM;
 
@@ -520,13 +577,20 @@ static int ohc_tx_ir(struct rc_dev *rcdev, unsigned int *txbuf, unsigned int cou
 
 		if (periods > 0x7fff)
 			periods = 0x7fff;
-		payload[IR_FIXED_BYTES + i * 2] = periods >> 8;
-		payload[IR_FIXED_BYTES + i * 2 + 1] = periods & 0xff;
+		payload[OHC_IR_FIXED + i * 2] = periods >> 8;
+		payload[OHC_IR_FIXED + i * 2 + 1] = periods & 0xff;
 	}
 
-	ret = ohc_request(mcu, OP_IROUT_SEND, payload, IR_FIXED_BYTES + n * 2, NULL);
+	ret = ohc_request(mcu, OHC_OP_IROUT_SEND, payload, OHC_IR_FIXED + n * 2, &f);
 	kfree(payload);
-	return ret ? ret : (int)n;
+	if (ret)
+		return ret;
+	/* stock answers 0; openHC's says when it is busy or has no such output */
+	if (f.len >= 1 && f.payload[0] == OHC_IR_ST_BUSY)
+		return -EBUSY;
+	if (f.len >= 1 && f.payload[0] != OHC_IR_ST_OK)
+		return -EIO;
+	return n;
 }
 
 static int ohc_tx_carrier(struct rc_dev *rcdev, u32 carrier)
@@ -535,13 +599,29 @@ static int ohc_tx_carrier(struct rc_dev *rcdev, u32 carrier)
 
 	/* The firmware divides by the derived word; a carrier this low would
 	 * round it to zero and take the part down with it. */
-	if (carrier < 1000 || IR_PRONTO_HZ / carrier == 0)
+	if (carrier < 1000 || OHC_IR_PRONTO_HZ / carrier == 0)
 		return -EINVAL;
 	em->carrier = carrier;
 	return 0;
 }
 
-/* A capture from the front receiver: [timer period][durations, bit 15 = mark] */
+/* The end of a code whose last chunk was full: no shorter one came after it. */
+static void ohc_ir_idle(struct work_struct *work)
+{
+	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
+					     struct ohc_iomcu, rx_idle);
+	struct ir_raw_event ev = { .timeout = 1 };
+
+	ir_raw_event_store(mcu->rx, &ev);
+	ir_raw_event_handle(mcu->rx);
+}
+
+/*
+ * A capture from the front receiver: [carrier period in 50 MHz ticks]
+ * [bursts, bit 15 = mark, in carrier periods]. A long code is chunked at
+ * OHC_IRIN_WORDS, each chunk repeating the period, so only a short chunk
+ * ends it; after a full one the end is a quiet line.
+ */
 static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
 {
 	struct ir_raw_event ev = {};
@@ -553,15 +633,12 @@ static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
 	period = ((u32)p[0] << 8) | p[1];
 	if (!period)
 		return;
-	carrier = IR_SYS_HZ / period;
+	carrier = OHC_IRIN_TICK_HZ / period;
 	if (!carrier)
 		return;
+	cancel_delayed_work(&mcu->rx_idle);
 
-	/*
-	 * Lead with the measured carrier: it reaches lirc as
-	 * LIRC_MODE2_FREQUENCY, and is the only place the frequency survives —
-	 * the durations that follow are microseconds.
-	 */
+	/* reaches lirc as LIRC_MODE2_FREQUENCY; the durations are microseconds */
 	ev.carrier_report = 1;
 	ev.carrier = carrier;
 	ir_raw_event_store(mcu->rx, &ev);
@@ -572,13 +649,15 @@ static void ohc_ir_capture(struct ohc_iomcu *mcu, const u8 *p, int len)
 		memset(&ev, 0, sizeof(ev));
 		if (!(w & 0x7fff))
 			break;			/* padding, not a zero-length burst */
-		ev.pulse = !!(w & 0x8000);
-		/* periods -> microseconds, the unit rc-core wants */
+		ev.pulse = !!(w & OHC_IRIN_MARK);
 		ev.duration = div_u64((u64)(w & 0x7fff) * 1000000u, carrier);
 		ir_raw_event_store(mcu->rx, &ev);
 	}
-	/* The capture is complete; say so rather than leaving a reader to infer
-	 * it from a trailing gap this protocol never sends. */
+	if ((len - 2) / 2 >= OHC_IRIN_WORDS) {
+		ir_raw_event_handle(mcu->rx);
+		schedule_delayed_work(&mcu->rx_idle, msecs_to_jiffies(60));
+		return;
+	}
 	memset(&ev, 0, sizeof(ev));
 	ev.timeout = 1;
 	ir_raw_event_store(mcu->rx, &ev);
@@ -762,9 +841,9 @@ static void ohc_frame_complete(struct ohc_iomcu *mcu)
 	 * arrived on one of the MCU-routed serial ports. This is the whole
 	 * reason the decoder keeps frames it did not ask for.
 	 */
-	if (opcode == OP_IRIN_CAPTURED)
+	if (opcode == OHC_OP_IRIN_CAPTURED)
 		ohc_ir_capture(mcu, mcu->body + 5, len);
-	else if (opcode == OP_UART_RECEIVE)
+	else if (opcode == OHC_OP_UART_RECEIVE)
 		ohc_uart_rx(mcu, mcu->body + 5, len);
 }
 
@@ -1069,7 +1148,7 @@ static int ohc_uart_control(struct ohc_uart *u, bool enable)
 	pl[3] = u->data_bits;
 	pl[4] = u->parity;
 	pl[5] = u->stop_bits;
-	return ohc_send(u->mcu, OP_UART_SET_CONTROL, pl, sizeof(pl));
+	return ohc_send(u->mcu, OHC_OP_UART_SET_CONTROL, pl, sizeof(pl));
 }
 
 static int ohc_uart_apply(struct ohc_uart *u)
@@ -1150,7 +1229,7 @@ static ssize_t ohc_serial_write(struct tty_struct *tty, const u8 *buf, size_t co
 
 		pl[0] = (u8)u->index;
 		memcpy(pl + 1, buf + done, n);
-		if (ohc_send(u->mcu, OP_UART_SEND, pl, n + 1))
+		if (ohc_send(u->mcu, OHC_OP_UART_SEND, pl, n + 1))
 			break;
 		done += n;
 	}
@@ -1388,7 +1467,7 @@ static void ohc_unregister_serial(struct ohc_iomcu *mcu)
 
 /*
  * Register the IR side: one lirc device per emitter, plus one for the receiver.
- * Reasoning at IR_PRONTO_HZ.
+ * Reasoning at OHC_IR_PRONTO_HZ.
  *
  * Each node is NAMED — the number depends on probe order, so DEV_NAME in
  * /sys/class/rc/rcN/uevent is the stable handle. Failure is not fatal: a board
@@ -1437,7 +1516,6 @@ static int ohc_register_emitter(struct ohc_iomcu *mcu, struct ohc_emitter *em,
 static void ohc_register_rc(struct ohc_iomcu *mcu)
 {
 	int n = mcu->geo.ir_out + (mcu->geo.ir_blaster ? 1 : 0);
-	int blaster_bit = 0;
 	struct rc_dev *rx;
 	int i, k = 0, ok = 0;
 
@@ -1449,7 +1527,7 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 
 		/*
 		 * Named by panel jack number; the front blaster is not a jack and
-		 * takes the channel after the last one.
+		 * takes its own channel, or the one after the last jack.
 		 */
 		for (i = 0; i < mcu->geo.n_jacks; i++) {
 			const struct ohc_jack *j = &mcu->geo.jacks[i];
@@ -1460,7 +1538,6 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 				k--;
 				continue;
 			}
-			blaster_bit = max(blaster_bit, j->ir + 1);
 			ret = ohc_register_emitter(mcu, em, 1u << j->ir,
 						   kasprintf(GFP_KERNEL, "openHC IR out %u",
 							     j->num));
@@ -1477,7 +1554,7 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 		}
 		if (mcu->geo.ir_blaster) {
 			int ret = ohc_register_emitter(mcu, &mcu->emitters[k],
-						       1u << blaster_bit,
+						       1u << ohc_blaster_bit(&mcu->geo),
 						       kstrdup("openHC IR front blaster",
 							       GFP_KERNEL));
 
@@ -1515,7 +1592,7 @@ static void ohc_register_rc(struct ohc_iomcu *mcu)
 				 * wrong argument fails silently, and the
 				 * symptom is a receiver that never fires.
 				 */
-				ohc_send(mcu, OP_IRIN_SET_CAPTURE, &on, 1);
+				ohc_send(mcu, OHC_OP_IRIN_SET_CAPTURE, &on, 1);
 			}
 		}
 	}
@@ -1549,8 +1626,10 @@ static bool ohc_raw_seen(struct ohc_iomcu *mcu, const u8 *needle, int n)
 	return hit;
 }
 
-static const u8 ohc_boot_ack[] = { 0x00, 0xcc };	/* TI bootloader ACK */
+static const u8 ohc_boot_ack[] = { 0x00, OHC_BL_ACK };	/* TI bootloader ACK */
 static const u8 ohc_app_frame[] = { DLE, STX };		/* anything the app says */
+static const u8 ohc_knock[] = { OHC_KNOCK, OHC_KNOCK };
+static const u8 ohc_ping[] = { 0x03, OHC_BL_PING, OHC_BL_PING };
 
 static bool ohc_raw_answered(struct ohc_iomcu *mcu)
 {
@@ -1576,113 +1655,261 @@ static bool ohc_raw_xfer(struct ohc_iomcu *mcu, const u8 *out, int len,
 				  msecs_to_jiffies(ms)) > 0;
 }
 
-/*
- * Start the application. The part (TM4C on EA, LM3S on HC) powers up in the TI
- * serial bootloader and does NOT run its application on its own; until it does
- * it answers nothing on DLE/STX, which was long mistaken for dead silicon. The
- * plain TI sequence, bytes from the vendor's reflash library:
- *
- *   autobaud      55 55                  -> 00 cc  (bootloader ACK)
- *   PING          03 20 20               -> 00 cc
- *   COMMAND_RUN   07 32 22 00 00 10 00   -> nothing, by design: it has jumped
- *                                           to the application at 0x1000
- *   app autobaud  55 55                  -> 10 02 d7 ... (AUTO_BAUD_RESP)
- *
- * The last knock is for the application, which autobauds onto our line rate
- * from its own first 55 55. GET_STATUS is deliberately not sent: its reply is a
- * packet that must itself be ACKed or the bootloader desyncs.
- *
- * THE KNOCK GOES FIRST, before any DLE/STX. The bootloader autobauds on the
- * first bytes it hears, so asking "is the application up?" with a
- * FIRMWARE_VERSION frame spoils the measurement, and the 55 55 after it gets no
- * ACK at all — measured on an HC-800 held in its bootloader by io_reset: frame
- * then knock, silence; knock first, 00 cc. A running application answers the
- * same knock with an AUTO_BAUD_RESP frame, so one knock tells the two apart and
- * a part that is already up (a warm reboot, a kexec) is left as it is.
- *
- * It is also why a reset is recovered by rebinding, never in place: pulse the
- * line under a bound driver and the contact poller's next frame reaches the
- * fresh bootloader before any knock can, after which nothing gets an ACK. iod's
- * MCU reset unbinds, pulses, and binds again, so this runs first.
- */
-static void ohc_bringup(struct ohc_iomcu *mcu)
+/* Raw mode: the link is ours, bytes collect in raw_buf, no frame goes out. */
+static void ohc_raw_begin(struct ohc_iomcu *mcu)
 {
-	static const u8 knock[] = { 0x55, 0x55 };
-	static const u8 ping[]  = { 0x03, 0x20, 0x20 };
-	static const u8 run[]   = { 0x07, 0x32, 0x22, 0x00, 0x00, 0x10, 0x00 };
-	bool boot = false;
-
 	mutex_lock(&mcu->io_lock);
 	WRITE_ONCE(mcu->raw, true);
-	if (ohc_raw_xfer(mcu, knock, sizeof(knock), NULL, 0, 400))
-		boot = ohc_raw_seen(mcu, ohc_boot_ack, sizeof(ohc_boot_ack));
-	if (boot) {
-		/* PING mostly confirms the link before the un-ACKed RUN. */
-		ohc_raw_xfer(mcu, ping, sizeof(ping), ohc_boot_ack,
-			     sizeof(ohc_boot_ack), 400);
-		ohc_raw_reset(mcu);
-		ohc_xmit(mcu, run, sizeof(run));
-		msleep(300);
-		ohc_raw_xfer(mcu, knock, sizeof(knock), ohc_app_frame,
-			     sizeof(ohc_app_frame), 700);
-	}
+	ohc_raw_reset(mcu);
+}
+
+static void ohc_raw_end(struct ohc_iomcu *mcu)
+{
 	/* Whatever the decoder held from before is stale; hunt afresh. */
 	mcu->state = RX_IDLE;
 	mcu->body_len = 0;
 	WRITE_ONCE(mcu->raw, false);
 	mutex_unlock(&mcu->io_lock);
-
-	/* Silence is not reported here: FIRMWARE_VERSION is the verdict. */
-	if (boot)
-		pr_info("%s: started the application from the TI bootloader\n",
-			mcu->name);
 }
 
 /*
- * Start the application if it needs starting, identify it, then register the
- * chip. Deferred from probe: the bring-up can take a second, which has no
- * business in the boot-time probe, and a part that never answers gets no chip.
+ * COMMAND_RUN at the app slot, then knock for the application. True if it
+ * answered. If the bootloader answers instead, nothing started (an empty or
+ * half-written slot, whose stub resets straight back) and in_boot says so.
+ * Raw mode.
  */
-static void ohc_identify(struct work_struct *work)
+static bool ohc_run_app(struct ohc_iomcu *mcu)
 {
-	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
-					     struct ohc_iomcu, identify_work);
-	struct ohc_frame f;
-	int i, lines, ret;
+	/* [size][sum][RUN, address BE]: never ACKed, it has jumped by then */
+	static const u8 run[] = { 0x07, OHC_BL_RUN + 0x10, OHC_BL_RUN, 0x00, 0x00, 0x10, 0x00 };
 
-	/* Knock first (see ohc_bringup), then identify. */
-	ohc_bringup(mcu);
-	ret = ohc_request(mcu, OP_FIRMWARE_VERSION, NULL, 0, &f);
-	if (ret) {
-		/*
-		 * No chip. A gpiochip standing in for a part that is not
-		 * answering is one whose every read is a lie, and it would be
-		 * indistinguishable from working hardware until somebody
-		 * trusted a contact.
-		 */
-		pr_warn("no reply from the IO microcontroller on %s; no gpiochip registered\n",
-			mcu->name);
-		pr_warn("  tx=%lu rx=%lu frames=%lu badcsum=%lu\n",
-			mcu->tx_bytes, mcu->rx_bytes, mcu->rx_frames, mcu->rx_bad_csum);
-		if (mcu->first_rx_len)
-			print_hex_dump(KERN_WARNING, "ohc-iomcu: first rx: ",
-				       DUMP_PREFIX_NONE, 16, 1,
-				       mcu->first_rx, mcu->first_rx_len, false);
-		return;
+	ohc_raw_reset(mcu);
+	ohc_xmit(mcu, run, sizeof(run));
+	msleep(300);
+	ohc_raw_xfer(mcu, ohc_knock, sizeof(ohc_knock), NULL, 0, 700);
+	if (ohc_raw_seen(mcu, ohc_app_frame, sizeof(ohc_app_frame))) {
+		WRITE_ONCE(mcu->in_boot, false);
+		return true;
 	}
+	WRITE_ONCE(mcu->in_boot, ohc_raw_seen(mcu, ohc_boot_ack, sizeof(ohc_boot_ack)));
+	return false;
+}
+
+/*
+ * Start the application. The part (TM4C on EA, LM3S on HC) powers up in the TI
+ * serial bootloader and does NOT run its application on its own:
+ *
+ *   autobaud      55 55                  -> 00 cc  (bootloader ACK)
+ *   PING          03 20 20               -> 00 cc
+ *   COMMAND_RUN   07 32 22 00 00 10 00   -> nothing: it has jumped to 0x1000
+ *   app autobaud  55 55                  -> 10 02 d7 ... (AUTO_BAUD_RESP)
+ *
+ * THE KNOCK GOES FIRST, before any DLE/STX: the bootloader autobauds on the
+ * first bytes it hears, and a frame before the knock leaves it deaf. A running
+ * application answers the same knock with AUTO_BAUD_RESP, so one knock tells
+ * the two apart and a part already up (a warm reboot, a kexec) is left alone.
+ * It is also why a reset is recovered by rebinding, never in place: iod's MCU
+ * reset unbinds, pulses, and binds again, so this runs first.
+ */
+static void ohc_bringup(struct ohc_iomcu *mcu)
+{
+	bool boot = false, up = false;
+
+	ohc_raw_begin(mcu);
+	WRITE_ONCE(mcu->in_boot, false);
+	if (ohc_raw_xfer(mcu, ohc_knock, sizeof(ohc_knock), NULL, 0, 400))
+		boot = ohc_raw_seen(mcu, ohc_boot_ack, sizeof(ohc_boot_ack));
+	if (boot) {
+		/* PING mostly confirms the link before the un-ACKed RUN. */
+		ohc_raw_xfer(mcu, ohc_ping, sizeof(ohc_ping), ohc_boot_ack,
+			     sizeof(ohc_boot_ack), 400);
+		up = ohc_run_app(mcu);
+	}
+	ohc_raw_end(mcu);
+
+	/* Silence is not reported here: FIRMWARE_VERSION is the verdict. */
+	if (up)
+		pr_info("%s: started the application from the TI bootloader\n", mcu->name);
+	else if (READ_ONCE(mcu->in_boot))
+		pr_warn("%s: the bootloader answers but its application did not start\n",
+			mcu->name);
+}
+
+static bool ohc_ours(struct ohc_iomcu *mcu)
+{
+	return str_has_prefix(mcu->fw_version, OHC_FW_VERSION_PREFIX);
+}
+
+/* FIRMWARE_VERSION: online, and what runs. */
+static int ohc_read_version(struct ohc_iomcu *mcu)
+{
+	struct ohc_frame f;
+	int n, ret;
+
+	ret = __ohc_request(mcu, OHC_OP_FIRMWARE_VERSION, NULL, 0, &f, OHC_TIMEOUT_MS);
+	if (ret) {
+		WRITE_ONCE(mcu->online, false);
+		return ret;
+	}
+	n = min_t(int, f.len, sizeof(mcu->fw_version) - 1);
+	memcpy(mcu->fw_version, f.payload, n);
+	mcu->fw_version[n] = '\0';
 	WRITE_ONCE(mcu->online, true);
+	return 0;
+}
+
+/* ---- the pin table ------------------------------------------------------ */
+
+static const char *const ohc_cfg_kind[] = {
+	[OHC_CFG_IR_OUT] = "IR output", [OHC_CFG_IR_IN] = "IR receiver",
+	[OHC_CFG_RELAY] = "relay", [OHC_CFG_CONTACT] = "contact",
+	[OHC_CFG_UART_RX] = "serial RX", [OHC_CFG_UART_TX] = "serial TX",
+	[OHC_CFG_IR_CARRIER] = "IR carrier", [OHC_CFG_IR_GATE] = "IR gate",
+	[OHC_CFG_HOLD] = "held line", [OHC_CFG_HEARTBEAT] = "heartbeat",
+	[OHC_CFG_UART_MUX_A] = "serial mode line A", [OHC_CFG_UART_MUX_B] = "serial mode line B",
+};
+
+static const char *const ohc_cfg_status[] = {
+	[OHC_CFG_S_KIND] = "unknown kind", [OHC_CFG_S_INDEX] = "index out of range or used twice",
+	[OHC_CFG_S_PIN] = "no such pin", [OHC_CFG_S_RESERVED] = "pin reserved (host link or debug)",
+	[OHC_CFG_S_FUNC] = "the pin cannot do this", [OHC_CFG_S_BUSY] = "pin or peripheral already taken",
+	[OHC_CFG_S_PAIR] = "its partner is missing (UART RX/TX, a gate's carrier)",
+	[OHC_CFG_S_FLAGS] = "bad flags",
+};
+
+static void ohc_cfg_add(u8 *p, int *n, u8 kind, int index, struct ohc_pin pin, u8 flags)
+{
+	u8 *e = p + OHC_CFG_HDR + *n * OHC_CFG_ENTRY;
+
+	if (!pin.set || index < 0 || *n >= OHC_CFG_MAX_ENTRIES)
+		return;
+	e[0] = kind;
+	e[1] = index;
+	e[2] = pin.port;
+	e[3] = pin.pin;
+	e[4] = flags;
+	(*n)++;
+}
+
+/*
+ * CONFIG_SET: every pin the node describes, as {kind, index, port, pin,
+ * flags}. openHC's firmware starts with nothing driven and applies this,
+ * NAKing per entry what the part cannot do; stock firmware drops it unanswered.
+ */
+static int ohc_send_config(struct ohc_iomcu *mcu)
+{
+	const struct ohc_geometry *geo = &mcu->geo;
+	struct ohc_frame *f;
+	int i, n = 0, bad = 0, ret;
+	bool ours = ohc_ours(mcu);
+	u8 *p, gate_flags;
+
+	p = kzalloc(OHC_CFG_HDR + OHC_CFG_MAX_ENTRIES * OHC_CFG_ENTRY, GFP_KERNEL);
+	f = kmalloc(sizeof(*f), GFP_KERNEL);
+	if (!p || !f) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	gate_flags = geo->gates_active_low ? OHC_CFG_F_ACTIVE_LOW : 0;
+	for (i = 0; i < OHC_CFG_CARRIERS; i++)
+		ohc_cfg_add(p, &n, OHC_CFG_IR_CARRIER, i, geo->carrier[i], 0);
+	for (i = 0; i < geo->n_jacks; i++) {
+		const struct ohc_jack *j = &geo->jacks[i];
+		int k;
+
+		ohc_cfg_add(p, &n, OHC_CFG_IR_OUT, j->ir, j->ir_pin, 0);
+		for (k = 0; k < j->n_gates; k++)
+			ohc_cfg_add(p, &n, OHC_CFG_IR_GATE, j->ir, j->gate[k].pin,
+				    gate_flags | OHC_CFG_F_CARRIER(j->gate[k].carrier));
+		if (j->rx.set && j->tx.set) {
+			ohc_cfg_add(p, &n, OHC_CFG_UART_RX, j->uart, j->rx, 0);
+			ohc_cfg_add(p, &n, OHC_CFG_UART_TX, j->uart, j->tx, 0);
+		}
+		ohc_cfg_add(p, &n, OHC_CFG_UART_MUX_A, j->uart, j->mux_a, 0);
+		ohc_cfg_add(p, &n, OHC_CFG_UART_MUX_B, j->uart, j->mux_b, 0);
+	}
+	if (geo->ir_blaster) {
+		int bit = ohc_blaster_bit(geo);
+
+		ohc_cfg_add(p, &n, OHC_CFG_IR_OUT, bit, geo->blaster_pin, 0);
+		for (i = 0; i < geo->n_blaster_gates; i++)
+			ohc_cfg_add(p, &n, OHC_CFG_IR_GATE, bit, geo->blaster_gate[i].pin,
+				    gate_flags | OHC_CFG_F_CARRIER(geo->blaster_gate[i].carrier));
+	}
+	for (i = 0; i < geo->n_hold; i++)
+		ohc_cfg_add(p, &n, OHC_CFG_HOLD, i, geo->hold[i], 0);
+	ohc_cfg_add(p, &n, OHC_CFG_HEARTBEAT, 0, geo->heartbeat, 0);
+	if (geo->ir_in)
+		ohc_cfg_add(p, &n, OHC_CFG_IR_IN, 0, geo->rx_pin, geo->rx_flags);
+	for (i = 0; i < geo->relays; i++)
+		ohc_cfg_add(p, &n, OHC_CFG_RELAY, i, geo->relay[i].pin, geo->relay[i].flags);
+	for (i = 0; i < geo->contacts; i++)
+		ohc_cfg_add(p, &n, OHC_CFG_CONTACT, i, geo->contact[i].pin, geo->contact[i].flags);
+
+	ret = 0;
+	if (!n) {
+		if (ours)
+			dev_warn(mcu->dev, "the node gives no pins: openHC's firmware drives nothing\n");
+		goto out;
+	}
+	p[0] = OHC_CFG_VERSION;
+	p[1] = n;
+	ret = __ohc_request(mcu, OHC_OP_CONFIG_SET, p, OHC_CFG_HDR + n * OHC_CFG_ENTRY, f,
+			    ours ? OHC_TIMEOUT_MS : 200);
+	if (ret) {
+		if (ours)
+			dev_err(mcu->dev, "no answer to the pin table: %d\n", ret);
+		else
+			ret = 0;	/* stock: drops it, runs its own */
+		goto out;
+	}
+	if (f->opcode != OHC_OP_CONFIG_RESP || f->len < 3 || f->payload[0] != OHC_CFG_VERSION) {
+		dev_err(mcu->dev, "malformed answer to the pin table\n");
+		ret = -EPROTO;
+		goto out;
+	}
+	if (f->payload[1] != OHC_CFG_R_OK) {
+		dev_err(mcu->dev, "the firmware refused the pin table (%u); it drives nothing\n",
+			f->payload[1]);
+		ret = -EINVAL;
+		goto out;
+	}
+	for (i = 0; i < n && i + 3 < f->len; i++) {
+		const u8 *e = p + OHC_CFG_HDR + i * OHC_CFG_ENTRY;
+		u8 st = f->payload[3 + i];
+
+		if (st == OHC_CFG_S_OK)
+			continue;
+		bad++;
+		dev_err(mcu->dev, "%s %u on P%c%u: %s\n",
+			e[0] < ARRAY_SIZE(ohc_cfg_kind) ? ohc_cfg_kind[e[0]] : "?", e[1],
+			'A' + e[2], e[3],
+			st < ARRAY_SIZE(ohc_cfg_status) && ohc_cfg_status[st] ? ohc_cfg_status[st] : "refused");
+	}
+	dev_info(mcu->dev, "pin table: %d of %d entries applied\n", n - bad, n);
+out:
+	kfree(f);
+	kfree(p);
+	return ret;
+}
+
+/* ---- registration ------------------------------------------------------- */
+
+/* The chip, the lirc devices and the ttys, once the part has answered. */
+static void ohc_register_all(struct ohc_iomcu *mcu)
+{
+	int i, lines;
+
+	if (mcu->registered)
+		return;
+	mcu->registered = true;
 
 	lines = mcu->geo.relays + mcu->geo.contacts;
-	if (!lines) {
-		/* No GPIO lines (the EA1): no gpiochip, but the IR emitters and
-		 * the MCU-routed serial ports below are still worth having. */
-		ohc_register_serial(mcu);
-		ohc_register_rc(mcu);
-		return;
-	}
+	if (!lines)
+		goto rest;	/* no GPIO lines (the EA1): IR and serial only */
 	mcu->names = kcalloc(lines, sizeof(char *), GFP_KERNEL);
 	if (!mcu->names)
-		return;
+		goto rest;
 	/*
 	 * Named lines, so `gpiofind relay1` works. ONE-BASED, because that is
 	 * what is printed on the back of the box; the line offset and the wire
@@ -1722,17 +1949,368 @@ static void ohc_identify(struct work_struct *work)
 
 	pr_info("%s: %d relays, %d contacts as GPIO lines\n",
 		mcu->name, mcu->geo.relays, mcu->geo.contacts);
-
-	ohc_register_serial(mcu);
-	ohc_register_rc(mcu);
-	return;
+	goto rest;
 
 err_names:
 	for (i = 0; i < lines; i++)
 		kfree(mcu->names[i]);
 	kfree(mcu->names);
 	mcu->names = NULL;
+rest:
+	ohc_register_serial(mcu);
+	ohc_register_rc(mcu);
 }
+
+/*
+ * Start the application if it needs starting, identify it, send the pin
+ * table, then register. Deferred from probe: the bring-up can take a second.
+ * A part that never answers gets no chip — a gpiochip standing in for a silent
+ * part is one whose every read is a lie — unless the loader brings it up.
+ */
+static void ohc_identify(struct work_struct *work)
+{
+	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
+					     struct ohc_iomcu, identify_work);
+
+	ohc_bringup(mcu);
+	if (!READ_ONCE(mcu->in_boot) && !ohc_read_version(mcu)) {
+		dev_info(mcu->dev, "firmware %s\n", mcu->fw_version);
+		ohc_send_config(mcu);
+		ohc_register_all(mcu);
+	} else if (!mcu->fw_name) {
+		pr_warn("no reply from the IO microcontroller on %s; no gpiochip registered\n",
+			mcu->name);
+		pr_warn("  tx=%lu rx=%lu frames=%lu badcsum=%lu\n",
+			mcu->tx_bytes, mcu->rx_bytes, mcu->rx_frames, mcu->rx_bad_csum);
+		if (mcu->first_rx_len)
+			print_hex_dump(KERN_WARNING, "ohc-iomcu: first rx: ",
+				       DUMP_PREFIX_NONE, 16, 1,
+				       mcu->first_rx, mcu->first_rx_len, false);
+	}
+	if (mcu->fw_name)
+		schedule_delayed_work(&mcu->fw_work, 0);
+}
+
+/* ---- the loader: TI serial bootloader ----------------------------------- */
+
+/* The next byte from the part, in raw mode. */
+static int ohc_raw_byte(struct ohc_iomcu *mcu, int *pos, int ms)
+{
+	if (!wait_event_timeout(mcu->raw_wait, READ_ONCE(mcu->raw_len) > *pos,
+				msecs_to_jiffies(ms)))
+		return -ETIMEDOUT;
+	return mcu->raw_buf[(*pos)++];
+}
+
+/* The bootloader's answer to a packet: zeros, then ACK or NAK. */
+static int ohc_bl_ack(struct ohc_iomcu *mcu, int *pos, int ms)
+{
+	int c;
+
+	do {
+		c = ohc_raw_byte(mcu, pos, ms);
+	} while (c == 0);
+	if (c < 0)
+		return c;
+	return c == OHC_BL_ACK ? 0 : c == OHC_BL_NAK ? -EIO : -EPROTO;
+}
+
+/* [size][sum][data], and its ACK. */
+static int ohc_bl_packet(struct ohc_iomcu *mcu, const u8 *d, int n, int ms)
+{
+	u8 buf[2 + 1 + OHC_BL_CHUNK];
+	int i, pos = 0, ret;
+
+	buf[0] = n + 2;
+	buf[1] = 0;
+	for (i = 0; i < n; i++)
+		buf[1] += d[i];
+	memcpy(buf + 2, d, n);
+	ohc_raw_reset(mcu);
+	ret = ohc_xmit(mcu, buf, n + 2);
+	return ret ? ret : ohc_bl_ack(mcu, &pos, ms);
+}
+
+/* GET_STATUS: its answer is a packet of its own, which must be ACKed. */
+static int ohc_bl_status(struct ohc_iomcu *mcu)
+{
+	static const u8 get[] = { 0x03, OHC_BL_GET_STATUS, OHC_BL_GET_STATUS };
+	static const u8 ack[] = { OHC_BL_ACK };
+	int pos = 0, size, sum, st, ret;
+
+	ohc_raw_reset(mcu);
+	ret = ohc_xmit(mcu, get, sizeof(get));
+	if (!ret)
+		ret = ohc_bl_ack(mcu, &pos, 500);
+	if (ret)
+		return ret;
+	do {
+		size = ohc_raw_byte(mcu, &pos, 500);
+	} while (size == 0);
+	sum = ohc_raw_byte(mcu, &pos, 500);
+	st = ohc_raw_byte(mcu, &pos, 500);
+	if (size < 0 || sum < 0 || st < 0)
+		return -ETIMEDOUT;
+	ohc_xmit(mcu, ack, sizeof(ack));
+	return size == 3 && sum == st ? st : -EPROTO;
+}
+
+static int ohc_bl_cmd(struct ohc_iomcu *mcu, const u8 *d, int n, int ms)
+{
+	int st = ohc_bl_packet(mcu, d, n, ms);
+
+	if (!st)
+		st = ohc_bl_status(mcu);
+	return st < 0 ? st : st == OHC_BL_SUCCESS ? 0 : -EIO;
+}
+
+/* DOWNLOAD erases [addr, addr + size); SEND_DATA then programs it in order. */
+static int ohc_bl_download(struct ohc_iomcu *mcu, u32 addr, const u8 *p, u32 size)
+{
+	u8 c[1 + OHC_BL_CHUNK];
+	u32 off, n;
+	int ret;
+
+	c[0] = OHC_BL_DOWNLOAD;
+	put_unaligned_be32(addr, c + 1);
+	put_unaligned_be32(size, c + 5);
+	ret = ohc_bl_cmd(mcu, c, 9, 5000);	/* the erase happens before the ACK */
+	for (off = 0; !ret && off < size; off += n) {
+		if (READ_ONCE(mcu->fw_cancel))
+			return -ECANCELED;
+		n = min_t(u32, size - off, OHC_BL_CHUNK);
+		c[0] = OHC_BL_SEND_DATA;
+		memcpy(c + 1, p + off, n);
+		ret = ohc_bl_cmd(mcu, c, n + 1, 500);
+	}
+	return ret;
+}
+
+/*
+ * A vector page that resets the part: SP, reset -> ldr r0/r1, str, b . with
+ * AIRCR <- VECTKEY | SYSRESETREQ. While the slot holds it, starting the
+ * application lands back in the bootloader.
+ */
+static const u8 ohc_reset_stub[] = {
+	0x00, 0x04, 0x00, 0x20,	0x09, 0x10, 0x00, 0x00,
+	0x01, 0x48, 0x02, 0x49,	0x01, 0x60, 0xfe, 0xe7,
+	0x0c, 0xed, 0x00, 0xe0,	0x04, 0x00, 0xfa, 0x05,
+};
+
+/*
+ * The application slot, its first page last: the stub goes in first, then the
+ * body, then the real vector table. Cut short anywhere before that last page,
+ * the slot starts into the stub, which resets into the bootloader, and the next
+ * probe finds the part there and writes it again. The bootloader's 4 KB below
+ * OHC_APP_BASE is never addressed.
+ */
+static int ohc_bl_write(struct ohc_iomcu *mcu, const struct ohc_img *img)
+{
+	u32 first = min_t(u32, img->size, OHC_FLASH_PAGE);
+	int ret;
+
+	ret = ohc_bl_download(mcu, OHC_APP_BASE, ohc_reset_stub, sizeof(ohc_reset_stub));
+	if (!ret && img->size > first)
+		ret = ohc_bl_download(mcu, OHC_APP_BASE + first, img->data + first,
+				      img->size - first);
+	if (!ret)
+		ret = ohc_bl_download(mcu, OHC_APP_BASE, img->data, first);
+	return ret;
+}
+
+/*
+ * Into the bootloader, synced: a bootloader already there answers PING; ours
+ * resets on OHC_OP_RESET; anything else needs the reset line. Raw mode, so no
+ * frame reaches a fresh bootloader before its knock.
+ */
+static int ohc_enter_boot(struct ohc_iomcu *mcu)
+{
+	if (READ_ONCE(mcu->in_boot) &&
+	    ohc_raw_xfer(mcu, ohc_ping, sizeof(ohc_ping), ohc_boot_ack, sizeof(ohc_boot_ack), 400))
+		return 0;
+	if (READ_ONCE(mcu->online) && ohc_ours(mcu)) {
+		ohc_write_frame(mcu, OHC_OP_RESET, ++mcu->seq, NULL, 0);
+		msleep(200);
+	} else if (mcu->reset) {
+		gpiod_set_value_cansleep(mcu->reset, 1);
+		msleep(20);
+		gpiod_set_value_cansleep(mcu->reset, 0);
+		msleep(200);
+	} else if (READ_ONCE(mcu->online)) {
+		return -EOPNOTSUPP;	/* stock, and no way to reset it */
+	}
+	WRITE_ONCE(mcu->online, false);
+	if (!ohc_raw_xfer(mcu, ohc_knock, sizeof(ohc_knock), ohc_boot_ack,
+			  sizeof(ohc_boot_ack), 400))
+		return -ENODEV;
+	WRITE_ONCE(mcu->in_boot, true);
+	return 0;
+}
+
+/* The header, checked against this part; img->data points into @d. */
+static int ohc_img_parse(struct ohc_iomcu *mcu, const u8 *d, size_t n, struct ohc_img *img)
+{
+	if (n < OHC_IMG_HDR_LEN || memcmp(d, OHC_IMG_MAGIC, 8) ||
+	    get_unaligned_le16(d + OHC_IMG_OFF_HDR_VER) != 1 ||
+	    get_unaligned_le16(d + OHC_IMG_OFF_HDR_LEN) != OHC_IMG_HDR_LEN ||
+	    ~crc32_le(~0, d, OHC_IMG_OFF_HDR_CRC) != get_unaligned_le32(d + OHC_IMG_OFF_HDR_CRC))
+		return -EINVAL;
+	img->part = get_unaligned_le32(d + OHC_IMG_OFF_PART);
+	img->load = get_unaligned_le32(d + OHC_IMG_OFF_LOAD);
+	img->size = get_unaligned_le32(d + OHC_IMG_OFF_SIZE);
+	if (img->part != mcu->part)
+		return -ENODEV;
+	if (img->load != OHC_APP_BASE || !img->size || img->size % 4 ||
+	    img->size > OHC_FLASH_SIZE - OHC_APP_BASE || img->size != n - OHC_IMG_HDR_LEN)
+		return -EINVAL;
+	if (~crc32_le(~0, d + OHC_IMG_HDR_LEN, img->size) != get_unaligned_le32(d + OHC_IMG_OFF_CRC))
+		return -EBADMSG;
+	memcpy(img->version, d + OHC_IMG_OFF_VERSION, OHC_IMG_VERSION_LEN);
+	img->version[OHC_IMG_VERSION_LEN - 1] = '\0';
+	img->data = d + OHC_IMG_HDR_LEN;
+	return 0;
+}
+
+/*
+ * Write @img, start it, check it answers with its own version, send the pin
+ * table. Every other request is refused meanwhile. On failure the part is left
+ * in its bootloader (in_boot), where the next probe finds it and writes again.
+ */
+static int ohc_flash(struct ohc_iomcu *mcu, const struct ohc_img *img)
+{
+	int ret = -ENODEV, tries;
+
+	mutex_lock(&mcu->fw_lock);
+	WRITE_ONCE(mcu->updating, true);
+	mcu->contacts_valid = false;
+	ohc_raw_begin(mcu);
+	for (tries = 0; tries < 3; tries++) {
+		ret = ohc_enter_boot(mcu);
+		if (!ret)
+			ret = ohc_bl_write(mcu, img);
+		if (!ret || ret == -ECANCELED || ret == -EOPNOTSUPP)
+			break;
+		dev_warn(mcu->dev, "write %d of 3 failed: %d\n", tries + 1, ret);
+	}
+	if (!ret && !ohc_run_app(mcu))
+		ret = -EIO;
+	ohc_raw_end(mcu);
+	WRITE_ONCE(mcu->updating, false);
+
+	if (!ret)
+		ret = ohc_read_version(mcu);
+	if (!ret && strcmp(mcu->fw_version, img->version)) {
+		dev_err(mcu->dev, "wrote %s, but the part says %s\n", img->version, mcu->fw_version);
+		ret = -EIO;
+	}
+	if (!ret)
+		ohc_send_config(mcu);
+	mutex_unlock(&mcu->fw_lock);
+	return ret;
+}
+
+/*
+ * firmware-name: load it, and write it only when the part runs something
+ * else. Built in, this can run before the root filesystem is mounted, so a
+ * missing file is retried for a while.
+ */
+static void ohc_fw_work(struct work_struct *work)
+{
+	struct ohc_iomcu *mcu = container_of(to_delayed_work(work),
+					     struct ohc_iomcu, fw_work);
+	const struct firmware *fw;
+	struct ohc_img img;
+	int ret;
+
+	ret = request_firmware_direct(&fw, mcu->fw_name, mcu->dev);
+	if (ret == -ENOENT && ++mcu->fw_tries < 90) {
+		schedule_delayed_work(&mcu->fw_work, 2 * HZ);
+		return;
+	}
+	if (ret) {
+		dev_warn(mcu->dev, "cannot load %s: %d\n", mcu->fw_name, ret);
+		return;
+	}
+	ret = ohc_img_parse(mcu, fw->data, fw->size, &img);
+	if (ret) {
+		dev_err(mcu->dev, "%s is not an image for this part: %d\n", mcu->fw_name, ret);
+		goto out;
+	}
+	if (READ_ONCE(mcu->online) && !strcmp(mcu->fw_version, img.version))
+		goto out;
+	if (READ_ONCE(mcu->online) && !ohc_ours(mcu) && !mcu->reset) {
+		dev_warn(mcu->dev, "runs %s; replacing it needs reset-gpios\n", mcu->fw_version);
+		goto out;
+	}
+	dev_info(mcu->dev, "writing %s (%u bytes) over %s\n", img.version, img.size,
+		 READ_ONCE(mcu->online) ? mcu->fw_version : "no running application");
+	ret = ohc_flash(mcu, &img);
+	if (ret) {
+		dev_err(mcu->dev, "writing %s failed: %d%s\n", img.version, ret,
+			READ_ONCE(mcu->in_boot) ? "; left in its bootloader for the next probe" : "");
+		goto out;
+	}
+	dev_info(mcu->dev, "firmware %s\n", mcu->fw_version);
+	ohc_register_all(mcu);
+out:
+	release_firmware(fw);
+}
+
+/*
+ * /sys/class/firmware/ohc-iomcu: any image for this part, written on request
+ * whatever runs now. Return to stock puts Control4's back this way.
+ */
+static enum fw_upload_err ohc_up_prepare(struct fw_upload *fwl, const u8 *data, u32 size)
+{
+	struct ohc_iomcu *mcu = fwl->dd_handle;
+
+	WRITE_ONCE(mcu->fw_cancel, false);
+	if (ohc_img_parse(mcu, data, size, &mcu->upload))
+		return FW_UPLOAD_ERR_FW_INVALID;
+	return FW_UPLOAD_ERR_NONE;
+}
+
+static enum fw_upload_err ohc_up_write(struct fw_upload *fwl, const u8 *data,
+				       u32 offset, u32 size, u32 *written)
+{
+	struct ohc_iomcu *mcu = fwl->dd_handle;
+	int ret;
+
+	*written = size;
+	if (offset)
+		return FW_UPLOAD_ERR_NONE;
+	ret = ohc_flash(mcu, &mcu->upload);
+	if (!ret) {
+		dev_info(mcu->dev, "wrote firmware %s\n", mcu->fw_version);
+		ohc_register_all(mcu);
+	}
+	switch (ret) {
+	case 0:			return FW_UPLOAD_ERR_NONE;
+	case -ECANCELED:	return FW_UPLOAD_ERR_CANCELED;
+	case -ETIMEDOUT:	return FW_UPLOAD_ERR_TIMEOUT;
+	case -EOPNOTSUPP:	return FW_UPLOAD_ERR_HW_ERROR;
+	default:		return FW_UPLOAD_ERR_RW_ERROR;
+	}
+}
+
+static enum fw_upload_err ohc_up_poll(struct fw_upload *fwl)
+{
+	return FW_UPLOAD_ERR_NONE;
+}
+
+static void ohc_up_cancel(struct fw_upload *fwl)
+{
+	struct ohc_iomcu *mcu = fwl->dd_handle;
+
+	WRITE_ONCE(mcu->fw_cancel, true);
+}
+
+static const struct fw_upload_ops ohc_up_ops = {
+	.prepare	= ohc_up_prepare,
+	.write		= ohc_up_write,
+	.poll_complete	= ohc_up_poll,
+	.cancel		= ohc_up_cancel,
+};
 
 /* ---- /sys/class/ohc/iomcu ----------------------------------------------- */
 
@@ -1743,7 +2321,7 @@ err_names:
  * where iod reads it back:
  *
  *	/sys/class/ohc/iomcu/{relays,contacts,ir_out,ir_blaster,ir_in,uarts}
- *	/sys/class/ohc/iomcu/{port,baud,online}
+ *	/sys/class/ohc/iomcu/{port,baud,online,firmware,part}
  *
  * It appears at probe, not when the part answers: a box whose microcontroller
  * is silent should still say it has four relays, so the diagnosis is "not
@@ -1768,6 +2346,24 @@ OHC_INFO_INT(uarts, mcu->geo.uarts);
 OHC_INFO_INT(baud, mcu->baud);
 OHC_INFO_INT(online, READ_ONCE(mcu->online));
 
+/* What FIRMWARE_VERSION said; empty until it answers. */
+static ssize_t firmware_show(struct device *d, struct device_attribute *a, char *buf)
+{
+	struct ohc_iomcu *mcu = dev_get_drvdata(d);
+
+	return sysfs_emit(buf, "%s\n", mcu->fw_version);
+}
+static DEVICE_ATTR_RO(firmware);
+
+static ssize_t part_show(struct device *d, struct device_attribute *a, char *buf)
+{
+	struct ohc_iomcu *mcu = dev_get_drvdata(d);
+
+	return sysfs_emit(buf, "%s\n", mcu->part == OHC_PART_TM4C1231D5 ? "tm4c1231d5" :
+					mcu->part == OHC_PART_LM3S1162 ? "lm3s1162" : "");
+}
+static DEVICE_ATTR_RO(part);
+
 /* The serdev device the part is: serial0-0. */
 static ssize_t port_show(struct device *d, struct device_attribute *a, char *buf)
 {
@@ -1787,6 +2383,8 @@ static struct attribute *ohc_info_attrs[] = {
 	&dev_attr_port.attr,
 	&dev_attr_baud.attr,
 	&dev_attr_online.attr,
+	&dev_attr_firmware.attr,
+	&dev_attr_part.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(ohc_info);
@@ -1794,37 +2392,10 @@ ATTRIBUTE_GROUPS(ohc_info);
 /* ---- serdev driver ------------------------------------------------------ *
  *
  * The board's firmware describes the part as a child of the UART it is wired
- * to, with what sits behind it. On EA that is the board device tree:
- *
- *	&uart1 {
- *		io-mcu {
- *			compatible = "control4,io-mcu";
- *			current-speed = <460800>;
- *			#address-cells = <1>;
- *			#size-cells = <0>;
- *			control4,relays = <1>;
- *			control4,contacts = <1>;
- *			control4,ir-blaster;		// internal front emitter
- *			control4,ir-receiver;		// front learner
- *			jack@1 {			// combo: IR or serial
- *				reg = <1>;
- *				label = "IR / Serial 1";
- *				control4,ir-channel = <0>;
- *				control4,uart = <0>;
- *			};
- *			jack@4 {			// IR only
- *				reg = <4>;
- *				label = "IR 4";
- *				control4,ir-channel = <3>;
- *			};
- *		};
- *	};
- *
- * Without jack nodes, control4,ir-outputs and control4,uarts give counts.
- *
- * On the HC-800 it is the same binding in ACPI (board/hc800/acpi/), as a
- * PRP0001 device under the BIOS's UART with the properties in _DSD, so the
- * match table and the device_property_*() reads below are the same code.
+ * to, with what sits behind it: the board device tree on EA, a PRP0001 device
+ * with the same properties in _DSD on the HC-800 (board/hc800/acpi/), so the
+ * match table and the fwnode reads below are the same code. The binding is
+ * Documentation/devicetree/bindings/gpio/control4,io-mcu.yaml.
  *
  * A UART with a serdev child is no longer a tty: the port belongs to this
  * driver from boot, and nothing in userspace attaches anything.
@@ -1851,25 +2422,210 @@ static int ohc_prop_count(struct device *dev, const char *prop)
 	return v > 32 ? -1 : (int)v;
 }
 
+/* <port pin>, both in range; absent is fine, malformed is not. */
+static int ohc_read_pins(struct fwnode_handle *node, const char *prop,
+			 struct ohc_pin *pins, int n)
+{
+	u32 v[4];
+	int i, ret;
+
+	if (!fwnode_property_present(node, prop))
+		return 0;
+	ret = fwnode_property_read_u32_array(node, prop, v, 2 * n);
+	if (ret)
+		return ret;
+	for (i = 0; i < n; i++) {
+		if (v[2 * i] > 7 || v[2 * i + 1] > 7)
+			return -EINVAL;
+		pins[i] = (struct ohc_pin){ .set = true, .port = v[2 * i], .pin = v[2 * i + 1] };
+	}
+	return 0;
+}
+
+/* A list of <port pin> or <port pin carrier>: how many entries were read. */
+static int ohc_read_list(struct fwnode_handle *node, const char *prop, int cells,
+			 u32 *v, int max)
+{
+	int n, i;
+
+	if (!fwnode_property_present(node, prop))
+		return 0;
+	n = fwnode_property_count_u32(node, prop);
+	if (n <= 0 || n % cells || n / cells > max ||
+	    fwnode_property_read_u32_array(node, prop, v, n))
+		return -EINVAL;
+	for (i = 0; i < n; i++)
+		if (v[i] > ((i % cells) == 2 ? OHC_CFG_CARRIERS - 1 : 7))
+			return -EINVAL;
+	return n / cells;
+}
+
+static int ohc_read_gates(struct fwnode_handle *node, struct ohc_gate *g)
+{
+	u32 v[3 * OHC_MAX_GATES];
+	int i, n = ohc_read_list(node, "control4,ir-gates", 3, v, OHC_MAX_GATES);
+
+	for (i = 0; i < n; i++)
+		g[i] = (struct ohc_gate){
+			.pin = { .set = true, .port = v[3 * i], .pin = v[3 * i + 1] },
+			.carrier = v[3 * i + 2],
+		};
+	return n;
+}
+
+static int ohc_parse_jack(struct device *dev, struct fwnode_handle *child,
+			  struct ohc_jack *j)
+{
+	struct ohc_pin uart[2] = {}, mux[2] = {};
+	u32 v;
+
+	if (fwnode_property_read_u32(child, "reg", &j->num))
+		return -EINVAL;
+	fwnode_property_read_string(child, "label", &j->label);
+	j->ir = fwnode_property_read_u32(child, "control4,ir-channel", &v) ? -1 : v;
+	j->uart = fwnode_property_read_u32(child, "control4,uart", &v) ? -1 : v;
+	if (j->ir >= OHC_IR_MAX_OUTPUTS || j->uart > 31 || (j->ir < 0 && j->uart < 0))
+		return dev_err_probe(dev, -EINVAL, "jack %u: bad channel or uart\n", j->num);
+	j->n_gates = ohc_read_gates(child, j->gate);
+	if (j->n_gates < 0 || ohc_read_pins(child, "control4,ir-pin", &j->ir_pin, 1) ||
+	    ohc_read_pins(child, "control4,uart-pins", uart, 2) ||
+	    ohc_read_pins(child, "control4,uart-mux-pins", mux, 2))
+		return dev_err_probe(dev, -EINVAL, "jack %u: bad pin\n", j->num);
+	j->rx = uart[0];
+	j->tx = uart[1];
+	j->mux_a = mux[0];
+	j->mux_b = mux[1];
+	return 0;
+}
+
 /*
- * The jacks: jack@N child nodes when the node has them (each with
- * control4,ir-channel and/or control4,uart), which set ir_out and uarts.
- * Without them (the HC-800's ACPI table) the counts describe IR-only jacks
- * 1..ir-outputs on channels 0.. and UARTs on connectors of their own.
+ * relays { relay@N } or contacts { contact@N }: N is the wire index and the
+ * line, numbered 0.. with no gaps; control4,pin where it is known. Without
+ * the group, the count property says how many there are.
  */
-static int ohc_parse_jacks(struct device *dev, struct ohc_geometry *geo)
+static int ohc_parse_lines(struct device *dev, const char *group, const char *count,
+			   int *n, struct ohc_line **out)
+{
+	struct fwnode_handle *g, *child;
+	struct ohc_line *l;
+	u32 reg;
+
+	*n = ohc_prop_count(dev, count);
+	if (*n < 0)
+		return dev_err_probe(dev, -EINVAL, "%s: implausible\n", count);
+	g = device_get_named_child_node(dev, group);
+	if (!g) {
+		*out = devm_kcalloc(dev, max(*n, 1), sizeof(**out), GFP_KERNEL);
+		return *out ? 0 : -ENOMEM;
+	}
+	*n = 0;
+	fwnode_for_each_child_node(g, child)
+		(*n)++;
+	l = devm_kcalloc(dev, max(*n, 1), sizeof(*l), GFP_KERNEL);
+	if (!l || *n > 32) {
+		fwnode_handle_put(g);
+		return l ? dev_err_probe(dev, -EINVAL, "%s: more than 32\n", group) : -ENOMEM;
+	}
+	fwnode_for_each_child_node(g, child) {
+		if (fwnode_property_read_u32(child, "reg", &reg) || reg >= (u32)*n ||
+		    l[reg].seen || ohc_read_pins(child, "control4,pin", &l[reg].pin, 1)) {
+			fwnode_handle_put(child);
+			fwnode_handle_put(g);
+			return dev_err_probe(dev, -EINVAL,
+					     "%s: each child needs its own reg 0..%d\n",
+					     group, *n - 1);
+		}
+		l[reg].seen = true;
+		if (fwnode_property_read_bool(child, "control4,active-low"))
+			l[reg].flags |= OHC_CFG_F_ACTIVE_LOW;
+		if (fwnode_property_read_bool(child, "bias-pull-up"))
+			l[reg].flags |= OHC_CFG_F_PULL_UP;
+		if (fwnode_property_read_bool(child, "bias-pull-down"))
+			l[reg].flags |= OHC_CFG_F_PULL_DOWN;
+	}
+	fwnode_handle_put(g);
+	*out = l;
+	return 0;
+}
+
+static bool ohc_is_jack(struct fwnode_handle *child)
+{
+	const char *name = fwnode_get_name(child);
+
+	return name && str_has_prefix(name, "jack@");
+}
+
+/*
+ * What sits behind the part. jack@N children carry the panel jacks (each with
+ * control4,ir-channel and/or control4,uart, and their pins); without them the
+ * counts describe IR-only jacks 1..ir-outputs on channels 0.. and UARTs on
+ * connectors of their own. ir-blaster / ir-receiver nodes carry the front
+ * emitter and receiver; the boolean properties of the same names say only
+ * that they exist. Documentation/devicetree/bindings/gpio/control4,io-mcu.yaml
+ */
+static int ohc_parse_node(struct device *dev, struct ohc_geometry *geo)
 {
 	struct fwnode_handle *child;
 	struct ohc_jack *j;
-	int n = 0, i, max_uart = -1;
+	int n = 0, i, ret, max_uart = -1;
+	u32 v;
+
+	{
+		struct fwnode_handle *node = dev_fwnode(dev);
+		u32 v[2 * 16];
+		int k, n;
+
+		n = ohc_read_list(node, "control4,ir-carriers", 2, v, OHC_CFG_CARRIERS);
+		for (k = 0; k < n; k++)
+			geo->carrier[k] = (struct ohc_pin){ .set = true, .port = v[2 * k], .pin = v[2 * k + 1] };
+		geo->n_hold = ohc_read_list(node, "control4,hold-low-pins", 2, v, 16);
+		for (k = 0; k < geo->n_hold; k++)
+			geo->hold[k] = (struct ohc_pin){ .set = true, .port = v[2 * k], .pin = v[2 * k + 1] };
+		if (n < 0 || geo->n_hold < 0 ||
+		    ohc_read_pins(node, "control4,heartbeat-pin", &geo->heartbeat, 1))
+			return dev_err_probe(dev, -EINVAL, "bad carrier, hold or heartbeat pin\n");
+		geo->gates_active_low = fwnode_property_read_bool(node, "control4,ir-gates-active-low");
+	}
+
+	ret = ohc_parse_lines(dev, "relays", "control4,relays", &geo->relays, &geo->relay);
+	if (!ret)
+		ret = ohc_parse_lines(dev, "contacts", "control4,contacts", &geo->contacts,
+				      &geo->contact);
+	if (ret)
+		return ret;
+
+	geo->blaster_ch = -1;
+	child = device_get_named_child_node(dev, "ir-blaster");
+	if (child) {
+		geo->ir_blaster = 1;
+		if (!fwnode_property_read_u32(child, "control4,ir-channel", &v))
+			geo->blaster_ch = v < OHC_IR_MAX_OUTPUTS ? (int)v : -1;
+		ret = ohc_read_pins(child, "control4,ir-pin", &geo->blaster_pin, 1);
+		geo->n_blaster_gates = ohc_read_gates(child, geo->blaster_gate);
+		fwnode_handle_put(child);
+		if (ret || geo->n_blaster_gates < 0)
+			return dev_err_probe(dev, -EINVAL, "ir-blaster: bad pin\n");
+	}
+	child = device_get_named_child_node(dev, "ir-receiver");
+	if (child) {
+		geo->ir_in = 1;
+		ret = ohc_read_pins(child, "control4,ir-pin", &geo->rx_pin, 1);
+		if (fwnode_property_read_bool(child, "control4,demodulated"))
+			geo->rx_flags |= OHC_CFG_F_DEMODULATED;
+		if (fwnode_property_read_bool(child, "control4,active-low"))
+			geo->rx_flags |= OHC_CFG_F_ACTIVE_LOW;
+		fwnode_handle_put(child);
+		if (ret)
+			return dev_err_probe(dev, ret, "ir-receiver: bad pin\n");
+	}
 
 	device_for_each_child_node(dev, child)
-		if (fwnode_property_present(child, "reg"))
+		if (ohc_is_jack(child))
 			n++;
 
 	if (!n) {
-		geo->jacks = devm_kcalloc(dev, geo->ir_out, sizeof(*j), GFP_KERNEL);
-		if (geo->ir_out && !geo->jacks)
+		geo->jacks = devm_kcalloc(dev, max(geo->ir_out, 1), sizeof(*j), GFP_KERNEL);
+		if (!geo->jacks)
 			return -ENOMEM;
 		for (i = 0; i < geo->ir_out; i++)
 			geo->jacks[i] = (struct ohc_jack){ .num = i + 1, .ir = i, .uart = -1 };
@@ -1883,17 +2639,12 @@ static int ohc_parse_jacks(struct device *dev, struct ohc_geometry *geo)
 	geo->ir_out = 0;
 	j = geo->jacks;
 	device_for_each_child_node(dev, child) {
-		u32 v;
-
-		if (fwnode_property_read_u32(child, "reg", &j->num))
+		if (!ohc_is_jack(child))
 			continue;
-		fwnode_property_read_string(child, "label", &j->label);
-		j->ir = fwnode_property_read_u32(child, "control4,ir-channel", &v) ? -1 : v;
-		j->uart = fwnode_property_read_u32(child, "control4,uart", &v) ? -1 : v;
-		if (j->ir > 23 || j->uart > 31 || (j->ir < 0 && j->uart < 0)) {
+		ret = ohc_parse_jack(dev, child, j);
+		if (ret) {
 			fwnode_handle_put(child);
-			return dev_err_probe(dev, -EINVAL, "jack %u: bad channel or uart\n",
-					     j->num);
+			return ret;
 		}
 		if (j->ir >= 0)
 			geo->ir_out++;
@@ -1905,6 +2656,18 @@ static int ohc_parse_jacks(struct device *dev, struct ohc_geometry *geo)
 	return 0;
 }
 
+/* The front blaster's IROUT_SEND bit: its own, or the one after the last jack. */
+static int ohc_blaster_bit(const struct ohc_geometry *geo)
+{
+	int i, bit = 0;
+
+	if (geo->blaster_ch >= 0)
+		return geo->blaster_ch;
+	for (i = 0; i < geo->n_jacks; i++)
+		bit = max(bit, geo->jacks[i].ir + 1);
+	return bit;
+}
+
 /*
  * Undo everything ohc_identify registered. The port must still be open: a
  * request in flight needs its reply to finish.
@@ -1913,10 +2676,14 @@ static void ohc_teardown(struct ohc_iomcu *mcu)
 {
 	int i, lines;
 
+	if (mcu->fwl)
+		firmware_upload_unregister(mcu->fwl);
 	if (mcu->info)
 		device_unregister(mcu->info);
 	cancel_delayed_work_sync(&mcu->identify_work);
+	cancel_delayed_work_sync(&mcu->fw_work);
 	cancel_delayed_work_sync(&mcu->poll_work);
+	cancel_delayed_work_sync(&mcu->rx_idle);
 	ohc_unregister_serial(mcu);
 	for (i = 0; i < mcu->n_emitters; i++) {
 		if (mcu->emitters[i].rc)
@@ -1958,7 +2725,7 @@ static int ohc_iomcu_probe(struct serdev_device *serdev)
 
 	if (geo.relays < 0 || geo.contacts < 0 || geo.ir_out < 0 || geo.uarts < 0)
 		return dev_err_probe(dev, -EINVAL, "implausible count in the node\n");
-	ret = ohc_parse_jacks(dev, &geo);
+	ret = ohc_parse_node(dev, &geo);
 	if (ret)
 		return ret;
 	/*
@@ -1980,11 +2747,36 @@ static int ohc_iomcu_probe(struct serdev_device *serdev)
 	mcu->name = dev_name(dev);
 	mcu->geo = geo;
 	mutex_init(&mcu->io_lock);
+	mutex_init(&mcu->fw_lock);
 	spin_lock_init(&mcu->rx_lock);
 	init_completion(&mcu->reply);
 	init_waitqueue_head(&mcu->raw_wait);
 	INIT_DELAYED_WORK(&mcu->poll_work, ohc_poll);
 	INIT_DELAYED_WORK(&mcu->identify_work, ohc_identify);
+	INIT_DELAYED_WORK(&mcu->fw_work, ohc_fw_work);
+	INIT_DELAYED_WORK(&mcu->rx_idle, ohc_ir_idle);
+
+	/*
+	 * The part, from the compatible: what an image must be built for.
+	 * firmware-name opts the board in to the loader; reset-gpios lets it
+	 * replace firmware that has no reset opcode of its own (stock's).
+	 */
+	mcu->part = (uintptr_t)device_get_match_data(dev);
+	device_property_read_string(dev, "firmware-name", &mcu->fw_name);
+	if (mcu->fw_name && !mcu->part) {
+		dev_warn(dev, "firmware-name needs a part in the compatible; not loading\n");
+		mcu->fw_name = NULL;
+	}
+	mcu->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(mcu->reset)) {
+		ret = PTR_ERR(mcu->reset);
+		if (ret == -EPROBE_DEFER) {
+			kfree(mcu);
+			return ret;
+		}
+		dev_warn(dev, "cannot take reset-gpios: %d\n", ret);
+		mcu->reset = NULL;
+	}
 
 	/* Before open: bytes can arrive the moment the port is up. */
 	serdev_device_set_drvdata(serdev, mcu);
@@ -2022,6 +2814,15 @@ static int ohc_iomcu_probe(struct serdev_device *serdev)
 		mcu->info = NULL;
 	}
 
+	if (mcu->part) {
+		mcu->fwl = firmware_upload_register(THIS_MODULE, dev, "ohc-iomcu",
+						    &ohc_up_ops, mcu);
+		if (IS_ERR(mcu->fwl)) {
+			dev_warn(dev, "no firmware upload: %ld\n", PTR_ERR(mcu->fwl));
+			mcu->fwl = NULL;
+		}
+	}
+
 	/* Bring-up and identify take a second; not in the boot-time probe. */
 	schedule_delayed_work(&mcu->identify_work, msecs_to_jiffies(50));
 	dev_info(dev, "IO microcontroller at %u baud\n", mcu->baud);
@@ -2038,6 +2839,8 @@ static void ohc_iomcu_remove(struct serdev_device *serdev)
 }
 
 static const struct of_device_id ohc_iomcu_of_match[] = {
+	{ .compatible = "control4,tm4c1231d5-io-mcu", .data = (void *)OHC_PART_TM4C1231D5 },
+	{ .compatible = "control4,lm3s1162-io-mcu", .data = (void *)OHC_PART_LM3S1162 },
 	{ .compatible = "control4,io-mcu" },
 	{ }
 };

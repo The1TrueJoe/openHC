@@ -1,0 +1,371 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/gpio/control4,io-mcu.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Control4 IO microcontroller
+
+maintainers:
+  - Joseph Telaak <joseph@telaak.dev>
+
+description: |
+  The companion microcontroller on Control4 controllers (TI TM4C1231D5 on
+  the EA family, TI LM3S1162 on the HC-800) that carries the relays, contact
+  inputs, IR outputs and receiver, and MCU-routed serial ports. It sits on a
+  host UART behind a TI serial bootloader and speaks a DLE/STX framed
+  protocol. Described as a child of that UART (serdev), in a device tree or
+  as a PRP0001 device with the same properties in ACPI _DSD.
+
+  Pins are <port pin> with port A..H as IOMCU_PORT_A..H from
+  dt-bindings/gpio/control4,io-mcu.h. The driver sends every pin the node
+  gives to the microcontroller in one config frame after bring-up. openHC's
+  firmware drives nothing until then and refuses, entry by entry, a pin that
+  cannot do the job (the IR carrier needs a timer CCP on the TM4C and a PWM
+  output on the LM3S); Control4's firmware ignores the frame.
+
+properties:
+  compatible:
+    oneOf:
+      - items:
+          - enum:
+              - control4,tm4c1231d5-io-mcu
+              - control4,lm3s1162-io-mcu
+          - const: control4,io-mcu
+      - const: control4,io-mcu
+        deprecated: true
+        description: Without the part, no firmware is ever loaded.
+
+  current-speed:
+    description: Host link baud rate (460800 on the EA family, 115200 on the HC-800).
+
+  firmware-name:
+    maxItems: 1
+    description:
+      openHC firmware image for the part, e.g. openhc/io-mcu-tm4c1231d5.bin.
+      When set, the driver writes it through the bootloader whenever the part
+      reports another version. Absent, nothing is ever written.
+
+  reset-gpios:
+    maxItems: 1
+    description:
+      The microcontroller's reset. With firmware-name, needed to replace
+      firmware that has no reset command of its own (Control4's); openHC's
+      resets itself into the bootloader on request.
+
+  '#address-cells':
+    const: 1
+
+  '#size-cells':
+    const: 0
+
+  control4,ir-carriers:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    maxItems: 4
+    items:
+      items:
+        - description: port
+          maximum: 7
+        - description: pin
+          maximum: 7
+    description:
+      Shared carrier sources 0.., for outputs that are gated rather than
+      driven (the HC-800's two PWM outputs).
+
+  control4,ir-gates-active-low:
+    type: boolean
+    description: The control4,ir-gates lines route the carrier when low.
+
+  control4,hold-low-pins:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    maxItems: 16
+    items:
+      items:
+        - maximum: 7
+        - maximum: 7
+    description: Lines driven low while the firmware runs (the HC-800's third gate lines).
+
+  control4,heartbeat-pin:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    items:
+      - maximum: 7
+      - maximum: 7
+    description: An output toggled every 100 ms while the firmware runs.
+
+  control4,relays:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    deprecated: true
+    description: Relay count, without a relays node.
+
+  control4,contacts:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    deprecated: true
+    description: Contact count, without a contacts node.
+
+  control4,ir-outputs:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    deprecated: true
+    description: IR-only jacks 1..N on channels 0..N-1, without jack nodes.
+
+  control4,uarts:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    deprecated: true
+    description: MCU-routed serial ports, without jack nodes.
+
+  control4,ir-blaster:
+    type: boolean
+    deprecated: true
+    description: An internal front emitter, without an ir-blaster node.
+
+  control4,ir-receiver:
+    type: boolean
+    deprecated: true
+    description: A front receiver, without an ir-receiver node.
+
+  ir-blaster:
+    type: object
+    additionalProperties: false
+    description: The internal front IR emitter (no jack behind it).
+    properties:
+      control4,ir-channel:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 23
+        description: Its IROUT_SEND bit; default, the one after the last jack's.
+      control4,ir-pin:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - maximum: 7
+          - maximum: 7
+        description: The carrier output.
+      control4,ir-gates:
+        $ref: /schemas/types.yaml#/definitions/uint32-matrix
+        maxItems: 4
+        items:
+          items:
+            - description: port
+              maximum: 7
+            - description: pin
+              maximum: 7
+            - description: the control4,ir-carriers entry it routes
+              maximum: 3
+        description: Lines that route a shared carrier onto this output.
+
+  ir-receiver:
+    type: object
+    additionalProperties: false
+    description: The front IR receiver.
+    properties:
+      control4,ir-pin:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - maximum: 7
+          - maximum: 7
+        description: The receiver output (a 32-bit timer CCP on the TM4C).
+      control4,demodulated:
+        type: boolean
+        description:
+          The receiver outputs the envelope, not the carrier; the carrier is
+          then reported as 38 kHz.
+      control4,active-low:
+        type: boolean
+        description: A demodulated receiver's mark is low.
+
+  relays:
+    type: object
+    additionalProperties: false
+    properties:
+      '#address-cells':
+        const: 1
+      '#size-cells':
+        const: 0
+    patternProperties:
+      '^relay@[0-9a-f]+$':
+        $ref: '#/$defs/line'
+
+  contacts:
+    type: object
+    additionalProperties: false
+    properties:
+      '#address-cells':
+        const: 1
+      '#size-cells':
+        const: 0
+    patternProperties:
+      '^contact@[0-9a-f]+$':
+        allOf:
+          - $ref: '#/$defs/line'
+          - properties:
+              bias-pull-up: true
+              bias-pull-down: true
+
+patternProperties:
+  '^jack@[0-9a-f]+$':
+    type: object
+    additionalProperties: false
+    description:
+      A rear panel jack, numbered as printed. An IR output, an MCU serial
+      port, or both (a combo jack, one at a time).
+    properties:
+      reg:
+        maxItems: 1
+        description: Panel number.
+      label:
+        description: What the panel says.
+      control4,ir-channel:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 23
+        description: IROUT_SEND output bit.
+      control4,ir-pin:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - maximum: 7
+          - maximum: 7
+        description: Its own carrier output (a timer CCP on the TM4C).
+      control4,ir-gates:
+        $ref: /schemas/types.yaml#/definitions/uint32-matrix
+        maxItems: 4
+        items:
+          items:
+            - description: port
+              maximum: 7
+            - description: pin
+              maximum: 7
+            - description: the control4,ir-carriers entry it routes
+              maximum: 3
+        description: Lines that route a shared carrier onto this output.
+      control4,uart:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 31
+        description: MCU user serial port, /dev/ttyOHC<n>.
+      control4,uart-pins:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - description: RX port
+            maximum: 7
+          - description: RX pin
+            maximum: 7
+          - description: TX port
+            maximum: 7
+          - description: TX pin
+            maximum: 7
+      control4,uart-mux-pins:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - description: line A port (high = serial)
+            maximum: 7
+          - description: line A pin
+            maximum: 7
+          - description: line B port (high = serial, RX/TX swapped)
+            maximum: 7
+          - description: line B pin
+            maximum: 7
+        description: The lines that switch a combo jack between IR and serial.
+    required:
+      - reg
+    anyOf:
+      - required: [control4,ir-channel]
+      - required: [control4,uart]
+
+$defs:
+  line:
+    type: object
+    description: Numbered 0.. with no gaps; reg is the protocol's index.
+    properties:
+      reg:
+        maxItems: 1
+      label: true
+      control4,pin:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - maximum: 7
+          - maximum: 7
+      control4,active-low:
+        type: boolean
+    required:
+      - reg
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    // EA-3 (TM4C1231D5): every output on its own timer
+    #include <dt-bindings/gpio/control4,io-mcu.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    serial {
+        io-mcu {
+            compatible = "control4,tm4c1231d5-io-mcu", "control4,io-mcu";
+            current-speed = <460800>;
+            firmware-name = "openhc/io-mcu-tm4c1231d5.bin";
+            reset-gpios = <&gpio 7 GPIO_ACTIVE_LOW>;
+            control4,heartbeat-pin = <IOMCU_PORT_C 7>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            jack@1 {
+                reg = <1>;
+                label = "IR / Serial 1";
+                control4,ir-channel = <0>;
+                control4,ir-pin = <IOMCU_PORT_B 6>;
+                control4,uart = <0>;
+                control4,uart-pins = <IOMCU_PORT_E 4>, <IOMCU_PORT_E 5>;
+                control4,uart-mux-pins = <IOMCU_PORT_E 2>, <IOMCU_PORT_B 1>;
+            };
+
+            ir-blaster {
+                control4,ir-channel = <6>;
+                control4,ir-pin = <IOMCU_PORT_D 4>;
+            };
+
+            ir-receiver {
+                control4,ir-pin = <IOMCU_PORT_D 6>;
+            };
+
+            relays {
+                #address-cells = <1>;
+                #size-cells = <0>;
+
+                relay@0 {
+                    reg = <0>;
+                    control4,pin = <IOMCU_PORT_A 2>;
+                };
+            };
+
+            contacts {
+                #address-cells = <1>;
+                #size-cells = <0>;
+
+                contact@0 {
+                    reg = <0>;
+                    control4,pin = <IOMCU_PORT_F 0>;
+                    control4,active-low;
+                    bias-pull-up;
+                };
+            };
+        };
+    };
+
+  - |
+    // HC-800 (LM3S1162): two PWM carriers, gated onto each jack
+    #include <dt-bindings/gpio/control4,io-mcu.h>
+
+    serial {
+        io-mcu {
+            compatible = "control4,lm3s1162-io-mcu", "control4,io-mcu";
+            current-speed = <115200>;
+            control4,ir-carriers = <IOMCU_PORT_D 1>, <IOMCU_PORT_F 3>;
+            control4,ir-gates-active-low;
+            control4,hold-low-pins = <IOMCU_PORT_F 4>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            jack@1 {
+                reg = <1>;
+                control4,ir-channel = <0>;
+                control4,ir-gates = <IOMCU_PORT_C 7 0>, <IOMCU_PORT_C 6 1>;
+            };
+        };
+    };

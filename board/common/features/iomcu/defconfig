@@ -9,6 +9,9 @@
 # NOT every board. The CA-1 has no IO microcontroller at all, and the IO
 # Extender drives its relays from the SoC's own GPIO.
 BR2_OHC_IOMCU_KERNEL_DRIVER=y
+# openHC's own firmware for the part, which the driver loads only where the
+# board's io-mcu node names it (firmware-name).
+BR2_PACKAGE_IO_MCU=y
 
 # ir-ctl and ir-keytable, so an emitter can be driven and a receiver read with
 # the stock Linux tools, by hand, with nothing of openHC's in the way:

@@ -21,6 +21,9 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/packages/*/*.mk))
 # parameter file, generated from its profile). It is not a package of its own:
 # the folder holds the source, the generator and this build rule together.
 include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/*/firmware/*/*/*.mk))
+# ...and firmware shared by every board with the part, a level up
+# (board/common/firmware/io-mcu, the IO microcontroller's).
+include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/firmware/*/*.mk))
 
 # ── ffmpeg: no libv4l2 ─────────────────────────────────────────────────────
 #
@@ -84,8 +87,8 @@ FFMPEG_CONF_OPTS += --disable-libv4l2
 #
 # arch/ carries the EA family's shared .dtsi files (arch/x86/boot/dts/, linked
 # in by common/patches/linux/0015's BUILTIN_DTB), so .dts/.dtsi are
-# mirrored too.
-OHC_KERNEL_SUBTREES = arch drivers sound
+# mirrored too. include/ carries dt-bindings headers those files use.
+OHC_KERNEL_SUBTREES = arch drivers include sound
 # NOT unconditional, despite living under common/. The only thing in that mirror
 # is the IO-MCU gpiochip driver, and two boards have no IO microcontroller —
 # mirroring it there cost them a vmlinux link failure on rc-core. See

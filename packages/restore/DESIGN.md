@@ -32,6 +32,7 @@ One rootfs on p1 at a time; each direction reuses a mechanism that already exist
 | MFH autoscript item | SPI-NOR `0x80000` table | leave disabled (do not delete — brick risk) |
 | script-enable byte | SPI-NOR `0xa0f1c` | clear (`revert`) |
 | openHC kernel + boot-init | eMMC gap `0x800000`/`0x1000000` | (optional) zero |
+| IO microcontroller application | the part's flash above 4 KB | Control4's image from p1's `/control4/firmware/io`, last in the finalize (iomcu.rs) |
 
 openHC never touches the stock kernel container at eMMC `0x400` (it boots its own
 kernel from the gap), so the stock kernel is already pristine, and p2 is never

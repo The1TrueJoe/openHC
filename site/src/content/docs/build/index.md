@@ -163,12 +163,13 @@ Needs rustup with the board's target added, plus node and npm.
 ## The IO-MCU firmware
 
 ```sh
-make mcu BOARD=ea3-v2
+make -C board/common/firmware/io-mcu        # both images
+make -C board/common/firmware/io-mcu test   # host tests
 ```
 
-Builds the clean-room TM4C firmware with an `arm-none-eabi` toolchain. EA family
-only — the Makefile refuses on other boards and explains why. The board profile is
-compile-time, in `board_profile.h`.
+Buildroot builds the images into every board with the `iomcu` feature
+(`host-arm-gnu-toolchain`); by hand it needs `arm-none-eabi-gcc`. The host tests
+need any C compiler and run in CI. See [IO-MCU firmware](/shared/io-mcu-firmware/).
 
 ## CI
 
