@@ -165,7 +165,7 @@ pub struct SwitchConfig {
 impl SwitchConfig {
     /// The default a box has before anyone configures it: a managed switch with
     /// every port bridged into `br-lan` and the bridge on DHCP. `ports` is the
-    /// list this board actually has (from `OHC_DSA_PORTS`), so the bridge's
+    /// list this board actually has (`dsa_ports`), so the bridge's
     /// member list and the per-port map are seeded from real hardware.
     pub fn default_for(ports: &[String]) -> SwitchConfig {
         SwitchConfig {
@@ -308,14 +308,39 @@ mod tests {
     }
 }
 
-/// The managed ports, from `OHC_DSA_PORTS` in board.env. Empty means this board
-/// has no managed switch and switchd has nothing to do.
+/// The managed ports: the DSA user ports the kernel created (DEVTYPE=dsa),
+/// named by their device-tree labels. Empty means this board has no managed
+/// switch, or its driver is not bound, and switchd has nothing to do.
 pub fn dsa_ports() -> Vec<String> {
-    // The daemon's init sources board.env and exports OHC_DSA_PORTS; honour the
-    // same variable directly so `switchd` run by hand behaves identically.
-    std::env::var("OHC_DSA_PORTS")
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect()
+    dsa_ports_in(std::path::Path::new("/sys/class/net"))
+}
+
+fn dsa_ports_in(net: &std::path::Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(net) else { return vec![] };
+    let mut v: Vec<String> = rd
+        .flatten()
+        .filter(|e| {
+            std::fs::read_to_string(e.path().join("uevent"))
+                .is_ok_and(|u| u.lines().any(|l| l == "DEVTYPE=dsa"))
+        })
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+#[cfg(test)]
+mod dsa_tests {
+    #[test]
+    fn user_ports_are_the_dsa_netdevs() {
+        let d = std::env::temp_dir().join(format!("switchd-net-{}", std::process::id()));
+        for (n, u) in [("lan2", "DEVTYPE=dsa\nINTERFACE=lan2\n"), ("eth0", "INTERFACE=eth0\n"),
+                       ("lan1", "DEVTYPE=dsa\nINTERFACE=lan1\n"), ("br-lan", "DEVTYPE=bridge\n")] {
+            std::fs::create_dir_all(d.join(n)).unwrap();
+            std::fs::write(d.join(n).join("uevent"), u).unwrap();
+        }
+        let ports = super::dsa_ports_in(&d);
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(ports, ["lan1", "lan2"]);
+    }
 }

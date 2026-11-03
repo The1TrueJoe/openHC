@@ -6,8 +6,8 @@
 //! Two processes with one UART open each get half the bytes, and which half is
 //! a race; that is the whole reason iod exists. The UI calls iod directly.
 //!
-//! Board-agnostic: everything it shows comes from /opt/ohc/board.env, and the
-//! serial/radio endpoints act on whatever that file declares. Serves the React
+//! Board-agnostic: the model comes from the device tree and the network
+//! defaults from /opt/ohc/board.env. Serves the React
 //! UI compiled into this binary, plus a WebSocket serial bridge for the in-UI
 //! terminal. Single-threaded tokio runtime — this box has one Cortex-A9.
 mod api;

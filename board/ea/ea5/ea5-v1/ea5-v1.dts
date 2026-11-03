@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Control4 EA-5 v1. Includes mirror ohc.features. */
+/dts-v1/;
+
+#include "ea5.dtsi"
+#include "ea-wifi.dtsi"
+#include "ea-gpio-names.dtsi"
+
+/ {
+	model = "Control4 EA-5 v1";
+	compatible = "control4,ea5-v1", "intel,ce5300";
+};

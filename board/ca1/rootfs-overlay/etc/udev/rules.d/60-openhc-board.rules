@@ -1,0 +1,8 @@
+# CA-1: which tty is what (see 70-openhc-io.rules for the properties).
+
+# Rear RS-232/RS-485 combo port (UART3).
+SUBSYSTEM=="tty", KERNELS=="2034000.serial", ENV{OHC_SERIAL}="1", ENV{OHC_SERIAL_LABEL}="RS-232/485"
+
+# Z-Wave ZM5304 (UART4) and the EM35x Zigbee NCP (UART5).
+SUBSYSTEM=="tty", KERNELS=="2038000.serial", ENV{OHC_RADIO}="zwave"
+SUBSYSTEM=="tty", KERNELS=="2018000.serial", ENV{OHC_RADIO}="zigbee"

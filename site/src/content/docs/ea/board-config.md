@@ -9,20 +9,43 @@ The comments in the EA config files are kept to one line. This page holds the
 background: why each setting is there, what has been measured, and what is
 still open on each board.
 
-The files:
+## Layout
 
-| File | Role |
-|---|---|
-| `board/ea/common/common_defconfig` | EA family base. Not standalone; `build/build.sh` composes it with the rest |
-| `board/ea/common/external-toolchain.defconfig` | Optional switch to a pre-built toolchain (`OHC_EA_SDK`) |
-| `board/ea/common/features/<name>/defconfig` | One feature's packages, enabled from `ohc.features` |
-| `board/ea/<board>/<board>_defconfig` | Hostname and `/etc/issue`, nothing else |
-| `board/ea/<board>/rootfs-overlay/opt/ohc/board.env` | Runtime board description read by init scripts and daemons |
+Every EA is the same computer, so the tree is built in layers, each adding only
+what differs from the one above:
 
-The composition order and the "last assignment wins" rule are on the
-[build page](/build/#how-the-configuration-is-assembled). Only put something in
-`common_defconfig` if it is true for the whole family; a board overrides it by
-setting it again later.
+```
+board/common/                  every board
+board/ea/common/               the family: SoC, shared feature sets, kernel base
+board/ea/<model>/              one model: ea1, ea3, ea5
+board/ea/<model>/<board>/      one variant: ea1-v1, ea1-v2, ea1-v2-poe,
+                               ea3-v1, ea3-v2, ea5-v1, ea5-v2
+```
+
+| File | Family | Model | Variant |
+|---|---|---|---|
+| defconfig | `common_defconfig` | `defconfig` (hostname) | `<board>_defconfig` (`/etc/issue`) |
+| kernel | `linux/common.fragment` | `linux.fragment`, if any | `linux.fragment`, if any |
+| features | `ohc.features` | `ohc.features` | `ohc.features` |
+| device tree | shared `.dtsi` in the kernel mirror | `<model>.dtsi` | `<board>.dts` |
+| `board.env` | `board.env` | `board.env` | `board.env`, if any |
+| files | `rootfs-overlay/` | `rootfs-overlay/` | `rootfs-overlay/` |
+
+`build/board-layers.sh` resolves the layers and the feature list for both
+`build/build.sh` and `packages/build.sh`. Later layers win: kconfig takes the last
+assignment, later overlays replace files, and the `board.env` files are
+concatenated in order into `/opt/ohc/board.env`. The built-in DTB name is
+generated from the board name. The composition order is on the
+[build page](/build/#how-the-configuration-is-assembled).
+
+A feature is one directory, `features/<name>/`, at any layer: `defconfig`
+(packages), `linux.fragment` (kernel), `rootfs-overlay/` (files) and `requires`
+(other features). A feature with a device-tree half, `ea-<name>.dtsi`, must be
+included exactly when the board selects it; `build/build.sh` refuses a board
+where the two disagree.
+
+`board/ea/common/external-toolchain.defconfig` is the optional switch to a
+pre-built toolchain (`OHC_EA_SDK`), below.
 
 ## Family base
 
@@ -156,8 +179,8 @@ Two traps:
 ## Feature packages
 
 Each feature's kernel half is the `linux.fragment` beside its `defconfig`.
-Which board gets which feature is in `board/ea/common/ohc.features` (every EA)
-and `board/ea/<board>/ohc.features`.
+Which board gets which feature is in the family, model and variant
+`ohc.features` files.
 
 | Feature | Packages | Notes |
 |---|---|---|
@@ -167,7 +190,7 @@ and `board/ea/<board>/ohc.features`.
 | `restore` | kexec | The `restore` package edits the MFH over `/dev/mtd0` and, for a full restore, kexecs p2's recovery kernel. MTD is already in `common.fragment`. See [recovery](/shared/recovery/#openhcs-own-software-return-to-stock) |
 | `sgx` | `sgx545-srvinit` | The kernel driver (PCI `01:02.0`, `8086:089b`, ported from Intel's Cedarview GPL DDK 1.7) is the `kernel/` of the `board/ea/common/sgx545-ce` submodule, built as `CONFIG_SGX545_CE=m`, giving `/dev/dri/card0`. srvinit is the open GPU bring-up, run once by `S60sgx`. See [graphics](/ea/graphics/#bringing-the-gpu-up-at-boot) |
 | `switch` | iproute2, bridge-utils | switchd needs iproute2: `bridge vlan` is how 802.1Q filtering is offloaded to the b53, and `brctl` cannot filter VLANs at all. bridge-utils is only kept for habit and scripts |
-| `wifi` | wpa_supplicant (nl80211, CLI, passphrase), iw | Boards with the ath9k radio |
+| `wifi` | wpa_supplicant (nl80211, CLI, passphrase), iw, `S40wifi` | Boards with the ath9k radio |
 | `wpe` | `sgx545-um`, wpewebkit, `wpebackend-pvr`, `webview` | The proprietary half of 3D: DDK 1.7 EGL + GLES2, fetched at build, not vendored. It must be the same DDK version as the driver, which refuses a mismatch on connect. Buildroot also builds wpebackend-fdo and Wayland for wpewebkit; nothing uses them. `wpebackend-pvr` is the libwpe backend that reaches the display; `webview` puts a page on screen (WebKit is built without MiniBrowser). Split from `sgx` so the open driver and the blobs are separable |
 
 **`BR2_PACKAGE_SHAIRPORT_SYNC_ALSA` does not exist.** shairport-sync always
@@ -176,56 +199,51 @@ word, the same kind of silent miss as `CONFIG_PWM_CE5300` or `NET_DSA_B53`.
 
 ## board.env
 
-`board.env` is sourced by `/opt/ohc/bin/ohc` and the init scripts, and iod and
-audiod parse it line by line as `KEY=value` with anything after `#` stripped.
-Shell assignments only, one per line.
+`board.env` is sourced by `/opt/ohc/bin/ohc` and the init scripts and exported
+into the daemons. Shell assignments only, one per line. It is assembled from the family, model and variant `board.env` files, later
+lines winning, and holds software defaults; the hardware (model, switch ports, IO, radios, audio) comes from the
+device tree and the family's udev rules, as listed on
+[hardware from the kernel](/shared/hardware-from-the-kernel/). Lines for those
+that an EA `board.env` still carries are ignored.
 
 ### Identity
 
 | Key | Meaning |
 |---|---|
-| `OHC_MODEL` | 1, 3 or 5. The ea1-v2-poe is 1 despite carrying the EA3's switch |
 | `OHC_ID_IFACE` | The interface whose MAC names the box; always the wired one |
-| `OHC_MDNS_IFACE` | Interface order for the mDNS identity; `wlan0` only where there is Wi-Fi |
 | `OHC_TIMEZONE` | Host timezone; change it with `ohc-tz <Zone>` |
+
+The model is the device tree's (`Control4 EA-3 v1`), and mDNS picks among the
+interfaces that are up, wired first.
 
 ### IO
 
-`OHC_IO_BACKEND` is the only thing ohc-iod branches on:
-
-| Value | Meaning |
-|---|---|
-| `mcu` | Relays, contacts and IR are behind a microcontroller on a serial port, spoken to with DLE/STX |
-| `gpio` | They are native SoC GPIO lines |
-| `none` | No local IO |
-
-Every EA is `mcu` with `OHC_IO_MCU_PART=tm4c1231d5`. What sits behind the part
-(relays, contacts, IR jacks, the front blaster and receiver, the MCU-routed
-serial ports) and its UART and line rate are not in `board.env`. They are in the
-board's device tree (`&io_mcu` in `<board>.dts`); the kernel binds the part from
-it at boot and iod reads the counts back from `/sys/class/ohc/iomcu`, so there
-is one description that cannot disagree with itself. The combo jacks are the
-MCU-routed UARTs: a jack is IR or serial, never both. `OHC_SERIALS` is empty on
-all EA boards. See [the IO-MCU](/shared/io-mcu/) and
-[IO naming](/shared/io-naming/).
+Every EA's IO microcontroller is the `&io_mcu` node (`control4,io-mcu`) on
+uart1. What sits behind the part (relays, contacts, IR jacks, the front blaster
+and receiver, the MCU-routed serial ports) and its line rate are in the model's
+device tree (`<model>.dtsi`); the kernel binds the part from it at boot and iod reads the counts
+back from `/sys/class/ohc/iomcu`. The combo jacks are the MCU-routed UARTs: a
+jack is IR or serial, never both. No EA has a host serial port. See
+[the IO-MCU](/shared/io-mcu/) and [IO naming](/shared/io-naming/).
 
 ### Zigbee
 
-`OHC_RADIOS` lists home-automation radios as `type:dev`; the UI shows a panel
-for each. Every EA has only Zigbee (no Z-Wave), from the shared `zigbee` feature
-(node + cp210x). Boards without Wi-Fi still have it.
+Every EA has Zigbee (no Z-Wave), from the shared `zigbee` feature (node +
+cp210x). Boards without Wi-Fi still have it.
 
-The radio is an EM357 NCP behind a CP2104 USB bridge (`/dev/ttyUSB0`), not a
-host UART, at 115200 8N1 with no RTS/CTS. Unlike the CA-1, which resets the NCP
-on DTR, the EA holds it on `zigbee_reset` (gpio29), which the board device tree
-hogs high (released) at boot. The chip runs its application from power-on and
+The radio is an EM357 NCP behind a CP2104 USB bridge (`10c4:ea60`) on an
+internal USB host (`01:0d.2` on an EA1). The family's udev rule
+(`board/ea/common/rootfs-overlay/etc/udev/rules.d/60-openhc-board.rules`) names
+it `/dev/zigbee`, and not a CP210x plugged into the rear port (`01:0d.1`). 115200 8N1, no RTS/CTS. Unlike the CA-1, which resets the NCP on DTR,
+the EA holds it on `zigbee_reset` (gpio29), which the board device tree hogs
+high (released) at boot. The chip runs its application from power-on and
 answers EZSP/ASH directly, so opening the port does not drop it into the
 bootloader. On an EA1 a bare ASH `RST` returns `RSTACK` (`0xc1`). See
 [EA-1: Zigbee](/ea/ea1/#zigbee-the-bootloader-trap).
 
 | Key | Meaning |
 |---|---|
-| `OHC_ZIGBEE_TTY`, `OHC_ZIGBEE_BAUD` | `/dev/ttyUSB0`, `115200` |
+| `OHC_ZIGBEE_BAUD` | `115200` |
 | `OHC_ZIGBEE_TCP_PORT` | `6638`. The NCP ships on EmberZNet EZSP v4; the zigbee daemon reflashes it at boot to the feature's 6.7.8 image (EZSP v8, `packages/zigbee/src/ncp.rs`). zigpy's bellows speaks both. The daemon holds the port and relays it over TCP, and `S91ohczigbee` advertises `_zigbee-coordinator._tcp` (ser2net style) so ZHA attaches as `socket://<box>:6638` |
 | `OHC_ZIGBEE_RADIO_TYPE` | `ezsp` |
 | `OHC_ZIGBEE_STOCK_ARCHIVE` | `/dev/mmcblk0p2:/recfs.tar.xz`. A return to stock first puts Control4's own NCP image back, unpacked from p2's factory rootfs (`zigbee --restore-stock`). Same member path as the HC-800's; checked on an EA1 on 2026-10-26 |
@@ -257,61 +275,65 @@ Full detail on [recovery](/shared/recovery/#openhcs-own-software-return-to-stock
 ### Audio
 
 The scheme is the HC-800's: audiod runs Spotify Connect and AirPlay endpoints
-onto named outputs, each output's level is an ALSA softvol, and it writes
+onto the board's outputs, each output's level is an ALSA softvol, and it writes
 `/etc/asound.conf`, whose `default` is the first output so any other ALSA
-program plays there too. `OHC_LIBRARY` is the music-library player (mpd over the
-drives storaged mounts on `/media`). See [audio](/ea/audio/).
+program plays there too. The outputs are the kernel's PCMs, labelled with their
+names; see [hardware from the kernel](/shared/hardware-from-the-kernel/#sound-cards).
+The library player (mpd over the drives storaged mounts on `/media`) defaults
+to the first output. See [audio](/ea/audio/).
 
-| Board | Outputs | Rate |
+| Board | Outputs | `OHC_AUDIO_RATE` |
 |---|---|---|
-| EA1 (all three) | `hdmi` only | 48000, the HDMI clock's one rate |
-| EA3 (both) | `analog`, then `hdmi` | 48000, the DSP program's one rate (HDMI matches it) |
-| EA-5 | see [EA-5](/ea/ea5/) | 48000 |
+| EA1 (all three) | HDMI only | 48000, the HDMI clock's one rate |
+| EA3 (both) | the analog card's link, then HDMI | 48000, the DSP program's one rate (HDMI matches it) |
+| EA-5 | the FPGA card's four links, then HDMI; see [EA-5](/ea/ea5/) | 48000 |
 
-**HDMI** (`hw:CARD=HDMI,DEV=0|HDMI|format=S32_LE`) is the HDMI transmitter's own
-audio DMA (`ce5300-hdmi`). Its FIFO takes 32-bit words, hence `format=`, and its
-clock gives 48 kHz only. Playing switches the link from DVI to HDMI mode if
-CEFDK left it in DVI. See [HDMI out](/ea/audio/#hdmi-out-every-ea).
+**HDMI** is the HDMI transmitter's own audio DMA (`ce5300-hdmi`), card `HDMI`,
+PCM `HDMI`. Its FIFO takes 32-bit words, so audiod runs it at S32_LE (it asks
+the hardware), and its clock gives 48 kHz only. Playing switches the link from DVI
+to HDMI mode if CEFDK left it in DVI. See [HDMI out](/ea/audio/#hdmi-out-every-ea).
+
+Each card names its PCMs in the device tree: the EA3's three links are `Analog`,
+`Coax` and `Coax in` (`link-name` on each `simple-audio-card,dai-link`, from
+openHC's patch `0020`), and the EA-5's four stream pairs are `Audio 1` to
+`Audio 4` (`control4,link-names`) until each jack is checked on hardware.
 
 **EA3 analog** is CE5300 I2S1 → ADAU1451 SigmaDSP → AK4621. Tone is done by the
-DSP, not audiod's software stage: `dsp=` names the profile describing the DSP's
-knobs (`adau1451-ea3-openhc.json`, the same file the DSP firmware is built from
-in `board/ea/common/firmware/dsp/adau1451/`), and audiod sets them as the
-card's controls. It boots silent and stays muted while idle: the DSP volume
-starts at 0 until audiod restores the saved level and tone, and the DAC unmutes
-only while a stream plays.
+DSP, not audiod's software stage: the codec's `firmware-name`
+(`openhc/adau1451-ea3-openhc.bin`) names the profile describing the DSP's knobs
+(`/usr/share/openhc/dsp/adau1451-ea3-openhc.json`, the same file the DSP
+firmware is built from in `board/ea/common/firmware/dsp/adau1451/`), and audiod
+sets them as the card's controls. It boots silent and stays muted while idle:
+the DSP volume starts at 0 until audiod restores the saved level and tone, and
+the DAC unmutes only while a stream plays.
 
-The analog card is `openhcea`, the board device tree's simple-audio-card. The
-CE5300 I²S clocks the DSP from boot, but until its PCM is finished
-(`ce5300_i2s.enable_pcm`) the card has the DSP controls and no playable PCM, so
-the analog endpoints come up and cannot play yet. See [what is still unproven](/ea/audio/#what-is-still-unproven).
+The analog card is `openhcea`, the board device tree's simple-audio-card. Its
+output takes its label from the card's link name.
 
 ### Switch ports
 
-`OHC_DSA_PORTS` lists the BCM53125's DSA port netdevs (`lan1 lan2` on the EA3s
-and the ea1-v2-poe). `S39ea-switch`, the shared `S40net` and `S87ohcswitch` use
-it; it is unset on a board with one plain MAC. DSA only attaches with
-`ohc.switch=1` on the kernel command line. See [Ethernet and the
-switch](/ea/switch/).
+The switch ports are the DSA user ports the kernel creates from the BCM53125's
+device-tree `ports` (`lan1 lan2` on the EA3s and the ea1-v2-poe, `lan0`-`lan4` on the EA-5;
+each model declares its own, `ea-switch.dtsi` only the chip and the CPU port). `S39ea-switch`,
+the shared `S40net`, `S87ohcswitch` and switchd read them from
+`/sys/class/net` (`ohc-hw dsa-ports`); a board with one plain MAC has none. DSA
+only attaches with `ohc.switch=1` on the kernel command line. See [Ethernet and
+the switch](/ea/switch/).
 
-### RAM reclaim: `OHC_KEXEC_CMDLINE_EXTRA`
+### RAM reclaim
 
 CEFDK withholds about 1.8 GB as a media carve-out openHC never uses, leaving
-an EA1 about 176 MB. The `memmap=exactmap` line that gives it back, entry by
+an EA about 176 MB. The `memmap=exactmap` line that gives it back, entry by
 entry, is on [kernel configuration](/ea/kernel-config/#ram-reclaim-memmapexactmap).
 **Do not widen it past `0x70000000`**: a `memmap` past the end of real DRAM is
 not recoverable remotely.
 
-The EA1 boards put it in `board.env` because they boot through the `S00kexec`
-bootstrap, whose `--command-line` replaces the staged kernel's `CONFIG_CMDLINE`,
-so a reclaim in the board fragment would never take effect. The EA3s boot
-their kernel directly and carry it in `CONFIG_CMDLINE`; their `board.env` has
-no such key.
-
-Proven on the ea1-v1 at 10.0.0.127: `MemTotal` went from 180384 kB to
-1783332 kB (about 1.7 GB), ACPI clean, `mtd0` intact. The ea1-v2 and ea1-v2-poe
-carry the same line, unverified on their hardware. A bad line there is
-recoverable: power-cycle and the bootstrap kernel comes back.
+It is in the family's `CONFIG_CMDLINE`, so every EA has it. x86 prepends the
+built-in line to whatever the loader passes, so the kernel `S00kexec` starts
+gets it too. Proven on the ea1-v1 at 10.0.0.127 (then carried in `board.env`):
+`MemTotal` went from 180384 kB to 1783332 kB, ACPI clean, `mtd0` intact.
+Unverified with the line in the kernel on an EA1, and on the ea1-v2, ea1-v2-poe
+and EA-5 at all.
 
 ## Per-board
 
@@ -322,7 +344,8 @@ recoverable: power-cycle and the bootstrap kernel comes back.
 | ea1-v2-poe | `openea1` | `switch` | Unverified on hardware, fuse included |
 | ea3-v1 | `openea3` | `wifi switch audio-dsp` | Image unverified; a v1 board has run the ea3-v2 image |
 | ea3-v2 | `openea3` | `switch audio-dsp` | Proven. Fuse blown; takeover via autoscript |
-| ea5 | `openea5` | `wifi switch audio-fpga` | See [EA-5](/ea/ea5/#bring-up) |
+| ea5-v1 | `openea5` | `wifi switch audio-fpga` | See [EA-5](/ea/ea5/#bring-up) |
+| ea5-v2 | `openea5` | `switch audio-fpga` | See [EA-5](/ea/ea5/#bring-up) |
 
 ### ea1-v1
 
@@ -330,8 +353,8 @@ The reference EA1. Every `board.env` value was read off this board.
 
 ### ea1-v2
 
-Close to the ea1-v1: Wi-Fi, no managed switch. Its `board.env` is inherited from
-the ea1-v1, not read off a v2. Boot is where the two might differ, and boot is
+Close to the ea1-v1: Wi-Fi, no managed switch. It has nothing of its own beyond
+the `wifi` feature; everything else comes from the EA-1 model, read off a v1. Boot is where the two might differ, and boot is
 not described by `board.env`, so copying the v1's IO and networking is a
 reasonable reading, but every value should be confirmed the first time a v2 is
 on the bench. The IR and UART counts (now in the device tree) are the ones a
@@ -353,14 +376,13 @@ BCM53125 switch, so it is wired-only:
 | Networking | ea3-v2: DSA switch ports, no Wi-Fi |
 | IO | ea1-v1: it is still an EA1, 4 IR out, no relays or contacts |
 
-Open: the fuse, the DSA port names (`OHC_DSA_PORTS` must match what b53
-registers on this board, and nobody has watched it come up), Zigbee, and the
-RAM reclaim.
+Open: the fuse, the DSA ports (the device tree's labels are what b53 registers,
+and nobody has watched it come up on this board), Zigbee, and the RAM reclaim.
 
 ### ea3-v1
 
-The ea3-v2 plus the Wi-Fi radio the v2 dropped. The only `board.env` line that
-differs is `OHC_MDNS_IFACE`.
+The ea3-v2 plus the Wi-Fi radio the v2 dropped: the `wifi` feature and
+`ea-wifi.dtsi`, nothing else.
 
 Open: the fuse. Every EA measured so far (the ea3-v2, an ea1-v1 rev 5) is blown,
 so assume the autoscript takeover; netboot first. See
@@ -381,7 +403,7 @@ Each "unverified" above comes down to one of these on a running box:
 
 | Check | Command | Expect |
 |---|---|---|
-| Zigbee radio (ea1-v2-poe, both EA3s) | `ls /dev/ttyUSB0`, then the `S91ohczigbee` log | The node exists and the log shows `RSTACK` |
+| Zigbee radio (ea1-v2-poe, both EA3s) | `ls -l /dev/zigbee`, then the `S91ohczigbee` log | The link exists and the log shows `RSTACK` |
 | Restore button polarity (EA3) | `od -An -tx1 /dev/ohc/input/id-button` | Events on press and on release |
 | RAM reclaim (ea1-v2, ea1-v2-poe) | `grep MemTotal /proc/meminfo` | About 1.7 GB |
 | Switch ports (ea1-v2-poe) | boot with `ohc.switch=1`, `ip link` | `lan1` and `lan2` |

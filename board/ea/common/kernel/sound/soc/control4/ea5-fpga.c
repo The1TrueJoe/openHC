@@ -605,10 +605,6 @@ static struct pci_driver ea5_fpga_pci_driver = {
 
 /* ---- card -------------------------------------------------------------------- */
 
-static const char * const ea5_link_names[NR_PAIRS] = {
-	"Analog 1", "Coax 1", "Analog 2", "Coax 2",
-};
-
 static void ea5_put_nodes(void *data)
 {
 	struct snd_soc_card *card = data;
@@ -649,8 +645,13 @@ static int ea5_card_probe(struct platform_device *pdev)
 	for (i = 0; i < NR_PAIRS; i++) {
 		cpus[i].name = fpga_name;
 		cpus[i].dai_name = ea5_dais[i].name;
-		links[i].name = ea5_link_names[i];
-		links[i].stream_name = ea5_link_names[i];
+		/* The PCM's user-facing name, from the DT. */
+		if (of_property_read_string_index(np, "control4,link-names", i,
+						  &links[i].name))
+			links[i].name = devm_kasprintf(dev, GFP_KERNEL, "PCM %d", i);
+		if (!links[i].name)
+			return -ENOMEM;
+		links[i].stream_name = links[i].name;
 		links[i].cpus = &cpus[i];
 		links[i].num_cpus = 1;
 		links[i].codecs = &snd_soc_dummy_dlc;

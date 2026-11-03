@@ -49,10 +49,6 @@ fi
 # script's environment — so the fallback always fired and EVERY image, on every
 # board, was stamped `board=openhc`. The flasher reads this field to work out
 # what a unit is running, so it was answering "openhc" for all eight.
-#
-# Not OHC_MODEL from board.env, which looks like the obvious source and is not:
-# the EA boards set it to a family NUMBER (`OHC_MODEL=1`, `OHC_MODEL=3`), so it
-# would stamp `board=1` and be worse than the bug it replaced.
 b="${2:-}"
 if [ -z "$b" ]; then
     b="${BR2_DEFCONFIG:-openhc}"; b="${b##*/}"

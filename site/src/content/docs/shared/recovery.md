@@ -240,7 +240,9 @@ ssh root@BOX 'dd if=/dev/mmcblk0 bs=512 count=$(cat /sys/class/block/mmcblk0p1/s
 
 Backups are **your device's own data, kept local.** They contain Control4 and
 Intel proprietary code and must never be committed or redistributed — `.gitignore`
-excludes them. They exist so a unit can be put back exactly as it was.
+excludes them. They exist so a unit can be put back exactly as it was. See
+[the GPL drop](/shared/gpl-source/) for what Control4 does and doesn't
+give us rights to.
 
 ## CA-1
 
@@ -326,29 +328,3 @@ If DHCP succeeds but TFTP doesn't answer, U-Boot loops forever — it ignores IC
 port-unreachable. Recovery to stock needs **either** no DHCP (so `tst` aborts)
 **or** a definitive TFTP *error* reply.
 :::
-
-## The clean-room boundary
-
-Stock firmware is read to learn **interfaces**, the boot flow, a wire protocol,
-GPIO names, which UART is which. Control4 and Intel code is not copied into
-anything openHC ships. A netbooted kernel is an independent implementation written
-from observed behaviour.
-
-The genuinely unresolved tension is the vendor Android UI on the EA boards.
-Keeping *Control4's* build is a redistribution problem even though it runs fine.
-Options, cleanest first:
-
-1. build our own AOSP container targeting the same graphics interface;
-2. ship a non-Android UI on that plane;
-3. treat the stock container as *the user's own existing files*, left in place on
-   their unit and never redistributed by us.
-
-Option 3 is fine for personal bring-up on your own box and is what the milestones
-assume. **It isn't distributable.** Decide before publishing images.
-
-The licence position on the kernel side is better than expected, every graphics
-kernel module on the EA boards declares Dual BSD/GPL or Dual MIT/GPL, so the
-kernel modules are redistributable. The proprietary surface shrinks to the
-PowerVR userspace driver and the Android container itself. See
-[the GPL drop](/shared/gpl-source/) for what Control4 does and doesn't
-give us rights to.

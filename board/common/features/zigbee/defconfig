@@ -2,10 +2,10 @@
 # bridge it into the rest of the world over MQTT. Enabled on every board that has
 # a radio (ca1, the EA family, hc800); NOT on the IO Extender, which has none.
 #
-# This is the TRANSPORT-AGNOSTIC half. WHICH port the NCP is on is per-board
-# (board.env OHC_ZIGBEE_TTY / OHC_RADIOS): a CP2104 USB bridge on the EA
-# (/dev/ttyUSB0), a native UART on the ca1 (ttymxc4) and hc800 (ttyS4). The
-# kernel side of the USB bridge is this feature's linux.fragment.
+# This is the TRANSPORT-AGNOSTIC half. WHICH port the NCP is on is the board's
+# udev rule (60-openhc-board.rules -> /dev/zigbee): a CP2104 USB bridge on the
+# EA, a native UART on the ca1 (ttymxc4) and hc800 (ttyS4). The kernel side of
+# the USB bridge is this feature's linux.fragment.
 #
 # The NCP BRING-UP (run the app out of the bootloader, hold the port) is the
 # feature's own Rust package `zigbee` -> /opt/ohc/bin/zigbee, staged by

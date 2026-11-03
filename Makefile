@@ -20,7 +20,7 @@ BOARD ?= ea3-v2
 # ca1:     Freescale i.MX6SL (ARM), native on-board IO, stock U-Boot boot.scr.
 # hc800:   Intel Atom D525 PC (x86_64), companion LM3S1162 IO-MCU, GRUB 0.97.
 # Every board directory with a <name>/<name>_defconfig.
-BOARDS := $(sort $(filter-out common,$(foreach f,$(wildcard board/*/*_defconfig board/ea/*/*_defconfig),$(notdir $(patsubst %/,%,$(dir $(f)))))))
+BOARDS := $(sort $(filter-out common,$(foreach f,$(filter-out board/ea/common/%,$(wildcard board/*/*_defconfig board/ea/*/*/*_defconfig)),$(notdir $(patsubst %/,%,$(dir $(f)))))))
 
 ifeq ($(filter $(BOARD),$(BOARDS)),)
   $(error BOARD must be one of: $(BOARDS)  (got '$(BOARD)'))

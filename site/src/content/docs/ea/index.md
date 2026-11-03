@@ -25,15 +25,15 @@ and why the variants are composed rather than copied.
 | ea1-v2 | ath9k | — | — | ? | builds; boot differences unconfirmed |
 | ea1-v2-poe | — | BCM53125 | yes | ? | builds, never booted |
 | ea3-v1 | ath9k | BCM53125 | yes | ? | builds; image never booted (a v1 board has run the ea3-v2 image) |
+| ea5-v1 | ath9k | BCM53125 | ? | ? | builds, never booted |
+| ea5-v2 | — | BCM53125 | ? | ? | builds, never booted |
 
-Each board lists what it has in `board/<board>/ohc.features` — `wifi`, `emmc`,
-`switch`, `audio`, `sgx` — and shared feature sets under
-`board/ea/common/features/` supply the configuration. Buildroot has no include
-mechanism for defconfigs, so the build script concatenates them: a common file
-for every board, then the EA family base, then the board's feature sets, then the
-board's own file. Kconfig takes the last assignment, so a board extends or
-overrides shared settings simply by coming later, and each board file stays a
-short list of genuine differences.
+The tree follows the hardware: `board/ea/common/` for the family,
+`board/ea/<model>/` for what every variant of a model has (its device tree, its
+features, its `board.env`), and `board/ea/<model>/<board>/` for the few lines a
+variant changes, usually just whether it has Wi-Fi. Kconfig, overlays and
+`board.env` take the last assignment, so each layer only states differences. See
+[board configuration](/ea/board-config/#layout).
 
 ## The identity straps
 
@@ -82,7 +82,7 @@ patches/linux/            edits to upstream: i2c-pxa, serial, e1000 fake-phy,
                           ssp, ehci, x86 built-in device tree
 post-image.sh             wraps the bzImage in the CEFDK container
 firmware/dsp/             the ADAU1451 program and parameters
-kernel/arch/x86/boot/dts/ the board device trees: switch, codec, LEDs,
+kernel/arch/x86/boot/dts/ the shared device trees: SoC, switch, codecs, LEDs,
                           GPIO names + reset lines, LM75, framebuffer
 kernel/drivers/           gpio-intelce, pwm-ce5300, the boot SPI-NOR controller
 kernel/sound/             the CE5300 I2S + ADAU1451 drivers

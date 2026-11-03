@@ -42,18 +42,23 @@ Buildroot has no include mechanism for defconfigs, so `build/build.sh`
 concatenates them and feeds the result in as `BR2_DEFCONFIG`:
 
 ```
-board/common/common_defconfig          every board
-  + board/ea/common/common_defconfig   EA family only
-  + features listed in ohc.features       wifi, emmc, switch, audio, sgx
-  + board/<board>/<board>_defconfig       the board's own differences
+board/common/common_defconfig                 every board
+  + board/ea/common/common_defconfig          EA family only
+  + features listed in ohc.features           wifi, emmc, switch, audio, sgx
+  + board/ea/<model>/defconfig                the model (EA only)
+  + board/.../<board>/<board>_defconfig       the board's own differences
 ```
+
+EA boards live at `board/ea/<model>/<board>/`; `build/board-layers.sh` resolves
+the layers for both build scripts. The [EA board configuration](/ea/board-config/#layout)
+page has the whole layout, including `board.env` and the device tree.
 
 **Kconfig takes the last assignment**, so a board extends or overrides shared
 settings simply by coming after them, and each board file stays a short list of
 genuine differences rather than a full copy that drifts.
 
-The same layering applies to the kernel: `common.fragment`, then per-feature
-fragments, then the board fragment. Ordering matters and has bitten before — the
+The same layering applies to the kernel: `common.fragment`, then the model's
+and board's fragments, then per-feature fragments. Ordering matters and has bitten before — the
 [SGX feature](/ea/graphics/) sets `CONFIG_DRM=y` while `common.fragment`
 sets `# CONFIG_DRM is not set`, and it works only because feature fragments are
 appended *after* the board file.

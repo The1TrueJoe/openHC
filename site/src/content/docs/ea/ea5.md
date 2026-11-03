@@ -7,8 +7,9 @@ sidebar:
 
 The EA-5 is the EA-3's platform (CE5300, CEFDK, TM4C IO-MCU, EM357 Zigbee) with
 a bigger IO panel and a different audio section. Board: **GARMADON MAIN BOARD,
-100-00257 rev C**. openHC builds it as one board, `ea5`, for both the V1
-(internal Wi-Fi) and the V2 (no radio).
+100-00257 rev C**. openHC builds it as two boards: `ea5-v1` (internal
+Wi-Fi) and `ea5-v2` (no radio). Everything else is the EA-5 model
+(`board/ea/ea5/`).
 
 **Nothing here has run on an EA-5 yet.** Everything below comes from Control4's
 GPL kernel (OS 3.3.1), the stock root filesystem (shared by every EA), the
@@ -116,7 +117,9 @@ No EA-5 DSP program exists in openHC yet, so the DSPs are left as they come up.
 ## What openHC does
 
 - **Card `openhcea5`** (`snd-soc` driver `ea5-fpga`): one PCM per FPGA pair, each
-  playback and capture, 48 kHz, S16/S24_3LE/S32. The DSPs are on the card as aux
+  playback and capture, 48 kHz, S16/S24_3LE/S32. The PCMs are named in the
+  device tree (`control4,link-names`), `Audio 1` to `Audio 4` until each jack is
+  checked; rename them in `ea-audio-fpga.dtsi` as they are. The DSPs are on the card as aux
   devices, controls prefixed `Zone 1` / `Zone 2`.
 - **Routing, DSPs bypassed**: PCM 0 analog 1, PCM 1 coax 1, PCM 2 analog 2,
   PCM 3 coax 2, in and out. The DSP inputs get stock's routing, so a program can
@@ -125,11 +128,13 @@ No EA-5 DSP program exists in openHC yet, so the DSPs are left as they come up.
   input), so any route can be changed with `amixer`.
 - **DAC mute** follows playback: unmuted while any playback runs.
 - `/sys/kernel/debug/ea5-fpga` dumps the registers.
+- **Switch**: `lan0` to `lan4` in `ea5.dtsi`; which port is which jack is
+  unverified.
 - **Combo jacks**: IR 1 / Serial 3 and IR 2 / Serial 4, see
   [combo jacks](/shared/io-mcu/#combo-jacks).
 
 Not done: an EA-5 DSP program, the DB9 serial ports, sample rates other than
-48 kHz, DSA port labels.
+48 kHz, the port-to-jack map.
 
 ## Bring-up
 

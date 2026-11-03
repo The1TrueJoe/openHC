@@ -53,37 +53,8 @@ fi
 #
 # A feature owns a crate by dropping a `packages` file in its feature directory,
 # one "<crate> <binary>" per line (binary defaults to the crate name). The family
-# base and feature search mirror build/build.sh: ea* -> ea/common, and the EA
-# boards live at board/ea/<board>, so BOARD_DIR (not board/$BOARD) is the board.
-case "$BOARD" in
-  ea*) FAM="$REPO/board/ea/common"; BOARD_DIR="$REPO/board/ea/$BOARD" ;;
-  *)   FAM="";                      BOARD_DIR="$REPO/board/$BOARD" ;;
-esac
-FEATURES=""
-for ff in ${FAM:+"$FAM/ohc.features"} "$BOARD_DIR/ohc.features"; do
-  [ -f "$ff" ] && FEATURES="$FEATURES $(sed 's/#.*//' "$ff" | tr '\n' ' ')"
-done
-FEATURES=$(printf '%s\n' $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
-# features/<name>/requires pulls in more, as in build/build.sh.
-i=0
-while [ $i -lt 8 ]; do
-  more=""
-  for f in $FEATURES; do
-    for d in "$REPO/board/common/features/$f" ${FAM:+"$FAM/features/$f"} "$BOARD_DIR/features/$f"; do
-      [ -f "$d/requires" ] && more="$more $(sed 's/#.*//' "$d/requires" | tr '\n' ' ')"
-    done
-  done
-  new=$(printf '%s\n' $more $FEATURES | awk 'NF && !seen[$0]++' | tr '\n' ' ')
-  [ "$new" = "$FEATURES" ] && break
-  FEATURES=$new; i=$((i + 1))
-done
-
-# Every scope's copy of a feature, most general first (as build/build.sh layers them).
-feature_dirs() {
-  for d in "$REPO/board/common/features/$1" ${FAM:+"$FAM/features/$1"} "$BOARD_DIR/features/$1"; do
-    [ -d "$d" ] && echo "$d"
-  done
-}
+# layers are the same as build/build.sh's (build/board-layers.sh).
+. "$REPO/build/board-layers.sh"
 
 # Core crates/binaries, on every board. CRATES (what `cargo build -p` builds)
 # and BINS (what gets installed) are separate lists, so a crate whose binary

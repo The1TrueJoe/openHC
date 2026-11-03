@@ -27,10 +27,10 @@ them was invisible while CI only ever built one board. The row below says
 | **ea3-v2** | Intel CE5310 | **Proven** | 7.1.8 via `bootlinux`, e1000 + eMMC + SSH, **persistent self-boot** from eMMC. Fuse blown; takes over via the CEFDK autoscript. |
 | **ca1** | i.MX6SL | **Proven** | Boots our 7.1.8 kernel. openHC on eMMC ext4, Node, Rust dashboard, captive-portal Wi-Fi setup. |
 | **ioxv1** | TI DM355 | **Proven** | Installs to NAND over SSH from stock or openHC, and boots from it; three failed openHC boots fall back to stock on their own. The FPGA loads itself at boot from the unit's own NAND, giving four RS-232 ports (verified both ways against a PC) and eight IR outputs (all eight verified against a GC-IRL learner at 38 kHz). Relays, contacts, the tri-colour status LED, data/link LEDs, iod and the web UI all work. |
-| ea1-v2 | Intel CE5310 | Builds | Never booted; boot differences unconfirmed. `board.env` inherited from the ea1-v1, not read off this variant. |
+| ea1-v2 | Intel CE5310 | Builds | Never booted; boot differences unconfirmed. Everything but its Wi-Fi comes from the EA-1 model, read off a v1. |
 | ea1-v2-poe | Intel CE5310 | Builds | Never booted. `board.env` is the EA1's IO with the EA3's networking, per its defconfig — unverified. |
-| ea3-v1 | Intel CE5310 | Builds | This image has never booted, but a v1 board has run the ea3-v2 image durably, with the same RAM reclaim (1.7 GB). Fuse state unknown; assume blown. `board.env` is the ea3-v2's plus the radio it kept. |
-| ea5 | Intel CE53xx | Builds | Never booted. The audio FPGA, both DSPs, eight IR jacks (two combo), four relays and contacts are described from Control4's GPL source and stock rootfs. See [EA-5](/ea/ea5/). |
+| ea3-v1 | Intel CE5310 | Builds | This image has never booted, but a v1 board has run the ea3-v2 image durably, with the same RAM reclaim (1.7 GB). Fuse state unknown; assume blown. It is the ea3-v2 plus the radio it kept. |
+| ea5-v1, ea5-v2 | Intel CE53xx | Builds | Never booted. The audio FPGA, both DSPs, eight IR jacks (two combo), four relays and contacts are described from Control4's GPL source and stock rootfs. See [EA-5](/ea/ea5/). |
 | **hc800** | Atom D525 | **Proven** | 7.1.8 booted, then **persistently installed** (GRUB entry on the spare kernel partition, boot-once via `savedefault`). Relays, contacts, six named IR devices, all six front LEDs, web UI, iod and sysmond. No kernel patches at all — the cheapest board here to bring up, as predicted. |
 
 The HC-250 is not supported: the IO-MCU firmware tree has room for its

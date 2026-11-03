@@ -248,7 +248,7 @@ export interface AudioReceiver {
   now_playing?: unknown;
 }
 
-/** A named jack on a board with an endpoint map (board.env OHC_AUDIO_OUTPUTS). */
+/** A named jack: an ALSA PCM, labelled with the name the kernel gives it. */
 /** One tone knob an output has: the software tone stage's bass/treble/balance,
  *  or on a DSP board those and its EQ bands. Live values arrive as
  *  `<base>/state/audio/<id>/<output>`; 0 is neutral. */

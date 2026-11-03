@@ -143,18 +143,18 @@ define OHC_KERNEL_MIRROR_HOOK
 endef
 LINUX_POST_PATCH_HOOKS += OHC_KERNEL_MIRROR_HOOK
 
-# A board's own device tree sits at the root of its board folder
-# (board/ea/<board>/<board>.dts, board/hc800/hc800.dts), beside the
-# ohc.features its includes follow, not in a kernel mirror. Copy it next to the
-# shared .dtsi files a mirror just installed; the board fragment names it in
-# CONFIG_BUILTIN_DTB_NAME. BR2_OHC_BOARD_DTS is written by build/build.sh for
-# the EA family and set in the defconfig of a standalone board.
+# A board's own DT files (its .dts, plus the model's .dtsi for the EA family)
+# live in the board folders, not a kernel mirror. Copy them next to the shared
+# .dtsi files the mirror installed. BR2_OHC_BOARD_DTS is written by
+# build/build.sh for the EA family and set in a standalone board's defconfig.
 OHC_BOARD_DTS = $(call qstrip,$(BR2_OHC_BOARD_DTS))
 ifneq ($(OHC_BOARD_DTS),)
 define OHC_BOARD_DTS_HOOK
-	install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/$(OHC_BOARD_DTS) \
-		$(LINUX_DIR)/arch/x86/boot/dts/$(notdir $(OHC_BOARD_DTS))
-	echo "openHC: installed arch/x86/boot/dts/$(notdir $(OHC_BOARD_DTS)) ($(OHC_BOARD_DTS))"
+	for f in $(OHC_BOARD_DTS); do \
+		install -D -m644 $(BR2_EXTERNAL_OPENHC_PATH)/$$f \
+			$(LINUX_DIR)/arch/x86/boot/dts/$$(basename $$f) || exit 1; \
+		echo "openHC: installed arch/x86/boot/dts/$$(basename $$f)"; \
+	done
 endef
 LINUX_POST_PATCH_HOOKS += OHC_BOARD_DTS_HOOK
 endif

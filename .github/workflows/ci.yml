@@ -213,7 +213,7 @@ jobs:
           set -euo pipefail
           # The fleet is every board directory with a <name>/<name>_defconfig.
           boards_in() { for d in "$@"; do n=$(basename "$d"); [ "$n" != common ] && [ -f "$d/${n}_defconfig" ] && echo "$n"; done; return 0; }
-          EA_BOARDS=$(boards_in board/ea/*/ | tr '\n' ' ')
+          EA_BOARDS=$(boards_in $(ls -d board/ea/*/*/ | grep -v '^board/ea/common/') | tr '\n' ' ')
           OTHER_BOARDS=$(boards_in board/*/ | tr '\n' ' ')
           printf -v ALL '"%s",' $EA_BOARDS $OTHER_BOARDS
           ALL="[${ALL%,}]"
@@ -236,15 +236,26 @@ jobs:
           changed=$(git diff --name-only "$base" HEAD)
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
 
-          # Shared trees affect every board. build/ and the flasher are in here
-          # because build.sh drives the build and post-image calls ohc-flash.
-          # packages/ is NOT here any more — a daemon change is scoped to the
-          # boards that actually ship it, further down.
-          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|flasher/|Makefile)'; then
+          # Shared trees affect every board. packages/ and flasher/ are scoped
+          # further down to the boards that ship what changed.
+          if echo "$changed" | grep -qE '^(board/common/|board/Config\.in|board/external\.|build/|Makefile)'; then
             echo "boards=$ALL" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           sel=()
+
+          # flasher/ is its own build (the flasher job). An image carries only
+          # flasher/crates/core, compiled into the restore and update daemons; CI
+          # never runs ohc-flash in an image build (post-image skips the netboot
+          # wrap without it). A PR's daemons-build already compiles those
+          # daemons, so only main rebuilds the images that ship them.
+          if [ "${{ github.event_name }}" = push ] && echo "$changed" | grep -q '^flasher/crates/core/'; then
+            for b in $EA_BOARDS $OTHER_BOARDS; do
+              case " $(bash packages/build.sh "$b" --crates 2>/dev/null) " in
+                *" restore "*|*" update "*) sel+=("$b") ;;
+              esac
+            done
+          fi
 
           # packages/ — the Rust daemons, staged into the overlay. A change here
           # used to rebuild all eight images; instead map it to the boards that
@@ -329,9 +340,12 @@ jobs:
           if echo "$changed" | grep -qx '.github/workflows/dsp-program.yml'; then
             sel+=(ea3-v1 ea3-v2)
           fi
-          # EA boards live under board/ea/<board>/; the others are top-level.
+          # EA boards live at board/ea/<model>/<board>/; a change in the model
+          # folder outside any board folder rebuilds every board of that model.
           for b in $EA_BOARDS; do
-            echo "$changed" | grep -qE "^board/ea/$b/" && sel+=("$b")
+            m=$(basename "$(dirname board/ea/*/"$b")")
+            echo "$changed" | grep -qE "^board/ea/$m/$b/" && sel+=("$b")
+            echo "$changed" | grep -E "^board/ea/$m/" | grep -vqE "^board/ea/$m/$m-[^/]+/" && sel+=("$b")
           done
           for b in $OTHER_BOARDS; do
             echo "$changed" | grep -qE "^board/$b/" && sel+=("$b")
@@ -492,6 +506,18 @@ jobs:
       matrix:
         board: ${{ fromJSON(needs.select.outputs.boards) }}
     steps:
+      # A warm tree is ~12 GB unpacked on top of dl/ and ccache, which leaves no
+      # margin on a hosted runner (ea5 ran out restoring its tree). Drop the
+      # preinstalled toolchains no board build uses.
+      - name: Free runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/powershell \
+            /usr/share/swift /opt/microsoft /opt/google /usr/lib/jvm
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       # sgx545-ce is a submodule and board/Config.in sources its Config.in
       # unconditionally, so defconfig fails for every board without it.
       - uses: actions/checkout@v4
@@ -501,6 +527,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: packages/webd/ui/package-lock.json
 
@@ -792,12 +819,15 @@ jobs:
         if: success() && matrix.board == 'hc800'
         env:
           KEXEC_VERSION: "2.0.31"
+          KEXEC_SHA256: 8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
         run: |
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
           # Built in runner.temp, outside the checkout.
-          wget -q -P "$RUNNER_TEMP" "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          bash .github/scripts/fetch.sh "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz" "$KEXEC_SHA256" \
+            "https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz" \
+            "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
           tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}.tar.xz"
           ( cd "$RUNNER_TEMP/kexec-tools-${KEXEC_VERSION}" && ./configure --host=i686-pc-linux-gnu \
               --build=x86_64-pc-linux-gnu CC="gcc -m32" LDFLAGS="-static" \
@@ -1180,6 +1210,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: packages/webd/ui/package-lock.json
 
@@ -1448,6 +1479,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: site/package-lock.json
 
@@ -1507,6 +1539,7 @@ jobs:
       # root on hardware with no recovery console, so "whatever is newest today"
       # is not an acceptable input.
       KEXEC_VERSION: "2.0.31"
+      KEXEC_SHA256: 8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
     steps:
       - uses: actions/checkout@v4
 
@@ -1527,7 +1560,9 @@ jobs:
       - name: Fetch kexec-tools
         run: |
           set -e
-          wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
+          bash .github/scripts/fetch.sh "kexec-tools-${KEXEC_VERSION}.tar.xz" "$KEXEC_SHA256" \
+            "https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz" \
+            "https://mirrors.edge.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VERSION}.tar.xz"
           tar xf "kexec-tools-${KEXEC_VERSION}.tar.xz"
 
       # --host is what selects kexec's i386 architecture support. Building it
