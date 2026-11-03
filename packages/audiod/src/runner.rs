@@ -51,11 +51,12 @@ pub fn asound_conf(b: &Board, eq: bool) -> String {
         for p in ports {
             key += 1;
             s += &format!(
-                "\n# {label}\npcm.{pcm}_{kind} {{\n    type {kind}\n    ipc_key {key}\n    ipc_perm 0666\n    slave {{\n        pcm \"{dev}\"\n        rate {rate}\n        channels 2\n        period_size 1024\n        buffer_size 8192\n    }}\n}}\n",
+                "\n# {label}\npcm.{pcm}_{kind} {{\n    type {kind}\n    ipc_key {key}\n    ipc_perm 0666\n    slave {{\n        pcm \"{dev}\"\n        rate {rate}\n        format {format}\n        channels 2\n        period_size 1024\n        buffer_size 8192\n    }}\n}}\n",
                 label = p.label.replace('"', "'"),
                 pcm = p.pcm,
                 dev = p.device,
                 rate = b.rate,
+                format = p.format.as_deref().unwrap_or("S16_LE"),
             );
             // A swapped port gets a route plugin between plug and the shared
             // dmix/dsnoop, so everything that plays to it (or records from it)
@@ -424,9 +425,19 @@ mod tests {
         assert!(a.contains("pcm \"hw:CARD=Intel,DEV=3\""));
         assert!(a.contains("pcm.!default \"ohc_analog1\""));
         assert_eq!(a.matches("ipc_key").count(), 3);
-        // No format: dmix asks for S16 and takes the hardware's own (the EA's
-        // S32-only I2S and HDMI) when it cannot have it.
-        assert!(!a.contains("format"));
+        assert_eq!(a.matches("format S16_LE").count(), 3);
+    }
+    #[test]
+    fn an_s32_output_runs_its_dmix_and_tone_stage_at_s32() {
+        let mut b = Board {
+            outputs: vec![Port { id: "hdmi".into(), label: "HDMI".into(), device: "hw:CARD=HDMI,DEV=0".into(), pcm: "ohc_hdmi".into(), format: Some("S32_LE".into()), ..Default::default() }],
+            inputs: vec![], rate: 48000, helpers: vec![], product: String::new(),
+        };
+        b.outputs[0].tone = crate::tone::plugin_knobs();
+        let a = asound_conf(&b, true);
+        assert!(a.contains("rate 48000\n        format S32_LE\n"), "{a}");
+        assert!(a.contains("format \"S32_LE\""), "{a}");
+        assert!(!a.contains("S16_LE"));
     }
     #[test]
     fn librespot_hook_runs_this_binary() {

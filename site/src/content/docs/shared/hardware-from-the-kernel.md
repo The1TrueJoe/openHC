@@ -71,9 +71,10 @@ link named `Analog 1` gives an output labelled `Analog 1`. A
 `simple-audio-card` link's codec (its `sound-dai`) is where audiod looks for
 `firmware-name`; on a card with `dai-link@N` children, link N is PCM device N.
 
-No format hint is needed. audiod's dmix asks for S16_LE and, on hardware that
-cannot take it (the CE5300 I2S and HDMI take S32_LE only), takes the
-hardware's own format; the `plug` in front converts.
+No format hint is needed either. At start audiod asks each output's hardware
+(`aplay --dump-hw-params`) and runs its dmix and tone stage (`ohceq`) at S16_LE
+where the hardware takes it, else S32_LE (the CE5300's I2S, S/PDIF and HDMI);
+the `plug` in front converts.
 
 ## What board.env still holds
 

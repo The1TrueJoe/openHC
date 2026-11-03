@@ -13,7 +13,9 @@
 //! A port's DSP profile comes from its codec's `firmware-name` in the device
 //! tree: `openhc/adau1451-ea3-openhc.bin` -> [`DSP_DIR`]`/adau1451-ea3-openhc.json`.
 //! The id (`analog1`, `hdmi`) is the label in lower case without spaces or
-//! anything in parentheses; saved endpoints refer to it.
+//! anything in parentheses; saved endpoints refer to it. An output's sample
+//! format is S16_LE where its hardware takes it, else S32_LE (the EA's I2S,
+//! S/PDIF and HDMI), as `aplay --dump-hw-params` reports it.
 //!
 //! board.env adds software defaults only: OHC_AUDIO_RATE (the dmix rate) and
 //! OHC_AUDIO_HELPERS. A board with no PCM has no endpoint map; the daemon then
@@ -39,6 +41,9 @@ pub struct Port {
     /// The DSP profile behind this port's tone.
     #[serde(skip)]
     pub dsp: Option<String>,
+    /// The hardware sample format its dmix and tone stage run at; None is S16_LE.
+    #[serde(skip)]
+    pub format: Option<String>,
     /// The tone knobs this port has, in the order the UI shows them; empty
     /// when it has no tone stage. Filled in once the board is read (tone.rs).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -235,6 +240,30 @@ fn apply_dsp(pcms: &mut [Pcm]) {
     }
 }
 
+/// The format to run a device at from its `aplay --dump-hw-params` output:
+/// S16_LE if it takes it, else S32_LE.
+pub fn format_of(dump: &str) -> Option<String> {
+    let line = dump.lines().find_map(|l| l.trim().strip_prefix("FORMAT:"))?;
+    let has = |f: &str| line.split_whitespace().any(|t| t == f);
+    ["S16_LE", "S32_LE"].into_iter().find(|f| has(f)).map(str::to_string)
+}
+
+/// Ask the hardware; it is busy only for a moment while audiod restarts.
+fn probe_format(device: &str) -> Option<String> {
+    for _ in 0..5 {
+        let out = std::process::Command::new("aplay")
+            .args(["--dump-hw-params", "-D", device, "-t", "raw", "/dev/null"])
+            .output()
+            .ok()?;
+        if let Some(f) = format_of(&String::from_utf8_lossy(&out.stderr)) {
+            return Some(f);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    eprintln!("audiod: cannot read {device}'s formats; assuming S16_LE");
+    None
+}
+
 /// `Control4 EA-3 v1` -> `EA-3`: the model without its vendor and variant.
 pub fn product(model: &str) -> String {
     // A device-tree model leads with the vendor.
@@ -267,9 +296,13 @@ impl Board {
             apply_udev(p, &props);
         }
         apply_dsp(&mut pcms);
+        let mut outputs = ports(&pcms, false, "ohc_");
+        for o in &mut outputs {
+            o.format = probe_format(&o.device);
+        }
         let model = std::fs::read("/proc/device-tree/model").map(|m| String::from_utf8_lossy(&m).trim_end_matches('\0').to_string()).unwrap_or_default();
         Board {
-            outputs: ports(&pcms, false, "ohc_"),
+            outputs,
             inputs: ports(&pcms, true, "ohc_in_"),
             rate: env("OHC_AUDIO_RATE").parse().unwrap_or(44100),
             helpers: env("OHC_AUDIO_HELPERS").split_whitespace().map(str::to_string).collect(),
@@ -426,6 +459,15 @@ mod tests {
         }
         assert_eq!(card_codecs(&multi, &d), [Some(dsp), None]);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn the_format_is_s16_where_the_hardware_takes_it() {
+        let dump = |f: &str| format!("HW Params of device \"hw:CARD=HDMI,DEV=0\":\n--------------------\nACCESS:  MMAP_INTERLEAVED RW_INTERLEAVED\nFORMAT:  {f}\nSUBFORMAT:  STD\n");
+        assert_eq!(format_of(&dump("S16_LE S32_LE")).as_deref(), Some("S16_LE"));
+        assert_eq!(format_of(&dump("S32_LE")).as_deref(), Some("S32_LE"));
+        assert_eq!(format_of(&dump("S24_3LE")), None);
+        assert_eq!(format_of("aplay: main:834: audio open error: Device or resource busy"), None);
     }
 
     #[test]

@@ -50,8 +50,8 @@ enable.
 **As an output.** audiod finds the card's one PCM, `HDMI`, like any other: the
 EA1's only output, the EA3's second next to its analog one. It gets Spotify
 and AirPlay endpoints, level, tone and routes, and is the `/etc/asound.conf`
-`default` where it is first. The dmix opens it at the 32-bit words the FIFO
-takes: it asks for S16_LE, which the driver refuses, and takes S32_LE.
+`default` where it is first. Its dmix and tone stage run at the 32-bit words
+the FIFO takes: audiod asks the hardware, which offers S32_LE only.
 
 **The clock.** MCLK is the SoC's audio PLL, IOSF sideband port `0x8b`, eight
 registers (`apll_cr[0..7]`). Stock's `ismdaudio` programs it per mode; CEFDK
@@ -352,9 +352,10 @@ block flag in the low byte. An S16 tone through audiod's `ohc_coax` (softvol,
 plays and recordings killed mid-stream left every DMA context idle, with no
 warning.
 
-audiod's tone stage, `ohceq`, used to take 16-bit samples only, so no output
-with `format=S32_LE` (HDMI on every EA, the coax out) opened through audiod at
-all; it now takes the output's format from its config.
+audiod's tone stage, `ohceq`, used to take 16-bit samples only, so no S32-only
+output (HDMI on every EA, the coax out) opened through audiod at all; it now
+takes the output's format from its config, which audiod writes from what the
+hardware offers.
 
 :::danger[Do not poke this device with devmem]
 An unbound PCI function may have memory decode off or sub-blocks unclocked.

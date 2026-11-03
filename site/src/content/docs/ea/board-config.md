@@ -267,8 +267,8 @@ to the first output. See [audio](/ea/audio/).
 | EA-5 | the FPGA card's four links, then HDMI; see [EA-5](/ea/ea5/) | 48000 |
 
 **HDMI** is the HDMI transmitter's own audio DMA (`ce5300-hdmi`), card `HDMI`,
-PCM `HDMI`. Its FIFO takes 32-bit words, which dmix picks up from the hardware
-on its own, and its clock gives 48 kHz only. Playing switches the link from DVI
+PCM `HDMI`. Its FIFO takes 32-bit words, so audiod runs it at S32_LE (it asks
+the hardware), and its clock gives 48 kHz only. Playing switches the link from DVI
 to HDMI mode if CEFDK left it in DVI. See [HDMI out](/ea/audio/#hdmi-out-every-ea).
 
 **EA3 analog** is CE5300 I2S1 → ADAU1451 SigmaDSP → AK4621. Tone is done by the
