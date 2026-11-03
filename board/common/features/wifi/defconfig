@@ -1,0 +1,4 @@
+# wifi: the shared setup AP and captive portal (S41wifi-ap). The radio's own
+# packages and driver come from the family's wifi feature.
+BR2_PACKAGE_HOSTAPD=y
+BR2_PACKAGE_DNSMASQ=y

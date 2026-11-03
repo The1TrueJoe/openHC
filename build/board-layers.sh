@@ -19,6 +19,8 @@ case "$BOARD" in
 esac
 SCOPES="$REPO/board/common $FAMILY_DIR $MODEL_DIR $BOARD_DIR"
 
+# A feature is a directory, features/<name>/, holding any of defconfig,
+# linux.fragment, rootfs-overlay/, board.env, packages and requires.
 # Every scope's copy of a feature, most general first.
 feature_dirs() {
     _found=1

@@ -1,6 +1,6 @@
 #!/bin/sh
 # The universal openHC identity layer — mDNS + timezone — on every board. Runs
-# after networking (S40net / S40wifi both sit at S40) and after any per-family
+# after networking (S40net, then S41wifi-ap) and after any per-family
 # hardware init (e.g. the EA's S49ohc-ea-hw).
 case "$1" in
   start) /opt/ohc/bin/ohc boot ;;
