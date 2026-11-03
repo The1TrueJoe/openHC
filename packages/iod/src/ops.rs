@@ -29,6 +29,8 @@ pub enum Fault {
     Todo(String),
     /// A local device would not open or would not talk.
     Io(String),
+    /// The thing is in use another way (a combo jack in the other mode).
+    Busy(String),
 }
 
 impl Fault {
@@ -39,6 +41,7 @@ impl Fault {
             Fault::NoChip(_) => "no_chip",
             Fault::Todo(_) => "not_implemented",
             Fault::Io(_) => "io_error",
+            Fault::Busy(_) => "busy",
         }
     }
     pub fn status(&self) -> u16 {
@@ -48,6 +51,7 @@ impl Fault {
             Fault::NoChip(_) => 503,
             Fault::Todo(_) => 501,
             Fault::Io(_) => 502,
+            Fault::Busy(_) => 409,
         }
     }
 }
@@ -55,7 +59,7 @@ impl Fault {
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Fault::NoSuch(s) | Fault::Bad(s) | Fault::Todo(s) | Fault::Io(s) => {
+            Fault::NoSuch(s) | Fault::Bad(s) | Fault::Todo(s) | Fault::Io(s) | Fault::Busy(s) => {
                 write!(f, "{s}")
             }
             Fault::NoChip(s) => write!(f, "no GPIO lines named relay1/contact1 — {s}"),
@@ -376,9 +380,16 @@ pub fn capabilities(c: &Arc<Config>) -> Value {
             "out": io.ir_out,
             "blaster": io.ir_blaster,
             "total": io.ir_total(),
-            // Combo ports share connectors with the user UARTs: a port is IR or
-            // serial, never both. A client must not offer the same index twice.
+            // Combo jacks: one connector, IR or serial at a time.
             "combo": io.ir_combo,
+            "jacks": io.serials.iter().enumerate()
+                .filter_map(|(i, p)| Some(json!({
+                    "jack": p.jack?,
+                    "label": p.label,
+                    "serial": crate::mqtt::topics::label(i),
+                    "mode": p.uart.and_then(crate::jack::mode).map(|m| m.as_str()),
+                })))
+                .collect::<Vec<_>>(),
             "receiver": io.ir_in,
             // The front panel carries both, and they share a topic prefix.
             "front": {
@@ -694,7 +705,10 @@ async fn ir_send(c: &Arc<Config>, target: IrTarget, pronto: &str, _repeat: u8) -
     tokio::task::spawn_blocking(move || crate::lirc::send(&path, carrier_hz, &durations))
         .await
         .map_err(|e| Fault::Io(e.to_string()))?
-        .map_err(|e| Fault::Io(e.to_string()))?;
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::EBUSY) => Fault::Busy(format!("IR {} is in serial mode", target.label())),
+            _ => Fault::Io(e.to_string()),
+        })?;
     Ok(json!({
         "target": target.label(),
         "device": dev.stable().display().to_string(),

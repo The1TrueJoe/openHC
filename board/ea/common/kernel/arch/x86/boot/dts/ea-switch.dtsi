@@ -52,7 +52,7 @@
 		spi-cpol;
 		spi-cpha;
 
-		ports {
+		switch_ports: ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
 

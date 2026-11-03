@@ -19,7 +19,7 @@ and Control4 spec doc DOC-00031-C.
 | | **EA-1** | **EA-3** | **EA-5** | **HC-800** | **HC-250** | **CA-1** |
 |---|---|---|---|---|---|---|
 | Arch | i686 | i686 | i686 ? | **x86_64-capable** | ARMv7 | ARMv7 |
-| SoC | Atom CE5310 | Atom CE5310 | Atom CE ? | **Atom D525 + NM10, 2c/4t** | ARMv7 ~1 GHz | **i.MX6SL, 1x A9** |
+| SoC | Atom CE5310 | Atom CE5310 | Atom CE53xx | **Atom D525 + NM10, 2c/4t** | ARMv7 ~1 GHz | **i.MX6SL, 1x A9** |
 | Board codename | ninjago | ninjago | garmadon | **none** | ? | emmet |
 | Board type strap | 1 | 2 | 3 ? | n/a (type 0) | n/a | n/a (type 0) |
 | RAM | ~1.5 GB | ~1.5 GB | ? | 2 GB | 512 MB | 1 GB |
@@ -29,19 +29,19 @@ and Control4 spec doc DOC-00031-C.
 | **IO MCU** | TM4C1231D5 | TM4C1231D5 | TM4C1231D5 | **LM3S1162** | LM3S1162 | **none** |
 | IO MCU UART | ttyS1 @ 460800 | ttyS1 @ 460800 | ttyS1 ? | ttyS3 @ 115200 | ? | n/a |
 | MCU profile block | 2 | 3 | 0/1/4/5 ? | n/a | n/a | n/a |
-| IR out (total) | 5 | 7 | 9 ? | 6 ? | 4 ? | 0 |
-| IR jacks | 4 | 6 | 8 ? | 6 | 4 ? | 0 |
-| Relays | 0 | 1 | 4 ? | 4 | 4 ? | 0 |
-| Contacts | 0 | 1 | 4 ? | 4 | 4 ? | 0 |
-| RS-232 | 2 combo | 3 combo | 2 ? | **2 host UARTs** | ? | **1 combo 232/485** |
-| Ethernet | 1x e1000 | **e1000 + BCM53125 (2 ports)** | ? | 1x RTL8168 (r8169) | 1x | 1x FEC (RMII) |
+| IR out (total) | 5 | 7 | 9 | 6 ? | 4 ? | 0 |
+| IR jacks | 4 | 6 | 8 | 6 | 4 ? | 0 |
+| Relays | 0 | 1 | 4 | 4 | 4 ? | 0 |
+| Contacts | 0 | 1 | 4 | 4 | 4 ? | 0 |
+| RS-232 | 2 combo | 3 combo | 2 combo + 2 DB9 | **2 host UARTs** | ? | **1 combo 232/485** |
+| Ethernet | 1x e1000 | **e1000 + BCM53125 (2 ports)** | e1000 + BCM53125 (5 ports) | 1x RTL8168 (r8169) | 1x | 1x FEC (RMII) |
 | Zigbee SoC | EM357 ? | EM357 ? | EM357 ? | EM357 ? | EM357 ? | EM35x ? |
 | Zigbee attach | USB-CP2104 | USB-CP2104 | USB ? | on-SoC UART (ttyS4) | UART ? | on-SoC UART (ttymxc4) |
 | Z-Wave | ? | ZM5304 | ? | **none on-board** | ? | ZM5304 (ttymxc3) |
-| Wi-Fi | ath9k | **none** | ath9k ? | USB RTL8192SU (r8712u) | ? | RTL8723BS (SDIO) |
-| Audio DSP | ADAU1451 | ADAU1451 | **FPGA** | none | ? | none |
-| Analog codec | ? | AK4621EF | ? | ALC888-VD (HDA) | ? | none |
-| Audio out | ? | line + coax + HDMI | ? | 2x line + coax S/PDIF | ? | none |
+| Wi-Fi | ath9k | **none** | ath9k (V1 only) | USB RTL8192SU (r8712u) | ? | RTL8723BS (SDIO) |
+| Audio DSP | ADAU1451 | ADAU1451 | **2× ADAU1451 + Spartan-6 FPGA** | none | ? | none |
+| Analog codec | ? | AK4621EF | AK4490 ×2, AK5388 | ALC888-VD (HDA) | ? | none |
+| Audio out | ? | line + coax + HDMI | 2 analog + 2 coax + HDMI | 2x line + coax S/PDIF | ? | none |
 | Video out | HDMI (Intel GDL) | HDMI (Intel GDL) | HDMI ? | **ADV7513 + THS8200 fitted** | ? | none (headless) |
 | GPU | PowerVR SGX (closed) | PowerVR SGX + GC300 | PowerVR SGX | Intel GMA 3150 / i915 | ? | GC320 2D, unused |
 | Android LXC | yes | yes | yes | no | no | no |
@@ -61,6 +61,10 @@ The EA family's combo RS-232 ports hang off the Tiva and are driven with
 `/dev/ttyS*`** for them, unlike the HC-800's two 8250 ports.
 
 ### The EA5's FPGA is why every EA carries FPGA drivers
+
+The FPGA routes the EA-5's audio; it does not replace its DSPs — the EA-5 has
+two ADAU1451s. See [EA-5](/ea/ea5/).
+
 
 The shared "ninjago" kernel ships `snd_ninjago_fpga*` on every EA board. The
 image it wants is `garmadon-fpga-45t-spi-rev8.bin`, and **garmadon is the EA5's
