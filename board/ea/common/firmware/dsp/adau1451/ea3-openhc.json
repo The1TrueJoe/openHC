@@ -29,7 +29,7 @@
   "step_db": 0.5,
   "version": {
     "param": "Version.DCValue",
-    "value": 2
+    "value": 3
   },
   "knobs": [
     {

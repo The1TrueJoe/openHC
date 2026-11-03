@@ -25,9 +25,11 @@
  * writes run the engine into the TX0 FIFO, and STOP_AFTER halts it cleanly;
  * through ALSA, TX0's samples reach the line out via the DSP's SDATA_IN0.
  *
- * Three streams, one CPU DAI each, in the vendor's context map: the I2S out
- * (TX0/DMA0, the EA3's DSP and analog jacks), the S/PDIF out (TX2/DMA2, the
- * coax out) and the S/PDIF in (RX1/DMA4, the coax in; stock's hw_dev_id 0x4d3).
+ * Four streams on three CPU DAIs, in the vendor's context map: the I2S DAI
+ * plays on TX0/DMA0 (the EA3's DSP and analog out) and captures on RX0/DMA3
+ * (stock's hw_dev_id 0x4d2: the DSP's SDATA_OUT0, which carries the analog in),
+ * then the S/PDIF out (TX2/DMA2, the coax out) and the S/PDIF in (RX1/DMA4, the
+ * coax in; 0x4d3).
  *
  * Periods are paced by a timer, not the interrupt: the PCI interrupt is not
  * routed on every kernel openHC boots, and the position register is exact, so
@@ -56,7 +58,9 @@ module_param(enable_pcm, bool, 0444);
 MODULE_PARM_DESC(enable_pcm,
 		 "Register the PCM (0: the DAI and the DSP controls only, no playable PCM)");
 
-enum { CE5300_I2S_OUT, CE5300_SPDIF_OUT, CE5300_SPDIF_IN, CE5300_STREAMS };
+/* The first three are also the DAI ids; the I2S DAI's capture is CE5300_I2S_IN. */
+enum { CE5300_I2S_OUT, CE5300_SPDIF_OUT, CE5300_SPDIF_IN, CE5300_I2S_IN, CE5300_STREAMS };
+#define CE5300_DAIS	CE5300_I2S_IN
 
 struct ce5300_i2s;
 
@@ -67,6 +71,7 @@ struct ce5300_stream {
 	unsigned int		dma;		/* DMA context 0..4 */
 	u32			fifo;		/* the FIFO port: TX_SATR or RX_SARR */
 	u32			flags;		/* descriptor mode word, STOP_AFTER clear */
+	u32			rx_sel, rx_int, rx_ctrl;	/* RX: input select, +0x0c, +0x04 bits */
 
 	struct ce5300_dma_desc	*ring;		/* CE5300_DESC_STRIDE-spaced, not packed */
 	dma_addr_t		ring_phys;
@@ -208,10 +213,12 @@ static void ce5300_hw_start(struct ce5300_i2s *i2s)
 }
 
 /*
- * The coax in, as stock's program_rx_interface leaves RX1 for 0x4d3: input
- * select S/PDIF, bound to its DMA context, FIFO threshold 0x3f, and the
- * S/PDIF bit in +0x0c. MEASURED 2026-11-02 with the same writes and the FIFO
- * read by hand: coax-in samples arrive bit for bit, 24 bits in 31:8.
+ * An RX context as stock's program_rx_interface leaves it: input select,
+ * bound to its DMA context, FIFO threshold 0x3f, and for the coax in (0x4d3)
+ * the S/PDIF bit in +0x0c. MEASURED 2026-11-02 with the same writes and the
+ * FIFO read by hand: coax-in samples arrive bit for bit, 24 bits in 31:8.
+ * MEASURED 2026-11-03: RX0 reads the DSP's SDATA_OUT0 whatever its select,
+ * two 16-bit samples per word until +0x04 bit 7 makes it 24 bits in 31:8.
  */
 static void ce5300_rx_setup(struct ce5300_stream *st)
 {
@@ -220,13 +227,12 @@ static void ce5300_rx_setup(struct ce5300_stream *st)
 	/* An empty FIFO, so no stale words lead the stream; it resets the rest. */
 	ce5300_update(i2s, st->ctx, CE5300_CTX_FIFO_RESET, CE5300_CTX_FIFO_RESET);
 	ce5300_update(i2s, st->ctx, CE5300_CTX_FIFO_RESET, 0);
-	ce5300_update(i2s, st->ctx, CE5300_CTX_SEL_MASK,
-		      CE5300_RX_SEL_SPDIF << CE5300_CTX_SEL_SHIFT);
+	ce5300_update(i2s, st->ctx, CE5300_CTX_SEL_MASK, st->rx_sel << CE5300_CTX_SEL_SHIFT);
 	ce5300_update(i2s, st->ctx + CE5300_RX_CTRL,
-		      CE5300_TX_DMA_CTX_MASK << CE5300_TX_DMA_CTX_SHIFT,
-		      st->dma << CE5300_TX_DMA_CTX_SHIFT);
+		      CE5300_TX_DMA_CTX_MASK << CE5300_TX_DMA_CTX_SHIFT | CE5300_RX_SAMPLE_24BIT,
+		      st->dma << CE5300_TX_DMA_CTX_SHIFT | st->rx_ctrl);
 	writel(0x3f, i2s->base + st->ctx + CE5300_RX_THRESH);
-	ce5300_update(i2s, st->ctx + CE5300_RX_INT, CE5300_RX_INT_SPDIF, CE5300_RX_INT_SPDIF);
+	ce5300_update(i2s, st->ctx + CE5300_RX_INT, st->rx_int, st->rx_int);
 }
 
 /*
@@ -286,6 +292,8 @@ static struct ce5300_stream *ce5300_stream_of(struct snd_soc_component *comp,
 	struct ce5300_i2s *i2s = snd_soc_component_get_drvdata(comp);
 	struct snd_soc_dai *dai = snd_soc_rtd_to_cpu(snd_soc_substream_to_rtd(ss), 0);
 
+	if (dai->id == CE5300_I2S_OUT && ss->stream == SNDRV_PCM_STREAM_CAPTURE)
+		return &i2s->st[CE5300_I2S_IN];
 	return &i2s->st[dai->id];
 }
 
@@ -524,9 +532,10 @@ static const struct snd_soc_component_driver ce5300_component = {
 	.formats	= SNDRV_PCM_FMTBIT_S32_LE,			\
 }
 
-static struct snd_soc_dai_driver ce5300_dais[CE5300_STREAMS] = {
+static struct snd_soc_dai_driver ce5300_dais[CE5300_DAIS] = {
 	[CE5300_I2S_OUT]   = { .name = "ce5300-i2s", .id = CE5300_I2S_OUT,
-			       .playback = CE5300_DAI_STREAM("I2S Playback") },
+			       .playback = CE5300_DAI_STREAM("I2S Playback"),
+			       .capture = CE5300_DAI_STREAM("I2S Capture") },
 	[CE5300_SPDIF_OUT] = { .name = "ce5300-spdif-out", .id = CE5300_SPDIF_OUT,
 			       .playback = CE5300_DAI_STREAM("S/PDIF Playback") },
 	[CE5300_SPDIF_IN]  = { .name = "ce5300-spdif-in", .id = CE5300_SPDIF_IN,
@@ -546,9 +555,10 @@ static const struct snd_soc_dai_ops ce5300_dai_off_ops = {
 	.startup = ce5300_dai_startup_off,
 };
 
-static struct snd_soc_dai_driver ce5300_dais_off[CE5300_STREAMS] = {
+static struct snd_soc_dai_driver ce5300_dais_off[CE5300_DAIS] = {
 	[CE5300_I2S_OUT]   = { .name = "ce5300-i2s", .id = CE5300_I2S_OUT,
 			       .playback = CE5300_DAI_STREAM("I2S Playback"),
+			       .capture = CE5300_DAI_STREAM("I2S Capture"),
 			       .ops = &ce5300_dai_off_ops },
 	[CE5300_SPDIF_OUT] = { .name = "ce5300-spdif-out", .id = CE5300_SPDIF_OUT,
 			       .playback = CE5300_DAI_STREAM("S/PDIF Playback"),
@@ -564,15 +574,22 @@ static const struct snd_soc_component_driver ce5300_component_off = {
 
 /* ---- PCI --------------------------------------------------------------- */
 
-/* The vendor's context map: hw_dev_id 0x3d1 (TX0/DMA0), 0x3d3 (TX2/DMA2), 0x4d3 (RX1/DMA4). */
+/*
+ * The vendor's context map: hw_dev_id 0x3d1 (TX0/DMA0), 0x3d3 (TX2/DMA2),
+ * 0x4d3 (RX1/DMA4, S/PDIF) and 0x4d2 (RX0/DMA3, I2S1).
+ */
 static const struct {
 	bool capture;
 	u32 ctx, fifo;
 	unsigned int dma;
+	u32 rx_sel, rx_int, rx_ctrl;
 } ce5300_streams[CE5300_STREAMS] = {
 	[CE5300_I2S_OUT]   = { false, CE5300_TX_REG(0, 0), CE5300_TX_REG(0, CE5300_TX_SATR), 0 },
 	[CE5300_SPDIF_OUT] = { false, CE5300_TX_REG(2, 0), CE5300_TX_REG(2, CE5300_TX_SATR), 2 },
-	[CE5300_SPDIF_IN]  = { true,  CE5300_RX_REG(1, 0), CE5300_RX_REG(1, CE5300_RX_SARR), 4 },
+	[CE5300_SPDIF_IN]  = { true,  CE5300_RX_REG(1, 0), CE5300_RX_REG(1, CE5300_RX_SARR), 4,
+			       CE5300_RX_SEL_SPDIF, CE5300_RX_INT_SPDIF, 0 },
+	[CE5300_I2S_IN]    = { true,  CE5300_RX_REG(0, 0), CE5300_RX_REG(0, CE5300_RX_SARR), 3,
+			       CE5300_RX_SEL_I2S1, 0, CE5300_RX_SAMPLE_24BIT },
 };
 
 static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -603,6 +620,9 @@ static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id
 		st->ctx = ce5300_streams[i].ctx;
 		st->fifo = ce5300_streams[i].fifo;
 		st->dma = ce5300_streams[i].dma;
+		st->rx_sel = ce5300_streams[i].rx_sel;
+		st->rx_int = ce5300_streams[i].rx_int;
+		st->rx_ctrl = ce5300_streams[i].rx_ctrl;
 		st->flags = st->capture ? CE5300_DMA_FLAGS_CAPTURE : CE5300_DMA_FLAGS_PLAYBACK;
 	}
 	pci_set_master(pdev);
@@ -616,7 +636,7 @@ static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id
 			 "probe-only (enable_pcm=0): DAIs registered without a PCM\n");
 		return devm_snd_soc_register_component(&pdev->dev,
 						       &ce5300_component_off,
-						       ce5300_dais_off, CE5300_STREAMS);
+						       ce5300_dais_off, CE5300_DAIS);
 	}
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
@@ -643,11 +663,11 @@ static int ce5300_i2s_probe(struct pci_dev *pdev, const struct pci_device_id *id
 	}
 
 	ret = devm_snd_soc_register_component(&pdev->dev, &ce5300_component,
-					      ce5300_dais, CE5300_STREAMS);
+					      ce5300_dais, CE5300_DAIS);
 	if (ret)
 		return ret;
 
-	dev_info(&pdev->dev, "CE5300 I2S: TX0/DMA0 I2S out, TX2/DMA2 S/PDIF out, RX1/DMA4 S/PDIF in\n");
+	dev_info(&pdev->dev, "CE5300 I2S: TX0/DMA0 I2S out, RX0/DMA3 I2S in, TX2/DMA2 S/PDIF out, RX1/DMA4 S/PDIF in\n");
 	return 0;
 }
 

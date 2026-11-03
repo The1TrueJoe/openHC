@@ -361,6 +361,14 @@ static struct snd_soc_dai_driver adau1451_c4_dai = {
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
 	},
+	/* The line in: the AK4621's ADC on SDATA_IN2, back to the CE5300 on SDATA_OUT0. */
+	.capture = {
+		.stream_name	= "Capture",
+		.channels_min	= 2,
+		.channels_max	= 2,
+		.rates		= SNDRV_PCM_RATE_48000,
+		.formats	= SNDRV_PCM_FMTBIT_S32_LE,
+	},
 	.ops = &adau1451_c4_dai_ops,
 };
 

@@ -209,6 +209,7 @@
 #define CE5300_CTX_SEL_SHIFT		5
 #define CE5300_CTX_SEL_MASK		(0x3 << CE5300_CTX_SEL_SHIFT)
 #define   CE5300_TX_SEL_SPDIF		3
+#define   CE5300_RX_SEL_I2S1		0
 #define   CE5300_RX_SEL_SPDIF		2
 
 /*
@@ -232,6 +233,7 @@
  * values (MEASURED 2026-11-03), so they are set after it.
  */
 #define CE5300_RX_CTRL			0x04	/* [19:17] the DMA context, as on TX */
+#define CE5300_RX_SAMPLE_24BIT		BIT(7)	/* as on TX; 0 packs two 16-bit samples per word */
 #define CE5300_RX_INT			0x0c	/* stock ORs its sa_int_mask in at capture start */
 #define   CE5300_RX_INT_SPDIF		0x200	/* 0x4d3, the S/PDIF input's */
 #define CE5300_RX_SYNC			0x10	/* bit 0, write 1 to clear: no valid S/PDIF stream */
