@@ -363,7 +363,10 @@ destination walking, 128-byte bursts); the position is the destination
   up after 10 ms. A relock mid-stream (the source paused or restarted) can
   land on either subframe, so each period tick looks for the flag in what was
   captured: on an odd word the stream has slipped, and the driver reports an
-  xrun, whose restart aligns it again.
+  xrun, whose restart aligns it again. Measured (2026-11-04, coax out
+  cabled to coax in): four relocks per recording, three recordings, no frame
+  left swapped; about one start in twelve still begins a subframe off, for
+  under one period, before the tick catches it.
 - A capture engine finishes a descriptor only while words arrive, so with the
   coax in dead a stopped stream can sit in one. Prepare refuses with `-EBUSY`
   until it has halted rather than rewrite a ring the engine walks.
