@@ -78,6 +78,7 @@ struct ce5300_stream {
 	struct snd_pcm_substream *substream;
 
 	struct hrtimer		tick;		/* one period; reports elapsed periods */
+	u32			scan;		/* S/PDIF in: next buffer byte to check for the block flag */
 	ktime_t			period;
 	atomic_t		running;
 };
@@ -177,7 +178,7 @@ static void ce5300_tx_start(struct ce5300_i2s *i2s, struct ce5300_stream *st,
  * and run on through underruns, so a few zero words prime it.
  *
  * TX2, the coax out, starts the same way, so the S/PDIF line carries a
- * stream from boot and a receiver locks once, not at every song.
+ * stream from boot; each playback restarts it (ce5300_spdif_tx_start()).
  */
 static void ce5300_hw_start(struct ce5300_i2s *i2s)
 {
@@ -313,6 +314,26 @@ static void ce5300_i2s_in_align(struct ce5300_stream *st)
 		readl(ctx + CE5300_RX_SARR);
 }
 
+/*
+ * Start the S/PDIF out on a left subframe. Between streams the transmitter
+ * sends zero subframes from its empty FIFO, so a stream's first word went to
+ * whichever subframe came next: left and right swapped on every other stream
+ * (MEASURED 2026-11-04, alternating over four plays inside one capture).
+ * Stopped long enough to settle (prepare: a few microseconds were not, a
+ * millisecond was), then run once the DMA has filled its FIFO, it starts the
+ * stream on channel A: 12 of 12.
+ */
+#define CE5300_TX_START_LEVEL	0x40
+
+static void ce5300_spdif_tx_start(struct ce5300_stream *st)
+{
+	u32 level;
+
+	readl_poll_timeout_atomic(st->i2s->base + st->ctx + CE5300_TX_LEVEL, level,
+				  level >= CE5300_TX_START_LEVEL, 1, 2000);
+	ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, CE5300_TX_RUN);
+}
+
 /* ---- PCM ---------------------------------------------------------------- */
 
 static const struct snd_pcm_hardware ce5300_pcm_hw = {
@@ -425,6 +446,10 @@ static int ce5300_pcm_prepare(struct snd_soc_component *comp,
 	 */
 	if (st->capture)
 		ce5300_rx_setup(st);
+	if (st == &st->i2s->st[CE5300_SPDIF_OUT]) {
+		ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, 0);
+		usleep_range(10000, 11000);
+	}
 	return 0;
 }
 
@@ -461,6 +486,9 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 		/* The engine sets CE5300_DMA_RUN itself. */
 		writel(st->ring_phys, dma_reg(st, CE5300_DMA_NEXT_DESC));
 		writel(st->flags, dma_reg(st, CE5300_DMA_CTRL));
+		if (st == &st->i2s->st[CE5300_SPDIF_OUT])
+			ce5300_spdif_tx_start(st);
+		st->scan = 0;
 		atomic_set(&st->running, 1);
 		hrtimer_start(&st->tick, st->period, HRTIMER_MODE_REL_SOFT);
 		return 0;
@@ -511,6 +539,31 @@ static int ce5300_pcm_sync_stop(struct snd_soc_component *comp,
 	return 0;
 }
 
+/*
+ * S/PDIF in: has the stream slipped a subframe? The block flag is on a left
+ * word, so in an aligned buffer it is at an even word. A relock (the source
+ * paused or restarted; the coax out does at every stream start) can land on
+ * either subframe (MEASURED 2026-11-04: 2 of 24 captures swapped).
+ */
+static bool ce5300_spdif_slipped(struct ce5300_stream *st)
+{
+	struct snd_pcm_runtime *rt = st->substream->runtime;
+	u32 size = snd_pcm_lib_buffer_bytes(st->substream);
+	u32 pos = readl(dma_reg(st, CE5300_DMA_DST)) - (u32)rt->dma_addr;
+	const __le32 *buf = (const __le32 *)rt->dma_area;
+	bool slipped = false;
+
+	if (pos >= size)
+		return false;
+	pos &= ~3;
+	while (st->scan != pos) {
+		if (le32_to_cpu(buf[st->scan / 4]) & CE5300_RX_SPDIF_BLOCK)
+			slipped = (st->scan / 4) & 1;
+		st->scan = (st->scan + 4) % size;
+	}
+	return slipped;
+}
+
 /* One period has gone by: let ALSA read the position and refill. */
 static enum hrtimer_restart ce5300_pcm_tick(struct hrtimer *t)
 {
@@ -518,6 +571,12 @@ static enum hrtimer_restart ce5300_pcm_tick(struct hrtimer *t)
 
 	if (!atomic_read(&st->running))
 		return HRTIMER_NORESTART;
+	/* A slipped S/PDIF in restarts, and the restart aligns it again. */
+	if (st == &st->i2s->st[CE5300_SPDIF_IN] && ce5300_spdif_slipped(st)) {
+		dev_dbg(st->i2s->dev, "S/PDIF in slipped a subframe: restarting\n");
+		snd_pcm_stop_xrun(st->substream);
+		return HRTIMER_NORESTART;
+	}
 	/* May stop the stream (xrun, drain), which clears running. */
 	snd_pcm_period_elapsed(st->substream);
 	if (!atomic_read(&st->running))
