@@ -15,9 +15,11 @@ changes, and the driver works the same against it and against stock.
 | TM4C1231D5 | EA-1, EA-3, EA-5 | `/lib/firmware/openhc/io-mcu-tm4c1231d5.bin` |
 | LM3S1162 | HC-800 | `/lib/firmware/openhc/io-mcu-lm3s1162.bin` |
 
-:::caution[Not run on silicon yet]
-Both images build, pass the host tests, and have never run on a part. No board
-sets `firmware-name`, so no box writes them. See
+:::caution[Run on one EA-3 so far]
+The TM4C image has run on an EA-3 (2026-11-04): the host link, the pin table,
+IR out, the relay and contact, a driver rebind, and the writer in both
+directions. The LM3S image has not run on a part. No board sets
+`firmware-name`, so no box writes either on its own. See
 [what is left](#what-hardware-verification-is-left).
 :::
 
@@ -62,13 +64,18 @@ stock image's per-board tables and its board-ID strap are not used at all.
 
 | Part | IR carrier | Receiver | Bursts | Clock |
 |---|---|---|---|---|
-| TM4C1231D5 | timer CCP in PWM mode (no PWM module) | 32-bit wide-timer edge-time capture | TIMER4, 32-bit one-shot | measured |
-| LM3S1162 | PWM module (generator *n* drives outputs 2*n*, 2*n*+1) | GPIO edge interrupt, timestamped by TIMER1 | TIMER0, 32-bit one-shot | measured |
+| TM4C1231D5 | timer CCP in PWM mode (no PWM module) | 32-bit wide-timer edge-time capture | TIMER4, 32-bit one-shot | 80 MHz, PIOSC + PLL |
+| LM3S1162 | PWM module (generator *n* drives outputs 2*n*, 2*n*+1) | GPIO edge interrupt, timestamped by TIMER1 | TIMER0, 32-bit one-shot | 50 MHz, 6 MHz crystal + PLL |
 
-**The clock is measured, not set.** The bootloader has already autobauded the host
-link, so its divisor holds the real system clock
-(`clk = baud × 16 × (IBRD + FBRD/64)`); the firmware reads it back and snaps it to
-the nearest standard rate. Nothing depends on knowing the crystal.
+**Nothing is inherited from the bootloader.** Both stock bootloaders' `RUN` gate
+off UART0 and reset it (legacy `RCGC1` bit 0, `SRCR1`) before they jump, so the
+application finds its host link unclocked: the first read of it bus-faults. That
+was the hang on the first run on silicon. The firmware therefore sets the clock
+the way stock and its bootloader do — `SysCtlClockSet(0xC1000550)` on the TM4C
+(PIOSC → PLL → 80 MHz), `RCC = 0x01C002C0` on the LM3S (6 MHz crystal → PLL →
+50 MHz, which is why stock answers `AUTO_BAUD` with 115207) — and clocks, muxes
+and programs UART0 from scratch. The PLL lock is read from `PLLSTAT` on the TM4C,
+not the lock interrupt, which an already-locked PLL never raises again.
 
 **IR out** is interrupt driven: the burst timer's interrupt gates the carrier onto
 the pin (the pin is handed between the timer and a GPIO held low), so the main
@@ -274,22 +281,30 @@ The flasher's restore runs the box's own `restore stock`, so it gets the same.
 
 ## What hardware verification is left
 
-- Run each image on a part: clock measurement, host link, the config frame's replies.
-- The TI writer end to end on both bootloaders, including a write cut short by a
-  power cut (the stub path).
-- IR out on a jack: carrier frequency and duty against a learner; channels gated
-  together.
+Done on an EA-3 (TM4C, 2026-11-04): the image starts after `RUN` and answers;
+the pin table applies (23 of 23); NEC from jack 1 reads back on a GC-IRL learner
+as 38 kHz with a 9.0 / 4.5 ms leader and the right bits; the relay toggles and
+reads back, the contact reads; a driver rebind finds it by its knock and leaves
+the relay closed; the writer goes stock → openHC over the reset line and
+openHC → stock over `RESET`, repeatedly. One write's first attempt got no ACK
+after the reset pulse and the second worked; the retry covers it. Writing
+stock's full 60 KB slot takes about 90 s (one `GET_STATUS` per 32-byte packet).
+
+Left:
+
+- The LM3S image on the HC-800, and the writer on its bootloader.
+- A write cut short by a power cut (the stub path).
+- IR duty; channels gated together; the front blaster.
 - IR in on the front receiver: TM4C capture on WT5CCP0; the HC-800's on PD4,
   carrier or envelope.
 - The HC-800's gates: polarity, and which line goes with which carrier (both
   inferred in the decode).
 - The combo-jack mode lines and the heartbeat's purpose.
-- Relays and contacts, polarity and pulls.
+- Relay coil polarity (heard, not just read back); contact polarity with the input shorted.
 - User serial loopback on an EA combo jack.
-- `reset-gpios` replacing a stock image (the EA's `io_reset` is a hog in `ea.dtsi`
-  today; a board that opts in replaces the hog). The HC-800's reset line is a
-  `gpio_ich` pin that ACPI cannot name, so stock there is replaced only by a part
-  already in its bootloader; openHC-to-openHC works without a line.
-- Return to stock on each family.
+- `reset-gpios` on the HC-800: its reset line is a `gpio_ich` pin that ACPI cannot
+  name, so stock there is replaced only by a part already in its bootloader;
+  openHC-to-openHC works without a line.
+- `restore stock` end to end on each family (`restore iomcu` works on the EA-3).
 
 Only then does a board set `firmware-name`.

@@ -53,23 +53,6 @@ static inline void pl011_setup(uint32_t b, uint32_t clk, uint32_t baud, uint8_t 
     UART_CTL(b) = CTL_EN;
 }
 
-/* Keep the bootloader's divisor and pins; FIFOs and RX interrupts on. */
-static inline void pl011_take_over(uint32_t b)
-{
-    uint32_t ib, fb;
-
-    pl011_wait_idle(b);
-    ib = UART_IBRD(b);
-    fb = UART_FBRD(b);
-    UART_CTL(b) = 0;
-    UART_IBRD(b) = ib;
-    UART_FBRD(b) = fb;
-    UART_LCRH(b) = (3u << 5) | LCRH_FEN;  /* 8N1 */
-    UART_IFLS(b) = IFLS_RX_HALF;
-    UART_IM(b) = IM_RX;
-    UART_CTL(b) = CTL_EN;
-}
-
 static inline bool pl011_putc(uint32_t b, uint8_t c)
 {
     if (UART_FR(b) & FR_TXFF)
