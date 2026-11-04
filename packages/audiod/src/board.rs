@@ -13,7 +13,7 @@
 //! A port's DSP profile comes from its codec's `firmware-name` in the device
 //! tree: `openhc/adau1451-ea3-openhc.bin` -> [`DSP_DIR`]`/adau1451-ea3-openhc.json`.
 //! The id (`analog1`, `hdmi`) is the label in lower case without spaces or
-//! anything in parentheses; saved endpoints refer to it. An output's sample
+//! anything in parentheses; saved endpoints refer to it. A port's sample
 //! format is S16_LE where its hardware takes it, else S32_LE (the EA's I2S,
 //! S/PDIF and HDMI), as `aplay --dump-hw-params` reports it.
 //!
@@ -41,7 +41,7 @@ pub struct Port {
     /// The DSP profile behind this port's tone.
     #[serde(skip)]
     pub dsp: Option<String>,
-    /// The hardware sample format its dmix and tone stage run at; None is S16_LE.
+    /// The hardware sample format its dmix/dsnoop and tone stage run at; None is S16_LE.
     #[serde(skip)]
     pub format: Option<String>,
     /// The tone knobs this port has, in the order the UI shows them; empty
@@ -249,9 +249,12 @@ pub fn format_of(dump: &str) -> Option<String> {
 }
 
 /// Ask the hardware; it is busy only for a moment while audiod restarts.
-fn probe_format(device: &str) -> Option<String> {
+/// Capture probes with `aplay -C`, bounded by `-d 1`.
+fn probe_format(device: &str, capture: bool) -> Option<String> {
+    let mode: &[&str] = if capture { &["-C", "-d", "1"] } else { &[] };
     for _ in 0..5 {
         let out = std::process::Command::new("aplay")
+            .args(mode)
             .args(["--dump-hw-params", "-D", device, "-t", "raw", "/dev/null"])
             .output()
             .ok()?;
@@ -298,12 +301,16 @@ impl Board {
         apply_dsp(&mut pcms);
         let mut outputs = ports(&pcms, false, "ohc_");
         for o in &mut outputs {
-            o.format = probe_format(&o.device);
+            o.format = probe_format(&o.device, false);
+        }
+        let mut inputs = ports(&pcms, true, "ohc_in_");
+        for i in &mut inputs {
+            i.format = probe_format(&i.device, true);
         }
         let model = std::fs::read("/proc/device-tree/model").map(|m| String::from_utf8_lossy(&m).trim_end_matches('\0').to_string()).unwrap_or_default();
         Board {
             outputs,
-            inputs: ports(&pcms, true, "ohc_in_"),
+            inputs,
             rate: env("OHC_AUDIO_RATE").parse().unwrap_or(44100),
             helpers: env("OHC_AUDIO_HELPERS").split_whitespace().map(str::to_string).collect(),
             product: product(&model),

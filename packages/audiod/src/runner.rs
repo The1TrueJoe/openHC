@@ -440,6 +440,18 @@ mod tests {
         assert!(!a.contains("S16_LE"));
     }
     #[test]
+    fn an_s32_input_runs_its_dsnoop_at_s32() {
+        let b = Board {
+            outputs: vec![],
+            inputs: vec![Port { id: "coaxin".into(), label: "Coax in".into(), device: "hw:CARD=Intel,DEV=5".into(), pcm: "ohc_in_coaxin".into(), format: Some("S32_LE".into()), ..Default::default() }],
+            rate: 48000, helpers: vec![], product: String::new(),
+        };
+        let a = asound_conf(&b, false);
+        assert!(a.contains("pcm.ohc_in_coaxin_dsnoop {"), "{a}");
+        assert!(a.contains("rate 48000\n        format S32_LE\n"), "{a}");
+        assert!(!a.contains("S16_LE"));
+    }
+    #[test]
     fn librespot_hook_runs_this_binary() {
         let h = librespot_hook("spotify-2");
         assert!(h.starts_with("#!/bin/sh\n"));
