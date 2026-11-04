@@ -342,9 +342,10 @@ TX0's frame rate. Like `TX_CTRL`, it ignores writes while TX2 runs. Playback
 starts and stops as TX0's does, with one addition: between streams the
 transmitter sends zero subframes from its empty FIFO, so a stream's first word
 went to whichever subframe came next, and left and right swapped on every other
-stream (four plays inside one capture alternated). Playback start therefore
-stops TX2, lets the DMA fill its FIFO, and runs it again, which starts the
-stream on channel A: 8 of 8. A receiver may relock at each stream start.
+stream (four plays inside one capture alternated). Prepare therefore stops TX2
+for 10 ms, a stop of a few microseconds was not enough, and trigger runs it
+again once the DMA has filled its FIFO, which starts the stream on channel A:
+12 of 12. A receiver may relock at each stream start.
 
 **In** is stock's `capture_start`: the RX run bit, then the RX FIFO port
 (`+0x3118`) as the DMA's source (`+0x1110`), the head descriptor, and the

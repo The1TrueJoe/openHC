@@ -318,8 +318,9 @@ static void ce5300_i2s_in_align(struct ce5300_stream *st)
  * sends zero subframes from its empty FIFO, so a stream's first word went to
  * whichever subframe came next: left and right swapped on every other stream
  * (MEASURED 2026-11-04, alternating over four plays inside one capture).
- * Stopped while the DMA fills its FIFO and then run, it starts the stream on
- * channel A: 8 of 8.
+ * Stopped long enough to settle (prepare: a few microseconds were not, a
+ * millisecond was), then run once the DMA has filled its FIFO, it starts the
+ * stream on channel A: 12 of 12.
  */
 #define CE5300_TX_START_LEVEL	0x40
 
@@ -444,6 +445,10 @@ static int ce5300_pcm_prepare(struct snd_soc_component *comp,
 	 */
 	if (st->capture)
 		ce5300_rx_setup(st);
+	if (st == &st->i2s->st[CE5300_SPDIF_OUT]) {
+		ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, 0);
+		usleep_range(10000, 11000);
+	}
 	return 0;
 }
 
@@ -475,8 +480,6 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 			 * MEASURED 2026-11-03: without the destination the
 			 * engine fetches the head and stalls.
 			 */
-			if (st == &st->i2s->st[CE5300_SPDIF_OUT])
-				ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, 0);
 			writel(st->i2s->phys + st->fifo, dma_reg(st, CE5300_DMA_DST));
 		}
 		/* The engine sets CE5300_DMA_RUN itself. */
