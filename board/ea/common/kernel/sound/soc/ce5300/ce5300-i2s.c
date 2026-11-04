@@ -177,7 +177,7 @@ static void ce5300_tx_start(struct ce5300_i2s *i2s, struct ce5300_stream *st,
  * and run on through underruns, so a few zero words prime it.
  *
  * TX2, the coax out, starts the same way, so the S/PDIF line carries a
- * stream from boot and a receiver locks once, not at every song.
+ * stream from boot; each playback restarts it (ce5300_spdif_tx_start()).
  */
 static void ce5300_hw_start(struct ce5300_i2s *i2s)
 {
@@ -311,6 +311,25 @@ static void ce5300_i2s_in_align(struct ce5300_stream *st)
 
 	if (!readl_poll_timeout_atomic(ctx + CE5300_RX_LEVEL, level, level, 1, 1000))
 		readl(ctx + CE5300_RX_SARR);
+}
+
+/*
+ * Start the S/PDIF out on a left subframe. Between streams the transmitter
+ * sends zero subframes from its empty FIFO, so a stream's first word went to
+ * whichever subframe came next: left and right swapped on every other stream
+ * (MEASURED 2026-11-04, alternating over four plays inside one capture).
+ * Stopped while the DMA fills its FIFO and then run, it starts the stream on
+ * channel A: 8 of 8.
+ */
+#define CE5300_TX_START_LEVEL	0x40
+
+static void ce5300_spdif_tx_start(struct ce5300_stream *st)
+{
+	u32 level;
+
+	readl_poll_timeout_atomic(st->i2s->base + st->ctx + CE5300_TX_LEVEL, level,
+				  level >= CE5300_TX_START_LEVEL, 1, 2000);
+	ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, CE5300_TX_RUN);
 }
 
 /* ---- PCM ---------------------------------------------------------------- */
@@ -456,11 +475,15 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 			 * MEASURED 2026-11-03: without the destination the
 			 * engine fetches the head and stalls.
 			 */
+			if (st == &st->i2s->st[CE5300_SPDIF_OUT])
+				ce5300_update(st->i2s, st->ctx, CE5300_TX_RUN, 0);
 			writel(st->i2s->phys + st->fifo, dma_reg(st, CE5300_DMA_DST));
 		}
 		/* The engine sets CE5300_DMA_RUN itself. */
 		writel(st->ring_phys, dma_reg(st, CE5300_DMA_NEXT_DESC));
 		writel(st->flags, dma_reg(st, CE5300_DMA_CTRL));
+		if (st == &st->i2s->st[CE5300_SPDIF_OUT])
+			ce5300_spdif_tx_start(st);
 		atomic_set(&st->running, 1);
 		hrtimer_start(&st->tick, st->period, HRTIMER_MODE_REL_SOFT);
 		return 0;
