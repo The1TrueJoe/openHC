@@ -2096,21 +2096,28 @@ static const u8 ohc_reset_stub[] = {
 };
 
 /*
- * The application slot, its first page last: the stub goes in first, then the
- * body, then the real vector table. Cut short anywhere before that last page,
- * the slot starts into the stub, which resets into the bootloader, and the next
- * probe finds the part there and writes it again. The bootloader's 4 KB below
- * OHC_APP_BASE is never addressed.
+ * The application slot, its first page last. The bootloader takes DOWNLOAD only
+ * at the slot's base (and erases from there), so: the whole slot once with the
+ * stub in place of the first page, then the first page alone. Cut short
+ * anywhere before that last page, the slot starts into the stub, which resets
+ * into the bootloader, and the next probe finds the part there and writes it
+ * again. The bootloader's 4 KB below OHC_APP_BASE is never addressed.
  */
 static int ohc_bl_write(struct ohc_iomcu *mcu, const struct ohc_img *img)
 {
 	u32 first = min_t(u32, img->size, OHC_FLASH_PAGE);
+	u8 *slot;
 	int ret;
 
-	ret = ohc_bl_download(mcu, OHC_APP_BASE, ohc_reset_stub, sizeof(ohc_reset_stub));
-	if (!ret && img->size > first)
-		ret = ohc_bl_download(mcu, OHC_APP_BASE + first, img->data + first,
-				      img->size - first);
+	if (img->size <= first)
+		return ohc_bl_download(mcu, OHC_APP_BASE, img->data, img->size);
+	slot = kmemdup(img->data, img->size, GFP_KERNEL);
+	if (!slot)
+		return -ENOMEM;
+	memset(slot, 0xff, first);
+	memcpy(slot, ohc_reset_stub, sizeof(ohc_reset_stub));
+	ret = ohc_bl_download(mcu, OHC_APP_BASE, slot, img->size);
+	kfree(slot);
 	if (!ret)
 		ret = ohc_bl_download(mcu, OHC_APP_BASE, img->data, first);
 	return ret;
