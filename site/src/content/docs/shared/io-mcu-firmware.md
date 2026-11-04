@@ -138,7 +138,8 @@ table sent again (a driver rebind) changes nothing, so a closed relay stays clos
 **Stock ignores it.** Neither stock dispatcher handles `0xf0` or `0xf2`: the LM3S
 image compares down a chain that ends `… 0xa1, 0xb9, 0xc1, 0xc4, 0xd2`, the TM4C one
 `… 0xa1, 0xa3, 0xc1, 0xc4, 0xd2`, and anything else falls through to nothing. The
-driver waits 200 ms for an answer from stock and carries on.
+driver doesn't rely on that: it reads the firmware version first and sends the
+table only to openHC's own.
 
 `RESET` (`0xf2`, answered `0xf3`) resets openHC's firmware into the bootloader,
 which the loader uses to replace it without a reset line.
@@ -229,13 +230,15 @@ Opt-in per board: without `firmware-name` nothing is ever written to the part.
    a warning.
 4. It writes through the TI serial bootloader (`DOWNLOAD`, `SEND_DATA` in 32-byte
    packets, `GET_STATUS` after each), confirmed against both stock bootloaders:
-   `DOWNLOAD` erases page by page before it ACKs, and `RUN` always starts the
-   application through the vector table at `0x1000`.
+   `DOWNLOAD` erases page by page before it ACKs, it accepts only `0x1000` (or
+   `0x0`, its own region) as the start, and `RUN` always starts the application
+   through the vector table at `0x1000`.
 5. It starts the application, reads its version back, and sends the config frame.
 
-**An interrupted write recovers itself.** The first page of the slot gets a small
-stub first (its reset vector writes `SYSRESETREQ`), then the body, then the real
-first page. Cut short anywhere before that last page, starting the application
+**An interrupted write recovers itself.** The whole slot is written once with a
+small stub in place of its first page (the stub's reset vector writes
+`SYSRESETREQ`), then a second `DOWNLOAD` at `0x1000`, one page long, erases that
+page and writes the real one. Cut short anywhere before that last page, starting the application
 lands straight back in the bootloader; the next probe finds the bootloader
 answering where the application should be, and writes again. A write that fails
 three times leaves the part in its bootloader with nothing sent to it.

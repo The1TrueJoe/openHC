@@ -22,7 +22,7 @@ description: |
   gives to the microcontroller in one config frame after bring-up. openHC's
   firmware drives nothing until then and refuses, entry by entry, a pin that
   cannot do the job (the IR carrier needs a timer CCP on the TM4C and a PWM
-  output on the LM3S); Control4's firmware ignores the frame.
+  output on the LM3S). Control4's firmware is never sent the frame.
 
 properties:
   compatible:
@@ -37,6 +37,7 @@ properties:
         description: Without the part, no firmware is ever loaded.
 
   current-speed:
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: Host link baud rate (460800 on the EA family, 115200 on the HC-800).
 
   firmware-name:
@@ -195,8 +196,12 @@ properties:
         allOf:
           - $ref: '#/$defs/line'
           - properties:
-              bias-pull-up: true
-              bias-pull-down: true
+              bias-pull-up:
+                type: boolean
+                description: Enable the pin's internal pull-up.
+              bias-pull-down:
+                type: boolean
+                description: Enable the pin's internal pull-down.
 
 patternProperties:
   '^jack@[0-9a-f]+$':
@@ -239,6 +244,7 @@ patternProperties:
         description: MCU user serial port, /dev/ttyOHC<n>.
       control4,uart-pins:
         $ref: /schemas/types.yaml#/definitions/uint32-array
+        description: The serial port's RX and TX pins.
         items:
           - description: RX port
             maximum: 7
@@ -263,8 +269,8 @@ patternProperties:
     required:
       - reg
     anyOf:
-      - required: [control4,ir-channel]
-      - required: [control4,uart]
+      - required: ['control4,ir-channel']
+      - required: ['control4,uart']
 
 $defs:
   line:

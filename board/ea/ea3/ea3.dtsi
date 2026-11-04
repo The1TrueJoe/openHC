@@ -7,44 +7,79 @@
 #define EA_LINE_80	"ac_pwr"
 
 /* Six IR jacks; IR 1-3 double as serial ports 1-3. */
+/* Pins: docs shared/io-mcu-pinmap (stock TM4C profile block 3). */
 &io_mcu {
-	control4,relays = <1>;
-	control4,contacts = <1>;
-	control4,ir-blaster;
-	control4,ir-receiver;
-
 	jack@1 {
 		reg = <1>;
 		label = "IR / Serial 1";
 		control4,ir-channel = <0>;
+		control4,ir-pin = <IOMCU_PORT_B 6>;
 		control4,uart = <0>;
+		control4,uart-pins = <IOMCU_PORT_E 4>, <IOMCU_PORT_E 5>;
+		control4,uart-mux-pins = <IOMCU_PORT_E 2>, <IOMCU_PORT_B 1>;
 	};
 	jack@2 {
 		reg = <2>;
 		label = "IR / Serial 2";
 		control4,ir-channel = <1>;
+		control4,ir-pin = <IOMCU_PORT_F 2>;
 		control4,uart = <1>;
+		control4,uart-pins = <IOMCU_PORT_E 0>, <IOMCU_PORT_E 1>;
+		control4,uart-mux-pins = <IOMCU_PORT_E 3>, <IOMCU_PORT_B 3>;
 	};
 	jack@3 {
 		reg = <3>;
 		label = "IR / Serial 3";
 		control4,ir-channel = <2>;
+		control4,ir-pin = <IOMCU_PORT_B 0>;
 		control4,uart = <2>;
+		control4,uart-pins = <IOMCU_PORT_C 4>, <IOMCU_PORT_C 5>;
+		control4,uart-mux-pins = <IOMCU_PORT_A 7>, <IOMCU_PORT_B 5>;
 	};
 	jack@4 {
 		reg = <4>;
 		label = "IR 4";
 		control4,ir-channel = <3>;
+		control4,ir-pin = <IOMCU_PORT_B 2>;
 	};
 	jack@5 {
 		reg = <5>;
 		label = "IR 5";
 		control4,ir-channel = <4>;
+		control4,ir-pin = <IOMCU_PORT_D 0>;
 	};
 	jack@6 {
 		reg = <6>;
 		label = "IR 6";
 		control4,ir-channel = <5>;
+		control4,ir-pin = <IOMCU_PORT_D 2>;
+	};
+	ir-blaster {
+		control4,ir-channel = <6>;
+		control4,ir-pin = <IOMCU_PORT_D 4>;
+	};
+
+	relays {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		relay@0 {
+			reg = <0>;
+			label = "Relay 1";
+			control4,pin = <IOMCU_PORT_A 2>;
+		};
+	};
+
+	contacts {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		contact@0 {
+			reg = <0>;
+			label = "Contact 1";
+			control4,pin = <IOMCU_PORT_F 0>;
+			control4,active-low;
+		};
 	};
 };
 

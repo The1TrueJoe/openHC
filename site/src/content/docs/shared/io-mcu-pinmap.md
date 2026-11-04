@@ -6,8 +6,10 @@ sidebar:
 ---
 
 The pin each IO function sits on, per board, read out of Control4's stock IO-MCU
-application images. This is the input for the device-tree pin properties in
-[#134](https://github.com/The1TrueJoe/openHC/issues/134). The protocol, bring-up and
+application images. These are the pins in each EA model's `.dtsi`
+(`board/ea/<model>/<model>.dtsi`, the shared receiver and heartbeat in `ea.dtsi`)
+and in the HC-800's `board/hc800/acpi/ssdt-iomcu.asl`. Inferred rows are marked
+there too. The protocol, bring-up and
 history are on [The IO microcontroller](/shared/io-mcu/).
 
 Facts only: table layouts, addresses, pin numbers, and the evidence for each. No

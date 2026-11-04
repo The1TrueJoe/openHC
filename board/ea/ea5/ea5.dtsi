@@ -19,53 +19,125 @@
  * Eight IR jacks; IR 1 and 2 double as serial ports 3 and 4 (1 and 2 are the
  * DB9s, which are not on the MCU).
  */
+/* Pins: docs shared/io-mcu-pinmap (stock TM4C profile block 4, inferred). */
 &io_mcu {
-	control4,relays = <4>;
-	control4,contacts = <4>;
-	control4,ir-blaster;
-	control4,ir-receiver;
-
 	jack@1 {
 		reg = <1>;
 		label = "IR 1 / Serial 3";
 		control4,ir-channel = <0>;
+		control4,ir-pin = <IOMCU_PORT_B 6>;
 		control4,uart = <0>;
+		control4,uart-pins = <IOMCU_PORT_E 4>, <IOMCU_PORT_E 5>;
+		control4,uart-mux-pins = <IOMCU_PORT_E 2>, <IOMCU_PORT_B 1>;
 	};
 	jack@2 {
 		reg = <2>;
 		label = "IR 2 / Serial 4";
 		control4,ir-channel = <1>;
+		control4,ir-pin = <IOMCU_PORT_F 2>;
 		control4,uart = <1>;
+		control4,uart-pins = <IOMCU_PORT_E 0>, <IOMCU_PORT_E 1>;
+		control4,uart-mux-pins = <IOMCU_PORT_E 3>, <IOMCU_PORT_B 3>;
 	};
 	jack@3 {
 		reg = <3>;
 		label = "IR 3";
 		control4,ir-channel = <2>;
+		control4,ir-pin = <IOMCU_PORT_B 0>;
 	};
 	jack@4 {
 		reg = <4>;
 		label = "IR 4";
 		control4,ir-channel = <3>;
+		control4,ir-pin = <IOMCU_PORT_B 2>;
 	};
 	jack@5 {
+		/* pin from block 4, inferred (#128) */
 		reg = <5>;
 		label = "IR 5";
 		control4,ir-channel = <4>;
+		control4,ir-pin = <IOMCU_PORT_D 0>;
 	};
 	jack@6 {
+		/* pin from block 4, inferred (#128) */
 		reg = <6>;
 		label = "IR 6";
 		control4,ir-channel = <5>;
+		control4,ir-pin = <IOMCU_PORT_D 2>;
 	};
 	jack@7 {
+		/* pin from block 4, inferred (#128) */
 		reg = <7>;
 		label = "IR 7";
 		control4,ir-channel = <6>;
+		control4,ir-pin = <IOMCU_PORT_C 4>;
 	};
 	jack@8 {
+		/* pin from block 4, inferred (#128) */
 		reg = <8>;
 		label = "IR 8";
 		control4,ir-channel = <7>;
+		control4,ir-pin = <IOMCU_PORT_C 6>;
+	};
+	ir-blaster {
+		control4,ir-channel = <8>;
+		control4,ir-pin = <IOMCU_PORT_D 4>;
+	};
+
+	relays {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		relay@0 {
+			reg = <0>;
+			label = "Relay 1";
+			control4,pin = <IOMCU_PORT_A 2>;
+		};
+		relay@1 {
+			reg = <1>;
+			label = "Relay 2";
+			control4,pin = <IOMCU_PORT_A 3>;
+		};
+		relay@2 {
+			reg = <2>;
+			label = "Relay 3";
+			control4,pin = <IOMCU_PORT_A 4>;
+		};
+		relay@3 {
+			reg = <3>;
+			label = "Relay 4";
+			control4,pin = <IOMCU_PORT_A 5>;
+		};
+	};
+
+	contacts {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		contact@0 {
+			reg = <0>;
+			label = "Contact 1";
+			control4,pin = <IOMCU_PORT_F 0>;
+			control4,active-low;
+		};
+		contact@1 {
+			reg = <1>;
+			label = "Contact 2";
+			control4,pin = <IOMCU_PORT_F 1>;
+			control4,active-low;
+		};
+		contact@2 {
+			reg = <2>;
+			label = "Contact 3";
+			control4,pin = <IOMCU_PORT_F 3>;
+			control4,active-low;
+		};
+		contact@3 {
+			reg = <3>;
+			label = "Contact 4";
+			control4,pin = <IOMCU_PORT_F 4>;
+			control4,active-low;
+		};
 	};
 };
 
