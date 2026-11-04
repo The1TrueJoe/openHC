@@ -5,6 +5,9 @@
  * Carriers are timer halves in PWM mode, gated by handing the pin between the
  * timer and a GPIO driven low; capture is a 32-bit timer half in edge-time
  * mode; bursts are timed by TIMER4 as one 32-bit one-shot.
+ *
+ * Nothing is inherited from the bootloader: its RUN gates off and resets
+ * UART0 before it jumps, so the clock and the host link are set up here.
  */
 #include "../common/pl011.h"
 #include "hal.h"
@@ -13,6 +16,9 @@
 const part_desc *hal_part = &part_tm4c1231d5;
 
 #define SYSCTL          0x400FE000u
+#define RCC             REG(SYSCTL + 0x060u)
+#define RCC2            REG(SYSCTL + 0x070u)
+#define PLLSTAT         REG(SYSCTL + 0x168u)
 #define RCGCTIMER       REG(SYSCTL + 0x604u)
 #define RCGCGPIO        REG(SYSCTL + 0x608u)
 #define RCGCUART        REG(SYSCTL + 0x618u)
@@ -108,22 +114,62 @@ static void burst_init(void);
 #define UART0 0x4000C000u
 #define UART_CC(b) REG((b) + 0xFC8u)
 
+/* RCC2 for 80 MHz: PIOSC -> PLL (400 MHz) / 5, the clock stock and its bootloader run at */
+#define RCC2_USERCC2    (1u << 31)
+#define RCC2_DIV400     (1u << 30)
+#define RCC2_SYSDIV_M   (0x7Fu << 22)   /* {SYSDIV2, SYSDIV2LSB} with DIV400 */
+#define RCC2_SYSDIV_80  (4u << 22)
+#define RCC2_PWRDN2     (1u << 13)
+#define RCC2_BYPASS2    (1u << 11)
+#define RCC2_OSCSRC_M   (7u << 4)
+#define RCC2_PIOSC      (1u << 4)
+#define RCC_XTAL_M      (0x1Fu << 6)
+#define RCC_XTAL_16MHZ  (0x15u << 6)    /* the PLL's input is 16 MHz either way */
+#define RCC_USESYSDIV   (1u << 22)
+#define CLK_HZ          80000000u
+
+static void clock_init(void)
+{
+    uint32_t want = RCC2_USERCC2 | RCC2_DIV400 | RCC2_SYSDIV_80 | RCC2_PIOSC;
+    uint32_t mask = RCC2_USERCC2 | RCC2_DIV400 | RCC2_SYSDIV_M | RCC2_PWRDN2 |
+                    RCC2_BYPASS2 | RCC2_OSCSRC_M;
+
+    if ((RCC2 & mask) == want && (PLLSTAT & 1u))
+        return;                 /* the bootloader left it there */
+    RCC2 |= RCC2_USERCC2 | RCC2_BYPASS2;
+    RCC = (RCC & ~RCC_XTAL_M) | RCC_XTAL_16MHZ | RCC_USESYSDIV;
+    RCC2 = (RCC2 & ~(RCC2_OSCSRC_M | RCC2_PWRDN2 | RCC2_SYSDIV_M)) |
+           RCC2_PIOSC | RCC2_DIV400 | RCC2_SYSDIV_80;
+    /* PLLSTAT, not the lock interrupt: a PLL already locked never raises it again */
+    for (uint32_t i = 0; i < 1000000u && !(PLLSTAT & 1u); i++)
+        ;
+    RCC2 &= ~RCC2_BYPASS2;
+}
+
 void hal_init(void)
 {
     SCB_VTOR = 0x00001000u;     /* the bootloader leaves VTOR at its own table */
-
-    /* PIOSC as the UART clock would hide the system clock from the divisor */
-    if ((UART_CC(UART0) & 0xfu) == 0)
-        clk = clock_from_divisor(hal_part->host_baud, UART_IBRD(UART0), UART_FBRD(UART0), clk);
-    else
-        clk = 16000000u;
+    clock_init();
+    clk = CLK_HZ;
 
     SYSTICK_LOAD = clk / 1000u - 1u;
     SYSTICK_VAL = 0;
     SYSTICK_CTRL = 7;           /* core clock, interrupt, enable */
 
+    /* UART0 on PA0/PA1: the bootloader's RUN left it gated off and in reset */
+    RCGCUART |= 1u;
+    while (!(PRUART & 1u))
+        ;
+    RCGCGPIO |= 1u;
+    while (!(PRGPIO & 1u))
+        ;
+    GPIO_AMSEL(0) &= ~3u;
+    GPIO_PCTL(0) = (GPIO_PCTL(0) & ~0xFFu) | 0x11u;
+    GPIO_AFSEL(0) |= 3u;
+    GPIO_DEN(0) |= 3u;
+    UART_CC(UART0) = 0;         /* system clock */
     ring_init(&host_rx, host_rx_buf, sizeof(host_rx_buf));
-    pl011_take_over(UART0);
+    pl011_setup(UART0, clk, hal_part->host_baud, 8, 0, 1);
     nvic_enable(5, PRIO_UART);
     burst_init();
     __asm volatile("cpsie i");

@@ -6,6 +6,9 @@
  * TM4C's by handing the pin between PWM and a GPIO driven low. Bursts are
  * timed by TIMER0 as a 32-bit one-shot; the receiver is a GPIO edge interrupt
  * timestamped from TIMER1 free-running.
+ *
+ * Nothing is inherited from the bootloader: its RUN gates off and resets
+ * UART0 before it jumps, so the clock and the host link are set up here.
  */
 #include "../common/pl011.h"
 #include "hal.h"
@@ -14,7 +17,10 @@
 const part_desc *hal_part = &part_lm3s1162;
 
 #define SYSCTL      0x400FE000u
+#define RIS         REG(SYSCTL + 0x050u)
+#define MISC        REG(SYSCTL + 0x058u)
 #define RCC         REG(SYSCTL + 0x060u)
+#define RCC2        REG(SYSCTL + 0x070u)
 #define RCGC0       REG(SYSCTL + 0x100u)
 #define RCGC1       REG(SYSCTL + 0x104u)
 #define RCGC2       REG(SYSCTL + 0x108u)
@@ -83,17 +89,47 @@ static void gate(volatile uint32_t *rcgc, uint32_t bit)
 
 /* ---- core ---- */
 
+/*
+ * RCC as stock and its bootloader set it: 6 MHz crystal -> PLL (200 MHz) / 4
+ * = 50 MHz. Stock's AUTO_BAUD answer, 115207, is 50 MHz's divisor for 115200.
+ */
+#define RCC_50MHZ   0x01C002C0u     /* SYSDIV /4, USESYSDIV, XTAL 6 MHz, main osc, PLL */
+#define RCC_BYPASS  (1u << 11)
+#define RCC_PWRDN   (1u << 13)
+#define RCC_PLLLRIS (1u << 6)
+#define RCC2_USERCC2 (1u << 31)
+
+static void clock_init(void)
+{
+    RCC2 &= ~RCC2_USERCC2;
+    if ((RCC & ~(RCC_USEPWMDIV | (7u << 17))) == RCC_50MHZ)
+        return;                 /* the bootloader left it there */
+    RCC = (RCC | RCC_BYPASS) & ~(1u << 22);
+    MISC = RCC_PLLLRIS;
+    RCC = (RCC_50MHZ | RCC_BYPASS) & ~(1u << 22);
+    RCC = RCC_50MHZ | RCC_BYPASS;
+    for (uint32_t i = 0; i < 1000000u && !(RIS & RCC_PLLLRIS); i++)
+        ;
+    RCC = RCC_50MHZ;
+}
+
 void hal_init(void)
 {
     SCB_VTOR = 0x00001000u;
-    clk = clock_from_divisor(hal_part->host_baud, UART_IBRD(UART0), UART_FBRD(UART0), clk);
+    clock_init();
+    clk = 50000000u;
 
     SYSTICK_LOAD = clk / 1000u - 1u;
     SYSTICK_VAL = 0;
     SYSTICK_CTRL = 7;
 
+    /* UART0 on PA0/PA1: the bootloader's RUN left it gated off and in reset */
+    gate(&RCGC1, 1u << 0);
+    gate(&RCGC2, 1u << 0);
+    GPIO_AFSEL(0) |= 3u;
+    GPIO_DEN(0) |= 3u;
     ring_init(&host_rx, host_rx_buf, sizeof(host_rx_buf));
-    pl011_take_over(UART0);
+    pl011_setup(UART0, clk, hal_part->host_baud, 8, 0, 1);
     nvic_enable(5, PRIO_UART);
 
     gate(&RCGC1, (1u << 16) | (1u << 17));  /* TIMER0, TIMER1 */

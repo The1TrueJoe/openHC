@@ -55,27 +55,4 @@ static inline void sys_reset(void)
         ;
 }
 
-/*
- * The bootloader has autobauded the host link, so its divisor holds the real
- * system clock: clk = baud * 16 * (IBRD + FBRD / 64). Snapped to a standard
- * rate within 1%, the divisor's own rounding.
- */
-static inline uint32_t clock_from_divisor(uint32_t baud, uint32_t ibrd, uint32_t fbrd,
-                                          uint32_t fallback)
-{
-    static const uint32_t std[] = {
-        8000000u, 12000000u, 16000000u, 20000000u, 25000000u,
-        40000000u, 50000000u, 66666667u, 80000000u,
-    };
-    uint32_t clk;
-
-    if (!ibrd || ibrd > 1000u)
-        return fallback;
-    clk = (baud / 4u) * (64u * ibrd + (fbrd & 0x3fu));
-    for (unsigned i = 0; i < sizeof(std) / sizeof(std[0]); i++)
-        if (clk > std[i] - std[i] / 100u && clk < std[i] + std[i] / 100u)
-            return std[i];
-    return clk;
-}
-
 #endif

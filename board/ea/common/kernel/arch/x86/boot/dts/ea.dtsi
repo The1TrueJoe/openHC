@@ -261,6 +261,7 @@
 	io_mcu: io-mcu {
 		compatible = "control4,tm4c1231d5-io-mcu", "control4,io-mcu";
 		current-speed = <460800>;
+		firmware-name = "openhc/io-mcu-tm4c1231d5.bin";
 		/* io_reset; the loader needs it to replace Control4's firmware */
 		reset-gpios = <&gpio 7 GPIO_ACTIVE_LOW>;
 		control4,heartbeat-pin = <IOMCU_PORT_C 7>;
