@@ -73,13 +73,6 @@
  * kernel so devices probe out of reset. Feature lines live with the feature.
  */
 &gpio {
-	/* IO microcontroller (relays, contacts, IR) */
-	io-reset-hog {
-		gpio-hog;
-		gpios = <7 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "io_reset";
-	};
 	/* CP2104 USB-serial bridge in front of the EM357 Zigbee radio */
 	usb-2-serial-reset-hog {
 		gpio-hog;
@@ -268,6 +261,8 @@
 	io_mcu: io-mcu {
 		compatible = "control4,tm4c1231d5-io-mcu", "control4,io-mcu";
 		current-speed = <460800>;
+		/* io_reset; the loader needs it to replace Control4's firmware */
+		reset-gpios = <&gpio 7 GPIO_ACTIVE_LOW>;
 		control4,heartbeat-pin = <IOMCU_PORT_C 7>;
 		#address-cells = <1>;
 		#size-cells = <0>;
