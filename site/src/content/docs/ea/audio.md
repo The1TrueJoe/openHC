@@ -360,7 +360,10 @@ destination walking, 128-byte bursts); the position is the destination
   the left subframe of a block's first frame (the Z preamble, every 192
   frames), so capture start reads the FIFO by hand through one and its right
   partner, and the DMA's first word is a left subframe. With no input it gives
-  up after 10 ms.
+  up after 10 ms. A relock mid-stream (the source paused or restarted) can
+  land on either subframe, so each period tick looks for the flag in what was
+  captured: on an odd word the stream has slipped, and the driver reports an
+  xrun, whose restart aligns it again.
 - A capture engine finishes a descriptor only while words arrive, so with the
   coax in dead a stopped stream can sit in one. Prepare refuses with `-EBUSY`
   until it has halted rather than rewrite a ring the engine walks.

@@ -78,6 +78,7 @@ struct ce5300_stream {
 	struct snd_pcm_substream *substream;
 
 	struct hrtimer		tick;		/* one period; reports elapsed periods */
+	u32			scan;		/* S/PDIF in: next buffer byte to check for the block flag */
 	ktime_t			period;
 	atomic_t		running;
 };
@@ -487,6 +488,7 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 		writel(st->flags, dma_reg(st, CE5300_DMA_CTRL));
 		if (st == &st->i2s->st[CE5300_SPDIF_OUT])
 			ce5300_spdif_tx_start(st);
+		st->scan = 0;
 		atomic_set(&st->running, 1);
 		hrtimer_start(&st->tick, st->period, HRTIMER_MODE_REL_SOFT);
 		return 0;
@@ -537,6 +539,31 @@ static int ce5300_pcm_sync_stop(struct snd_soc_component *comp,
 	return 0;
 }
 
+/*
+ * S/PDIF in: has the stream slipped a subframe? The block flag is on a left
+ * word, so in an aligned buffer it is at an even word. A relock (the source
+ * paused or restarted; the coax out does at every stream start) can land on
+ * either subframe (MEASURED 2026-11-04: 2 of 24 captures swapped).
+ */
+static bool ce5300_spdif_slipped(struct ce5300_stream *st)
+{
+	struct snd_pcm_runtime *rt = st->substream->runtime;
+	u32 size = snd_pcm_lib_buffer_bytes(st->substream);
+	u32 pos = readl(dma_reg(st, CE5300_DMA_DST)) - (u32)rt->dma_addr;
+	const __le32 *buf = (const __le32 *)rt->dma_area;
+	bool slipped = false;
+
+	if (pos >= size)
+		return false;
+	pos &= ~3;
+	while (st->scan != pos) {
+		if (le32_to_cpu(buf[st->scan / 4]) & CE5300_RX_SPDIF_BLOCK)
+			slipped = (st->scan / 4) & 1;
+		st->scan = (st->scan + 4) % size;
+	}
+	return slipped;
+}
+
 /* One period has gone by: let ALSA read the position and refill. */
 static enum hrtimer_restart ce5300_pcm_tick(struct hrtimer *t)
 {
@@ -544,6 +571,12 @@ static enum hrtimer_restart ce5300_pcm_tick(struct hrtimer *t)
 
 	if (!atomic_read(&st->running))
 		return HRTIMER_NORESTART;
+	/* A slipped S/PDIF in restarts, and the restart aligns it again. */
+	if (st == &st->i2s->st[CE5300_SPDIF_IN] && ce5300_spdif_slipped(st)) {
+		dev_dbg(st->i2s->dev, "S/PDIF in slipped a subframe: restarting\n");
+		snd_pcm_stop_xrun(st->substream);
+		return HRTIMER_NORESTART;
+	}
 	/* May stop the stream (xrun, drain), which clears running. */
 	snd_pcm_period_elapsed(st->substream);
 	if (!atomic_read(&st->running))
