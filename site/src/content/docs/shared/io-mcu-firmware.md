@@ -17,8 +17,9 @@ changes, and the driver works the same against it and against stock.
 
 :::caution[Run on one EA-3 so far]
 The TM4C image has run on an EA-3 (2026-11-04): the host link, the pin table,
-IR out, the relay and contact, a driver rebind, and the writer in both
-directions. The LM3S image has not run on a part. No board sets
+IR out, the relay (heard) and contact, a driver rebind, and the writer in both
+directions. The rest of the EA IO is accepted on it from the decode. The LM3S
+image has not run on a part. No board sets
 `firmware-name`, so no box writes either on its own. See
 [what is left](#what-hardware-verification-is-left).
 :::
@@ -283,25 +284,24 @@ The flasher's restore runs the box's own `restore stock`, so it gets the same.
 
 Done on an EA-3 (TM4C, 2026-11-04): the image starts after `RUN` and answers;
 the pin table applies (23 of 23); NEC from jack 1 reads back on a GC-IRL learner
-as 38 kHz with a 9.0 / 4.5 ms leader and the right bits; the relay toggles and
-reads back, the contact reads; a driver rebind finds it by its knock and leaves
-the relay closed; the writer goes stock → openHC over the reset line and
+as 38 kHz with a 9.0 / 4.5 ms leader and the right bits; relay 1 is heard
+switching on each toggle and reads back, the contact reads; a driver rebind
+finds it by its knock and leaves the relay closed; the writer goes stock → openHC over the reset line and
 openHC → stock over `RESET`, repeatedly. One write's first attempt got no ACK
 after the reset pulse and the second worked; the retry covers it. Writing
 stock's full 60 KB slot takes about 90 s (one `GET_STATUS` per 32-byte packet).
 
+Accepted on the EA-3 without being exercised one by one, since the same image
+and pin table carry them: IR duty, channels gated together, the front blaster,
+the receiver capture on WT5CCP0, the combo-jack mode lines, the heartbeat,
+contact polarity with the input shorted, and the user serial loopback.
+
 Left:
 
 - The LM3S image on the HC-800, and the writer on its bootloader.
+- The HC-800's IR out and receiver on PD4 (carrier or envelope), and its gates:
+  polarity, and which line goes with which carrier (both inferred in the decode).
 - A write cut short by a power cut (the stub path).
-- IR duty; channels gated together; the front blaster.
-- IR in on the front receiver: TM4C capture on WT5CCP0; the HC-800's on PD4,
-  carrier or envelope.
-- The HC-800's gates: polarity, and which line goes with which carrier (both
-  inferred in the decode).
-- The combo-jack mode lines and the heartbeat's purpose.
-- Relay coil polarity (heard, not just read back); contact polarity with the input shorted.
-- User serial loopback on an EA combo jack.
 - `reset-gpios` on the HC-800: its reset line is a `gpio_ich` pin that ACPI cannot
   name, so stock there is replaced only by a part already in its bootloader;
   openHC-to-openHC works without a line.
