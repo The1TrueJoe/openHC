@@ -1794,15 +1794,17 @@ static void ohc_cfg_add(u8 *p, int *n, u8 kind, int index, struct ohc_pin pin, u
 /*
  * CONFIG_SET: every pin the node describes, as {kind, index, port, pin,
  * flags}. openHC's firmware starts with nothing driven and applies this,
- * NAKing per entry what the part cannot do; stock firmware drops it unanswered.
+ * NAKing per entry what the part cannot do. Control4's firmware is not sent it.
  */
 static int ohc_send_config(struct ohc_iomcu *mcu)
 {
 	const struct ohc_geometry *geo = &mcu->geo;
 	struct ohc_frame *f;
 	int i, n = 0, bad = 0, ret;
-	bool ours = ohc_ours(mcu);
 	u8 *p, gate_flags;
+
+	if (!ohc_ours(mcu))
+		return 0;
 
 	p = kzalloc(OHC_CFG_HDR + OHC_CFG_MAX_ENTRIES * OHC_CFG_ENTRY, GFP_KERNEL);
 	f = kmalloc(sizeof(*f), GFP_KERNEL);
@@ -1848,19 +1850,15 @@ static int ohc_send_config(struct ohc_iomcu *mcu)
 
 	ret = 0;
 	if (!n) {
-		if (ours)
-			dev_warn(mcu->dev, "the node gives no pins: openHC's firmware drives nothing\n");
+		dev_warn(mcu->dev, "the node gives no pins: openHC's firmware drives nothing\n");
 		goto out;
 	}
 	p[0] = OHC_CFG_VERSION;
 	p[1] = n;
 	ret = __ohc_request(mcu, OHC_OP_CONFIG_SET, p, OHC_CFG_HDR + n * OHC_CFG_ENTRY, f,
-			    ours ? OHC_TIMEOUT_MS : 200);
+			    OHC_TIMEOUT_MS);
 	if (ret) {
-		if (ours)
-			dev_err(mcu->dev, "no answer to the pin table: %d\n", ret);
-		else
-			ret = 0;	/* stock: drops it, runs its own */
+		dev_err(mcu->dev, "no answer to the pin table: %d\n", ret);
 		goto out;
 	}
 	if (f->opcode != OHC_OP_CONFIG_RESP || f->len < 3 || f->payload[0] != OHC_CFG_VERSION) {
@@ -2098,21 +2096,28 @@ static const u8 ohc_reset_stub[] = {
 };
 
 /*
- * The application slot, its first page last: the stub goes in first, then the
- * body, then the real vector table. Cut short anywhere before that last page,
- * the slot starts into the stub, which resets into the bootloader, and the next
- * probe finds the part there and writes it again. The bootloader's 4 KB below
- * OHC_APP_BASE is never addressed.
+ * The application slot, its first page last. The bootloader takes DOWNLOAD only
+ * at the slot's base (and erases from there), so: the whole slot once with the
+ * stub in place of the first page, then the first page alone. Cut short
+ * anywhere before that last page, the slot starts into the stub, which resets
+ * into the bootloader, and the next probe finds the part there and writes it
+ * again. The bootloader's 4 KB below OHC_APP_BASE is never addressed.
  */
 static int ohc_bl_write(struct ohc_iomcu *mcu, const struct ohc_img *img)
 {
 	u32 first = min_t(u32, img->size, OHC_FLASH_PAGE);
+	u8 *slot;
 	int ret;
 
-	ret = ohc_bl_download(mcu, OHC_APP_BASE, ohc_reset_stub, sizeof(ohc_reset_stub));
-	if (!ret && img->size > first)
-		ret = ohc_bl_download(mcu, OHC_APP_BASE + first, img->data + first,
-				      img->size - first);
+	if (img->size <= first)
+		return ohc_bl_download(mcu, OHC_APP_BASE, img->data, img->size);
+	slot = kmemdup(img->data, img->size, GFP_KERNEL);
+	if (!slot)
+		return -ENOMEM;
+	memset(slot, 0xff, first);
+	memcpy(slot, ohc_reset_stub, sizeof(ohc_reset_stub));
+	ret = ohc_bl_download(mcu, OHC_APP_BASE, slot, img->size);
+	kfree(slot);
 	if (!ret)
 		ret = ohc_bl_download(mcu, OHC_APP_BASE, img->data, first);
 	return ret;

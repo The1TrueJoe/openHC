@@ -45,9 +45,10 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
              * jacks plus the front blaster on IROUT_SEND bit 6; the front
              * receiver; four relays (a 0-based index on the wire) and four
              * contacts; no MCU-routed serial (the rear RS-232 ports are host
-             * UARTs). Pins (control4,ir-pin, control4,pin) go in once the
-             * LM3S1162 pin map is decoded; until then the driver sends no
-             * pin table and the part runs its own.
+             * UARTs). Pins from docs shared/io-mcu-pinmap (stock LM3S1162
+             * block 2), as <port pin> with port A..H = 0..7: two PWM carriers
+             * gated onto each jack by two active-low lines, a third line per
+             * jack held low.
              */
             Name (_DSD, Package ()
             {
@@ -57,8 +58,11 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "compatible", Package () {
                         "control4,lm3s1162-io-mcu", "control4,io-mcu" } },
                     Package () { "current-speed", 115200 },
-                    /* an empty ir-receiver node would not exist in ACPI */
-                    Package () { "control4,ir-receiver", 1 },
+                    Package () { "control4,ir-carriers", Package () { 3, 1, 5, 3 } },
+                    Package () { "control4,ir-gates-active-low", 1 },
+                    Package () { "control4,hold-low-pins", Package () {
+                        5, 4, 5, 5, 0, 7, 0, 6, 3, 6, 3, 7 } },
+                    Package () { "control4,heartbeat-pin", Package () { 5, 1 } },
                 },
                 ToUUID ("dbb8e3e6-5886-4ba6-8795-1319f52a966b"),
                 Package ()
@@ -70,6 +74,7 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "jack@5", "JK05" },
                     Package () { "jack@6", "JK06" },
                     Package () { "ir-blaster", "IRBL" },
+                    Package () { "ir-receiver", "IRRX" },
                     Package () { "relays", "RLYS" },
                     Package () { "contacts", "CONS" },
                 }
@@ -82,6 +87,7 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "reg", 1 },
                     Package () { "label", "IR 1" },
                     Package () { "control4,ir-channel", 0 },
+                    Package () { "control4,ir-gates", Package () { 2, 7, 0, 2, 6, 1 } },
                 }
             })
             Name (JK02, Package ()
@@ -92,6 +98,7 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "reg", 2 },
                     Package () { "label", "IR 2" },
                     Package () { "control4,ir-channel", 1 },
+                    Package () { "control4,ir-gates", Package () { 2, 5, 0, 2, 4, 1 } },
                 }
             })
             Name (JK03, Package ()
@@ -102,6 +109,7 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "reg", 3 },
                     Package () { "label", "IR 3" },
                     Package () { "control4,ir-channel", 2 },
+                    Package () { "control4,ir-gates", Package () { 1, 4, 0, 1, 5, 1 } },
                 }
             })
             Name (JK04, Package ()
@@ -112,6 +120,7 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "reg", 4 },
                     Package () { "label", "IR 4" },
                     Package () { "control4,ir-channel", 3 },
+                    Package () { "control4,ir-gates", Package () { 1, 6, 0, 5, 2, 1 } },
                 }
             })
             Name (JK05, Package ()
@@ -122,6 +131,7 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "reg", 5 },
                     Package () { "label", "IR 5" },
                     Package () { "control4,ir-channel", 4 },
+                    Package () { "control4,ir-gates", Package () { 4, 0, 0, 4, 1, 1 } },
                 }
             })
             Name (JK06, Package ()
@@ -132,12 +142,22 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
                     Package () { "reg", 6 },
                     Package () { "label", "IR 6" },
                     Package () { "control4,ir-channel", 5 },
+                    Package () { "control4,ir-gates", Package () { 4, 2, 0, 4, 3, 1 } },
                 }
             })
             Name (IRBL, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "control4,ir-channel", 6 } }
+                Package ()
+                {
+                    Package () { "control4,ir-channel", 6 },
+                    Package () { "control4,ir-gates", Package () { 5, 0, 0, 3, 5, 1 } },
+                }
+            })
+            Name (IRRX, Package ()
+            {
+                ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                Package () { Package () { "control4,ir-pin", Package () { 3, 4 } } }
             })
             Name (RLYS, Package ()
             {
@@ -153,22 +173,42 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
             Name (RLY0, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 0 } }
+                Package ()
+                {
+                    Package () { "reg", 0 },
+                    Package () { "label", "Relay 1" },
+                    Package () { "control4,pin", Package () { 0, 5 } },
+                }
             })
             Name (RLY1, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 1 } }
+                Package ()
+                {
+                    Package () { "reg", 1 },
+                    Package () { "label", "Relay 2" },
+                    Package () { "control4,pin", Package () { 0, 4 } },
+                }
             })
             Name (RLY2, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 2 } }
+                Package ()
+                {
+                    Package () { "reg", 2 },
+                    Package () { "label", "Relay 3" },
+                    Package () { "control4,pin", Package () { 0, 3 } },
+                }
             })
             Name (RLY3, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 3 } }
+                Package ()
+                {
+                    Package () { "reg", 3 },
+                    Package () { "label", "Relay 4" },
+                    Package () { "control4,pin", Package () { 0, 2 } },
+                }
             })
             Name (CONS, Package ()
             {
@@ -184,22 +224,46 @@ DefinitionBlock ("", "SSDT", 2, "OPENHC", "IOMCU", 0x00000001)
             Name (CON0, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 0 } }
+                Package ()
+                {
+                    Package () { "reg", 0 },
+                    Package () { "label", "Contact 1" },
+                    Package () { "control4,pin", Package () { 1, 0 } },
+                    Package () { "control4,active-low", 1 },
+                }
             })
             Name (CON1, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 1 } }
+                Package ()
+                {
+                    Package () { "reg", 1 },
+                    Package () { "label", "Contact 2" },
+                    Package () { "control4,pin", Package () { 1, 1 } },
+                    Package () { "control4,active-low", 1 },
+                }
             })
             Name (CON2, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 2 } }
+                Package ()
+                {
+                    Package () { "reg", 2 },
+                    Package () { "label", "Contact 3" },
+                    Package () { "control4,pin", Package () { 1, 2 } },
+                    Package () { "control4,active-low", 1 },
+                }
             })
             Name (CON3, Package ()
             {
                 ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                Package () { Package () { "reg", 3 } }
+                Package ()
+                {
+                    Package () { "reg", 3 },
+                    Package () { "label", "Contact 4" },
+                    Package () { "control4,pin", Package () { 1, 3 } },
+                    Package () { "control4,active-low", 1 },
+                }
             })
         }
     }

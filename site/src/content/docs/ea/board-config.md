@@ -220,12 +220,17 @@ interfaces that are up, wired first.
 ### IO
 
 Every EA's IO microcontroller is the `&io_mcu` node (`control4,io-mcu`) on
-uart1. What sits behind the part (relays, contacts, IR jacks, the front blaster
-and receiver, the MCU-routed serial ports) and its line rate are in the model's
-device tree (`<model>.dtsi`); the kernel binds the part from it at boot and iod reads the counts
-back from `/sys/class/ohc/iomcu`. The combo jacks are the MCU-routed UARTs: a
-jack is IR or serial, never both. No EA has a host serial port. See
-[the IO-MCU](/shared/io-mcu/) and [IO naming](/shared/io-naming/).
+uart1. What sits behind the part is in the model's device tree
+(`<model>.dtsi`), each with its microcontroller pin: the IR jacks, the front
+blaster, the relays and contacts (`relays`/`contacts` nodes), and the combo
+jacks' UART and IR/serial switch lines. The receiver and heartbeat, the same on
+every EA, are in `ea.dtsi`. The pins come from the
+[decoded stock tables](/shared/io-mcu-pinmap/); the EA-5's jacks 5-8 are
+inferred. The kernel binds the part at boot and iod reads the counts back from
+`/sys/class/ohc/iomcu`. The pins only reach openHC's own MCU firmware; with
+Control4's they are unused. A combo jack is IR or serial, never both. No EA has
+a host serial port. See [the IO-MCU](/shared/io-mcu/) and
+[IO naming](/shared/io-naming/).
 
 ### Wi-Fi
 
