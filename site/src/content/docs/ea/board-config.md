@@ -227,8 +227,9 @@ jacks' UART and IR/serial switch lines. The receiver and heartbeat, the same on
 every EA, are in `ea.dtsi`. The pins come from the
 [decoded stock tables](/shared/io-mcu-pinmap/); the EA-5's jacks 5-8 are
 inferred. The kernel binds the part at boot and iod reads the counts back from
-`/sys/class/ohc/iomcu`. The pins only reach openHC's own MCU firmware; with
-Control4's they are unused. A combo jack is IR or serial, never both. No EA has
+`/sys/class/ohc/iomcu`. `ea.dtsi` names openHC's MCU firmware in
+`firmware-name`, so the kernel writes it at boot when the part runs anything
+else, then sends it the pins. A combo jack is IR or serial, never both. No EA has
 a host serial port. See [the IO-MCU](/shared/io-mcu/) and
 [IO naming](/shared/io-naming/).
 

@@ -18,9 +18,9 @@ changes, and the driver works the same against it and against stock.
 :::caution[Run on one EA-3 so far]
 The TM4C image has run on an EA-3 (2026-11-04): the host link, the pin table,
 IR out, the relay (heard) and contact, a driver rebind, and the writer in both
-directions. The rest of the EA IO is accepted on it from the decode. The LM3S
-image has not run on a part. No board sets
-`firmware-name`, so no box writes either on its own. See
+directions. The rest of the EA IO is accepted on it from the decode. Every EA
+sets `firmware-name` in `ea.dtsi`, so an EA writes the TM4C image at boot. The
+LM3S image has not run on a part, and the HC-800 does not set it. See
 [what is left](#what-hardware-verification-is-left).
 :::
 
@@ -227,6 +227,7 @@ nodes, with no pins yet.
 ## The loader
 
 Opt-in per board: without `firmware-name` nothing is ever written to the part.
+The EA family opts in, in `ea.dtsi`; the HC-800 does not yet.
 
 1. Built into the kernel, the driver may probe before the root filesystem is
    mounted; it retries `request_firmware()` for up to three minutes.
@@ -276,7 +277,8 @@ A part already on stock is left alone.
 - **HC-800:** first, before the GRUB one-shot is armed, from the recovery archive
   (`OHC_STOCK_ARCHIVE`, or `OHC_ZIGBEE_STOCK_ARCHIVE`). On failure nothing else
   has changed.
-- `restore iomcu` runs only this step.
+- `restore iomcu` runs only this step. On an EA still running openHC, the next
+  boot writes openHC's image again.
 
 The flasher's restore runs the box's own `restore stock`, so it gets the same.
 
@@ -307,4 +309,4 @@ Left:
   openHC-to-openHC works without a line.
 - `restore stock` end to end on each family (`restore iomcu` works on the EA-3).
 
-Only then does a board set `firmware-name`.
+The HC-800 sets `firmware-name` once its items are done.
