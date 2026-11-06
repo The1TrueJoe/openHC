@@ -15,8 +15,10 @@ KEXEC_SHA256=8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 echo 'int main(void){return 0;}' > "$work/t.c"
-gcc -m32 -static -o "$work/t" "$work/t.c" 2>/dev/null && file "$work/t" | grep -q "Intel 80386" \
-  || { echo "gcc -m32 -static does not produce i386 binaries: build/deps.sh --kexec" >&2; exit 1; }
+# Ubuntu 26.04 runners failed this with gcc-multilib installed: newer file says "Intel i386".
+gcc -m32 -static -o "$work/t" "$work/t.c" 2>"$work/cc.log" && file "$work/t" | grep -qE "Intel (80386|i386)" \
+  || { echo "gcc -m32 -static does not produce i386 binaries: build/deps.sh --kexec" >&2
+       cat "$work/cc.log" >&2; [ -e "$work/t" ] && file "$work/t" >&2; exit 1; }
 
 tarball="$work/kexec-tools-$KEXEC_VERSION.tar.xz"
 bash "$REPO/.github/scripts/fetch.sh" "$tarball" "$KEXEC_SHA256" \
@@ -32,7 +34,7 @@ mkdir -p "$(dirname "$OUT")"
 cp "$work/kexec-tools-$KEXEC_VERSION/build/sbin/kexec" "$OUT"
 
 file "$OUT"
-file "$OUT" | grep -q "ELF 32-bit.*Intel 80386" || { echo "not a 32-bit x86 binary" >&2; exit 1; }
+file "$OUT" | grep -qE "ELF 32-bit.*Intel (80386|i386)" || { echo "not a 32-bit x86 binary" >&2; exit 1; }
 file "$OUT" | grep -q "statically linked" || { echo "NOT STATIC: it would need the vendor's glibc" >&2; exit 1; }
 # A dynamic section would mean a runtime dependency we cannot satisfy.
 if readelf -d "$OUT" 2>/dev/null | grep -q NEEDED; then
