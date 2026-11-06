@@ -6,6 +6,7 @@ import {
   type SwitchPortStatus, type ApplyResult,
 } from '../api';
 import { useIoState } from '../App';
+import { toastError } from '../toast';
 
 /* The managed switch (switchd, on boards with the BCM53125 DSA switch).
  *
@@ -23,7 +24,6 @@ export function SwitchPanel({ caps }: { caps: Capabilities }) {
   const [cfg, setCfg] = useState<SwitchConfig>(() => structuredClone(caps.switch!.config));
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ApplyResult | null>(null);
-  const [errs, setErrs] = useState<string[] | null>(null);
 
   if (!sw) return null;
 
@@ -50,12 +50,14 @@ export function SwitchPanel({ caps }: { caps: Capabilities }) {
     cfg.ports[name] ?? { enabled: true };
 
   const save = async () => {
-    setBusy(true); setResult(null); setErrs(null);
+    setBusy(true); setResult(null);
     try {
-      setResult(await rest.saveSwitchConfig(cfg));
+      const r = await rest.saveSwitchConfig(cfg);
+      setResult(r);
+      if (r.errors.length > 0) toastError(r.errors.join('\n'), `Applied with ${r.errors.length} problem(s)`);
     } catch (e) {
       // switchd returns {errors:[…]} on a refused config; j() surfaces the first.
-      setErrs([String((e as Error).message ?? e)]);
+      toastError(e, 'Switch config refused');
     } finally {
       setBusy(false);
     }
@@ -148,13 +150,7 @@ export function SwitchPanel({ caps }: { caps: Capabilities }) {
         {result && (result.ok
           ? <span className="flex items-center gap-1.5 text-sm text-live"><CheckCircle2 size={15} /> Applied{result.l3_iface ? ` — address on ${result.l3_iface}` : ''}</span>
           : <span className="flex items-center gap-1.5 text-sm text-warm"><AlertTriangle size={15} /> Applied with {result.errors.length} problem(s)</span>)}
-        {errs && <span className="flex items-center gap-1.5 text-sm text-alarm"><AlertTriangle size={15} /> {errs[0]}</span>}
       </div>
-      {result && result.errors.length > 0 && (
-        <ul className="hair rounded-lg border bg-raised p-3 font-mono text-xs text-alarm/90 space-y-0.5">
-          {result.errors.map((e, i) => <li key={i}>{e}</li>)}
-        </ul>
-      )}
     </div>
   );
 }

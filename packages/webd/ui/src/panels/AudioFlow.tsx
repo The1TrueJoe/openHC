@@ -12,6 +12,7 @@ import {
   io, rest, audioCover, toneValue, type AudioEndpoint, type AudioEndpoints, type AudioMap, type AudioMeta,
   type IoState, type LibraryEntry, type LibraryState, type ToneKnob,
 } from '../api';
+import { toastError, tryIo } from '../toast';
 
 /* The audio switcher: the whole Audio page on boards with named outputs.
 
@@ -266,7 +267,6 @@ const nodeTypes = { ohcSource: SourceNode, ohcOutput: OutputNode };
 export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
   // Edits show at once; the next map from MQTT replaces this.
   const [pending, setPending] = useState<AudioEndpoints | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const mapKey = JSON.stringify(endpointsOf(map));
   useEffect(() => setPending(null), [mapKey]);
@@ -274,12 +274,11 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
 
   const save = useCallback(async (next: AudioEndpoints) => {
     setPending(next);
-    setErr(null);
     try {
       await rest.saveEndpoints(next);
     } catch (e) {
       setPending(null);
-      setErr(e instanceof Error ? e.message : String(e));
+      toastError(e, 'Saving the audio routes');
     }
   }, []);
 
@@ -441,11 +440,6 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
           <Panel position="bottom-right">
             <Legend />
           </Panel>
-          {err && (
-            <Panel position="bottom-center">
-              <div className="rounded-lg border border-alarm/40 bg-panel px-3 py-1.5 text-xs text-alarm">{err}</div>
-            </Panel>
-          )}
         </ReactFlow>
       </div>
     </FlowCtx.Provider>
@@ -535,7 +529,7 @@ function SourceInspector({
           </span>
           <button disabled={!s.connected && !live.input?.[inputId!]}
             title={s.connected ? undefined : 'Pick a default output first'}
-            onClick={() => { try { io.setInput(inputId!, !live.input?.[inputId!]); } catch { /* not connected */ } }}
+            onClick={() => { tryIo(() => { io.setInput(inputId!, !live.input?.[inputId!]); }) }}
             className={`ml-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-xs disabled:opacity-40 ${live.input?.[inputId!] ? 'bg-raised text-ink hover:bg-alarm/10 hover:text-alarm' : 'bg-accent/20 text-ink hover:bg-accent/30'}`}>
             {live.input?.[inputId!] ? <><Square size={11} /> Stop</> : <><Play size={11} /> Play</>}
           </button>
@@ -612,7 +606,7 @@ function OutputInspector({
       subtitle={announcing ? 'Announcing' : playing ? `${playing} playing` : 'Idle'}
       footer={
         <>
-          <button onClick={() => { try { io.announce(id); } catch { /* not connected */ } }}
+          <button onClick={() => { tryIo(() => { io.announce(id); }) }}
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-raised hover:text-ink">
             <Bell size={13} /> Chime
           </button>
@@ -622,7 +616,7 @@ function OutputInspector({
       <Section title="Volume">
         <div className="flex items-center gap-2">
           <button disabled={level === undefined} aria-label={muted ? 'Unmute' : 'Mute'} title={muted ? 'Unmute' : 'Mute'}
-            onClick={() => { try { io.setAudioLevel(id, muted ? lastLevel.current : 0); } catch { /* not connected */ } }}
+            onClick={() => { tryIo(() => { io.setAudioLevel(id, muted ? lastLevel.current : 0); }) }}
             className={`rounded-lg p-1.5 hover:bg-raised ${muted ? 'text-alarm' : 'text-muted hover:text-ink'}`}>
             {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
           </button>
@@ -678,7 +672,7 @@ function LiveSlider({
     const now = Date.now();
     if (!force && now - sent.current < 120) return;
     sent.current = now;
-    try { send(v); } catch { /* not connected */ }
+    tryIo(() => { send(v); })
   };
   const release = () => { if (drag !== null) go(drag, true); setDrag(null); };
   return (
@@ -700,7 +694,7 @@ function ToneChoice({ output, knob, value }: { output: string; knob: ToneKnob; v
       <div role="radiogroup" aria-label={knob.label} className="flex min-w-0 flex-1 flex-wrap gap-1">
         {(knob.choices ?? []).map((c, i) => (
           <button key={c} role="radio" aria-checked={value === i}
-            onClick={() => { try { io.setTone(output, knob.id, i); } catch { /* not connected */ } }}
+            onClick={() => { tryIo(() => { io.setTone(output, knob.id, i); }) }}
             className={`rounded-md px-2 py-0.5 ${value === i ? 'bg-accent/15 text-ink' : 'text-muted hover:bg-raised hover:text-ink'}`}>
             {c}
           </button>
@@ -729,7 +723,7 @@ function ToneSection({
   return (
     <Section title={title} action={
       <button disabled={flat} title={reset} aria-label={`Reset ${title.toLowerCase()}`}
-        onClick={() => { try { knobs.forEach((k) => io.setTone(output, k.id, 0)); } catch { /* not connected */ } }}
+        onClick={() => { tryIo(() => { knobs.forEach((k) => io.setTone(output, k.id, 0)); }) }}
         className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:text-ink disabled:opacity-30">
         <RotateCcw size={11} /> Reset
       </button>
@@ -746,7 +740,7 @@ function ToneSection({
 function ToneSlider({ output, knob, value }: { output: string; knob: ToneKnob; value: number }) {
   if (knob.unit === 'choice') return <ToneChoice output={output} knob={knob} value={value} />;
   return (
-    <div className="flex items-center gap-2 text-xs" onDoubleClick={() => { try { io.setTone(output, knob.id, 0); } catch { /* not connected */ } }}
+    <div className="flex items-center gap-2 text-xs" onDoubleClick={() => { tryIo(() => { io.setTone(output, knob.id, 0); }) }}
       title="Double-click to reset">
       <span className="w-14 shrink-0 text-muted">{knob.label}</span>
       <div className="min-w-0 flex-1">
@@ -775,7 +769,7 @@ function useElapsed(st: LibraryState | undefined): number | undefined {
 }
 
 function LibraryPlayer({ state, meta }: { state: LibraryState | undefined; meta: AudioMeta | undefined }) {
-  const send = (verb: string, arg = '') => { try { io.library(verb, arg); } catch { /* not connected */ } };
+  const send = (verb: string, arg = '') => { tryIo(() => { io.library(verb, arg); }) };
   const elapsed = useElapsed(state);
   const playing = state?.state === 'play';
   const offline = !state || state.state === 'offline';
@@ -844,14 +838,12 @@ function Browser({ onPlay, onQueue }: { onPlay: (uri: string) => void; onQueue: 
   const [path, setPath] = useState('');
   const [q, setQ] = useState('');
   const [items, setItems] = useState<LibraryEntry[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    setErr(null);
     const load = q.trim() ? rest.librarySearch(q.trim()) : rest.libraryBrowse(path);
     const t = setTimeout(() => {
-      load.then((v) => live && setItems(v)).catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+      load.then((v) => live && setItems(v)).catch((e) => live && toastError(e, 'Library', 'library'));
     }, q.trim() ? 250 : 0);
     return () => { live = false; clearTimeout(t); };
   }, [path, q]);
@@ -876,7 +868,6 @@ function Browser({ onPlay, onQueue }: { onPlay: (uri: string) => void; onQueue: 
             className="w-32 bg-transparent text-xs text-ink outline-none sm:w-44" />
         </label>
       </div>
-      {err && <p className="text-xs text-alarm">{err}</p>}
       {items && !items.length && (
         <p className="text-xs text-muted">{q ? 'No matches.' : path ? 'Empty folder.' : 'No drives with music yet — plug one in (it is indexed automatically).'}</p>
       )}

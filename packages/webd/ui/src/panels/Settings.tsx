@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Check, Lock, AlertTriangle, Server, Share2, Hash } from 'lucide-react';
+import { Check, Lock, Server, Share2, Hash } from 'lucide-react';
 import { rest, type ConfigDoc, type MqttWrite } from '../api';
+import { toastError } from '../toast';
 
 /** Fields the environment has pinned cannot be edited here: a restart would
  *  discard the change, and a form that silently ignores you is worse than one
@@ -16,12 +17,11 @@ function Pinned() {
 export function SettingsPanel() {
   const [doc, setDoc] = useState<ConfigDoc | null>(null);
   const [form, setForm] = useState<MqttWrite>({});
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [note, setNote] = useState<{ text: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    rest.config().then((d) => { setDoc(d); setForm(d.mqtt); }).catch((e) =>
-      setNote({ ok: false, text: String(e.message ?? e) }));
+    rest.config().then((d) => { setDoc(d); setForm(d.mqtt); }).catch((e) => toastError(e, 'Settings'));
   }, []);
 
   if (!doc) return <div className="text-muted">Reading settings…</div>;
@@ -41,16 +41,16 @@ export function SettingsPanel() {
         if (!pinned(k) && v !== (doc!.mqtt as any)[k]) (patch as any)[k] = v;
       }
       if (Object.keys(patch).length === 0) {
-        setNote({ ok: true, text: 'nothing changed' });
+        setNote({ text: 'nothing changed' });
         return;
       }
       await rest.saveConfig(patch);
       const fresh = await rest.config();
       setDoc(fresh);
       setForm(fresh.mqtt);
-      setNote({ ok: true, text: 'saved — the broker connection restarted' });
+      setNote({ text: 'saved — the broker connection restarted' });
     } catch (e) {
-      setNote({ ok: false, text: String((e as Error).message) });
+      toastError(e, 'Saving the MQTT settings');
     } finally {
       setSaving(false);
     }
@@ -164,8 +164,8 @@ export function SettingsPanel() {
           {saving ? 'Saving…' : 'Save'}
         </button>
         {note && (
-          <span className={`flex items-center gap-1.5 text-xs ${note.ok ? 'text-live' : 'text-alarm'}`}>
-            {note.ok ? <Check size={13} /> : <AlertTriangle size={13} />}
+          <span className="flex items-center gap-1.5 text-xs text-live">
+            <Check size={13} />
             {note.text}
           </span>
         )}

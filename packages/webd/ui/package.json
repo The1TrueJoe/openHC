@@ -17,7 +17,8 @@
     "lucide-react": "^0.454.0",
     "mqtt": "^5.15.2",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "sonner": "^2.0.8"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.11",

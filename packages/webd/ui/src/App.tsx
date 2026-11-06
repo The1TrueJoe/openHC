@@ -1,6 +1,7 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, AlertTriangle, Settings, BookOpen, Activity, Music, Network, HardDrive, Monitor } from 'lucide-react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { Cpu, ToggleLeft, Settings, BookOpen, Activity, Music, Network, HardDrive, Monitor } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
+import { toast, toastError } from './toast';
 import { IoPanel } from './panels/Io';
 import { OverviewPanel } from './panels/Overview';
 import { SettingsPanel } from './panels/Settings';
@@ -79,10 +80,11 @@ function destinations(c: Capabilities): Dest[] {
 
 export default function App() {
   const [caps, setCaps] = useState<Capabilities | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const [at, setAt] = useState('overview');
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setFailed(false);
     // REST first, for two things MQTT cannot supply: the board's shape, and
     // the topic root to subscribe under. Only then does the IO client connect.
     // Audio is audiod's (its own daemon and REST); a board without it, or
@@ -107,24 +109,21 @@ export default function App() {
           ...(display?.available ? { display } : {}),
         });
         io.connect(cfg.topics.base);
+        toast.dismiss('boot');
       })
-      .catch((e: unknown) => setErr(String((e as Error).message ?? e)));
+      .catch((e: unknown) => {
+        // webd served this page, so it is iod (:7070) that is down or unreachable.
+        toastError(e, 'Cannot reach the IO server (iod)', 'boot');
+        setFailed(true);
+      });
   }, []);
+  useEffect(load, [load]);
 
-  if (err) {
+  if (failed && !caps) {
     return (
-      <div className="flex h-full items-center justify-center p-8">
-        <div className="max-w-md rounded-xl border border-alarm/30 bg-alarm/5 p-6">
-          <div className="mb-2 flex items-center gap-2 text-alarm">
-            <AlertTriangle size={18} />
-            <h1 className="font-semibold">Cannot reach iod</h1>
-          </div>
-          <p className="text-sm text-muted">
-            The IO server owns every port on this controller and answers on <code>:7070</code>. This
-            page loaded, so webd is running — iod is not, or is not reachable.
-          </p>
-          <p className="mt-3 font-mono text-xs text-alarm/80">{err}</p>
-        </div>
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted">
+        <p>Could not read the board.</p>
+        <button onClick={load} className="hair rounded-lg border px-3 py-1 text-sm text-ink hover:border-accent/50">Retry</button>
       </div>
     );
   }

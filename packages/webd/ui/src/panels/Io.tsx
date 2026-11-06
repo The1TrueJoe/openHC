@@ -3,6 +3,7 @@ import { Zap, CircleDot, Circle, Radio, Rss } from 'lucide-react';
 import { io, panel, type Capabilities } from '../api';
 import { SerialSection } from './Serial';
 import { useIoState } from '../App';
+import { toast, toastError } from '../toast';
 
 export function IoPanel({ caps }: { caps: Capabilities }) {
   // Contacts and relays are STATE, mirrored from iod. Nothing here polls: iod
@@ -10,19 +11,23 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
   // open tab agrees and the UART is asked once rather than once per viewer.
   const state = useIoState();
   const [busy, setBusy] = useState<number | null>(null);
-  const [note, setNote] = useState<string | null>(null);
 
   const linkUp = state.mcu?.link !== false;
+  useEffect(() => {
+    if (linkUp) { toast.dismiss('mcu-link'); return; }
+    toast.error('The IO microcontroller stopped answering', {
+      id: 'mcu-link', description: 'Readings are stale until it answers again.', duration: Infinity,
+    });
+  }, [linkUp]);
 
   function setRelay(i: number, on: boolean) {
     setBusy(i);
-    setNote(null);
     try {
       // set, not toggle: the UI knows what it wants the relay to BE. Toggle
       // from a stale view closes a relay that somebody else just closed.
       io.relaySet(i, on);
     } catch (e) {
-      setNote(String((e as Error).message));
+      toastError(e, `Relay ${panel(i)}`);
     } finally {
       // Publishing is fire-and-forget: the answer arrives as the retained
       // relay topic changing, which every other open page sees too.
@@ -32,12 +37,6 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
 
   return (
     <div className="space-y-4">
-      {!linkUp && (
-        <div className="rounded-lg border border-alarm/30 bg-alarm/5 px-4 py-3 text-sm text-alarm">
-          The IO microcontroller stopped answering. Readings below are stale.
-        </div>
-      )}
-
       {caps.contacts && (
         <section className="hair rounded-xl border bg-panel p-4">
           <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -97,7 +96,6 @@ export function IoPanel({ caps }: { caps: Capabilities }) {
               );
             })}
           </div>
-          {note && <p className="mt-2 text-xs text-alarm">{note}</p>}
         </section>
       )}
 
@@ -142,7 +140,7 @@ function IrSection({ caps }: { caps: Capabilities }) {
       io.sendIr(port, pronto.trim());
       setNote('sent');
     } catch (e) {
-      setNote(String((e as Error).message));
+      toastError(e, 'IR send');
     }
   }
 
@@ -203,7 +201,7 @@ function IrSection({ caps }: { caps: Capabilities }) {
             via <code>{node(port === null ? 'openHC IR front blaster' : `openHC IR out ${port + 1}`) ?? 'lirc'}</code>
           </span>
         )}
-        {note && <span className={`text-xs ${note === 'sent' ? 'text-live' : 'text-alarm'}`}>{note}</span>}
+        {note && <span className="text-xs text-live">{note}</span>}
       </div>
 
       {caps.ir?.receiver && (

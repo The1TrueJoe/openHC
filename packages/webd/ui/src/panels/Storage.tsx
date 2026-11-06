@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { io, rest, type Capabilities, type FileEntry, type StorageShare, type StorageVolume } from '../api';
 import { useIoState } from '../App';
+import { toastError } from '../toast';
 
 /* Storage: drives plugged into the box, and the network share they are on.
 
@@ -78,7 +79,7 @@ function VolumeRow({ v }: { v: StorageVolume }) {
         disabled={busy}
         onClick={() => {
           setBusy(true);
-          try { io.ejectVolume(v.id); } catch { setBusy(false); }
+          try { io.ejectVolume(v.id); } catch (e) { setBusy(false); toastError(e, `Ejecting ${v.name}`); }
         }}
         title="Unshare and unmount, so the drive can be pulled out"
         className="hair flex shrink-0 items-center gap-1.5 rounded-lg border bg-panel px-2.5 py-1.5 text-xs hover:border-accent/50 disabled:opacity-40">
@@ -130,7 +131,7 @@ function Share({
       setPassword('');
       if (u.password) setChanged(true);
     } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      toastError(e, 'Saving the share');
     } finally {
       setBusy(false);
     }
@@ -195,7 +196,7 @@ function Share({
         Allow guest access (no password). Macs connect as Guest; Windows 11 refuses guest logins unless that is
         turned on in Windows too.
       </label>
-      {msg && <p className={`mt-2 text-xs ${msg.ok ? 'text-live' : 'text-alarm'}`}>{msg.text}</p>}
+      {msg && <p className="mt-2 text-xs text-live">{msg.text}</p>}
     </section>
   );
 }
@@ -207,7 +208,7 @@ function Share({
    upload — drop files on the panel or pick them; each streams to the drive with
    its own progress bar. */
 
-type Upload = { name: string; progress: number; error?: string };
+type Upload = { name: string; progress: number };
 
 const when = (s: number) =>
   s ? new Date(s * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '';
@@ -216,7 +217,7 @@ function Files({ volumes }: { volumes: StorageVolume[] }) {
   const [vol, setVol] = useState(volumes[0].name);
   const [dir, setDir] = useState('');
   const [items, setItems] = useState<FileEntry[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
@@ -232,13 +233,13 @@ function Files({ volumes }: { volumes: StorageVolume[] }) {
   const here = dir ? `${vol}/${dir}` : vol;
   const readOnly = volumes.find((v) => v.name === vol)?.read_only ?? false;
   const reload = useCallback(() => {
-    setErr(null);
-    rest.files(here).then(setItems).catch((e) => { setItems([]); setErr(e instanceof Error ? e.message : String(e)); });
+    setFailed(false);
+    rest.files(here).then(setItems).catch((e) => { setItems([]); setFailed(true); toastError(e, `Reading ${here}`); });
   }, [here]);
   useEffect(reload, [reload]);
 
   const act = async (p: Promise<unknown>) => {
-    try { await p; } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    try { await p; } catch (e) { toastError(e); }
     reload();
   };
 
@@ -252,9 +253,10 @@ function Files({ volumes }: { volumes: StorageVolume[] }) {
       try {
         await rest.fileUpload(target, f, (progress) => set({ progress }));
         set({ progress: 1 });
-        setTimeout(() => setUploads((u) => u.filter((x) => x.name !== f.name || x.error)), 1500);
+        setTimeout(() => setUploads((u) => u.filter((x) => x.name !== f.name)), 1500);
       } catch (e) {
-        set({ error: e instanceof Error ? e.message : String(e) });
+        setUploads((u) => u.filter((x) => x.name !== f.name));
+        toastError(e, `Uploading ${f.name}`);
       }
       reload();
     }
@@ -315,21 +317,16 @@ function Files({ volumes }: { volumes: StorageVolume[] }) {
             <div key={u.name} className="flex items-center gap-2 text-xs">
               <Upload size={12} className="shrink-0 text-muted" />
               <span className="w-40 truncate sm:w-60">{u.name}</span>
-              {u.error ? (
-                <span className="text-alarm">{u.error}</span>
-              ) : (
-                <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-edge">
-                  <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.round(u.progress * 100)}%` }} />
-                </div>
-              )}
+              <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-edge">
+                <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.round(u.progress * 100)}%` }} />
+              </div>
             </div>
           ))}
         </div>
       )}
-      {err && <p className="mb-2 text-xs text-alarm">{err}</p>}
 
       <div className="max-h-[28rem] overflow-auto">
-        {items?.length === 0 && !err && (
+        {items?.length === 0 && !failed && (
           <p className="py-6 text-center text-xs text-muted">
             {readOnly ? 'Empty folder.' : 'Empty folder. Drop files here to upload them.'}
           </p>

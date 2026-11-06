@@ -131,3 +131,8 @@ body {
 .xterm-viewport {
   background: transparent !important;
 }
+
+/* sonner's description colour is fixed for its light theme; ours follows the page. */
+[data-sonner-toast] .ohc-toast-desc {
+  color: var(--muted) !important;
+}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Activity, Fan } from 'lucide-react';
 import { io, type History } from '../api';
 import { useIoState } from '../App';
+import { toastError, tryIo } from '../toast';
 
 type Sample = History['samples'][number];
 
@@ -126,16 +127,18 @@ function FanControl() {
   const [busy, setBusy] = useState(false);
   // A command's effect arrives as a new health/fan; that ends the busy state.
   useEffect(() => setBusy(false), [fan?.mode, fan?.pct]);
+  useEffect(() => {
+    if (fan?.error) toastError(fan.error, 'Fan', 'fan-error');
+  }, [fan?.error]);
 
   if (!fan?.available) return null;
 
   const act = (v: number | 'auto') => {
     setBusy(true);
-    io.setFan(v);
+    tryIo(() => io.setFan(v));
     // Never stay stuck if the state does not change (e.g. same value again).
     setTimeout(() => setBusy(false), 4000);
   };
-  const err = fan.error ?? null;
 
   const manual = fan.mode === 'manual';
   const pct = fan.pct ?? 0;
@@ -186,7 +189,6 @@ function FanControl() {
           ? 'Held manually. If the board gets hot, the fan goes back to automatic.'
           : 'Following the temperature curve.'}
       </p>
-      {err && <p className="mt-1 text-xs text-alarm">{err}</p>}
     </div>
   );
 }

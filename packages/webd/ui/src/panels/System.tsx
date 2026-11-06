@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Download, Lightbulb, RotateCcw, TriangleAlert } from 'lucide-react';
 import { io, type Capabilities, type IoState } from '../api';
 import { useIoState } from '../App';
 import { HealthSection } from './Health';
+import { toastError } from '../toast';
 
 /* The box itself, as distinct from the IO it controls.
    Relays, contacts, IR and serial are things wired TO this controller and live
@@ -27,6 +28,9 @@ export function SystemPanel({ caps }: { caps: Capabilities }) {
 function UpdateSection() {
   const u = useIoState().system?.update;
   const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (u?.state === 'error') toastError(u.error ?? 'failed', 'Software update', 'update-error');
+  }, [u?.state, u?.error]);
   if (!u) return null;
   const busy = ['checking', 'downloading', 'installing', 'rebooting'].includes(u.state);
   const when = u.checked_at ? new Date(u.checked_at * 1000).toLocaleString() : null;
@@ -63,7 +67,6 @@ function UpdateSection() {
       </div>
       <p className="mt-3 text-xs text-muted">
         {busy ? doing[u.state]
-          : u.state === 'error' ? <span className="text-alarm">{u.error}</span>
           : u.latest === null ? (when ? `Nothing on the ${u.channel} channel for this board yet.` : 'Not checked yet.')
           : u.available ? <>Version <code>{u.latest}</code> is available on the {u.channel} channel.</>
           : <>Up to date with the {u.channel} channel ({u.latest}).</>}
