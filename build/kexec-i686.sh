@@ -15,7 +15,7 @@ KEXEC_SHA256=8a8f350ddc66e1c905a3ab525a7e9ba96c81e04e70ef69397b0155b67b922c31
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 echo 'int main(void){return 0;}' > "$work/t.c"
-# file 5.46 (Ubuntu 26.04) says "Intel i386" where older ones said "Intel 80386".
+# Ubuntu 26.04 runners failed this with gcc-multilib installed: newer file says "Intel i386".
 gcc -m32 -static -o "$work/t" "$work/t.c" 2>/dev/null && file "$work/t" | grep -qE "Intel (80386|i386)" \
   || { echo "gcc -m32 -static does not produce i386 binaries: build/deps.sh --kexec" >&2; exit 1; }
 
