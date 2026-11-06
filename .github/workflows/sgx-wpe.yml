@@ -207,7 +207,7 @@ jobs:
           echo "=== ELF class of key objects (expect 32-bit 80386) ==="
           file "$T/usr/bin/webview" "$T"/usr/lib/libWPEBackend-pvr.so.1 || true
           file "$T"/usr/lib/libEGL.so* 2>/dev/null | head -2 || true
-          file "$T/usr/bin/webview" | grep -q "ELF 32-bit.*80386" \
+          file "$T/usr/bin/webview" | grep -qE "ELF 32-bit.*(80386|i386)" \
             || { echo "webview is not i386"; missing=1; }
 
           [ "$missing" = 0 ] || { echo "sysroot is missing deliverable pieces"; exit 1; }
