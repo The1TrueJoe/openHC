@@ -36,6 +36,23 @@ Run `make help` for the per-board notes it prints, several boards have a
 different install path and the Makefile says so rather than silently doing the
 wrong thing.
 
+## Natively on Linux
+
+The Docker build keeps everything off the host. On a Debian or Ubuntu machine
+the CI build also runs directly, which is faster and resumes cleanly:
+
+```sh
+build/deps.sh --kexec        # host packages, once (--kexec: the hc800's 32-bit kexec)
+make native BOARD=hc800      # = build/image.sh hc800
+```
+
+It also needs rustup and node/npm for the daemons, about 8 GB of RAM and tens
+of GB of disk. Buildroot is fetched to `~/buildroot` (`BUILDROOT_DIR`
+overrides), the tree lands in `output/build/<board>/` and the flasher bundle,
+`openhc-<board>-<version>.zip`, in the repo root. CI's optional extras (the EA3
+DSP program, the EA on-panel browser sysroots) are left out: the image ships
+without them.
+
 ## How the configuration is assembled
 
 Buildroot has no include mechanism for defconfigs, so `build/build.sh`
@@ -66,9 +83,10 @@ appended *after* the board file.
 ## Which Buildroot
 
 openHC builds against **Buildroot master, pinned to a commit** (`04b8e19`, from
-2026-10-26), not a release. The pin is `BUILDROOT_REF` in `ci.yml`,
-`sgx-module.yml`, `sgx-wpe.yml` and `build/Dockerfile`. The fetch takes a SHA or
-a tag, so moving to the 2026.11 tag when it ships is a one-line change in each.
+2026-10-26), not a release. The pin is `build/buildroot.ref`, read by
+`build/fetch-buildroot.sh` for CI, Docker and native builds alike;
+`sgx-module.yml` and `sgx-wpe.yml` still carry their own copy. The fetch takes
+a SHA or a tag, so moving to the 2026.11 tag when it ships is a one-line change.
 This moved from 2026.02.3 in openHC #82.
 
 Whatever upstream has fixed, openHC stops carrying. The move to master dropped:
@@ -173,9 +191,30 @@ need any C compiler and run in CI. See [IO-MCU firmware](/shared/io-mcu-firmware
 
 ## CI
 
-Two workflows. `images.yml` builds every affected board in parallel and attaches
-the bundles to releases; `flasher.yml` builds the desktop flasher for macOS,
-Windows and Linux.
+One workflow per area, so a change runs only what it touches:
+
+| Workflow | Runs for |
+|---|---|
+| `docs.yml` | `site/**`; deploys Pages from main |
+| `flasher.yml` | `flasher/**`; release attaches the binaries |
+| `daemons.yml` | `packages/**`, `flasher/crates/core/**` |
+| `io-mcu.yml` | `board/common/firmware/io-mcu/**`, `ohc-iomcu-proto.h` |
+| `tools.yml` | `tools.yml`, `.github/scripts/fetch.sh`, `build/kexec-i686.sh` |
+| `images.yml` | `board/**`, `packages/**`, `build/**`, `Makefile` (and `flasher/crates/core/**` on main); release, weekly schedule |
+
+A workflow starts only when its paths change, on a pull request and on main
+alike, so a docs or flasher change never starts an image build. Branch
+protection requires one check, `ci-ok`, a commit status that `ci-ok.yml`
+posts: pending while any area workflow started for the commit is running,
+failure once one fails, success when all pass or none was needed. It is
+re-evaluated each time an area workflow finishes.
+
+The images workflow's steps are scripts in `build/`, so the same build runs on
+any Linux machine (see [natively](#natively-on-linux) below):
+`select-boards.sh` picks the boards a change affects (`build/select-boards.sh
+origin/main` shows what your branch would build), `fetch-buildroot.sh`,
+`deps.sh`, `stage-daemons.sh`, `build.sh`, `kexec-i686.sh` and `bundle.sh`. The
+workflow adds only caching, the shared EA toolchain and publishing.
 
 The images workflow runs Buildroot **directly on the runner** rather than through
 the Dockerfile, deliberately: the Dockerfile keeps sources off a developer's
@@ -191,6 +230,9 @@ EA image job uses it as an external toolchain (`OHC_EA_SDK` in `build/build.sh`)
 The other boards each build their own.
 
 A change under `board/<board>/` builds only that board; one under
-`board/ea/common/` builds every EA board. A change to `board/common`, `build/`,
-the flasher or the Makefile builds everything. A change under `packages/` builds
-the boards that ship the touched crate. A docs-only change builds nothing.
+`board/ea/common/` builds every EA board, and one in a model folder outside its
+board folders builds that model's boards. A change to `board/common`, `build/`
+or the Makefile builds everything. A change under `packages/` builds the boards
+that ship the touched crate; one to `flasher/crates/core` rebuilds the boards
+with the restore or update daemon, on main only. A docs-only change builds
+nothing.

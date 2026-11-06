@@ -5,16 +5,16 @@ name: ci-retry
 # minutes; what it compiled is kept when it runs out (its ccache, and on main
 # the output tree), so a re-run resumes from there and finishes.
 #
-# Only when EVERY failed job of the attempt is an image build that ci.yml's
-# Build step marked `build-timeout`, or ci-ok (which fails because of it): a
-# real failure is left for a person. At most three attempts in all, and not
+# Only when EVERY failed job of the attempt is an image build that images.yml's
+# Build step marked `build-timeout`: a real failure is left for a person. At
+# most three attempts in all, and not
 # when the run's commit is no longer the head of its branch or PR, because a
 # newer run has replaced it.
 #
 # workflow_run only fires from the copy of this file on the default branch.
 on:
   workflow_run:
-    workflows: [ci]
+    workflows: [images]
     types: [completed]
 
 # One retry decision per CI run at a time.
@@ -57,7 +57,6 @@ jobs:
 
           timedout=0
           while IFS=$'\t' read -r name url; do
-            [ "$name" = ci-ok ] && continue
             if gh api "${url#https://api.github.com/}/annotations" -q '.[].title' | grep -qx build-timeout; then
               echo "ran out of time: $name"; timedout=1
             else
