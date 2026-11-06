@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Users, X, Plug } from 'lucide-react';
 import { io, panel, serialSocket, type Capabilities, type SerialPort } from '../api';
 import { useIoState } from '../App';
+import { toastError } from '../toast';
 
 /** The serial ports, as a section of the IO page. Opening one raises a
  *  terminal window over the page — a console is a thing you visit, not a place
@@ -85,7 +86,6 @@ function TerminalWindow({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [conn, setConn] = useState<'connecting' | 'open' | 'closed'>('connecting');
-  const [note, setNote] = useState<string | null>(null);
   // A port is bridgeable whenever it has a device node — a host UART, or an
   // MCU-routed port the kernel now exposes as a tty. `transport` stays honest
   // about the path (and still drives the "via MCU" hint) but no longer decides
@@ -127,14 +127,13 @@ function TerminalWindow({
   }, [index, routed]);
 
   function changeBaud(next: number) {
-    setNote(null);
     try {
       // Applies to the shared session, so every viewer moves together — a
       // console at two different rates is not a thing that can exist. iod
       // announces the reopen on the stream itself.
       io.setBaud(index, next);
     } catch (e) {
-      setNote(String((e as Error).message));
+      toastError(e, 'Serial baud rate');
     }
   }
 
@@ -176,7 +175,6 @@ function TerminalWindow({
               {viewers} viewers
             </span>
           )}
-          {note && <span className="text-red-400">{note}</span>}
 
           <span className={`ml-auto ${conn === 'open' ? 'text-green-400' : conn === 'closed' ? 'text-red-400' : 'text-green-500/50'}`}>
             {routed ? '' : conn}

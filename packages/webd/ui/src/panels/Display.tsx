@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, AlertTriangle, Monitor } from 'lucide-react';
+import { Check, Monitor } from 'lucide-react';
 import { rest, type DisplayCfg } from '../api';
 import { Field, Text, Toggle } from './Settings';
+import { toastError } from '../toast';
 
 /** The controller's own screen: the opt-in full-screen web view (S95ohc-display
  *  on each board that has one — openHC's webview on the EAs and the HC-800), so the tab
@@ -61,7 +62,7 @@ export function DisplayPanel() {
           : 'off — the screen shows the splash',
       });
     } catch (e) {
-      setNote({ ok: false, text: String((e as Error).message) });
+      toastError(e, 'Saving the display');
     } finally {
       setSaving(false);
     }
@@ -144,8 +145,8 @@ export function DisplayPanel() {
           </div>
         )}
         {note && (
-          <div className={`mt-3 flex items-center gap-1.5 text-xs ${note.ok ? 'text-live' : 'text-alarm'}`}>
-            {note.ok ? <Check size={13} /> : <AlertTriangle size={13} />}
+          <div className="mt-3 flex items-center gap-1.5 text-xs text-live">
+            <Check size={13} />
             {note.text}
           </div>
         )}

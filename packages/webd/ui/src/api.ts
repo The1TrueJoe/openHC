@@ -14,6 +14,7 @@
 // the IO server, so the whole GUI needs exactly one port reachable — the one it
 // was served from.
 import mqtt, { type MqttClient } from 'mqtt';
+import { toast, toastError } from './toast';
 
 const HTTP = `${location.origin}/iod`;
 /* Telemetry is a DIFFERENT daemon behind a different mount. Deriving it from
@@ -681,6 +682,7 @@ export class Io {
   connected = false;
   base = '';
   lastError: string | null = null;
+  #lost = false;
 
   #c: MqttClient | null = null;
   #onChange = new Set<() => void>();
@@ -712,6 +714,8 @@ export class Io {
     this.#c = c;
 
     c.on('connect', () => {
+      if (this.#lost) toast.success('Reconnected to the IO server', { id: 'io-link' });
+      this.#lost = false;
       this.connected = true;
       // State is retained, so subscribing IS the snapshot — no separate
       // "give me everything" round trip, and a page loaded an hour after the
@@ -719,13 +723,26 @@ export class Io {
       c.subscribe([`${base}/state/#`, `${base}/status`, `${base}/error`]);
       this.#changed();
     });
-    c.on('close', () => { this.connected = false; this.#changed(); });
-    c.on('error', (e) => { this.lastError = String(e?.message ?? e); this.#changed(); });
+    c.on('close', () => {
+      // One toast for the outage, updated in place on reconnect, not one per retry.
+      if (this.connected) {
+        this.#lost = true;
+        toast.error('Lost the connection to the IO server', { id: 'io-link', description: 'reconnecting…', duration: Infinity });
+      }
+      this.connected = false;
+      this.#changed();
+    });
+    c.on('error', (e) => {
+      this.lastError = String(e?.message ?? e);
+      toastError(e, 'IO server', 'io-error');
+      this.#changed();
+    });
 
     c.on('message', (topic, payload) => {
       const body = payload.toString();
       if (topic === `${base}/error`) {
         try { this.lastError = JSON.parse(body).message ?? body; } catch { this.lastError = body; }
+        toastError(this.lastError, 'IO server');
         this.#changed();
         return;
       }

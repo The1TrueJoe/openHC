@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import { Toasts, toastError } from './toast';
 import './index.css';
 
 // ?theme=light|dark forces the page theme (index.css keys off data-theme). The
@@ -9,8 +10,13 @@ import './index.css';
 const forced = new URLSearchParams(location.search).get('theme');
 if (forced === 'light' || forced === 'dark') document.documentElement.dataset.theme = forced;
 
+// Anything nobody caught is still an error the user should see.
+addEventListener('unhandledrejection', (ev) => toastError(ev.reason));
+addEventListener('error', (ev) => toastError(ev.error ?? ev.message));
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
+    <Toasts />
   </StrictMode>,
 );

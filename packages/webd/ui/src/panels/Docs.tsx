@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiReferenceReact } from '@scalar/api-reference-react';
 import '@scalar/api-reference-react/style.css';
+import { toastError } from '../toast';
 
 /* The two halves of the API, side by side, because "what can this box do" is one
    question and the answer is split across two protocols:
@@ -103,15 +104,14 @@ type Spec = {
 
 function AsyncApiWrap() {
   const [spec, setSpec] = useState<Spec | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     fetch('/api/asyncapi.json')
       .then((r) => r.json())
       .then(setSpec)
-      .catch((e) => setErr(String(e)));
+      .catch((e) => { setFailed(true); toastError(e, 'Loading asyncapi.json'); });
   }, []);
-  if (err) return <div className="p-6 text-sm text-alarm">Could not load asyncapi.json: {err}</div>;
-  if (!spec) return <div className="p-6 text-sm text-muted">Loading…</div>;
+  if (!spec) return <div className="p-6 text-sm text-muted">{failed ? 'Not available.' : 'Loading…'}</div>;
 
   const chans = Object.entries(spec.channels ?? {});
   const group = (pred: (a: string) => boolean) => chans.filter(([, c]) => pred(c.address));
