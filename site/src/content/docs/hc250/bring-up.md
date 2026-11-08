@@ -33,10 +33,72 @@ the stock boot.
 
 From a running openHC, the next kernel is `kexec`, not another button press.
 
+## The other way in: kexec from stock, over SSH
+
+The stock kernel (2.6.32) has `CONFIG_KEXEC` off, but it loads modules, has
+`/proc/kallsyms`, and ships `/proc/config.gz`. `board/hc250/stock-kexec/`
+adds the missing piece as a module, so openHC boots from a stock unit with
+only SSH: no button, no stick, no serial. Nothing is written to flash; a reboot
+or power cycle comes back up in stock.
+
+| File | What |
+|---|---|
+| `ohc_kexec.c` | the module: `/dev/ohc-kexec` takes the image, `go` boots it |
+| `ohc-kexec.sh` | runs on the unit: insmod, load the image, boot (or `dry`) |
+| `build.sh` | builds `ohc_kexec.ko` with no kbuild (below) |
+| `stock-kernel.config` | the unit's `/proc/config.gz` |
+| `stock-crcs.txt` | export CRCs from the stock modules' `__versions` |
+
+```sh
+board/hc250/stock-kexec/build.sh          # -> board/hc250/stock-kexec/out/
+scp -O out/ohc_kexec.ko out/ohc-kexec.sh root@<unit>:/tmp/
+# on the unit:
+/tmp/ohc-kexec.sh http://<host>/openhc-hc250-kernel.img dry   # plan only, stays in stock
+/tmp/ohc-kexec.sh http://<host>/openhc-hc250-kernel.img       # boot it
+```
+
+**Building against a kernel with no source.** Control4 never published the
+`magneto` kernel, so the module is built against the closest GPL tree (the
+2.9.0 drop's `linux-omap-2.6.32`) configured with the unit's own config.
+`build.sh` does by hand what kbuild and modpost would: it generates
+`autoconf.h`, `bounds.h` and the version headers, compiles with gcc 4-era
+flags (`-std=gnu89`, ARM-only relocations, no unwind tables), and writes the
+`.mod.c` with `__versions` taken from the stock modules. The result matches the
+stock modules where the loader checks: the same `vermagic`
+(`2.6.32-51.48 mod_unload modversions ARMv7`), `struct module` the same size
+(0x144) with `init`/`exit` at the same offsets, and only `ABS32`/`CALL`/`JUMP24`
+relocations. The module imports only symbols the stock modules already import;
+everything else (`__get_free_pages`, `kernel_restart_prepare`,
+`setup_mm_for_reboot`, `v7_flush_kern_cache_all`) it looks up through
+`kallsyms_lookup_name`, whose address the script passes in from
+`/proc/kallsyms`.
+
+**What `go` does.**
+
+1. The image arrives in page chunks (1 MiB when free) that lie outside the RAM
+   it will be copied to, `0x80000000` to `load_addr` + 48 MiB. A uImage header
+   is skipped, and anything that is not a zImage is refused.
+2. It builds ATAGs at `0x80000100`: 504 MiB of memory, like stock's
+   `mem=504M`, which keeps the DSP carve-out untouched, and the command line.
+   The decompressor (`ATAG_DTB_COMPAT`) folds them into the appended DTB.
+3. It stops WDT2, which stock's `watchdogd` holds open with `NOWAYOUT`, and then
+   calls `kernel_restart_prepare`, the reboot path's notifiers and
+   `device_shutdown`.
+4. With IRQs and FIQs off, it maps RAM 1:1 (`setup_mm_for_reboot`), cleans and
+   invalidates every cache level, and jumps to a stub at its physical address.
+5. The stub turns the MMU and caches off, copies the chunks to `0x82000000` and
+   the ATAGs into place, and enters the zImage the way U-Boot's `bootm` does.
+
+`echo dry > /sys/module/ohc_kexec/parameters/go` does steps 1 and 2 and prints
+the copy plan to `dmesg` without leaving stock. `shutdown=0` skips
+`device_shutdown`, if a stock driver hangs in it.
+
 ## What the first image is
 
 - **Kernel:** mainline 7.1.8, `omap2plus_defconfig` + `linux/hc250.fragment`.
-- **Device tree:** `linux/c4-omap3-hc250.dts`, on `ti/omap/omap36xx.dtsi`.
+- **Device tree:** `linux/dts/ti/omap/c4-omap3-hc250.dts`, on `omap36xx.dtsi`. It sits
+  under `ti/omap/` like the in-tree boards, because `omap36xx.dtsi` pulls in its clock
+  files by bare name.
   Stock U-Boot passes ATAGS, so the DTB is appended to the zImage
   (`ARM_APPENDED_DTB` + `ARM_ATAG_DTB_COMPAT`).
 - **Pin mux is U-Boot's.** The DTS has no board pinctrl yet; every pad stays as
@@ -89,7 +151,8 @@ only the EA's pair.
 
 ## Next
 
-1. First RAM boot: serial console, Ethernet, USB, the IO-MCU answering.
+1. First RAM boot (USB stick or kexec from stock): serial console, Ethernet, USB,
+   the IO-MCU answering.
 2. Find the interior SD card; a persistent rootfs there (Zigbee/Node can live on it).
 3. TPS65950 audio (codec DAC/ADC) and the MADC.
 4. Video: DPI → ADV7513, then the THS8200.
