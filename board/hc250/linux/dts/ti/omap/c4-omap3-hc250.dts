@@ -208,12 +208,15 @@
 		};
 	};
 
-	/* c4sys boot counters (0-5) and the MAC (8-13). Never written. */
+	/*
+	 * c4sys boot counters (0 bootcount0, 1 bootcount1, 2 cleancount, 3 cleanboot,
+	 * 4 restore count, 5 restore state) and the MAC (8-13). S95ohcboot zeroes
+	 * 0/1 and 2 after a good boot, as stock's setbootcnt does; nothing else writes.
+	 */
 	eeprom@50 {
 		compatible = "atmel,24c02";
 		reg = <0x50>;
 		pagesize = <8>;
-		read-only;
 	};
 };
 
@@ -471,7 +474,7 @@
 	ranges = <0 0 0x30000000 0x01000000>,	/* CS0: NAND */
 		 <5 0 0x2c000000 0x01000000>;	/* CS5: LAN9220 */
 
-	/* Partitions as stock /proc/mtd + U-Boot env. All read-only. */
+	/* Partitions as stock /proc/mtd. Read-only but the two env copies (fw_setenv). */
 	nand@0,0 {
 		compatible = "ti,omap2-nand";
 		reg = <0 0 4>;
@@ -513,7 +516,6 @@
 			partition@280000 {
 				label = "u-boot-env";
 				reg = <0x00280000 0x00040000>;
-				read-only;
 			};
 			partition@2c0000 {
 				label = "kernel0";
@@ -563,7 +565,6 @@
 			partition@1ff20000 {
 				label = "u-boot-env-redund";
 				reg = <0x1ff20000 0x00040000>;
-				read-only;
 			};
 		};
 	};

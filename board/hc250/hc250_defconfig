@@ -44,6 +44,16 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 # Next kernel without the ID-button dance.
 BR2_PACKAGE_KEXEC=y
 BR2_PACKAGE_KEXEC_ZLIB=y
+# SD install (ohc-sd-install): U-Boot's env from Linux, the SD's partitions and
+# filesystems. U-Boot 2011.03 reads FAT, so the boot partition is vfat.
+BR2_PACKAGE_UBOOT_TOOLS=y
+BR2_PACKAGE_UBOOT_TOOLS_FWPRINTENV=y
+BR2_PACKAGE_E2FSPROGS=y
+BR2_PACKAGE_E2FSPROGS_RESIZE2FS=y
+BR2_PACKAGE_DOSFSTOOLS=y
+BR2_PACKAGE_DOSFSTOOLS_MKFS_FAT=y
+BR2_PACKAGE_UTIL_LINUX=y
+BR2_PACKAGE_UTIL_LINUX_FDISKS=y
 
 # --- overlays, image wrap ---
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/hc250/rootfs-overlay"
