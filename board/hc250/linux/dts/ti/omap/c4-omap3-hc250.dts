@@ -13,7 +13,7 @@
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/gpio/control4,io-mcu.h>
-#include "ti/omap/omap36xx.dtsi"
+#include "omap36xx.dtsi"
 
 / {
 	model = "Control4 HC-250";
@@ -162,8 +162,8 @@
 	};
 };
 
-#include "ti/omap/twl4030.dtsi"
-#include "ti/omap/twl4030_omap3.dtsi"
+#include "twl4030.dtsi"
+#include "twl4030_omap3.dtsi"
 
 /* THS8200 @21 and ADV7513 @39; video is not described yet. */
 &i2c2 {
@@ -401,4 +401,4 @@
 	};
 };
 
-#include "ti/omap/omap-gpmc-smsc911x.dtsi"
+#include "omap-gpmc-smsc911x.dtsi"
