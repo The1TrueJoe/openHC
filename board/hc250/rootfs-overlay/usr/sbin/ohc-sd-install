@@ -1,34 +1,24 @@
 #!/bin/sh
-# ohc-sd-install install <image|http-url> | uninstall | status
+# ohc-sd-install install <image|http-url> | stock | status
 #
-# HC-250: openHC on the interior SD card, booted by stock U-Boot. Run it from
-# openHC in RAM (kexec'd from stock). What it changes:
+# HC-250: the openHC half of the SD install. Run it from openHC in RAM (kexec'd
+# from stock); stock-kexec/ohc-boot-env.sh, run on stock, does the other half.
 #
-#   SD   p1 (Control4 "Internal" data) untouched. p2 "Apps" (ext4, ~15 MB used)
-#        shrunk to 2 GiB; p3 vfat "OHCBOOT" holds the uImage; p4 ext4 "ohcdata".
-#   env  bootmode=ohc and a bootohc script that counts tries in ohc_try and
-#        boots stock (bootnand) after three; S95ohcboot clears the count once
-#        the uplink is up. restoresystem, the script factory restore runs, gets
-#        "setenv bootmode nand; saveenv" appended, so a factory restore also
-#        returns U-Boot to stock. NAND is never written except the env.
+#   SD      p1 (Control4 "Internal" data) untouched. p2 "Apps" (ext4, ~15 MB used)
+#           shrunk to 2 GiB; p3 vfat "OHCBOOT" holds the uImage; p4 ext4 "ohcdata".
+#   EEPROM  byte 6 = U-Boot's bootohc try count: install arms it (0); at 3 U-Boot
+#           boots stock. "stock" sets it to 3, so every boot goes to stock until
+#           ohc-boot-env.sh uninstall (on stock) or the next install.
 #
-# uninstall puts bootmode and restoresystem back; the SD layout stays (stock
-# never reads the card).
+# openHC never writes the NAND (U-Boot's env included): mainline's BCH4 OOB layout
+# is not Control4's. The env is stock's fw_setenv's job, and factory restore's.
 set -e
 
 DEV=/dev/mmcblk0
 P2=${DEV}p2; P3=${DEV}p3; P4=${DEV}p4
 IMG=openhc.img
-STOCK_RESTORE='run restorekern; run restorerootfs; run cleanboot'
-OHC_RESTORE="$STOCK_RESTORE; setenv bootmode nand; saveenv"
-# Generic MMC in U-Boot 2011.03 (no "mmc init", so stock's bootmmc cannot work):
-# try both controllers. bootohcm boots what was loaded; bootnand is stock's boot.
-BOOTOHCM='setenv bootargs mem=${memsize} eth=${ethaddr} ${ohc_bootargs}; bootm ${bootload}'
-BOOTOHC='if itest ${ohc_try} -ge 3; then echo openHC: 3 failed boots, booting stock; run bootnand; fi;'
-BOOTOHC="$BOOTOHC"' if itest ${ohc_try} -eq 2; then setenv ohc_try 3; elif itest ${ohc_try} -eq 1; then setenv ohc_try 2; else setenv ohc_try 1; fi; saveenv;'
-BOOTOHC="$BOOTOHC"' if mmc rescan 0 && fatload mmc 0:3 ${bootload} openhc.img; then run bootohcm;'
-BOOTOHC="$BOOTOHC"' elif mmc rescan 1 && fatload mmc 1:3 ${bootload} openhc.img; then run bootohcm; fi; run bootnand'
-BOOTARGS='console=ttyS0,115200n8 panic=10 ohc.boot=sd'
+EEPROM=/sys/bus/i2c/devices/0-0050/eeprom
+TRY=6
 
 die() { echo "ohc-sd-install: $*" >&2; exit 1; }
 getenv() { fw_printenv -n "$1" 2>/dev/null; }
@@ -36,8 +26,7 @@ getenv() { fw_printenv -n "$1" 2>/dev/null; }
 check_board() {
     grep -q "Control4 HC-250" /proc/device-tree/model 2>/dev/null || die "not an HC-250"
     [ -b "$DEV" ] || die "no $DEV (interior SD)"
-    fw_printenv bootcmd >/dev/null 2>&1 || die "cannot read U-Boot's env (fw_env.config)"
-    case "$(getenv bootcmd)" in *'run boot${bootmode}'*) ;; *) die "bootcmd is not stock's run boot\${bootmode}" ;; esac
+    [ -w "$EEPROM" ] || die "no writable EEPROM at $EEPROM"
 }
 
 # p1 and p2 exactly as Control4 left them, or already ours.
@@ -93,45 +82,34 @@ put_image() {
     umount "$mnt"; trap - EXIT
 }
 
+setbyte() { printf "\\$(printf %o "$2")" | dd of="$EEPROM" bs=1 seek="$1" count=1 conv=notrunc 2>/dev/null; }
+byte() { dd if="$EEPROM" bs=1 skip="$1" count=1 2>/dev/null | hexdump -ve '1/1 "%u"'; }
+
 install() {
     [ -n "$1" ] || die "usage: $0 install <image|http-url>"
     check_board
-    rs=$(getenv restoresystem)
-    [ "$rs" = "$STOCK_RESTORE" ] || [ "$rs" = "$OHC_RESTORE" ] || die "restoresystem is not stock's: $rs"
     partition
     put_image "$1"
-    # One env write: everything lands together, or nothing does.
-    f=/tmp/ohc-env.$$
-    {
-        echo "ohc_try 0"
-        echo "ohc_bootargs $BOOTARGS"
-        echo "bootohcm $BOOTOHCM"
-        echo "bootohc $BOOTOHC"
-        echo "restoresystem $OHC_RESTORE"
-        echo "bootmode ohc"
-    } > "$f"
-    fw_setenv -s "$f"; rm -f "$f"
-    [ "$(getenv bootmode)" = ohc ] || die "env write did not stick"
-    echo "installed: U-Boot boots openHC from the SD; 3 failed boots or a factory restore go back to stock"
+    setbyte "$TRY" 0
+    [ "$(byte "$TRY")" = 0 ] || die "EEPROM byte $TRY did not stick"
+    echo "SD ready. Next, on stock: ohc-boot-env.sh install (sets bootmode=ohc)"
 }
 
-uninstall() {
+stock() {
     check_board
-    f=/tmp/ohc-env.$$
-    { echo "bootmode nand"; echo "restoresystem $STOCK_RESTORE"; echo "bootohc"; echo "bootohcm"; echo "ohc_try"; echo "ohc_bootargs"; } > "$f"
-    fw_setenv -s "$f"; rm -f "$f"
-    echo "uninstalled: U-Boot boots stock from NAND"
+    setbyte "$TRY" 3
+    echo "every boot goes to stock now; ohc-sd-install install re-arms it"
 }
 
 status() {
-    echo "bootmode=$(getenv bootmode) ohc_try=$(getenv ohc_try)"
+    echo "bootmode=$(getenv bootmode) try(EEPROM $TRY)=$(byte "$TRY")"
     echo "restoresystem=$(getenv restoresystem)"
     blkid "$DEV"p* 2>/dev/null
 }
 
 case "$1" in
     install) shift; install "$@" ;;
-    uninstall) uninstall ;;
+    stock) stock ;;
     status) status ;;
-    *) echo "usage: $0 install <image|http-url> | uninstall | status" >&2; exit 2 ;;
+    *) echo "usage: $0 install <image|http-url> | stock | status" >&2; exit 2 ;;
 esac

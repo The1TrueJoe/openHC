@@ -193,8 +193,9 @@
 	};
 };
 
+/* 400 kHz, not the TWL's 2.6 MHz HS mode: the 24C02 at 0x50 shares the bus. */
 &i2c1 {
-	clock-frequency = <2600000>;
+	clock-frequency = <400000>;
 
 	twl: twl@48 {
 		reg = <0x48>;
@@ -210,8 +211,9 @@
 
 	/*
 	 * c4sys boot counters (0 bootcount0, 1 bootcount1, 2 cleancount, 3 cleanboot,
-	 * 4 restore count, 5 restore state) and the MAC (8-13). S95ohcboot zeroes
-	 * 0/1 and 2 after a good boot, as stock's setbootcnt does; nothing else writes.
+	 * 4 restore count, 5 restore state) and the MAC (8-13). Byte 6 is openHC's
+	 * SD boot try count (U-Boot's bootohc). S95ohcboot zeroes 0/1, 2 and 6 after a
+	 * good boot, as stock's setbootcnt does for its own; nothing else writes.
 	 */
 	eeprom@50 {
 		compatible = "atmel,24c02";
@@ -474,7 +476,11 @@
 	ranges = <0 0 0x30000000 0x01000000>,	/* CS0: NAND */
 		 <5 0 0x2c000000 0x01000000>;	/* CS5: LAN9220 */
 
-	/* Partitions as stock /proc/mtd. Read-only but the two env copies (fw_setenv). */
+	/*
+	 * Partitions as stock /proc/mtd, all read-only: mainline's BCH4 OOB layout is
+	 * not Control4's (its ECC sits at OOB 36-63), so a write from here would read
+	 * back as uncorrectable in U-Boot. The env is written by stock's fw_setenv.
+	 */
 	nand@0,0 {
 		compatible = "ti,omap2-nand";
 		reg = <0 0 4>;
@@ -516,6 +522,7 @@
 			partition@280000 {
 				label = "u-boot-env";
 				reg = <0x00280000 0x00040000>;
+				read-only;
 			};
 			partition@2c0000 {
 				label = "kernel0";
@@ -565,6 +572,7 @@
 			partition@1ff20000 {
 				label = "u-boot-env-redund";
 				reg = <0x1ff20000 0x00040000>;
+				read-only;
 			};
 		};
 	};

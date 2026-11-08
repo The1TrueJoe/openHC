@@ -1,19 +1,21 @@
 #!/bin/sh
 # Tell U-Boot this openHC boot was good. HC-250 SD install (ohc-sd-install) only.
 #
-# The install (`ohc-sd-install install`) makes U-Boot count openHC boot attempts
-# in its environment: `bootohc` bumps ohc_try 0->1->2->3 and saves it BEFORE
-# booting us, and at 3 it runs the untouched stock `bootnand` instead. So a
-# kernel that panics (panic=10), hangs (the hardware watchdog U-Boot arms) or
-# comes up deaf three times in a row lands the box back on stock Control4, with
-# no serial console and nobody touching it. This script is the other half: once
-# the uplink has carrier and an address, it puts ohc_try back to 0.
+# The install makes U-Boot's bootohc count openHC boot attempts in EEPROM byte 6
+# (0->1->2->3, written before booting us) and boot stock (bootnand) at 3. So a
+# kernel that panics (panic=10), hangs (the watchdog U-Boot arms) or comes up
+# deaf three times in a row lands the box back on stock Control4 with nobody
+# touching it. This script is the other half: once the uplink has carrier and an
+# address, it zeroes the count. The EEPROM, not U-Boot's env: mainline's NAND ECC
+# layout is not Control4's, so openHC never writes the NAND.
 #
-# "Up" means reachable, not merely booted. A box with userspace running and no
-# network is, from the next room, the same as a hung one, so if the uplink is not
-# up within five minutes this reboots and lets the count go on climbing.
+# It also zeroes stock's own counters for the slot U-Boot ran (bytes 0/1) and the
+# clean count (2), which c4sys init bumps every boot and stock's setbootcnt clears;
+# left alone they switch stock to its other slot after three boots.
 #
-# A RAM boot (kexec from stock) never sets ohc_try, so then this does nothing.
+# "Up" means reachable, not merely booted: if the uplink is not up within five
+# minutes this reboots and lets the count go on climbing. A RAM boot (kexec from
+# stock) leaves byte 6 alone, so then this does nothing.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 UPLINK="${OHC_UPLINK_IFACE:-eth0}"
 LIMIT=300
@@ -23,27 +25,26 @@ reachable() {
     ip -4 addr show "$UPLINK" 2>/dev/null | grep -q "inet "
 }
 
-# U-Boot's c4sys init counts every boot in the EEPROM and, with nobody to clear
-# the count, switches stock to its other slot after three. Stock's setbootcnt
-# zeroes it after a good boot; this does the same for the slot U-Boot ran.
 EEPROM=/sys/bus/i2c/devices/0-0050/eeprom
-clear_c4_counters() {
-    sys=$(fw_printenv -n bootsystem 2>/dev/null) || return 0
-    case "$sys" in 0|1) ;; *) return 0 ;; esac
-    for off in "$sys" 2; do
-        v=$(dd if="$EEPROM" bs=1 skip="$off" count=1 2>/dev/null | hexdump -ve '1/1 "%u"')
-        [ -n "$v" ] && [ "$v" != 0 ] || continue
-        printf '\000' | dd of="$EEPROM" bs=1 seek="$off" count=1 conv=notrunc 2>/dev/null \
-            && logger -t ohcboot "EEPROM counter $off: $v -> 0"
-    done
+TRY=6
+
+byte() { dd if="$EEPROM" bs=1 skip="$1" count=1 2>/dev/null | hexdump -ve '1/1 "%u"'; }
+zero() {
+    v=$(byte "$1")
+    [ -n "$v" ] && [ "$v" != 0 ] || return 0
+    printf '\000' | dd of="$EEPROM" bs=1 seek="$1" count=1 conv=notrunc 2>/dev/null \
+        && logger -t ohcboot "EEPROM byte $1: $v -> 0"
 }
 
 confirm() {
     t=0
     while [ "$t" -lt "$LIMIT" ]; do
         if reachable; then
-            fw_setenv ohc_try 0 && logger -t ohcboot "boot confirmed, ohc_try cleared"
-            clear_c4_counters
+            sys=$(fw_printenv -n bootsystem 2>/dev/null)
+            case "$sys" in 0|1) zero "$sys" ;; esac
+            zero 2
+            zero "$TRY"
+            logger -t ohcboot "boot confirmed"
             return 0
         fi
         sleep 5; t=$((t + 5))
@@ -54,8 +55,9 @@ confirm() {
 
 case "$1" in
     start)
-        try=$(fw_printenv -n ohc_try 2>/dev/null) || exit 0
-        [ "$try" = 0 ] && exit 0
+        [ -r "$EEPROM" ] || exit 0
+        try=$(byte "$TRY")
+        case "$try" in 1|2|3) ;; *) exit 0 ;; esac
         echo "ohcboot: SD boot attempt $try; confirming once $UPLINK is up"
         confirm >/dev/null 2>&1 &
         ;;
