@@ -1,0 +1,48 @@
+# openHC — Control4 HC-250 ("magneto"): OMAP36xx (DM3730 class) Cortex-A8,
+# TPS65950, 512 MB, 512 MB NAND, LM3S1162 IO-MCU.
+# Standalone board, no family. Docs: https://the1truejoe.github.io/openHC/hc250/
+
+# --- arch: Cortex-A8, VFPv3 + NEON ---
+BR2_arm=y
+BR2_cortex_a8=y
+BR2_ARM_ENABLE_NEON=y
+BR2_ARM_ENABLE_VFP=y
+BR2_ARM_FPU_VFPV3=y
+BR2_ARM_EABIHF=y
+
+# --- init / login: console on UART1 ---
+BR2_TARGET_GENERIC_HOSTNAME="openhc250"
+BR2_TARGET_GENERIC_ISSUE="openHC Control4 HC-250"
+BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
+BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
+
+# --- kernel: omap2plus + our board DTS ---
+# Stock U-Boot 2011.03 passes ATAGS, so the DTB is appended and the whole
+# thing wrapped as a legacy uImage in post-image.sh.
+BR2_LINUX_KERNEL_USE_DEFCONFIG=y
+BR2_LINUX_KERNEL_DEFCONFIG="omap2plus"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_OPENHC_PATH)/hc250/linux/hc250.fragment"
+BR2_LINUX_KERNEL_ZIMAGE=y
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
+BR2_LINUX_KERNEL_CUSTOM_DTS_PATH="$(BR2_EXTERNAL_OPENHC_PATH)/hc250/linux/c4-omap3-hc250.dts"
+
+# --- rootfs: initramfs in the uImage (RAM boot from a USB stick) ---
+BR2_TARGET_ROOTFS_INITRAMFS=y
+
+# --- on-target tools ---
+# Host mkimage: the uImage and the c4test.img U-Boot script.
+BR2_PACKAGE_HOST_UBOOT_TOOLS=y
+# NAND inspection (the DT keeps every partition read-only).
+BR2_PACKAGE_MTD=y
+# TWL4030/TPS65950, ADV7513, THS8200 bring-up.
+BR2_PACKAGE_I2C_TOOLS=y
+# C++ for v4l-utils (ir-ctl, from the iomcu feature); zigbee brings it elsewhere.
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+# Next kernel without the ID-button dance.
+BR2_PACKAGE_KEXEC=y
+BR2_PACKAGE_KEXEC_ZLIB=y
+
+# --- overlays, image wrap ---
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_OPENHC_PATH)/common/rootfs-overlay $(BR2_EXTERNAL_OPENHC_PATH)/hc250/rootfs-overlay"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_OPENHC_PATH)/hc250/post-image.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="hc250"

@@ -1,0 +1,21 @@
+#!/bin/sh
+# eth0's MAC, before S09hostname names the box from it. smsc911x takes it only
+# from DT, which stock U-Boot can't fill: use eth= from the cmdline, else the
+# copy c4sys keeps in the board EEPROM at offset 8.
+[ "$1" = start ] || exit 0
+
+mac=
+for a in $(cat /proc/cmdline); do
+    case "$a" in eth=??:??:??:??:??:??) mac=${a#eth=} ;; esac
+done
+if [ -z "$mac" ]; then
+    for e in /sys/bus/i2c/devices/1-0050/eeprom /sys/bus/nvmem/devices/1-0050*/nvmem; do
+        [ -r "$e" ] || continue
+        mac=$(dd if="$e" bs=1 skip=8 count=6 2>/dev/null | hexdump -v -e '6/1 "%02x:"' | sed 's/:$//')
+        break
+    done
+fi
+case "$mac" in
+    ""|00:00:00:00:00:00|ff:ff:ff:ff:ff:ff) echo "ethaddr: none found, keeping $(cat /sys/class/net/eth0/address)"; exit 0 ;;
+esac
+ip link set eth0 address "$mac" && echo "ethaddr: eth0 $mac"

@@ -21,7 +21,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
 case "$BOARD" in
-  ca1*)             TARGET=armv7-unknown-linux-musleabihf ;;
+  ca1*|hc250*)      TARGET=armv7-unknown-linux-musleabihf ;;
   # EA runs a modern 64-bit userspace. The Buildroot rootfs is x86_64 (glibc) and
   # the daemons are x86_64 static-musl, so they match the base and the IA32
   # emulation layer is reserved for the one thing that genuinely needs it: the

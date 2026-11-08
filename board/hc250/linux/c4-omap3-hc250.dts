@@ -1,0 +1,404 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Control4 HC-250 ("magneto"): OMAP36xx (DM3730 class), TPS65950, 512 MB,
+ * 512 MB NAND, LAN9220, LM3S1162 IO-MCU, EM357 Zigbee.
+ *
+ * Pads stay as stock U-Boot muxed them; no board pinctrl yet.
+ * GPIOs read off a stock unit (/sys/kernel/debug/gpio, /dev/gpio).
+ * Docs: https://the1truejoe.github.io/openHC/hc250/
+ */
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/gpio/control4,io-mcu.h>
+#include "ti/omap/omap36xx.dtsi"
+
+/ {
+	model = "Control4 HC-250";
+	compatible = "control4,hc250", "ti,omap3630", "ti,omap3";
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x20000000>;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led-power {
+			label = "hc250::power";
+			gpios = <&gpio4 15 GPIO_ACTIVE_LOW>;		/* gpio111 */
+			linux,default-trigger = "default-on";
+		};
+		led-data {
+			label = "hc250::data";
+			gpios = <&gpio6 18 GPIO_ACTIVE_LOW>;		/* gpio178 */
+		};
+		led-link {
+			label = "hc250::link";
+			gpios = <&gpio6 22 GPIO_ACTIVE_LOW>;		/* gpio182 */
+		};
+		led-wifi-red {
+			label = "hc250:red:wifi";
+			gpios = <&gpio6 19 GPIO_ACTIVE_LOW>;		/* gpio179 */
+		};
+		led-wifi-yellow {
+			label = "hc250:yellow:wifi";
+			gpios = <&gpio6 20 GPIO_ACTIVE_LOW>;		/* gpio180 */
+		};
+		led-wifi-blue {
+			label = "hc250:blue:wifi";
+			gpios = <&gpio6 21 GPIO_ACTIVE_LOW>;		/* gpio181 */
+			linux,default-trigger = "heartbeat";
+		};
+	};
+
+	/* ID button: held at power-on it is U-Boot's USB-script trigger. */
+	id-button {
+		compatible = "gpio-keys";
+		label = "hc250-id-button";
+
+		key-id {
+			label = "id_button";
+			gpios = <&gpio1 22 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_F5>;
+			debounce-interval = <20>;
+		};
+	};
+
+	/* Rear USB 5 V: TPS2553 enabled by TWL GPIO 7 (U-Boot c4sys usbcheck). */
+	usb_vbus: regulator-usb-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&twl_gpio 7 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+	};
+};
+
+&gpio1 {
+	gpio-line-names =
+		/*  0 */ "", "", "", "", "", "", "", "",
+		/*  8 */ "", "", "", "", "", "", "", "",
+		/* 16 */ "", "", "", "hdmi_irq", "", "", "id_button", "",
+		/* 24 */ "zigbee_reset", "zigrf_enable", "", "eth_irq", "", "", "", "";
+
+	/* Held as the stock OS leaves them: NCP out of reset, RF on. */
+	zigbee-reset-hog {
+		gpio-hog;
+		gpios = <24 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "zigbee_reset";
+	};
+	zigrf-enable-hog {
+		gpio-hog;
+		gpios = <25 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "zigrf_enable";
+	};
+};
+
+&gpio4 {
+	gpio-line-names =
+		/*  96 */ "io_reset", "", "", "", "", "wifi_carddetect", "", "",
+		/* 104 */ "12v_enable", "", "", "", "", "", "12v_fault", "",
+		/* 112 */ "", "", "", "", "", "", "", "",
+		/* 120 */ "", "", "", "", "", "", "", "";
+
+	/* Stock tps2533 driver holds this high; its fault input is gpio110. */
+	pwr-12v-hog {
+		gpio-hog;
+		gpios = <8 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "12v_enable";
+	};
+	/* Wi-Fi is off on stock; keep it that way until mmc2 is brought up. */
+	wifi-cd-hog {
+		gpio-hog;
+		gpios = <5 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "wifi_carddetect";
+	};
+};
+
+&gpio6 {
+	gpio-line-names =
+		/* 160 */ "", "", "", "", "", "", "", "",
+		/* 168 */ "", "", "", "", "", "", "", "",
+		/* 176 */ "wifi_reset", "eth_reset", "", "", "", "", "", "",
+		/* 184 */ "", "", "", "", "", "", "", "";
+
+	wifi-reset-hog {
+		gpio-hog;
+		gpios = <16 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "wifi_reset";
+	};
+};
+
+&i2c1 {
+	clock-frequency = <2600000>;
+
+	twl: twl@48 {
+		reg = <0x48>;
+		interrupts = <7>;		/* SYS_NIRQ */
+		interrupt-parent = <&intc>;
+	};
+
+	/* c4sys boot counters (0-5) and the MAC (8-13). Never written. */
+	eeprom@50 {
+		compatible = "atmel,24c02";
+		reg = <0x50>;
+		pagesize = <8>;
+		read-only;
+	};
+};
+
+#include "ti/omap/twl4030.dtsi"
+#include "ti/omap/twl4030_omap3.dtsi"
+
+/* THS8200 @21 and ADV7513 @39; video is not described yet. */
+&i2c2 {
+	clock-frequency = <400000>;
+};
+
+&i2c3 {
+	status = "disabled";
+};
+
+/* Console. */
+&uart1 {
+	status = "okay";
+};
+
+/* EM357 Zigbee NCP, on the McBSP3 pads with RTS/CTS. */
+&uart2 {
+	uart-has-rtscts;
+	status = "okay";
+};
+
+/* LM3S1162 IO-MCU. Pins: docs shared/io-mcu-pinmap (stock LM3S block 1). */
+&uart3 {
+	status = "okay";
+
+	io_mcu: io-mcu {
+		compatible = "control4,lm3s1162-io-mcu", "control4,io-mcu";
+		current-speed = <115200>;
+		reset-gpios = <&gpio4 0 GPIO_ACTIVE_LOW>;	/* gpio96 io_reset */
+		control4,ir-carriers = <IOMCU_PORT_D 1>, <IOMCU_PORT_F 3>;
+		control4,ir-gates-active-low;
+		control4,hold-low-pins = <IOMCU_PORT_F 4>, <IOMCU_PORT_F 5>,
+					 <IOMCU_PORT_A 7>, <IOMCU_PORT_A 6>;
+		control4,heartbeat-pin = <IOMCU_PORT_F 1>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Jack 1 = UART1, jack 2 = UART2: inferred, not yet probed. */
+		jack@1 {
+			reg = <1>;
+			label = "IR / Serial 1";
+			control4,ir-channel = <0>;
+			control4,ir-gates = <IOMCU_PORT_C 7 0>, <IOMCU_PORT_C 6 1>;
+			control4,uart = <0>;
+			control4,uart-pins = <IOMCU_PORT_D 2>, <IOMCU_PORT_D 3>;
+			control4,uart-mux-pins = <IOMCU_PORT_B 0>;
+		};
+		jack@2 {
+			reg = <2>;
+			label = "IR / Serial 2";
+			control4,ir-channel = <1>;
+			control4,ir-gates = <IOMCU_PORT_C 5 0>, <IOMCU_PORT_C 4 1>;
+			control4,uart = <1>;
+			control4,uart-pins = <IOMCU_PORT_G 0>, <IOMCU_PORT_G 1>;
+			control4,uart-mux-pins = <IOMCU_PORT_B 1>;
+		};
+		jack@3 {
+			reg = <3>;
+			label = "IR 3";
+			control4,ir-channel = <2>;
+			control4,ir-gates = <IOMCU_PORT_B 4 0>, <IOMCU_PORT_B 5 1>;
+		};
+		jack@4 {
+			reg = <4>;
+			label = "IR 4";
+			control4,ir-channel = <3>;
+			control4,ir-gates = <IOMCU_PORT_B 6 0>, <IOMCU_PORT_F 2 1>;
+		};
+		ir-blaster {
+			control4,ir-channel = <4>;
+			control4,ir-gates = <IOMCU_PORT_F 0 0>, <IOMCU_PORT_D 5 1>;
+		};
+		ir-receiver {
+			control4,ir-pin = <IOMCU_PORT_D 4>;
+		};
+
+		relays {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			relay@0 {
+				reg = <0>;
+				label = "Relay 1";
+				control4,pin = <IOMCU_PORT_E 0>;
+			};
+		};
+
+		contacts {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			contact@0 {
+				reg = <0>;
+				label = "Contact 1";
+				control4,pin = <IOMCU_PORT_E 1>;
+				control4,active-low;
+			};
+		};
+	};
+};
+
+/* Interior SD slot (inferred). CD is TWL GPIO 0 but reads "empty" on stock, so poll. */
+&mmc1 {
+	vmmc-supply = <&vmmc1>;
+	bus-width = <4>;
+	broken-cd;
+};
+
+/* Broadcom SDIO Wi-Fi behind a level shifter; held in reset for now. */
+&mmc2 {
+	status = "disabled";
+};
+
+&mmc3 {
+	status = "disabled";
+};
+
+/* Rear USB: MUSB through the TWL4030 PHY, host only. */
+&usb_otg_hs {
+	interface-type = <0>;
+	usb-phy = <&usb2_phy>;
+	phys = <&usb2_phy>;
+	phy-names = "usb2-phy";
+	mode = <1>;
+	dr_mode = "host";
+	power = <250>;
+};
+
+&gpmc {
+	ranges = <0 0 0x30000000 0x01000000>,	/* CS0: NAND */
+		 <5 0 0x2c000000 0x01000000>;	/* CS5: LAN9220 */
+
+	/* Partitions as stock /proc/mtd + U-Boot env. All read-only. */
+	nand@0,0 {
+		compatible = "ti,omap2-nand";
+		reg = <0 0 4>;
+		interrupt-parent = <&gpmc>;
+		interrupts = <0 IRQ_TYPE_NONE>, <1 IRQ_TYPE_NONE>;
+		nand-bus-width = <16>;
+		gpmc,device-width = <2>;
+		ti,nand-ecc-opt = "bch4";
+		gpmc,sync-clk-ps = <0>;
+		gpmc,cs-on-ns = <0>;
+		gpmc,cs-rd-off-ns = <44>;
+		gpmc,cs-wr-off-ns = <44>;
+		gpmc,adv-on-ns = <6>;
+		gpmc,adv-rd-off-ns = <34>;
+		gpmc,adv-wr-off-ns = <44>;
+		gpmc,we-off-ns = <40>;
+		gpmc,oe-off-ns = <54>;
+		gpmc,access-ns = <64>;
+		gpmc,rd-cycle-ns = <82>;
+		gpmc,wr-cycle-ns = <82>;
+		gpmc,wr-access-ns = <40>;
+		gpmc,wr-data-mux-bus-ns = <0>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "x-loader";
+				reg = <0x00000000 0x00080000>;
+				read-only;
+			};
+			partition@80000 {
+				label = "u-boot";
+				reg = <0x00080000 0x00200000>;
+				read-only;
+			};
+			partition@280000 {
+				label = "u-boot-env";
+				reg = <0x00280000 0x00040000>;
+				read-only;
+			};
+			partition@2c0000 {
+				label = "kernel0";
+				reg = <0x002c0000 0x00400000>;
+				read-only;
+			};
+			partition@6c0000 {
+				label = "rootfs0";
+				reg = <0x006c0000 0x08000000>;
+				read-only;
+			};
+			partition@86c0000 {
+				label = "recovery-kernel";
+				reg = <0x086c0000 0x00400000>;
+				read-only;
+			};
+			partition@8ac0000 {
+				label = "recovery-rootfs";
+				reg = <0x08ac0000 0x08000000>;
+				read-only;
+			};
+			partition@10ac0000 {
+				label = "jffs2";
+				reg = <0x10ac0000 0x01800000>;
+				read-only;
+			};
+			partition@122c0000 {
+				label = "internal";
+				reg = <0x122c0000 0x05060000>;
+				read-only;
+			};
+			partition@17320000 {
+				label = "kernel1";
+				reg = <0x17320000 0x00400000>;
+				read-only;
+			};
+			partition@17720000 {
+				label = "rootfs1";
+				reg = <0x17720000 0x08000000>;
+				read-only;
+			};
+			partition@1f720000 {
+				label = "logs";
+				reg = <0x1f720000 0x00800000>;
+				read-only;
+			};
+			partition@1ff20000 {
+				label = "u-boot-env-redund";
+				reg = <0x1ff20000 0x00040000>;
+				read-only;
+			};
+		};
+	};
+
+	ethernet@gpmc {
+		reg = <5 0 0xff>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <27 IRQ_TYPE_LEVEL_LOW>;		/* gpio27 */
+		reset-gpios = <&gpio6 17 GPIO_ACTIVE_LOW>;	/* gpio177 */
+	};
+};
+
+#include "ti/omap/omap-gpmc-smsc911x.dtsi"

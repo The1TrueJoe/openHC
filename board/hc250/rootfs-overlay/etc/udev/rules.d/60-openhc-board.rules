@@ -1,0 +1,5 @@
+# HC-250: which tty is what (see 70-openhc-io.rules for the properties).
+# The rear serial ports are MCU-routed (/dev/ohc/serial via gpio-ohc-iomcu).
+
+# EM357 Zigbee NCP on UART2; ttySZigbee is the vendor's name for it.
+SUBSYSTEM=="tty", KERNELS=="4806c000.serial", ENV{OHC_RADIO}="zigbee", SYMLINK+="ttySZigbee"

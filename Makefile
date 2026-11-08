@@ -18,6 +18,7 @@ BOARD ?= ea3-v2
 #          ea5 (V1 wifi, switch, audio FPGA; V2 the same without the radio)
 # ioxv1:   TI DaVinci DM355 (ARM), native on-board IO, U-Boot `run tst` netboot.
 # ca1:     Freescale i.MX6SL (ARM), native on-board IO, stock U-Boot boot.scr.
+# hc250:   TI OMAP36xx (ARM), companion LM3S1162 IO-MCU, USB-stick c4test.img RAM boot.
 # hc800:   Intel Atom D525 PC (x86_64), companion LM3S1162 IO-MCU, GRUB 0.97.
 # Every board directory with a <name>/<name>_defconfig.
 BOARDS := $(sort $(filter-out common,$(foreach f,$(filter-out board/ea/common/%,$(wildcard board/*/*_defconfig board/ea/*/*/*_defconfig)),$(notdir $(patsubst %/,%,$(dir $(f)))))))
