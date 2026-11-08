@@ -2478,6 +2478,20 @@ static int ohc_read_gates(struct fwnode_handle *node, struct ohc_gate *g)
 	return n;
 }
 
+/* control4,uart-mux-pins: line A, and line B where the jack has one (EA). */
+static int ohc_read_mux(struct fwnode_handle *node, struct ohc_pin *mux)
+{
+	const char *prop = "control4,uart-mux-pins";
+	int n;
+
+	if (!fwnode_property_present(node, prop))
+		return 0;
+	n = fwnode_property_count_u32(node, prop);
+	if (n != 2 && n != 4)
+		return -EINVAL;
+	return ohc_read_pins(node, prop, mux, n / 2);
+}
+
 static int ohc_parse_jack(struct device *dev, struct fwnode_handle *child,
 			  struct ohc_jack *j)
 {
@@ -2494,7 +2508,7 @@ static int ohc_parse_jack(struct device *dev, struct fwnode_handle *child,
 	j->n_gates = ohc_read_gates(child, j->gate);
 	if (j->n_gates < 0 || ohc_read_pins(child, "control4,ir-pin", &j->ir_pin, 1) ||
 	    ohc_read_pins(child, "control4,uart-pins", uart, 2) ||
-	    ohc_read_pins(child, "control4,uart-mux-pins", mux, 2))
+	    ohc_read_mux(child, mux))
 		return dev_err_probe(dev, -EINVAL, "jack %u: bad pin\n", j->num);
 	j->rx = uart[0];
 	j->tx = uart[1];

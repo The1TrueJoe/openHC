@@ -256,6 +256,7 @@ patternProperties:
             maximum: 7
       control4,uart-mux-pins:
         $ref: /schemas/types.yaml#/definitions/uint32-array
+        minItems: 2
         items:
           - description: line A port (high = serial)
             maximum: 7
@@ -265,7 +266,9 @@ patternProperties:
             maximum: 7
           - description: line B pin
             maximum: 7
-        description: The lines that switch a combo jack between IR and serial.
+        description:
+          The lines that switch a combo jack between IR and serial. Line B is
+          optional (the HC-250 has one serial-enable line per jack).
     required:
       - reg
     anyOf:

@@ -18,7 +18,7 @@ BOARD="${1:?usage: $0 BOARD}"
 # entry there.
 case "$BOARD" in
   hc800*) target=x86_64-unknown-linux-musl;      cc=musl-gcc;                apt="musl-tools" ;;
-  ca1*)   target=armv7-unknown-linux-musleabihf; cc=arm-linux-gnueabihf-gcc; apt="gcc-arm-linux-gnueabihf libc6-dev-armhf-cross" ;;
+  ca1*|hc250*) target=armv7-unknown-linux-musleabihf; cc=arm-linux-gnueabihf-gcc; apt="gcc-arm-linux-gnueabihf libc6-dev-armhf-cross" ;;
   ioxv1*) target=armv5te-unknown-linux-musleabi; cc=arm-linux-gnueabi-gcc;   apt="gcc-arm-linux-gnueabi libc6-dev-armel-cross" ;;
   # EA default: a modern 64-bit userspace (x86_64 static-musl daemons).
   *)      target=x86_64-unknown-linux-musl;      cc=musl-gcc;                apt="musl-tools" ;;
