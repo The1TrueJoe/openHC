@@ -12,7 +12,8 @@ host UART.
 | Family | Part | Core | Port | Baud |
 |---|---|---|---|---|
 | EA1 / EA3 / EA5 | **TM4C1231D5** (TI Tiva) | Cortex-M4F | `ttyS1` | **460800** |
-| HC-800 / HC-250 | **LM3S1162** (TI Stellaris) | Cortex-M3 | `ttyS3` | 115200 |
+| HC-800 | **LM3S1162** (TI Stellaris) | Cortex-M3 | `ttyS3` | 115200 |
+| HC-250 | **LM3S1162** (TI Stellaris) | Cortex-M3 | `ttyS2` | 115200 |
 | CA-1 | **none** | — | — | — |
 
 Everything below is confirmed against a live EA1 unless marked otherwise. This is

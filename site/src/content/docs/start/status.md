@@ -33,8 +33,9 @@ them was invisible while CI only ever built one board. The row below says
 | ea5-v1, ea5-v2 | Intel CE53xx | Builds | Never booted. The audio FPGA, both DSPs, eight IR jacks (two combo), four relays and contacts are described from Control4's GPL source and stock rootfs. See [EA-5](/ea/ea5/). |
 | **hc800** | Atom D525 | **Proven** | 7.1.8 booted, then **persistently installed** (GRUB entry on the spare kernel partition, boot-once via `savedefault`). Relays, contacts, six named IR devices, all six front LEDs, web UI, iod and sysmond. No kernel patches at all — the cheapest board here to bring up, as predicted. |
 
-The HC-250 is not supported: the IO-MCU firmware tree has room for its
-Stellaris part, but it has not been in hand.
+The **HC-250** (TI OMAP36xx) is in bring-up: a stock unit has been surveyed and
+backed up, and `board/hc250` is being written to RAM-boot from a USB stick with
+nothing written to NAND. See [HC-250](/hc250/).
 
 ## What is genuinely finished
 

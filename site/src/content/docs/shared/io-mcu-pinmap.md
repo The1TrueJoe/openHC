@@ -329,9 +329,34 @@ SSI0's pins, contacts PB0/PB1 are CCP0/CCP2, and PB2/PB3 are I2C0. None is
 selected here. The LM3S1162 has no `GPIOPCTL`: `AFSEL` alone picks the single
 alternate function, so there is no function number to choose.
 
-## HC-250 and the other LM3S blocks
+## HC-250 — block 1
 
-Not openHC targets, recorded because they explain the image.
+Block 1 is the HC-250's (inferred from its I/O; the strap is unmeasured). Same
+record layout as block 2 above, decoded the same way:
+
+| Function | Bit / index | Pins | Source |
+|---|---|---|---|
+| Carriers | — | PD1 (PWM1), PF3 (PWM5) | `+0x1b8` |
+| IR jack 1 | bit 0 | gates A PC7, B PC6, C PF4 | `+0x038` |
+| IR jack 2 | bit 1 | A PC5, B PC4, C PF5 | `+0x050` |
+| IR jack 3 | bit 2 | A PB4, B PB5, C PA7 | `+0x068` |
+| IR jack 4 | bit 3 | A PB6, B PF2, C PA6 | `+0x080` |
+| Front blaster | bit 4 | A PF0, B PD5 | `+0x098` |
+| IR receiver | — | PD4 (TIMER1) | `+0x024` |
+| Relay 1 | 0 | PE0 | `+0x2c8` |
+| Contact 1 | 0 | PE1 | `+0x1c8` |
+| Heartbeat | — | PF1 | `+0x350` |
+| User serial 1 | UART1 | RX PD2, TX PD3, enable PB0 | `+0x38c`, `+0x358` |
+| User serial 2 | UART2 | RX PG0, TX PG1, enable PB1 | `+0x3b0`, `+0x360` |
+| Host link | UART0 | PA0/PA1, 115200 | `+0x368` |
+
+The jacks are HC-800 jacks 1–4 pin for pin, and the blaster is the HC-800's. Each
+user UART has **one** enable line, raised by `0xA0`, where the TM4C boards have an
+A/B pair. Which jack carries which UART (1→1, 2→2 assumed) is unconfirmed.
+
+## The other LM3S blocks
+
+Blocks 0 and 3 are not openHC targets, recorded because they explain the image.
 
 | Block | Strap | Board | IR | Relays / contacts | User serial |
 |---|---|---|---|---|---|
@@ -397,6 +422,20 @@ hc800: # LM3S1162 block 2
   contact: [B0, B1, B2, B3]
   heartbeat: F1
   strap: {adc: 0, block: 2}
+hc250: # LM3S1162 block 1 (inferred)
+  carrier: [{port: D, pin: 1, pwm: 1}, {port: F, pin: 3, pwm: 5}]
+  ir:
+    - {a: C7, b: C6, c: F4}
+    - {a: C5, b: C4, c: F5}
+    - {a: B4, b: B5, c: A7}
+    - {a: B6, b: F2, c: A6}
+  blaster: {a: F0, b: D5}
+  ir_rx: {port: D, pin: 4, ccp: 3, timer: TIMER1B}
+  uart: [{uart: 1, rx: D2, tx: D3, enable: B0}, {uart: 2, rx: G0, tx: G1, enable: B1}]
+  relay: [E0]
+  contact: [E1]
+  heartbeat: F1
+  strap: {adc: 0, block: 1}
 ```
 
 ## Open gaps

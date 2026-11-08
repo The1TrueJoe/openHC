@@ -19,31 +19,31 @@ and Control4 spec doc DOC-00031-C.
 | | **EA-1** | **EA-3** | **EA-5** | **HC-800** | **HC-250** | **CA-1** |
 |---|---|---|---|---|---|---|
 | Arch | i686 | i686 | i686 ? | **x86_64-capable** | ARMv7 | ARMv7 |
-| SoC | Atom CE5310 | Atom CE5310 | Atom CE53xx | **Atom D525 + NM10, 2c/4t** | ARMv7 ~1 GHz | **i.MX6SL, 1x A9** |
-| Board codename | ninjago | ninjago | garmadon | **none** | ? | emmet |
+| SoC | Atom CE5310 | Atom CE5310 | Atom CE53xx | **Atom D525 + NM10, 2c/4t** | **OMAP36xx (DM3730 class), 1x A8 @ 1 GHz** | **i.MX6SL, 1x A9** |
+| Board codename | ninjago | ninjago | garmadon | **none** | magneto | emmet |
 | Board type strap | 1 | 2 | 3 ? | n/a (type 0) | n/a | n/a (type 0) |
 | RAM | ~1.5 GB | ~1.5 GB | ? | 2 GB | 512 MB | 1 GB |
-| Storage | 7.6 GB eMMC | 7.6 GB eMMC | eMMC ? | **8 GB SATA SSD + eSATA** | ~2 GB ? | **3.7 GB eMMC + 16 MB SPI-NOR** |
-| Boot | CEFDK (no GRUB) | CEFDK 36-34 | CEFDK ? | **AMI BIOS → GRUB 0.97** | U-Boot ? | **U-Boot 2014.04 (SPI-NOR)** |
-| Secure boot | **fuse BLOWN** | **fuse BLOWN** | ? | **none — nothing verified** | ? | **HAB open — not enforced** |
+| Storage | 7.6 GB eMMC | 7.6 GB eMMC | eMMC ? | **8 GB SATA SSD + eSATA** | **512 MB NAND + 8 GB interior SD** | **3.7 GB eMMC + 16 MB SPI-NOR** |
+| Boot | CEFDK (no GRUB) | CEFDK 36-34 | CEFDK ? | **AMI BIOS → GRUB 0.97** | **X-Loader → U-Boot 2011.03 (NAND)** | **U-Boot 2014.04 (SPI-NOR)** |
+| Secure boot | **fuse BLOWN** | **fuse BLOWN** | ? | **none — nothing verified** | **none seen — U-Boot sources an unsigned USB script** | **HAB open — not enforced** |
 | **IO MCU** | TM4C1231D5 | TM4C1231D5 | TM4C1231D5 | **LM3S1162** | LM3S1162 | **none** |
-| IO MCU UART | ttyS1 @ 460800 | ttyS1 @ 460800 | ttyS1 ? | ttyS3 @ 115200 | ? | n/a |
-| MCU profile block | 2 | 3 | 0/1/4/5 ? | n/a | n/a | n/a |
-| IR out (total) | 5 | 7 | 9 | 6 ? | 4 ? | 0 |
-| IR jacks | 4 | 6 | 8 | 6 | 4 ? | 0 |
-| Relays | 0 | 1 | 4 | 4 | 4 ? | 0 |
-| Contacts | 0 | 1 | 4 | 4 | 4 ? | 0 |
-| RS-232 | 2 combo | 3 combo | 2 combo + 2 DB9 | **2 host UARTs** | ? | **1 combo 232/485** |
-| Ethernet | 1x e1000 | **e1000 + BCM53125 (2 ports)** | e1000 + BCM53125 (5 ports) | 1x RTL8168 (r8169) | 1x | 1x FEC (RMII) |
-| Zigbee SoC | EM357 ? | EM357 ? | EM357 ? | EM357 ? | EM357 ? | EM35x ? |
-| Zigbee attach | USB-CP2104 | USB-CP2104 | USB ? | on-SoC UART (ttyS4) | UART ? | on-SoC UART (ttymxc4) |
-| Z-Wave | ? | ZM5304 | ? | **none on-board** | ? | ZM5304 (ttymxc3) |
-| Wi-Fi | ath9k | **none** | ath9k (V1 only) | USB RTL8192SU (r8712u) | ? | RTL8723BS (SDIO) |
-| Audio DSP | ADAU1451 | ADAU1451 | **2× ADAU1451 + Spartan-6 FPGA** | none | ? | none |
-| Analog codec | ? | AK4621EF | AK4490 ×2, AK5388 | ALC888-VD (HDA) | ? | none |
-| Audio out | ? | line + coax + HDMI | 2 analog + 2 coax + HDMI | 2x line + coax S/PDIF | ? | none |
-| Video out | HDMI (Intel GDL) | HDMI (Intel GDL) | HDMI ? | **ADV7513 + THS8200 fitted** | ? | none (headless) |
-| GPU | PowerVR SGX (closed) | PowerVR SGX + GC300 | PowerVR SGX | Intel GMA 3150 / i915 | ? | GC320 2D, unused |
+| IO MCU UART | ttyS1 @ 460800 | ttyS1 @ 460800 | ttyS1 ? | ttyS3 @ 115200 | ttyS2 @ 115200 | n/a |
+| MCU profile block | 2 | 3 | 0/1/4/5 ? | 2 (LM3S) | 1 (LM3S, inferred) | n/a |
+| IR out (total) | 5 | 7 | 9 | 6 ? | 5 | 0 |
+| IR jacks | 4 | 6 | 8 | 6 | 4 | 0 |
+| Relays | 0 | 1 | 4 | 4 | 1 | 0 |
+| Contacts | 0 | 1 | 4 | 4 | 1 | 0 |
+| RS-232 | 2 combo | 3 combo | 2 combo + 2 DB9 | **2 host UARTs** | 2 combo (MCU) | **1 combo 232/485** |
+| Ethernet | 1x e1000 | **e1000 + BCM53125 (2 ports)** | e1000 + BCM53125 (5 ports) | 1x RTL8168 (r8169) | 1x LAN9220 (smsc911x) | 1x FEC (RMII) |
+| Zigbee SoC | EM357 ? | EM357 ? | EM357 ? | EM357 ? | EM357 | EM35x ? |
+| Zigbee attach | USB-CP2104 | USB-CP2104 | USB ? | on-SoC UART (ttyS4) | on-SoC UART (ttyS1) | on-SoC UART (ttymxc4) |
+| Z-Wave | ? | ZM5304 | ? | **none on-board** | none seen | ZM5304 (ttymxc3) |
+| Wi-Fi | ath9k | **none** | ath9k (V1 only) | USB RTL8192SU (r8712u) | Broadcom SDIO (dhd), held in reset | RTL8723BS (SDIO) |
+| Audio DSP | ADAU1451 | ADAU1451 | **2× ADAU1451 + Spartan-6 FPGA** | none | none | none |
+| Analog codec | ? | AK4621EF | AK4490 ×2, AK5388 | ALC888-VD (HDA) | TPS65950 | none |
+| Audio out | ? | line + coax + HDMI | 2 analog + 2 coax + HDMI | 2x line + coax S/PDIF | line (TPS65950) + HDMI | none |
+| Video out | HDMI (Intel GDL) | HDMI (Intel GDL) | HDMI ? | **ADV7513 + THS8200 fitted** | **ADV7513 + THS8200 (DPI)** | none (headless) |
+| GPU | PowerVR SGX (closed) | PowerVR SGX + GC300 | PowerVR SGX | Intel GMA 3150 / i915 | SGX530 if a DM3730 (unused) | GC320 2D, unused |
 | Android LXC | yes | yes | yes | no | no | no |
 
 </div>

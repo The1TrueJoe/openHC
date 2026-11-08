@@ -69,6 +69,11 @@ export default defineConfig({
           items: [{ autogenerate: { directory: 'hc800' } }],
         },
         {
+          label: 'HC-250 (TI OMAP36xx)',
+          collapsed: true,
+          items: [{ autogenerate: { directory: 'hc250' } }],
+        },
+        {
           label: 'CA-1 (i.MX6 SoloLite)',
           collapsed: true,
           items: [{ autogenerate: { directory: 'ca1' } }],
