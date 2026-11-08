@@ -1,3 +1,5 @@
 # HC-250 feature list (standalone board, no family base).
 iomcu       # LM3S1162 on ttyS2: 1 relay, 1 contact, 4 IR + blaster, 2 MCU serial
+audio       # TPS65950 codec (rear out + line in) and HDMI via the ADV7513
+splash      # a framebuffer on the DPI bus: HDMI and component
 # zigbee waits for a rootfs on the SD card: it brings Node, too big for the RAM image.

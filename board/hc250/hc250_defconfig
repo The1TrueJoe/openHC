@@ -37,6 +37,8 @@ BR2_PACKAGE_HOST_UBOOT_TOOLS=y
 BR2_PACKAGE_MTD=y
 # TWL4030/TPS65950, ADV7513, THS8200 bring-up.
 BR2_PACKAGE_I2C_TOOLS=y
+# Component video: the THS8200 from userspace (S47video), regs captured off stock.
+BR2_PACKAGE_THS8200=y
 # C++ for v4l-utils (ir-ctl, from the iomcu feature); zigbee brings it elsewhere.
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 # Next kernel without the ID-button dance.

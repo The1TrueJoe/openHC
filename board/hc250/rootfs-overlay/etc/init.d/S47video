@@ -1,0 +1,26 @@
+#!/bin/sh
+# Component video: the THS8200 on I2C2 @0x21, fed by the same DPI bus as the
+# ADV7513. Replays the register set captured off a stock HC-250 at 720p60
+# (/opt/ohc/video/ths8200-720p60.regs, via packages ths8200).
+#
+# The DPI bus only runs while DRM drives the HDMI connector, so with no HDMI
+# monitor attached the connector is forced on first: component then has a picture.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+BUS="${OHC_VIDEO_I2C_BUS:-1}"
+ADDR="${OHC_VIDEO_THS8200_ADDR:-0x21}"
+REGS="${OHC_VIDEO_REGS:-/opt/ohc/video/ths8200-720p60.regs}"
+
+case "${1:-start}" in
+    start)
+        [ "${OHC_VIDEO_AUTOCONFIG:-1}" = 1 ] || { echo "video: autoconfig off"; exit 0; }
+        for c in /sys/class/drm/card*-HDMI-A-*; do
+            [ -w "$c/status" ] && [ "$(cat "$c/status")" != connected ] && echo on > "$c/status"
+        done
+        [ -x /usr/bin/ths8200 ] || exit 0
+        [ -e "/dev/i2c-$BUS" ] || { echo "video: no /dev/i2c-$BUS"; exit 0; }
+        /usr/bin/ths8200 -b "$BUS" -a "$ADDR" "$REGS" 2>&1 | sed 's/^/video: /'
+        ;;
+    stop) : ;;
+    restart|reload) "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
