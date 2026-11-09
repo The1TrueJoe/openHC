@@ -224,16 +224,20 @@ pub fn plan(board: &Board, method: Method) -> Plan {
             Plan {
                 method,
                 steps: vec![
-                    "on stock: save Control4's IO firmware tree (for `restore`), then kexec openHC into RAM".into(),
+                    format!(
+                        "on stock: write U-Boot's env with stock's own fw_setenv (bootohc, the restoresystem \
+                         hook, bootmode=ohc last) and save Control4's IO firmware tree; U-Boot keeps booting \
+                         stock until openHC arms EEPROM byte {TRY_BYTE}"
+                    ),
+                    "kexec openHC into RAM".into(),
                     format!(
                         "on openHC: shrink SD p2 to 2 GiB, add p3 vfat {BOOT_LABEL} and p4 ext4 {DATA_LABEL} \
-                         (once), write {SD_IMAGE} to p3, keep the IO tree on p4, arm EEPROM byte {TRY_BYTE}"
+                         (once), write {SD_IMAGE} to p3, arm EEPROM byte {TRY_BYTE}"
                     ),
-                    "reboot (a RAM boot returns to stock)".into(),
-                    "on stock: write U-Boot's env with stock's own fw_setenv: bootohc, the restoresystem hook, \
-                     and bootmode=ohc last"
+                    "reboot into openHC from the SD, and keep the IO tree on p4".into(),
+                    "(from openHC in RAM, a reboot to stock does the env half first; from openHC on the SD, \
+                     only the image is replaced)"
                         .into(),
-                    "reboot into openHC from the SD".into(),
                 ],
                 writes: vec![
                     "the interior SD card: p2 resized (its files kept), p3 and p4 created; p1 untouched".into(),
