@@ -197,7 +197,24 @@ is written once at install by stock's own `fw_setenv`.
 | p3 | 256 MiB | vfat `OHCBOOT`: `openhc.img` (U-Boot 2011.03 reads FAT, not ext4 extents) |
 | p4 | the rest | ext4 `ohcdata` |
 
-**Steps**, all over SSH:
+**With the flasher** (the bundle carries the stock-side kit: `ohc_kexec.ko`,
+`ohc-kexec.sh`, `ohc-boot-env.sh`):
+
+```sh
+ohc-flash install <unit> --images openhc-hc250-<version>.zip   # --method sd, the default
+ohc-flash restore <unit>                  # Control4's IO firmware + factory restore
+ohc-flash uninstall <unit> --images ...   # stock from the NAND, openHC kept on the SD
+ohc-flash boot <unit> --images ...        # back into openHC (after a fallback, too)
+```
+
+From stock 2.10.6 it kexecs openHC into RAM to do the SD; a factory-restored unit
+(Control4 2.5.x, whose kernel the module does not load into) reaches the openHC
+already on the SD instead. `install` from stock sets `ohc_arm=1`, which makes the
+next `bootohc` zero the try count through U-Boot, so a stock that cannot touch the
+EEPROM still points the box back at openHC. Proven on the unit 2026-11-09:
+restore → install (from 2.5.3) → uninstall → boot, with no hands on the box.
+
+**By hand**, the same steps:
 
 ```sh
 # 1. on stock: kexec openHC (above)

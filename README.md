@@ -23,10 +23,9 @@ locked.
 | IO Extender (v1) | ✅ |
 | IO Extender (v2) | ❌ |
 
-¹ HC-250: installs to the interior SD card over SSH with two scripts for now
-(the flasher does not know it yet), and a factory restore, by button or remote,
-returns it to stock. No Wi-Fi (its BCM4319 has no mainline driver) and no Zigbee
-service yet. See [the HC-250 bring-up](https://the1truejoe.github.io/openHC/hc250/bring-up/).
+¹ HC-250: the flasher installs it to the interior SD card, and a factory
+restore, by button or with the flasher, returns it to stock. No Wi-Fi (its
+BCM4319 has no mainline driver) and no Zigbee service yet. See [the HC-250 bring-up](https://the1truejoe.github.io/openHC/hc250/bring-up/).
 
 These are just the controllers I have on hand. More will be coming in the future. I do not have plans to work on models older than the HC-250 (HC-200, HC-300, HC-500, HC-1000).
 
