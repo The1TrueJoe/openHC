@@ -206,7 +206,8 @@ U-Boot and X-Loader GPL patches.
 **Receivers.** audiod runs one AirPlay 2 (shairport-sync, one shared nqptp) and
 one Spotify Connect receiver per output: "HC-250 Analog" and "HC-250 HDMI", both
 advertised over mDNS, idle load 0.65 with 335 MB free. The music library (mpd)
-plays to either. Not yet tried: a stream from a phone.
+plays to either. AirPlay 2 from a phone to "HC-250 Analog" plays clean, with
+shairport-sync and nqptp at 12–48% of the one core and the load around 1.
 
 `S46audio` sets stock's codec path at boot (DAC2 → HSOL/HSOR, AUX → TX1). The codec
 is the I2S clock master and DAPM keeps it powered down until a path reaches an
