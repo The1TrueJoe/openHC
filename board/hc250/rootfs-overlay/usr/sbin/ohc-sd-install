@@ -16,7 +16,8 @@
 # is not Control4's. The env is stock's fw_setenv's job, and factory restore's.
 set -e
 
-DEV=/dev/mmcblk0
+# OHC_SD_DEV: another disk with the same layout (a loop device, for tests).
+DEV=${OHC_SD_DEV:-/dev/mmcblk0}
 P2=${DEV}p2; P3=${DEV}p3; P4=${DEV}p4
 IMG=openhc.img
 EEPROM=/sys/bus/i2c/devices/0-0050/eeprom
@@ -36,7 +37,7 @@ check_board() {
 
 # p1 and p2 exactly as Control4 left them, or already ours.
 layout() {
-    sfdisk -d "$DEV" | sed -n 's/^\/dev\/mmcblk0p\([0-9]\) : start= *\([0-9]*\), size= *\([0-9]*\).*/\1 \2 \3/p'
+    sfdisk -d "$DEV" | sed -n 's/^[^ ]*p\([0-9]\) : start= *\([0-9]*\), size= *\([0-9]*\).*/\1 \2 \3/p'
 }
 
 partition() {
@@ -49,7 +50,7 @@ partition() {
     echo "$l" | grep -q "^2 1750080 " || die "p2 does not start at 1750080: $l"
     [ "$(echo "$l" | wc -l)" = 2 ] || die "expected two partitions: $l"
     grep -q "^$DEV" /proc/mounts && die "the SD is mounted"
-    total=$(cat /sys/block/mmcblk0/size)
+    total=$(cat "/sys/block/${DEV#/dev/}/size")
     p2=4194304                                  # 2 GiB
     p3s=$((1750080 + p2)); p3=524288            # 256 MiB vfat
     p4s=$((p3s + p3)); p4=$((total - p4s))
