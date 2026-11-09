@@ -125,15 +125,39 @@ pub fn cset(p: &Port, control: &str, raw: u32) {
     }
 }
 
+/// How long the open-and-close of an output may take. A PCM whose clock never
+/// runs (a codec DAPM left powered down) stalls in drain forever; waiting on it
+/// would stall the whole daemon.
+const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `cmd` to completion, killing it after `limit`.
+fn run_bounded(cmd: &mut Command, limit: std::time::Duration) -> std::io::Result<std::process::ExitStatus> {
+    let mut child = cmd.spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(st) = child.try_wait()? {
+            return Ok(st);
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Create every output's controls and set them: softvol adds its control the
 /// first time its PCM is opened, and AirPlay/Spotify need it to exist before
 /// they start (they look their mixer up once). Opening the music PCM opens
 /// both stages; aplay on an empty raw stream opens and closes it.
 pub fn prepare(b: &Board, levels: &HashMap<String, u8>) {
     for p in &b.outputs {
-        let st = Command::new("aplay")
-            .args(["-q", "-t", "raw", "-f", "S16_LE", "-c", "2", "-r", &b.rate.to_string(), "-D", &p.pcm, "/dev/null"])
-            .status();
+        let st = run_bounded(
+            Command::new("aplay")
+                .args(["-q", "-t", "raw", "-f", "S16_LE", "-c", "2", "-r", &b.rate.to_string(), "-D", &p.pcm, "/dev/null"]),
+            OPEN_TIMEOUT,
+        );
         if !matches!(st, Ok(s) if s.success()) {
             eprintln!("audiod: cannot open {} to create its volume controls ({st:?})", p.pcm);
         }
