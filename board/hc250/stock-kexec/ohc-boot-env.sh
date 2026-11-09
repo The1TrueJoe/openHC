@@ -1,5 +1,5 @@
 #!/bin/sh
-# ohc-boot-env.sh install | uninstall | status       (runs on STOCK)
+# ohc-boot-env.sh install | uninstall | status | stock-io   (runs on STOCK)
 #
 # The env half of the HC-250 SD install; openHC's ohc-sd-install does the SD and
 # EEPROM half first. Stock's fw_setenv writes the NAND with Control4's own ECC
@@ -11,6 +11,10 @@
 #          (bootnand) at 3 or when the SD has no image; EEPROM byte 7 = 'R' runs
 #          the factory restore (openHC's `restore stock`).
 # uninstall bootmode=nand and stock's restoresystem back; the ohc variables go.
+# stock-io  a tar of this stock's IO firmware (/control4/firmware/io) on stdout,
+#           for openHC's `ohc-sd-install stock-io` to keep on the SD: `restore
+#           stock` writes it back to the IO microcontroller (openHC cannot read
+#           the stock rootfs on the NAND).
 set -e
 
 STOCK_RESTORE='run restorekern; run restorerootfs; run cleanboot'
@@ -60,10 +64,14 @@ case "$1" in
         for v in bootohc bootohcm ohc_bootargs; do fw_setenv "$v"; done
         echo "uninstalled: U-Boot boots stock from NAND"
         ;;
+    stock-io)
+        [ -d /control4/firmware/io ] || die "no /control4/firmware/io on this stock"
+        tar -C / -cf - control4/firmware/io
+        ;;
     status)
         echo "bootmode=$(getenv bootmode)"
         echo "restoresystem=$(getenv restoresystem)"
         echo "bootohc=$(getenv bootohc)"
         ;;
-    *) echo "usage: $0 install | uninstall | status" >&2; exit 2 ;;
+    *) echo "usage: $0 install | uninstall | status | stock-io" >&2; exit 2 ;;
 esac

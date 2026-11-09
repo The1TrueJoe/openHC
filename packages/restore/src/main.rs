@@ -711,9 +711,12 @@ fn main() {
     if hc250::is_hc250() {
         let r = match cmd {
             "status" => hc250::status(),
-            "stock" => hc250::stock(!args.iter().any(|a| a == "--no-reboot")),
+            "stock" => hc250::stock(
+                !args.iter().any(|a| a == "--no-reboot"),
+                args.iter().any(|a| a == "--keep-iomcu"),
+            ),
             _ => {
-                eprintln!("usage: restore {{status|stock [--no-reboot]}}   (HC-250)");
+                eprintln!("usage: restore {{status|stock [--no-reboot] [--keep-iomcu]}}   (HC-250)");
                 std::process::exit(2);
             }
         };

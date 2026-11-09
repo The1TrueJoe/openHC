@@ -153,18 +153,28 @@ ECC corrects). Left alone, U-Boot
 switches stock to its other slot after three boots, then stalls at "All
 Bootsystems Failed".
 
-**Remote factory restore** (proven 2026-11-08). `restore stock` on openHC writes
-`R` to EEPROM byte 7 and reboots. `bootohc` sees it, clears it, zeroes Control4's
+**Remote factory restore** (proven 2026-11-08). `restore stock` on openHC puts
+Control4's IO firmware back (below), writes `R` to EEPROM byte 7 and reboots. `bootohc` sees it, clears it, zeroes Control4's
 boot counters as the button path does, and runs `restoresystem`. About 4½ minutes
 later the unit answered as stock: the recovery image (Control4 2.5.x, kernel
 2.6.32-47.41, dropbear 0.52), `bootmode=nand`, `c4server`/`ioserver` running.
 Running `ohc-boot-env.sh install` on that stock and rebooting brought openHC back
 from the SD card, which the restore does not touch.
 
-**The IO controller keeps openHC's firmware across a restore.** The restored 2.5
-OS carries Control4's 03.17.05 image (`/control4/firmware/io/`) but did not write
-it in five minutes of running, and openHC's driver found its own image on the next
-boot. So a restore returns the NAND and U-Boot to stock, not the MCU.
+**The IO controller goes back too.** The restored OS does not rewrite the MCU (it
+ran five minutes on openHC's image without touching it), and openHC cannot read
+the stock rootfs on the NAND. So the install keeps stock's `/control4/firmware/io`
+tree on `ohcdata`:
+
+```sh
+ssh <stock> /tmp/ohc-boot-env.sh stock-io | ssh <openhc> ohc-sd-install stock-io
+```
+
+`restore stock` writes Control4's image back first (the one `.flash.config` names
+for `hc250`, through the driver's firmware upload, 12 s), and only then arms the
+restore; without a kept tree it refuses unless `--keep-iomcu`. Proven 2026-11-08:
+03.17.05 written over openHC's image, restore, stock's `ioserver` up on it, and on
+the next openHC boot the driver found 03.17.05 and wrote its own image back.
 
 **Factory restore.** The restore button runs the env script `restoresystem`
 (recovery kernel and rootfs into slot 0, then `cleanboot`). The install appends

@@ -1,5 +1,5 @@
 #!/bin/sh
-# ohc-sd-install install <image|http-url> | stock | status
+# ohc-sd-install install <image|http-url> | stock-io | stock | status
 #
 # HC-250: the openHC half of the SD install. Run it from openHC in RAM (kexec'd
 # from stock); stock-kexec/ohc-boot-env.sh, run on stock, does the other half.
@@ -9,6 +9,8 @@
 #   EEPROM  byte 6 = U-Boot's bootohc try count: install arms it (0); at 3 U-Boot
 #           boots stock. "stock" sets it to 3, so every boot goes to stock until
 #           ohc-boot-env.sh uninstall (on stock) or the next install.
+#   stock-io  keep stock's IO firmware tree (a tar on stdin, from ohc-boot-env.sh
+#           stock-io) on p4 under stock-io/, where `restore stock` finds it.
 #
 # openHC never writes the NAND (U-Boot's env included): mainline's BCH4 OOB layout
 # is not Control4's. The env is stock's fw_setenv's job, and factory restore's.
@@ -19,6 +21,7 @@ P2=${DEV}p2; P3=${DEV}p3; P4=${DEV}p4
 IMG=openhc.img
 EEPROM=/sys/bus/i2c/devices/0-0050/eeprom
 TRY=6
+STOCK_IO=stock-io
 
 die() { echo "ohc-sd-install: $*" >&2; exit 1; }
 getenv() { fw_printenv -n "$1" 2>/dev/null; }
@@ -94,13 +97,30 @@ install() {
     put_image "$1"
     setbyte "$TRY" 0
     [ "$(byte "$TRY")" = 0 ] || die "EEPROM byte $TRY did not stick"
-    echo "SD ready. Next, on stock: ohc-boot-env.sh install (sets bootmode=ohc)"
+    echo "SD ready. Next, on stock: ohc-boot-env.sh install (sets bootmode=ohc), and"
+    echo "  ohc-boot-env.sh stock-io | (ssh to openHC) ohc-sd-install stock-io"
 }
 
 stock() {
     check_board
     setbyte "$TRY" 3
     echo "every boot goes to stock now; ohc-sd-install install re-arms it"
+}
+
+stock_io() {
+    check_board
+    [ -b "$P4" ] || die "no $P4; run install first"
+    mnt=/tmp/ohcdata; mkdir -p "$mnt"
+    mount -t ext4 "$P4" "$mnt"
+    trap 'umount "$mnt" 2>/dev/null' EXIT
+    rm -rf "$mnt/$STOCK_IO.new"; mkdir -p "$mnt/$STOCK_IO.new"
+    tar -C "$mnt/$STOCK_IO.new" -xf -
+    ls "$mnt/$STOCK_IO.new/control4/firmware/io/"*LM3S1162* >/dev/null 2>&1 \
+        || { rm -rf "$mnt/$STOCK_IO.new"; die "no LM3S1162 image in what stock sent"; }
+    rm -rf "$mnt/$STOCK_IO"; mv "$mnt/$STOCK_IO.new" "$mnt/$STOCK_IO"; sync
+    ls "$mnt/$STOCK_IO/control4/firmware/io/"
+    umount "$mnt"; trap - EXIT
+    echo "kept stock's IO firmware on $P4 for restore stock"
 }
 
 status() {
@@ -112,6 +132,7 @@ status() {
 case "$1" in
     install) shift; install "$@" ;;
     stock) stock ;;
+    stock-io) stock_io ;;
     status) status ;;
-    *) echo "usage: $0 install <image|http-url> | stock | status" >&2; exit 2 ;;
+    *) echo "usage: $0 install <image|http-url> | stock-io | stock | status" >&2; exit 2 ;;
 esac
