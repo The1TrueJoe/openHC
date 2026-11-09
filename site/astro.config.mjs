@@ -44,6 +44,7 @@ export default defineConfig({
             { slug: 'index', label: 'What openHC is' },
             { slug: 'start/status', label: 'Board status' },
             { slug: 'start/glossary', label: 'Glossary' },
+            { slug: 'start/upstream', label: 'Upstream contributions' },
           ],
         },
         {
