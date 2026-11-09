@@ -153,6 +153,19 @@ ECC corrects). Left alone, U-Boot
 switches stock to its other slot after three boots, then stalls at "All
 Bootsystems Failed".
 
+**Remote factory restore** (proven 2026-11-08). `restore stock` on openHC writes
+`R` to EEPROM byte 7 and reboots. `bootohc` sees it, clears it, zeroes Control4's
+boot counters as the button path does, and runs `restoresystem`. About 4½ minutes
+later the unit answered as stock: the recovery image (Control4 2.5.x, kernel
+2.6.32-47.41, dropbear 0.52), `bootmode=nand`, `c4server`/`ioserver` running.
+Running `ohc-boot-env.sh install` on that stock and rebooting brought openHC back
+from the SD card, which the restore does not touch.
+
+**The IO controller keeps openHC's firmware across a restore.** The restored 2.5
+OS carries Control4's 03.17.05 image (`/control4/firmware/io/`) but did not write
+it in five minutes of running, and openHC's driver found its own image on the next
+boot. So a restore returns the NAND and U-Boot to stock, not the MCU.
+
 **Factory restore.** The restore button runs the env script `restoresystem`
 (recovery kernel and rootfs into slot 0, then `cleanboot`). The install appends
 `setenv bootmode nand; saveenv`, so U-Boot itself puts the env back on stock.
