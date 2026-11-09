@@ -203,6 +203,16 @@ U-Boot and X-Loader GPL patches.
 | HDMI audio | McBSP4 → ADV7513 I2S (`simple-audio-card`) | card registers; needs an HDMI sink |
 | Component | THS8200 from userspace (`S47video`, the HC-800's `ths8200` tool), registers captured off this unit at 720p60 | configured (137 registers, VERSION 0x04); no TV tried |
 
+**Receivers.** audiod runs one AirPlay 2 (shairport-sync, one shared nqptp) and
+one Spotify Connect receiver per output: "HC-250 Analog" and "HC-250 HDMI", both
+advertised over mDNS, idle load 0.65 with 335 MB free. The music library (mpd)
+plays to either. Not yet tried: a stream from a phone.
+
+`S46audio` sets stock's codec path at boot (DAC2 → HSOL/HSOR, AUX → TX1). The codec
+is the I2S clock master and DAPM keeps it powered down until a path reaches an
+output: without it every PCM on the card stalls once McBSP2's FIFO (640 frames)
+fills. audiod bounds its PCM-open probe so that cannot stall the daemon.
+
 Details that came from the unit:
 
 - **The display pads** use the DM3730 layout Beagle-xM does: dss_data0–5 on the
