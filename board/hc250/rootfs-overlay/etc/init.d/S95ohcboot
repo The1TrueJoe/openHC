@@ -15,7 +15,7 @@
 #
 # "Up" means reachable, not merely booted: if the uplink is not up within five
 # minutes this reboots and lets the count go on climbing. A RAM boot (kexec from
-# stock) leaves byte 6 alone, so then this does nothing.
+# stock) never confirms: it leaves byte 6 as it found it.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 UPLINK="${OHC_UPLINK_IFACE:-eth0}"
 LIMIT=300
@@ -56,6 +56,9 @@ confirm() {
 case "$1" in
     start)
         [ -r "$EEPROM" ] || exit 0
+        # Only an SD boot confirms: a RAM boot (kexec) must not undo `ohc-sd-install
+        # stock` (3) or a fallback.
+        grep -qw ohc.boot=sd /proc/cmdline || exit 0
         try=$(byte "$TRY")
         case "$try" in 1|2|3) ;; *) exit 0 ;; esac
         echo "ohcboot: SD boot attempt $try; confirming once $UPLINK is up"

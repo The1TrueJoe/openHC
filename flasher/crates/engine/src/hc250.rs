@@ -127,17 +127,13 @@ pub fn install_sd(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     let mut io_tar = None;
     if running(&box_) == Running::Stock {
         let tar = stock_half(&box_, rel, p)?;
-        // A stock the module cannot load into (a factory-restored box: the
-        // recovery image is older) can still reach an openHC already on the SD:
-        // the env is written, so the next boot runs it.
-        if let Err(why) = kexec_supported(&run(&box_, "uname -r")?) {
-            p.emit(Event::warn(format!("{why}; booting the openHC already on the SD instead")));
+        // If the module is ever refused, the env is written already: an openHC
+        // on the SD still boots, and gets the new image from there.
+        if let Err(why) = kexec(&box_, rel, p) {
+            p.emit(Event::warn(format!("kexec failed ({why:#}); booting the openHC already on the SD instead")));
             box_ = reboot_and_wait(&box_, "openHC from the SD", p)?;
             if !(running(&box_) == Running::Openhc && from_sd(&box_)) {
-                bail!(
-                    "no openHC on the SD to boot, and this stock cannot kexec one. U-Boot fell back to \
-                     stock; install from a stock running {KEXEC_KERNEL} (Control4 2.10.6)"
-                );
+                bail!("no openHC on the SD to boot, and stock could not kexec one; U-Boot fell back to stock");
             }
             p.emit(Event::step(format!("updating {SD_IMAGE} on the SD ({} bytes)", img.len())));
             let out = box_.put_stream(img, "ohc-sd-install install - 2>&1").map_err(|e| anyhow!("{e}"))?;
@@ -148,7 +144,6 @@ pub fn install_sd(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
             return Ok(());
         }
         io_tar = Some(tar);
-        kexec(&box_, rel, p)?;
         box_ = wait_for_login(&box_.host, BOOT_WAIT).context("openHC did not come up from RAM")?;
         if running(&box_) != Running::Openhc {
             bail!("expected openHC in RAM after the kexec; the box answers as stock");
