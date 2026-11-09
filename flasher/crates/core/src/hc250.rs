@@ -33,9 +33,12 @@ pub const REQUEST_BYTE: u8 = 7;
 /// Failed openHC boots before U-Boot boots stock.
 pub const MAX_TRIES: u32 = 3;
 
-/// The only stock kernel `ohc_kexec.ko` loads into: its vermagic and export CRCs
-/// are this build's. The factory-restore image (Control4 2.5.x) runs 2.6.32-47.41.
-pub const KEXEC_KERNEL: &str = "2.6.32-51.48";
+/// `ohc_kexec.ko` is built against Control4's 2.6.32 headers and 2.10.6's export
+/// CRCs, and loads into every Control4 2.6.32 kernel: with CRCs present the
+/// loader skips vermagic's release, and the kernel functions it calls it finds
+/// through kallsyms at run time. Proven on 2.6.32-51.48 (2.10.6) and 2.6.32-47.41
+/// (2.5.3, the factory-restore image).
+pub const KEXEC_KERNEL: &str = "2.6.32-";
 
 /// The uImage is loaded at 0x82000000 and run in place; below 0x8a000000, where
 /// `bootohc` keeps its scratch byte.
@@ -58,19 +61,13 @@ pub fn check_image(img: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Can this stock kexec openHC? `uname -r` must be the kernel the module was
-/// built against. When it cannot (the factory-restore image), the SD install
-/// still works from openHC already on the SD, and a restored stock goes back to
-/// openHC with `ohc-boot-env.sh install` alone.
+/// Can this stock kexec openHC? Any Control4 2.6.32 kernel (every HC-250 OS).
 pub fn kexec_supported(uname_r: &str) -> Result<(), String> {
     let r = uname_r.trim();
-    if r == KEXEC_KERNEL {
+    if r.starts_with(KEXEC_KERNEL) {
         Ok(())
     } else {
-        Err(format!(
-            "stock runs kernel {r}; ohc_kexec.ko is built for {KEXEC_KERNEL} only (the factory-restore \
-             image is older)"
-        ))
+        Err(format!("stock runs kernel {r}; ohc_kexec.ko is for Control4's 2.6.32 kernels"))
     }
 }
 
@@ -109,9 +106,10 @@ mod tests {
     }
 
     #[test]
-    fn kexec_only_from_the_kernel_the_module_was_built_for() {
-        assert!(kexec_supported("2.6.32-51.48\n").is_ok());
-        assert!(kexec_supported("2.6.32-47.41").is_err(), "the factory-restore image");
+    fn kexec_from_any_control4_2_6_32_kernel() {
+        assert!(kexec_supported("2.6.32-51.48\n").is_ok(), "2.10.6");
+        assert!(kexec_supported("2.6.32-47.41").is_ok(), "2.5.3, the factory-restore image");
+        assert!(kexec_supported("7.1.8").is_err(), "not stock");
     }
 
     #[test]
