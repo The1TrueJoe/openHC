@@ -1,4 +1,4 @@
-From 94df282b5d2c0da5001a1dda23a0a1e32205a52e Mon Sep 17 00:00:00 2001
+From 0791ca087d91dd8840163b2398854a815e175a0a Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
 Date: Mon, 9 Nov 2026 16:56:31 -0500
 Subject: [PATCH] e1000: support a fixed link on the CE4100 GbE
@@ -46,11 +46,11 @@ has no ACPI companion today: the DSDT gives it a wildcard _ADR
 Converting e1000 to phylink for one MAC type seemed out of proportion;
 the driver has its own PHY layer and no phylib users.
 ---
- .../net/ethernet/intel/e1000/e1000_ethtool.c  | 60 +++++++++++++++++
- drivers/net/ethernet/intel/e1000/e1000_hw.c   | 67 ++++++++++++++++++-
+ .../net/ethernet/intel/e1000/e1000_ethtool.c  | 60 ++++++++++++++++
+ drivers/net/ethernet/intel/e1000/e1000_hw.c   | 67 +++++++++++++++++-
  drivers/net/ethernet/intel/e1000/e1000_hw.h   |  3 +
- drivers/net/ethernet/intel/e1000/e1000_main.c | 67 ++++++++++++++++++-
- 4 files changed, 192 insertions(+), 5 deletions(-)
+ drivers/net/ethernet/intel/e1000/e1000_main.c | 68 ++++++++++++++++++-
+ 4 files changed, 193 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
 index 4dcbeab..4b83796 100644
@@ -293,7 +293,7 @@ index 95cdd17..a8f799a 100644
  	bool tbi_compatibility_on;
  	bool laa_is_present;
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
-index d7f5c6f..3247258 100644
+index d7f5c6f..9437025 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_main.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
 @@ -7,6 +7,8 @@
@@ -305,7 +305,7 @@ index d7f5c6f..3247258 100644
  
  char e1000_driver_name[] = "e1000";
  static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
-@@ -901,6 +903,57 @@ static int e1000_init_hw_struct(struct e1000_adapter *adapter,
+@@ -901,6 +903,58 @@ static int e1000_init_hw_struct(struct e1000_adapter *adapter,
  	return 0;
  }
  
@@ -353,6 +353,7 @@ index d7f5c6f..3247258 100644
 +	adapter->fc_autoneg = 0;
 +	hw->fc = of_property_read_bool(fixed, "pause") ?
 +		 E1000_FC_FULL : E1000_FC_NONE;
++	hw->original_fc = hw->fc;
 +
 +	e_dev_info("fixed link, %u Mbps %s duplex\n", speed,
 +		   full_duplex ? "full" : "half");
@@ -363,7 +364,7 @@ index d7f5c6f..3247258 100644
  /**
   * e1000_probe - Device Initialization Routine
   * @pdev: PCI device information struct
-@@ -1174,8 +1227,14 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1174,8 +1228,14 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  	adapter->wol = adapter->eeprom_wol;
  	device_set_wakeup_enable(&adapter->pdev->dev, adapter->wol);
  
@@ -379,7 +380,7 @@ index d7f5c6f..3247258 100644
  		for (i = 0; i < 32; i++) {
  			hw->phy_addr = i;
  			e1000_read_phy_reg(hw, PHY_ID2, &tmp);
-@@ -1184,8 +1243,10 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1184,8 +1244,10 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  				break;
  		}
  
@@ -391,7 +392,7 @@ index d7f5c6f..3247258 100644
  	}
  
  	/* reset the hardware with the new settings */
-@@ -4768,7 +4829,7 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
+@@ -4768,7 +4830,7 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
  	u16 mii_reg;
  	unsigned long flags;
  
