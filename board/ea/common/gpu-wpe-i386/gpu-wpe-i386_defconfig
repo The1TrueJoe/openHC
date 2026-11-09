@@ -21,7 +21,7 @@
 # this file builds from the fleet base board/common/common_defconfig alone.
 #
 # The fleet base (board/common/common_defconfig) is always prepended and sets
-# musl + a 7.1.8 kernel + "headers as kernel". kconfig takes the LAST assignment,
+# musl + a 7.3.3 kernel + "headers as kernel". kconfig takes the LAST assignment,
 # so everything below overrides it: i386, glibc, no kernel, bundled headers.
 
 # --- arch: i386 / i686 ---
@@ -60,7 +60,7 @@ BR2_USE_WCHAR=y
 # We harvest /usr only; there is no hardware to boot here. Turning the kernel
 # off means the toolchain can no longer take its headers "as kernel", so pin a
 # bundled headers series instead. 6.18 is the newest bundled series that is not
-# newer than the fleet's 7.1 kernel, which is what this userspace runs on; a
+# newer than the fleet's 7.3 kernel, which is what this userspace runs on; a
 # bundled version does NOT require BR2_LINUX_KERNEL (only "as kernel" does).
 # BR2_LINUX_KERNEL is not set
 BR2_KERNEL_HEADERS_6_18=y

@@ -1,6 +1,6 @@
 # EA-family kernel patches (Buildroot `BR2_GLOBAL_PATCH_DIR`)
 
-Applied to vanilla Linux 7.1.8 for every `ea*` board, after the x86 patches
+Applied to vanilla Linux 7.3.3 for every `ea*` board, after the x86 patches
 the EA family shares with the HC-800 in `board/common/patches/linux/`
 (today one: **0015**, the built-in device tree). Both directories are in
 `BR2_GLOBAL_PATCH_DIR` (`common_defconfig`).

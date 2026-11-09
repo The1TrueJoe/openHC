@@ -1,4 +1,4 @@
-# DM355 → Linux 7.1.8 kernel patches (Buildroot GLOBAL_PATCH_DIR)
+# DM355 → Linux 7.3.3 kernel patches (Buildroot GLOBAL_PATCH_DIR)
 
 Buildroot applies every `*.patch` here to the kernel source at extract time
 (numeric order). These resurrect TI DaVinci **DM355** support — removed from
