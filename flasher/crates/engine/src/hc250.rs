@@ -126,7 +126,28 @@ pub fn install_sd(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     // 1. Into openHC in RAM (from stock), saving stock's IO tree on the way.
     let mut io_tar = None;
     if running(&box_) == Running::Stock {
-        io_tar = Some(stock_half(&box_, rel, p)?);
+        let tar = stock_half(&box_, rel, p)?;
+        // A stock the module cannot load into (a factory-restored box: the
+        // recovery image is older) can still reach an openHC already on the SD:
+        // the env is written, so the next boot runs it.
+        if let Err(why) = kexec_supported(&run(&box_, "uname -r")?) {
+            p.emit(Event::warn(format!("{why}; booting the openHC already on the SD instead")));
+            box_ = reboot_and_wait(&box_, "openHC from the SD", p)?;
+            if !(running(&box_) == Running::Openhc && from_sd(&box_)) {
+                bail!(
+                    "no openHC on the SD to boot, and this stock cannot kexec one. U-Boot fell back to \
+                     stock; install from a stock running {KEXEC_KERNEL} (Control4 2.10.6)"
+                );
+            }
+            p.emit(Event::step(format!("updating {SD_IMAGE} on the SD ({} bytes)", img.len())));
+            let out = box_.put_stream(img, "ohc-sd-install install - 2>&1").map_err(|e| anyhow!("{e}"))?;
+            p.emit(Event::detail(out.trim().lines().last().unwrap_or("").to_string()));
+            let out = box_.put_stream(&tar, "ohc-sd-install stock-io 2>&1").map_err(|e| anyhow!("{e}"))?;
+            p.emit(Event::detail(out.trim().lines().last().unwrap_or("").to_string()));
+            p.emit(Event::resolved("openHC runs from the SD; restart the box to run the new image".into()));
+            return Ok(());
+        }
+        io_tar = Some(tar);
         kexec(&box_, rel, p)?;
         box_ = wait_for_login(&box_.host, BOOT_WAIT).context("openHC did not come up from RAM")?;
         if running(&box_) != Running::Openhc {
@@ -183,20 +204,21 @@ pub fn status(ssh: &Ssh, rel: Option<&Release>) -> Result<Vec<(String, String)>>
     Ok(out)
 }
 
-/// Back into the installed openHC: re-arm the try count (a fallback to stock
-/// leaves it at 3, which only openHC can clear) and reboot.
+/// Back into the installed openHC after a fallback to stock (the try count at
+/// 3). From stock: `ohc-boot-env.sh install` again, whose `ohc_arm` makes U-Boot
+/// zero the count; from openHC: `ohc-sd-install arm`. Then reboot.
 pub fn boot_installed(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
-    let mut box_ = ssh.clone();
-    if running(&box_) == Running::Stock {
-        let env = put_kit(&box_, rel, BOOT_ENV_SH, true)?;
-        if bootmode(&run(&box_, &format!("{env} status"))?) != Some("ohc") {
-            bail!("openHC is not installed on this box (bootmode is not ohc); use `install`");
-        }
-        kexec(&box_, rel, p)?;
-        box_ = wait_for_login(&box_.host, BOOT_WAIT).context("openHC did not come up from RAM")?;
+    if running(ssh) == Running::Stock {
+        let env = put_kit(ssh, rel, BOOT_ENV_SH, true)?;
+        let out = run(ssh, &format!("{env} install 2>&1"))?;
+        p.emit(Event::detail(out.lines().filter(|l| !l.starts_with("crc")).collect::<Vec<_>>().join("\n")));
+    } else {
+        run(ssh, "ohc-sd-install arm")?;
     }
-    run(&box_, "ohc-sd-install arm")?;
-    reboot_and_wait(&box_, "openHC from the SD", p)?;
+    let box_ = reboot_and_wait(ssh, "openHC from the SD", p)?;
+    if !(running(&box_) == Running::Openhc && from_sd(&box_)) {
+        bail!("the box came back as stock: no openHC on the SD? (`install` puts one there)");
+    }
     p.emit(Event::resolved("openHC runs from the SD again".into()));
     Ok(())
 }
