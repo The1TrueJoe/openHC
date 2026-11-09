@@ -23,7 +23,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | # | Patch | Why it must stay a patch |
 |---|---|---|
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
-| 0002 | x86 CE5300 serial clock | legacy-table BASE_BAUD at 14.7456 MHz, only so the boot console is readable before 8250_of takes the port over |
+| 0010 | 8250 polled TX from the LSR | a polled port is serviced through the IIR, which the CE5300's XScale UARTs never set for THRE; check the LSR in the poll timer, as the backup timer already does (generic, upstream-shaped) |
 | 0003 | e1000 fake PHY | changes upstream probe behaviour |
 | 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR, and its CS drops whenever the TX FIFO runs dry, so multi-transfer messages are merged and a transfer that fits the FIFO is queued with the clock stopped |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
@@ -36,8 +36,11 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
 `compatible = "intel,xscale-uart"`), **0011** (keep 8250_pci off the 0x2e66 UART
-— now `status = "disabled"` on that PCI node), and the IRQ half of **0002** (the
-tree gives the UARTs no interrupt, so they run polled).
+— now `status = "disabled"` on that PCI node), and **0002** (legacy-table
+BASE_BAUD): the UARTs' clock comes from the tree, and the boot console from
+`earlycon=uart8250,io,0x3f8,115200n8,14745600 console=uart8250,io,0x3f8`. A
+`uart8250` console with no baud keeps the divisor earlycon set, so the legacy
+port's wrong 1.8432 MHz clock never reprograms it before 8250_of takes over.
 
 New-file drivers in `board/ea/common/kernel/drivers/`:
 
@@ -105,7 +108,7 @@ What the move changed, beyond deleting C:
   as XScale at 14.7456 MHz with no IRQ (polled), each taking over the legacy
   slot at its address so ttyS numbers stay put; the 0x2e66 PCI face of UART1 is
   disabled so it cannot steal the IO-MCU's 0x2f8 decode. 0010 (TX from the LSR)
-  is still a driver change.
+  is a generic 8250 change.
 * **0012 (GEN3 FCR with DMA_SELECT, 64-byte FIFO) is retired.** Tested live on an
   EA3: with ttyS1's FCR rewritten to mainline XScale's 0x81 (and to 0x01) through
   /dev/port, relay reads (10/10) and 99-pulse IR sends (10/10, frames of several

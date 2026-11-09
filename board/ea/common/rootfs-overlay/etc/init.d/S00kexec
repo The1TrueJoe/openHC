@@ -63,7 +63,7 @@ OHC_ARGS=
 for a in $(cat /proc/cmdline 2>/dev/null); do
 	case "$a" in ohc.*) OHC_ARGS="$OHC_ARGS $a" ;; esac
 done
-CMDLINE="console=ttyS0,115200 pci=realloc,nocrs,routeirq intel_iommu=off root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}${OHC_ARGS}"
+CMDLINE="console=uart8250,io,0x3f8 pci=realloc,nocrs,routeirq intel_iommu=off root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}${OHC_ARGS}"
 
 echo "S00kexec: handing off to the staged kernel ($KERNEL)"
 if kexec -l "$KERNEL" --command-line="$CMDLINE"; then
