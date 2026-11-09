@@ -23,7 +23,7 @@ out="$IMAGES/openhc-$BOARD-kernel.img"
 
 cat "$z" "$dtb" > "$IMAGES/zImage-dtb"
 mkimage -A arm -O linux -T kernel -C none -a "$LOADADDR" -e "$LOADADDR" \
-        -n "openHC $BOARD (DM355 7.1.8)" \
+        -n "openHC $BOARD (DM355 7.3.3)" \
         -d "$IMAGES/zImage-dtb" "$out"
 
 echo "post-image: netboot uImage ready -> $out"

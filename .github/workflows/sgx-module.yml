@@ -83,15 +83,15 @@ jobs:
             echo ">> cache MISS: full seed build (~hours; also re-seeds the tree cache)"
             BUILDROOT_DIR="$HOME/buildroot" BOARD=ea1-v1 bash ./build/build.sh
           fi
-          ko=output/build/ea1-v1/build/linux-7.1.8/drivers/gpu/drm/sgx545ce/pvrsrvkm.ko
+          ko=output/build/ea1-v1/build/linux-7.3.3/drivers/gpu/drm/sgx545ce/pvrsrvkm.ko
           ls -l "$ko"
           mkdir -p out
           cp "$ko" out/pvrsrvkm.ko
           for m in drm.ko drm_panel_orientation_quirks.ko; do
-            f=$(find output/build/ea1-v1/build/linux-7.1.8 -name "$m" | head -1)
+            f=$(find output/build/ea1-v1/build/linux-7.3.3 -name "$m" | head -1)
             [ -n "$f" ] && cp "$f" out/ || true
           done
-          cp output/build/ea1-v1/build/linux-7.1.8/arch/x86/boot/bzImage out/ 2>/dev/null || true
+          cp output/build/ea1-v1/build/linux-7.3.3/arch/x86/boot/bzImage out/ 2>/dev/null || true
           ls -l out/
 
       # The EA "real" (fat) kernel: a second out-of-tree compile of the same source

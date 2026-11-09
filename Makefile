@@ -78,7 +78,7 @@ help:
 	@echo "  ioxv1 (DM355 IO Extender) is pre-boot: rootfs builds, but the kernel"
 	@echo "  needs the DM355 resurrection patches — see https://the1truejoe.github.io/openHC/iox/kernel-port/."
 	@echo "  ioxv1 netboots from U-Boot ('run tst' over TFTP), not 'make netboot'."
-	@echo "  ca1 (i.MX6SL) boots our 7.1.8 kernel — proven on hardware. Two paths:"
+	@echo "  ca1 (i.MX6SL) boots our mainline kernel (7.1.8 proven on hardware). Two paths:"
 	@echo "  persistent (boot.scr on the eMMC vfat partition; 'make image BOARD=ca1'"
 	@echo "  prints the steps) or RAM-only netboot ('make netboot BOARD=ca1', hold the"
 	@echo "  ID button at power-on — mfg mode, writes no flash). Its U-Boot console is"

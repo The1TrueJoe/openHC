@@ -183,6 +183,52 @@ CONFIG_SENSORS_PWM_FAN=y
 # CONFIG_R8169 is not set
 # CONFIG_ISO9660_FS is not set
 
+# x86_64_defconfig extras no EA uses: 7.3 outgrew the copy window by up to 87 KB.
+# CONFIG_TIGON3 is not set
+# CONFIG_NET_TULIP is not set
+# CONFIG_E100 is not set
+# CONFIG_FORCEDETH is not set
+# CONFIG_VIRTIO_MENU is not set
+# CONFIG_VIRTIO_PCI is not set
+# CONFIG_VIRTIO_NET is not set
+# CONFIG_VIRTIO_BLK is not set
+# CONFIG_VIRTIO_CONSOLE is not set
+# CONFIG_VIRTIO_INPUT is not set
+# CONFIG_NET_9P is not set
+# CONFIG_PCCARD is not set
+# CONFIG_HOTPLUG_PCI is not set
+# CONFIG_MACINTOSH_DRIVERS is not set
+# CONFIG_EEEPC_LAPTOP is not set
+# CONFIG_AMD_IOMMU is not set
+# CONFIG_ACPI_DOCK is not set
+# CONFIG_I2C_I801 is not set
+# CONFIG_NVRAM is not set
+# The CE5300 has one TDI EHCI and no companion controllers.
+# CONFIG_USB_XHCI_HCD is not set
+# CONFIG_USB_OHCI_HCD is not set
+# CONFIG_USB_UHCI_HCD is not set
+# CONFIG_USB_PRINTER is not set
+# CONFIG_USB_MON is not set
+# CONFIG_INPUT_TABLET is not set
+# CONFIG_INPUT_TOUCHSCREEN is not set
+# CONFIG_SECURITY is not set
+# CONFIG_AUDIT is not set
+# CONFIG_NETLABEL is not set
+# CONFIG_NUMA is not set
+# CONFIG_HIBERNATION is not set
+# CONFIG_PM_DEBUG is not set
+# CONFIG_X86_CHECK_BIOS_CORRUPTION is not set
+# CONFIG_CGROUP_DEBUG is not set
+# CONFIG_TASKSTATS is not set
+# CONFIG_BSD_PROCESS_ACCT is not set
+# CONFIG_IP_MROUTE is not set
+# CONFIG_HUGETLBFS is not set
+# CONFIG_PROC_KCORE is not set
+# CONFIG_SCHEDSTATS is not set
+# CONFIG_DEBUG_WX is not set
+# CONFIG_PROVIDE_OHCI1394_DMA_INIT is not set
+# CONFIG_EARLY_PRINTK_DBGP is not set
+
 # --- boot SPI-NOR as /dev/mtd0 (spi-ea-ce5xx, PCI 8086:08a0) ---
 # Back up mtd0 before writing it. SPI must be on, or MTD_SPI_NOR is dropped silently.
 CONFIG_SPI=y
