@@ -21,6 +21,8 @@ fn legacy_opts() -> Vec<&'static str> {
         "-o", "KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1",
         "-o", "HostKeyAlgorithms=+ssh-rsa",
         "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
+        // The HC-250's factory-restore image runs dropbear 0.52: CBC only.
+        "-o", "Ciphers=+aes128-cbc,3des-cbc",
     ]
 }
 
@@ -135,6 +137,35 @@ impl Ssh {
             });
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Run a command and return its stdout as raw bytes (a tar, an image):
+    /// [`Ssh::run`] decodes as UTF-8 and would mangle them. Non-zero exit is an
+    /// error.
+    pub fn run_bytes(&self, cmd: &str) -> Result<Vec<u8>, SshError> {
+        let mut last = None;
+        for attempt in 0..AUTH_TRIES {
+            let mut c = self.base()?;
+            c.arg(cmd);
+            c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let out = c.output().map_err(|e| SshError::Spawn(e.to_string()))?;
+            if spurious_refusal(&out.status, &out.stderr) && attempt + 1 < AUTH_TRIES {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                continue;
+            }
+            last = Some(out);
+            break;
+        }
+        let out = last.expect("loop always sets it");
+        if !out.status.success() {
+            return Err(SshError::Command {
+                host: self.host.clone(),
+                cmd: cmd.to_string(),
+                code: out.status.code().unwrap_or(-1),
+                msg: String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect(),
+            });
+        }
+        Ok(out.stdout)
     }
 
     /// Evaluate a shell `test` expression on the box, e.g. `-s /path`.

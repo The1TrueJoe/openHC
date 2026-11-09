@@ -107,6 +107,12 @@ pub const KNOWN: &[&str] = &[
     "kexec-i686-static",
     // The IO Extender: one legacy uImage, kernel + appended DTB + initramfs.
     "openhc-ioxv1-kernel.img",
+    // The HC-250: its uImage and the stock-side kit (stock has no kexec, and
+    // only stock's own fw_setenv may write its U-Boot env).
+    "openhc-hc250-kernel.img",
+    "ohc_kexec.ko",
+    "ohc-kexec.sh",
+    "ohc-boot-env.sh",
 ];
 
 #[cfg(test)]

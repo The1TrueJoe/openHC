@@ -9,6 +9,7 @@ pub mod board;
 pub mod ca1;
 pub mod cefdk;
 pub mod mfh;
+pub mod hc250;
 pub mod hc800;
 pub mod image;
 pub mod iox;
@@ -47,6 +48,33 @@ mod tests {
     fn ident(name: &str, running: Running) -> Identity {
         let b = board::by_name(name).expect("board in the table");
         Identity { board: Some(b), candidates: vec![b], running, version: None, raw: vec![] }
+    }
+
+    #[test]
+    fn hc250_is_identified_from_stock_and_from_openhc() {
+        let stock = "Processor\t: ARMv7 Processor rev 2 (v7l)\nHardware\t: HC250\nRevision\t: 0008\n";
+        let id = board::from_cpuinfo(stock, Running::Stock);
+        assert!(id.certain());
+        assert_eq!(id.board.map(|b| b.name), Some("hc250"));
+        // openHC's DT kernel names the SoC, not the board: never an HC-250 by cpuinfo.
+        let dt = "Hardware\t: Generic OMAP36xx (Flattened Device Tree)\n";
+        assert!(board::from_cpuinfo(dt, Running::Openhc).board.is_none());
+        let rel = board::from_release("openHC\nboard=hc250\nversion=1\n");
+        assert_eq!(rel.board.map(|b| b.family), Some(Family::Omap));
+    }
+
+    #[test]
+    fn hc250_defaults_to_the_sd_install_and_kexecs_on_request() {
+        for r in [Running::Stock, Running::Openhc] {
+            let (m, _) = method::choose(&ident("hc250", r), None);
+            assert_eq!(m, Some(Method::Sd), "running {r:?}");
+            let (k, _) = method::choose(&ident("hc250", r), Some(Method::Kexec));
+            assert_eq!(k, Some(Method::Kexec));
+        }
+        assert!(Method::Nand.suitable(&ident("hc250", Running::Stock)).is_err());
+        assert!(Method::Sd.suitable(&ident("hc800", Running::Stock)).is_err());
+        let plan = method::plan(board::by_name("hc250").unwrap(), Method::Kexec);
+        assert!(plan.steps[0].contains("ohc_kexec.ko"), "the HC-250's kexec, not the HC-800's");
     }
 
     #[test]

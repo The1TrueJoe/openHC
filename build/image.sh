@@ -29,6 +29,7 @@ bash "$REPO/build/stage-daemons.sh" "$BOARD"
 bash "$REPO/build/build.sh"
 case "$BOARD" in
   hc800*) bash "$REPO/build/kexec-i686.sh" "$REPO/output/build/$BOARD/images/kexec-i686-static" ;;
+  hc250) bash "$REPO/build/hc250-stock-kit.sh" "$REPO/output/build/$BOARD/images" ;;
 esac
 bundle=$(bash "$REPO/build/bundle.sh" "$BOARD" "$OHC_VERSION")
 echo ">> $BOARD $OHC_VERSION: $REPO/$bundle"

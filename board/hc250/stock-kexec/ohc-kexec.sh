@@ -1,14 +1,16 @@
 #!/bin/sh
-# ohc-kexec.sh <image|http-url> [dry] [-- extra cmdline]
+# ohc-kexec.sh <image|http-url|-> [dry|load] [-- extra cmdline]
 # Boot an openHC uImage/zImage from the stock HC-250 OS (2.6.32, BusyBox 1.15)
 # without U-Boot. RAM only: a reboot or power cycle comes back up in stock.
 # "dry" loads and plans everything, prints it to dmesg and stays in stock.
+# "load" loads it and stops; `echo 1 > /sys/module/ohc_kexec/parameters/go` jumps
+# (the flasher runs that detached). "-" reads the image from stdin.
 set -e
 img=$1; shift || true
 mode=1
-[ "$1" = dry ] && { mode=dry; shift; }
+case "$1" in dry|load) mode=$1; shift ;; esac
 [ "$1" = -- ] && shift
-[ -n "$img" ] || { echo "usage: $0 <image|http-url> [dry] [-- extra cmdline]" >&2; exit 2; }
+[ -n "$img" ] || { echo "usage: $0 <image|http-url|-> [dry|load] [-- extra cmdline]" >&2; exit 2; }
 
 ko=${KO:-$(dirname "$0")/ohc_kexec.ko}
 p=/sys/module/ohc_kexec/parameters
@@ -29,9 +31,11 @@ fi
 echo "console=ttyS0,115200n8 eth=$mac video=HDMI-A-1:1280x720@60e ohc.ramboot=1 $*" > $p/cmdline
 case "$img" in
     http://*|ftp://*) wget -O - "$img" > $dev ;;
+    -) cat > $dev ;;
     *) cat "$img" > $dev ;;
 esac
 dmesg | grep ohc-kexec | tail -1
+[ $mode = load ] && { echo "ohc-kexec: loaded; echo 1 > $p/go jumps"; exit 0; }
 [ $mode = dry ] || { echo "ohc-kexec: jumping; the console moves to the new kernel"; sync; }
 echo $mode > $p/go
 dmesg | grep ohc-kexec | tail -40
