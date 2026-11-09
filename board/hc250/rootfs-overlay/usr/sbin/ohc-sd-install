@@ -1,0 +1,139 @@
+#!/bin/sh
+# ohc-sd-install install <image|http-url> | stock-io | stock | status
+#
+# HC-250: the openHC half of the SD install. Run it from openHC in RAM (kexec'd
+# from stock); stock-kexec/ohc-boot-env.sh, run on stock, does the other half.
+#
+#   SD      p1 (Control4 "Internal" data) untouched. p2 "Apps" (ext4, ~15 MB used)
+#           shrunk to 2 GiB; p3 vfat "OHCBOOT" holds the uImage; p4 ext4 "ohcdata".
+#   EEPROM  byte 6 = U-Boot's bootohc try count: install arms it (0); at 3 U-Boot
+#           boots stock. "stock" sets it to 3, so every boot goes to stock until
+#           ohc-boot-env.sh uninstall (on stock) or the next install.
+#   stock-io  keep stock's IO firmware tree (a tar on stdin, from ohc-boot-env.sh
+#           stock-io) on p4 under stock-io/, where `restore stock` finds it.
+#
+# openHC never writes the NAND (U-Boot's env included): mainline's BCH4 OOB layout
+# is not Control4's. The env is stock's fw_setenv's job, and factory restore's.
+set -e
+
+# OHC_SD_DEV: another disk with the same layout (a loop device, for tests).
+DEV=${OHC_SD_DEV:-/dev/mmcblk0}
+P2=${DEV}p2; P3=${DEV}p3; P4=${DEV}p4
+IMG=openhc.img
+EEPROM=/sys/bus/i2c/devices/0-0050/eeprom
+TRY=6
+STOCK_IO=stock-io
+
+die() { echo "ohc-sd-install: $*" >&2; exit 1; }
+getenv() { fw_printenv -n "$1" 2>/dev/null; }
+# BusyBox's and util-linux's blkid both print LABEL="..."
+label() { blkid "$1" 2>/dev/null | sed -n 's/.* LABEL="\([^"]*\)".*/\1/p'; }
+
+check_board() {
+    grep -q "Control4 HC-250" /proc/device-tree/model 2>/dev/null || die "not an HC-250"
+    [ -b "$DEV" ] || die "no $DEV (interior SD)"
+    [ -w "$EEPROM" ] || die "no writable EEPROM at $EEPROM"
+}
+
+# p1 and p2 exactly as Control4 left them, or already ours.
+layout() {
+    sfdisk -d "$DEV" | sed -n 's/^[^ ]*p\([0-9]\) : start= *\([0-9]*\), size= *\([0-9]*\).*/\1 \2 \3/p'
+}
+
+partition() {
+    if [ -b "$P3" ] && [ -b "$P4" ]; then
+        [ "$(label "$P3")" = OHCBOOT ] || die "$P3 exists and is not OHCBOOT; refusing"
+        echo "SD already partitioned"; return 0
+    fi
+    l=$(layout)
+    echo "$l" | grep -q "^1 16 1750064$" || die "p1 is not stock's (16+1750064): $l"
+    echo "$l" | grep -q "^2 1750080 " || die "p2 does not start at 1750080: $l"
+    [ "$(echo "$l" | wc -l)" = 2 ] || die "expected two partitions: $l"
+    grep -q "^$DEV" /proc/mounts && die "the SD is mounted"
+    total=$(cat "/sys/block/${DEV#/dev/}/size")
+    p2=4194304                                  # 2 GiB
+    p3s=$((1750080 + p2)); p3=524288            # 256 MiB vfat
+    p4s=$((p3s + p3)); p4=$((total - p4s))
+    [ "$p4" -gt 1048576 ] || die "card too small ($total sectors)"
+    echo "shrinking p2 (Apps) to 2 GiB"
+    e2fsck -fy "$P2" || [ $? -le 1 ] || die "e2fsck $P2 failed"
+    resize2fs "$P2" 1900M
+    sfdisk --no-reread "$DEV" <<SF
+label: dos
+start=16, size=1750064, type=83
+start=1750080, size=$p2, type=83
+start=$p3s, size=$p3, type=c
+start=$p4s, size=$p4, type=83
+SF
+    blockdev --rereadpt "$DEV"; sleep 1
+    resize2fs "$P2"
+    mkfs.vfat -n OHCBOOT "$P3"
+    mkfs.ext4 -q -L ohcdata "$P4"
+}
+
+put_image() {
+    src=$1; mnt=/tmp/ohcboot
+    mkdir -p "$mnt"; mount -t vfat "$P3" "$mnt"
+    trap 'umount "$mnt" 2>/dev/null' EXIT
+    case "$src" in
+        http://*|https://*) wget -O "$mnt/$IMG.new" "$src" ;;
+        *) cp "$src" "$mnt/$IMG.new" ;;
+    esac
+    magic=$(dd if="$mnt/$IMG.new" bs=4 count=1 2>/dev/null | hexdump -ve '1/1 "%02x"')
+    [ "$magic" = 27051956 ] || { rm -f "$mnt/$IMG.new"; die "not a uImage"; }
+    dd if="$mnt/$IMG.new" bs=1 skip=32 count=32 2>/dev/null | grep -q hc250 \
+        || { rm -f "$mnt/$IMG.new"; die "uImage is not an hc250 image"; }
+    mv "$mnt/$IMG.new" "$mnt/$IMG"; sync
+    echo "image: $(ls -l "$mnt/$IMG" | awk '{print $5}') bytes on $P3"
+    umount "$mnt"; trap - EXIT
+}
+
+setbyte() { printf "\\$(printf %o "$2")" | dd of="$EEPROM" bs=1 seek="$1" count=1 conv=notrunc 2>/dev/null; }
+byte() { dd if="$EEPROM" bs=1 skip="$1" count=1 2>/dev/null | hexdump -ve '1/1 "%u"'; }
+
+install() {
+    [ -n "$1" ] || die "usage: $0 install <image|http-url>"
+    check_board
+    partition
+    put_image "$1"
+    setbyte "$TRY" 0
+    [ "$(byte "$TRY")" = 0 ] || die "EEPROM byte $TRY did not stick"
+    echo "SD ready. Next, on stock: ohc-boot-env.sh install (sets bootmode=ohc), and"
+    echo "  ohc-boot-env.sh stock-io | (ssh to openHC) ohc-sd-install stock-io"
+}
+
+stock() {
+    check_board
+    setbyte "$TRY" 3
+    echo "every boot goes to stock now; ohc-sd-install install re-arms it"
+}
+
+stock_io() {
+    check_board
+    [ -b "$P4" ] || die "no $P4; run install first"
+    mnt=/tmp/ohcdata; mkdir -p "$mnt"
+    mount -t ext4 "$P4" "$mnt"
+    trap 'umount "$mnt" 2>/dev/null' EXIT
+    rm -rf "$mnt/$STOCK_IO.new"; mkdir -p "$mnt/$STOCK_IO.new"
+    tar -C "$mnt/$STOCK_IO.new" -xf -
+    ls "$mnt/$STOCK_IO.new/control4/firmware/io/"*LM3S1162* >/dev/null 2>&1 \
+        || { rm -rf "$mnt/$STOCK_IO.new"; die "no LM3S1162 image in what stock sent"; }
+    rm -rf "$mnt/$STOCK_IO"; mv "$mnt/$STOCK_IO.new" "$mnt/$STOCK_IO"; sync
+    ls "$mnt/$STOCK_IO/control4/firmware/io/"
+    umount "$mnt"; trap - EXIT
+    echo "kept stock's IO firmware on $P4 for restore stock"
+}
+
+status() {
+    echo "bootmode=$(getenv bootmode) try(EEPROM $TRY)=$(byte "$TRY")"
+    echo "restoresystem=$(getenv restoresystem)"
+    blkid "$DEV"p* 2>/dev/null
+}
+
+case "$1" in
+    install) shift; install "$@" ;;
+    stock) stock ;;
+    stock-io) stock_io ;;
+    status) status ;;
+    *) echo "usage: $0 install <image|http-url> | stock-io | stock | status" >&2; exit 2 ;;
+esac

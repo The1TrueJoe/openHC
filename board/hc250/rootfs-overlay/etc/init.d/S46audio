@@ -1,0 +1,30 @@
+#!/bin/sh
+# TPS65950 codec bring-up, HC-250 only: stock's playback path and levels, read
+# off a stock unit (amixer contents). The codec is the I2S clock master, and
+# DAPM leaves it powered down until a mixer path reaches an output; with the
+# path off, every PCM on the card stalls once McBSP2's FIFO fills.
+#
+# S46: before audiod (S50s), which opens every PCM when it starts.
+case "${1:-start}" in
+    start)
+        [ -d /proc/asound/HC250 ] || { echo "audio: no HC250 card"; exit 0; }
+        set_one() { amixer -q -c HC250 sset "$@" >/dev/null 2>&1 || echo "audio: no '$1'"; }
+        # Out: DAC2 into the headset driver (HSOL/HSOR), the rear jack.
+        set_one "HeadsetL Mixer AudioL2" on
+        set_one "HeadsetR Mixer AudioR2" on
+        set_one "DAC2 Analog" 12
+        set_one "DAC2 Digital Coarse" 1
+        set_one "DAC2 Digital Fine" 57
+        set_one "Headset" 3
+        # In: AUXL/AUXR (line level) through TX1.
+        set_one "Analog Left AUXL" cap
+        set_one "Analog Right AUXR" cap
+        set_one "TX1" Analog
+        set_one "TX1 Digital" 12
+        set_one "Analog" 0
+        echo "audio: codec path set (DAC2 -> headset out, AUX -> TX1)"
+        ;;
+    stop) : ;;
+    restart|reload) "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

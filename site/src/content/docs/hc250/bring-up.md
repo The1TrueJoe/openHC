@@ -129,6 +129,141 @@ error early in boot.
 MADC raw values on an idle unit: ch2 257, ch6 154, ch7 567, ch8 761, ch12 572,
 the rest near 0. Which inputs are wired to what is not mapped yet.
 
+## Installing to the SD card
+
+openHC boots from the interior SD card through stock U-Boot, falls back to stock
+on its own, and a factory restore returns the unit to stock. Proven 2026-11-08:
+openHC up 40 s after `reboot`, with `ohc.boot=sd` on the command line.
+
+**How it boots.** Stock `bootcmd` ends in `run boot${bootmode}` (`bootmode=nand`).
+The install sets `bootmode=ohc` and adds `bootohc`:
+
+1. Read EEPROM byte 6 (`i2c read 50 6 1`). At 3 or more (or an unarmed `0xff`),
+   boot stock (`bootnand`).
+2. Count the attempt (`i2c mw 50 6 <n+1>`).
+3. `fatload` `openhc.img` from SD partition 3 (`mmc rescan 0`, then `1`) and
+   `bootm` it. Anything failing falls through to `bootnand`.
+
+`S95ohcboot` zeroes byte 6 once eth0 has an address (and reboots after five
+minutes without one, so the count keeps climbing). It also zeroes stock's own
+`c4sys init` counters (bytes 0/1, both slots, and the clean count in byte 2), as
+stock's `setbootcnt` does after a good boot. Not via the env's `bootsystem`: after
+stock's writes, Linux reads both env copies as bad CRC (bit flips only U-Boot's
+ECC corrects). Left alone, U-Boot
+switches stock to its other slot after three boots, then stalls at "All
+Bootsystems Failed".
+
+**Remote factory restore** (proven 2026-11-08). `restore stock` on openHC puts
+Control4's IO firmware back (below), writes `R` to EEPROM byte 7 and reboots. `bootohc` sees it, clears it, zeroes Control4's
+boot counters as the button path does, and runs `restoresystem`. About 4½ minutes
+later the unit answered as stock: the recovery image (Control4 2.5.x, kernel
+2.6.32-47.41, dropbear 0.52), `bootmode=nand`, `c4server`/`ioserver` running.
+Running `ohc-boot-env.sh install` on that stock and rebooting brought openHC back
+from the SD card, which the restore does not touch.
+
+**The IO controller goes back too.** The restored OS does not rewrite the MCU (it
+ran five minutes on openHC's image without touching it), and openHC cannot read
+the stock rootfs on the NAND. So the install keeps stock's `/control4/firmware/io`
+tree on `ohcdata`:
+
+```sh
+ssh <stock> /tmp/ohc-boot-env.sh stock-io | ssh <openhc> ohc-sd-install stock-io
+```
+
+`restore stock` writes Control4's image back first (the one `.flash.config` names
+for `hc250`, through the driver's firmware upload, 12 s), and only then arms the
+restore; without a kept tree it refuses unless `--keep-iomcu`. Proven 2026-11-08:
+03.17.05 written over openHC's image, restore, stock's `ioserver` up on it, and on
+the next openHC boot the driver found 03.17.05 and wrote its own image back.
+
+**Factory restore.** The restore button runs the env script `restoresystem`
+(recovery kernel and rootfs into slot 0, then `cleanboot`). The install appends
+`setenv bootmode nand; saveenv`, so U-Boot itself puts the env back on stock.
+Stock 2.10.6 never reads the SD card, so the card's layout does not matter to it.
+
+**Why openHC never writes the NAND.** Mainline reads the env byte-for-byte equal
+to a NAND dump, but with 256 "ECC unrecoverable" per partition. Control4's BCH4
+keeps its 4×7 ECC bytes at OOB 36–63; mainline's omap2 BCH4 layout puts them at
+2/10/18/26. A write from Linux would read back as uncorrectable in U-Boot. So
+every partition stays `read-only`, the try count lives in the EEPROM, and the env
+is written once at install by stock's own `fw_setenv`.
+
+**SD layout:**
+
+| | Size | What |
+|---|---|---|
+| p1 | 854 MiB | Control4 "Internal" data (ext4), untouched |
+| p2 | 2 GiB | Control4 "Apps" (ext4, 15 MB used), shrunk from 6.7 GiB |
+| p3 | 256 MiB | vfat `OHCBOOT`: `openhc.img` (U-Boot 2011.03 reads FAT, not ext4 extents) |
+| p4 | the rest | ext4 `ohcdata` |
+
+**Steps**, all over SSH:
+
+```sh
+# 1. on stock: kexec openHC (above)
+# 2. on openHC: SD + EEPROM
+ohc-sd-install install http://<host>/openhc-hc250-kernel.img
+# 3. reboot to stock, then: the env
+/tmp/ohc-boot-env.sh install        # board/hc250/stock-kexec/ohc-boot-env.sh
+reboot                              # -> openHC from the SD
+```
+
+To leave without a factory restore: `ohc-sd-install stock` on openHC (every boot
+goes to stock), then `ohc-boot-env.sh uninstall` on stock. Both scripts refuse
+unless the SD layout, `bootcmd` and `restoresystem` are stock's (or already theirs).
+
+The EEPROM shares I2C1 with the TPS65950. At the TWL's 2.6 MHz high-speed mode
+it never answers, so the bus runs at 400 kHz.
+
+## Audio and video (2026-11-08)
+
+Both are described from what stock does on a live unit, and from Control4's
+U-Boot and X-Loader GPL patches.
+
+| Output | How | Status |
+|---|---|---|
+| Rear audio out / line in | TPS65950 codec on McBSP2 (`ti,omap-twl4030`); DAC2 into HSOL/HSOR like stock, line in on AUXL/AUXR | **proven**: 1 kHz out → cable → in, 100% tone at −30 dBFS, gone when muted, L→L with −52 dB crosstalk |
+| Splash | omapdrm fbdev, 1280×720×32; fbcon and the Tux logo off | **proven** on an SD boot (`Splash: OK`) |
+| HDMI | DSS DPI, 24 lines → ADV7513 (`adv7511`), 720p forced on (`video=HDMI-A-1:1280x720@60e`) | DISPC runs; no monitor tried |
+| HDMI audio | McBSP4 → ADV7513 I2S (`simple-audio-card`) | card registers; needs an HDMI sink |
+| Component | THS8200 from userspace (`S47video`, the HC-800's `ths8200` tool), registers captured off this unit at 720p60 | configured (137 registers, VERSION 0x04); no TV tried |
+
+**Receivers.** audiod runs one AirPlay 2 (shairport-sync, one shared nqptp) and
+one Spotify Connect receiver per output: "HC-250 Analog" and "HC-250 HDMI", both
+advertised over mDNS, idle load 0.65 with 335 MB free. The music library (mpd)
+plays to either. AirPlay 2 from a phone to "HC-250 Analog" plays clean, with
+shairport-sync and nqptp at 12–48% of the one core and the load around 1.
+
+`S46audio` sets stock's codec path at boot (DAC2 → HSOL/HSOR, AUX → TX1). The codec
+is the I2S clock master and DAPM keeps it powered down until a path reaches an
+output: without it every PCM on the card stalls once McBSP2's FIFO (640 frames)
+fills. audiod bounds its PCM-open probe so that cannot stall the daemon.
+
+Details that came from the unit:
+
+- **The display pads** use the DM3730 layout Beagle-xM does: dss_data0–5 on the
+  data18–23 balls (mode 3), dss_data18–23 on sys_boot0/1/3–6. Stock's kernel sets
+  this and U-Boot does not, so the DT carries the pinctrl. `vdds_dsi` is VPLL2.
+- **THS8200:** reset is GPIO97 (X-Loader holds it low). Its 720p register set
+  differs from the HC-800's in 24 registers: same chip, different input wiring.
+- **VAUX3 and VDAC stay on.** Stock never registers them, so they keep the PMIC's
+  power-up state; openHC was turning them off as unused.
+- **Kexec'd from stock, the display does not start.** Stock clocks DISPC from the
+  DSI PLL (`DSS_CONTROL` 0x1), and after the hand-off the clock mux stays there
+  (`DSS_CLK_STATUS` 0x82 against 0x81 on an SD boot). DISPC never raises an
+  interrupt. Switching the mux back from the kexec module before shutdown did not
+  take. RAM test boots run without a picture; SD boots have one.
+
+## Wi-Fi: a BCM4319
+
+The module is fitted. Under stock, raising `wifi_reset` (GPIO176) and pulling the
+card-detect loop low makes it enumerate: SDIO `02d0:4319`, a **BCM4319**.
+GPIO101 (`wifi_carddetect`) is wired back to GPIO94, MMC2's card-detect input.
+Mainline `brcmfmac` has no 4319 entry, and stock 2.10.6 ships no firmware for it
+(its `dhd.ko` is never loaded). So MMC2 stays disabled. Under mainline the card
+does not initialize yet either: `MMCHS_CON` differs from stock's (0x600 against
+0x10e00; CTPL, CLKEXTFREE).
+
 ## What the first image is
 
 - **Kernel:** mainline 7.1.8, `omap2plus_defconfig` + `linux/hc250.fragment`.
@@ -137,22 +272,23 @@ the rest near 0. Which inputs are wired to what is not mapped yet.
   files by bare name.
   Stock U-Boot passes ATAGS, so the DTB is appended to the zImage
   (`ARM_APPENDED_DTB` + `ARM_ATAG_DTB_COMPAT`).
-- **Pin mux is U-Boot's.** The DTS has no board pinctrl yet; every pad stays as
-  stock U-Boot left it. The stock mux table was saved off the unit for when that
-  changes.
+- **Pin mux is U-Boot's**, except the display and McBSP4 pads, which stock's kernel
+  sets (above). The stock mux table was saved off the unit.
 - **MAC:** `smsc911x` reads its address only from DT properties, which this
   U-Boot can't fill. `S05ethaddr` sets it from `eth=` (the script passes U-Boot's
   `${ethaddr}`), falling back to the copy in the board EEPROM at offset 8.
 - **IO:** the `iomcu` feature. The IO-MCU node describes block 1 — four jacks,
   blaster, receiver, one relay, one contact — so `gpio-ohc-iomcu` names the lines
-  and lirc devices exactly as on the HC-800. No `firmware-name` yet: it talks to
-  Control4's firmware until ours is proven on this board.
-- **NAND:** described with every partition `read-only`.
+  and lirc devices exactly as on the HC-800. `firmware-name` is set: the driver
+  writes openHC's LM3S1162 image over Control4's 03.26.15 at the first boot
+  (8,644 bytes, about 3.5 s), then applies the pin table. A factory restore's
+  stock OS puts Control4's image back.
+- **NAND:** described with every partition `read-only` (see the install section).
 - **Held lines:** `zigbee_reset` and `zigrf_enable` high, the 12 V enable high,
   and the Wi-Fi radio held in reset, all as stock leaves them.
 
-Not in the first image: Zigbee (the feature brings Node, too big for a RAM
-image), Wi-Fi (MMC2 disabled), video, audio.
+Not in the image yet: Zigbee (the feature brings Node, too big for a RAM image)
+and Wi-Fi (no driver, above).
 
 ## Kernel patches
 
@@ -170,16 +306,14 @@ image), Wi-Fi (MMC2 disabled), video, audio.
 
 What may still need one:
 
-- **THS8200** (component out). No mainline driver. The HC-800 drives it from
-  userspace over I2C (`ths8200` package); that may carry over.
-- **Control4's NAND ECC layout.** If its BCH4 OOB layout differs from mainline's,
-  reading stock partitions without errors needs a layout patch. Only matters for
-  reading stock data or installing to NAND.
+- **THS8200** (component out). No mainline driver; driven from userspace like
+  the HC-800's.
+- **Control4's NAND ECC layout** differs from mainline's (above). Only a layout
+  patch would let Linux write the NAND; nothing needs that today.
 - **Audio** needs no driver patch: the TPS65950 codec is `ti,omap-twl4030` and
   HDMI audio is McBSP4 into the ADV7513, both expressible in the DT. Control4's
   `magneto` machine driver is not needed.
-- **Wi-Fi** depends on the module: `brcmfmac` if it is a supported Broadcom SDIO
-  part.
+- **Wi-Fi** needs BCM4319 support added to `brcmfmac`, plus firmware.
 
 The openHC driver changes for this board are in our own `gpio-ohc-iomcu`: a
 combo jack may now have a single serial-enable line (the HC-250's PB0/PB1), not
@@ -188,10 +322,10 @@ gives up (above).
 
 ## Next
 
-1. Zigbee: start the EM357 app from its bootloader at boot, and find what puts
-   it there.
-2. A persistent rootfs on the interior SD card (Zigbee/Node can live on it).
-3. TPS65950 audio (codec DAC/ADC) and what the MADC inputs measure.
-4. Video: DPI → ADV7513, then the THS8200.
-5. Wi-Fi on MMC2.
+1. A picture on a TV: HDMI with a monitor attached, and component.
+2. Zigbee: start the EM357 app from its bootloader at boot, then a root filesystem
+   on `ohcdata` (Zigbee/Node is too big for RAM).
+3. The HC-250 in the flasher, calling the two install scripts.
+4. Wi-Fi: BCM4319 in `brcmfmac`, plus firmware.
+5. What the MADC inputs measure.
 6. openHC's own LM3S1162 firmware on this board's pins.

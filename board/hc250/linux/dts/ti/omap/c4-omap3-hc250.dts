@@ -193,8 +193,9 @@
 	};
 };
 
+/* 400 kHz, not the TWL's 2.6 MHz HS mode: the 24C02 at 0x50 shares the bus. */
 &i2c1 {
-	clock-frequency = <2600000>;
+	clock-frequency = <400000>;
 
 	twl: twl@48 {
 		reg = <0x48>;
@@ -208,12 +209,16 @@
 		};
 	};
 
-	/* c4sys boot counters (0-5) and the MAC (8-13). Never written. */
+	/*
+	 * c4sys boot counters (0 bootcount0, 1 bootcount1, 2 cleancount, 3 cleanboot,
+	 * 4 restore count, 5 restore state) and the MAC (8-13). Byte 6 is openHC's
+	 * SD boot try count (U-Boot's bootohc). S95ohcboot zeroes 0/1, 2 and 6 after a
+	 * good boot, as stock's setbootcnt does for its own; nothing else writes.
+	 */
 	eeprom@50 {
 		compatible = "atmel,24c02";
 		reg = <0x50>;
 		pagesize = <8>;
-		read-only;
 	};
 };
 
@@ -279,6 +284,8 @@
 		compatible = "control4,lm3s1162-io-mcu", "control4,io-mcu";
 		current-speed = <115200>;
 		reset-gpios = <&gpio4 0 GPIO_ACTIVE_LOW>;	/* gpio96 io_reset */
+		/* openHC's image; a factory restore's stock OS puts Control4's back. */
+		firmware-name = "openhc/io-mcu-lm3s1162.bin";
 		control4,ir-carriers = <IOMCU_PORT_D 1>, <IOMCU_PORT_F 3>;
 		control4,ir-gates-active-low;
 		control4,hold-low-pins = <IOMCU_PORT_F 4>, <IOMCU_PORT_F 5>,
@@ -471,7 +478,11 @@
 	ranges = <0 0 0x30000000 0x01000000>,	/* CS0: NAND */
 		 <5 0 0x2c000000 0x01000000>;	/* CS5: LAN9220 */
 
-	/* Partitions as stock /proc/mtd + U-Boot env. All read-only. */
+	/*
+	 * Partitions as stock /proc/mtd, all read-only: mainline's BCH4 OOB layout is
+	 * not Control4's (its ECC sits at OOB 36-63), so a write from here would read
+	 * back as uncorrectable in U-Boot. The env is written by stock's fw_setenv.
+	 */
 	nand@0,0 {
 		compatible = "ti,omap2-nand";
 		reg = <0 0 4>;
