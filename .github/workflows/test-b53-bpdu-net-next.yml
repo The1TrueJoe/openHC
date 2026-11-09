@@ -44,9 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out-arm64 defconfig
-          scripts/config --file out-arm64/.config -e NET_DSA -e B53 -e B53_SPI_DRIVER -e B53_MDIO_DRIVER
-          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out-arm64 olddefconfig
-          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out-arm64 W=1 drivers/net/dsa/b53/ 2>&1 | tee b53-arm64.log | tail -5
+          make -s mrproper
+          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          scripts/config -e NET_DSA -e B53 -e B53_SPI_DRIVER -e B53_MDIO_DRIVER
+          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- W=1 drivers/net/dsa/b53/ 2>&1 | tee b53-arm64.log | tail -5
           if grep -E "b53_(common|priv)\.[ch].*(warning|error)" b53-arm64.log; then exit 1; fi
           echo "arm64 b53 built in, W=1, no warnings"
