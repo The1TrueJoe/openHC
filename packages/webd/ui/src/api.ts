@@ -714,7 +714,8 @@ export class Io {
     this.#c = c;
 
     c.on('connect', () => {
-      if (this.#lost) toast.success('Reconnected to the IO server', { id: 'io-link' });
+      // Same id as the outage toast, so it updates in place: clear what the outage set.
+      if (this.#lost) toast.success('Reconnected to the IO server', { id: 'io-link', description: undefined, duration: 4000 });
       this.#lost = false;
       this.connected = true;
       // State is retained, so subscribing IS the snapshot — no separate
