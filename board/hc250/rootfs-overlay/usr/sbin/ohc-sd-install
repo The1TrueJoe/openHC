@@ -59,8 +59,11 @@ partition() {
     echo "shrinking p2 (Apps) to 2 GiB"
     e2fsck -fy "$P2" || [ $? -le 1 ] || die "e2fsck $P2 failed"
     resize2fs "$P2" 1900M
+    # The same disk identifier, so the partitions keep their PARTUUIDs.
+    id=$(sfdisk -d "$DEV" | sed -n 's/^label-id: *//p')
     sfdisk --no-reread "$DEV" <<SF
 label: dos
+label-id: $id
 start=16, size=1750064, type=83
 start=1750080, size=$p2, type=83
 start=$p3s, size=$p3, type=c
