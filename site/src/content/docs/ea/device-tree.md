@@ -306,12 +306,38 @@ working.
 
 It replaced Control4's "internal fake PHY" mode (ported from their GPL drop),
 which answered MDIO reads from a canned register table with a made-up
-BCM53125 PHY ID and keyed on the CE5300 host bridge's PCI ID. That one also
-set CTL_AUX bit 1; see below for what that bit turned out to be.
+BCM53125 PHY ID and keyed on the CE5300 host bridge's PCI ID.
 
-The patch is meant for net-next. A DT binding question comes with it: the
-node's compatible would be the generic `pci8086,2e6e`, which has no binding
-today (falconfalls' CE4100 tree already uses it undocumented).
+**CTL_AUX bit 1 does nothing on the CE5300.** The vendor driver ORs `0x2`
+into CTL_AUX (`0xE0`) for its fake PHY, and openHC's port copied that. On an
+EA3 the register reads `0x100` (endianness field only) even with that code
+running. Writing `0x102` by hand reads back `0x100`, while `0x104` reads back
+`0x104`, so the register takes writes and bit 1 is simply not there. The link
+passed traffic either way. Mainline's RMII path clears the same bit next to
+bit 2 ("J/K bits required for receive"), so on the CE4100 it is probably an
+RMII receive option. The fixed-link patch leaves it alone.
+
+Don't poke CTL_AUX's upper bits on a live box: bits 8-11 select descriptor
+and packet endianness, and clearing them stopped the MAC until a power cycle.
+
+### Tested on an EA3 (2026-11-09, RAM boot)
+
+| | Switch off | Switch on (`ohc.switch=1`) |
+|---|---|---|
+| Probe | `fixed link, 1000 Mbps full duplex`, no PHY scan | same; b53 attaches, `DSA: tree 0 setup` |
+| Link, DHCP | carrier, lease on `eth0` | lease on `br-lan` via `lan2`, SSH through the switch |
+| `ethtool eth0` | 1000/full, Port MII, autoneg off, pause off | same |
+| TCP throughput, each way | 941 / 941 Mbit/s (2 GiB), 0 errors | 892 in / 940 out (1 GiB) |
+| `ethtool -s`, `SIOCGMIIPHY/REG`, `SIOCSMIIREG` | `EOPNOTSUPP` | same |
+| `ethtool -t offline` | PASS (PHY loopback skipped) | not run |
+| MDIO block (BAR1) | all zero after every test | same |
+| CTRL speed/force bits cleared by hand, then down/up | rewritten to `0x00001A49` (1000/full forced) | not run |
+
+With the switch on, eth0 counts a few hundred RX `missed` per GiB received at
+line rate, with or without flow control, and none with the switch off: the
+Atom falls behind on DSA-tagged frames, the link itself is clean. `lan1` had
+nothing plugged in, so lan1-to-lan2 forwarding wasn't exercised; the e1000
+side of it is the same conduit.
 
 ## The switch
 
