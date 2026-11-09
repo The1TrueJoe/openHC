@@ -14,7 +14,7 @@ set -e
 
 STOCK_RESTORE='run restorekern; run restorerootfs; run cleanboot'
 OHC_RESTORE="$STOCK_RESTORE; setenv bootmode nand; saveenv"
-BOOTARGS='console=ttyS0,115200n8 panic=10 ohc.boot=sd'
+BOOTARGS='console=ttyS0,115200n8 video=HDMI-A-1:1280x720@60e panic=10 ohc.boot=sd'
 BOOTOHCM='setenv bootargs mem=${memsize} eth=${ethaddr} ${ohc_bootargs}; bootm ${bootload}'
 # U-Boot 2011.03: i2c bus 0 = I2C1 (the 24C02 at 0x50); generic MMC, no "mmc init".
 BOOTOHC='i2c dev 0; i2c read 50 6 1 8a000000;'
