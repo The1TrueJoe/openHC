@@ -37,3 +37,23 @@ CONFIG_IIO=y
 CONFIG_TWL4030_MADC=y
 
 CONFIG_KEXEC=y
+
+# Video: DSS DPI into the ADV7513 (HDMI) and THS8200 (component). Built in, so
+# /dev/fb0 exists when S01splash runs; omap2plus has them as modules.
+CONFIG_DRM=y
+CONFIG_DRM_OMAP=y
+CONFIG_DRM_DISPLAY_CONNECTOR=y
+CONFIG_DRM_I2C_ADV7511=y
+CONFIG_DRM_I2C_ADV7511_AUDIO=y
+# fbdev for the splash: DRM_FBDEV_EMULATION selects FB_CORE, FB_DEVICE makes /dev/fb0.
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_FB=y
+CONFIG_FB_DEVICE=y
+# No fbcon or Tux: the console would clear the framebuffer and draw over the
+# openHC splash (as on the EA and HC-800). The console is ttyS0.
+# CONFIG_FRAMEBUFFER_CONSOLE is not set
+# CONFIG_LOGO is not set
+
+# Wi-Fi: Broadcom FullMAC on MMC2.
+CONFIG_BRCMFMAC=m
+CONFIG_BRCMFMAC_SDIO=y
