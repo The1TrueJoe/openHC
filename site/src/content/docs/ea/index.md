@@ -66,8 +66,8 @@ CEFDK's `script` autorun runs *before* the verifying path. See
 EA3 comes up on wired Ethernet with mainline `e1000`.
 
 **The EA3 has a BCM53125 managed switch on SPI** behind the MAC, which the EA1
-does not. The e1000 MAC doesn't talk to a PHY. It runs in "internal fake phy"
-mode against a fixed link, with the switch behind it. See
+does not. The e1000 MAC doesn't talk to a PHY. It runs a fixed RGMII link
+into the switch. See
 [Ethernet and the switch](/ea/switch/).
 
 ## What is common, and where it lives
@@ -78,7 +78,7 @@ mode against a fixed link, with the switch behind it. See
 ea/common/common_defconfig       the EA half of the config
 features/                 composable feature sets: wifi, emmc, switch, audio, sgx
 linux/                    common.fragment + per-feature fragments
-patches/linux/            edits to upstream: i2c-pxa, serial, e1000 fake-phy,
+patches/linux/            edits to upstream: i2c-pxa, serial, e1000 fixed link,
                           ssp, ehci, x86 built-in device tree
 post-image.sh             wraps the bzImage in the CEFDK container
 firmware/dsp/             the ADAU1451 program and parameters

@@ -47,7 +47,7 @@ FFMPEG_CONF_OPTS += --disable-libv4l2
 # stays a normal .c file you can edit, grep and compile-check, and there are no
 # context lines to go stale on a kernel bump. Patches remain the only option for
 # CHANGING existing upstream files — you cannot express an edit as a copy — so
-# 0001 (i2c-pxa-pci) and 0003 (e1000 fake PHY) stay patches and everything that
+# 0001 (i2c-pxa-pci) and 0003 (e1000 fixed link) stay patches and everything that
 # is merely a NEW file lives here instead.
 #
 # This hook also replaced three near-identical per-driver hooks (SPI/GPIO/LED)
