@@ -1626,6 +1626,14 @@ static bool ohc_raw_seen(struct ohc_iomcu *mcu, const u8 *needle, int n)
 	return hit;
 }
 
+static void ohc_pulse_reset(struct ohc_iomcu *mcu)
+{
+	gpiod_set_value_cansleep(mcu->reset, 1);
+	msleep(20);
+	gpiod_set_value_cansleep(mcu->reset, 0);
+	msleep(200);
+}
+
 static const u8 ohc_boot_ack[] = { 0x00, OHC_BL_ACK };	/* TI bootloader ACK */
 static const u8 ohc_app_frame[] = { DLE, STX };		/* anything the app says */
 static const u8 ohc_knock[] = { OHC_KNOCK, OHC_KNOCK };
@@ -1707,17 +1715,26 @@ static bool ohc_run_app(struct ohc_iomcu *mcu)
  * THE KNOCK GOES FIRST, before any DLE/STX: the bootloader autobauds on the
  * first bytes it hears, and a frame before the knock leaves it deaf. A running
  * application answers the same knock with AUTO_BAUD_RESP, so one knock tells
- * the two apart and a part already up (a warm reboot, a kexec) is left alone.
+ * the two apart and a part already up (a warm reboot) is left alone. A part
+ * that answers nothing gets one pulse of reset-gpios and a second knock: an HC-250
+ * kexec'd from stock finds the app mute (stock ran it at 460800).
  * It is also why a reset is recovered by rebinding, never in place: iod's MCU
  * reset unbinds, pulses, and binds again, so this runs first.
  */
 static void ohc_bringup(struct ohc_iomcu *mcu)
 {
-	bool boot = false, up = false;
+	bool answered, boot = false, up = false;
 
 	ohc_raw_begin(mcu);
 	WRITE_ONCE(mcu->in_boot, false);
-	if (ohc_raw_xfer(mcu, ohc_knock, sizeof(ohc_knock), NULL, 0, 400))
+	answered = ohc_raw_xfer(mcu, ohc_knock, sizeof(ohc_knock), NULL, 0, 400);
+	if (!answered && mcu->reset) {
+		ohc_pulse_reset(mcu);
+		answered = ohc_raw_xfer(mcu, ohc_knock, sizeof(ohc_knock), NULL, 0, 400);
+		if (answered)
+			pr_info("%s: silent until reset\n", mcu->name);
+	}
+	if (answered)
 		boot = ohc_raw_seen(mcu, ohc_boot_ack, sizeof(ohc_boot_ack));
 	if (boot) {
 		/* PING mostly confirms the link before the un-ACKed RUN. */
@@ -2137,10 +2154,7 @@ static int ohc_enter_boot(struct ohc_iomcu *mcu)
 		ohc_write_frame(mcu, OHC_OP_RESET, ++mcu->seq, NULL, 0);
 		msleep(200);
 	} else if (mcu->reset) {
-		gpiod_set_value_cansleep(mcu->reset, 1);
-		msleep(20);
-		gpiod_set_value_cansleep(mcu->reset, 0);
-		msleep(200);
+		ohc_pulse_reset(mcu);
 	} else if (READ_ONCE(mcu->online)) {
 		return -EOPNOTSUPP;	/* stock, and no way to reset it */
 	}
