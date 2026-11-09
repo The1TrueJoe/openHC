@@ -33,7 +33,7 @@ size=$(stat -c %s "$IMAGES/zImage-dtb")
 # A failed load falls through to the stock boot.
 cat > "$IMAGES/c4test.cmd" <<EOF
 echo openHC: RAM boot from USB
-setenv bootargs console=ttyS0,115200n8 eth=\${ethaddr} ohc.ramboot=1
+setenv bootargs console=ttyS0,115200n8 eth=\${ethaddr} video=HDMI-A-1:1280x720@60e ohc.ramboot=1
 fatload usb 0:1 $FILEADDR openhc-$BOARD-kernel.img
 bootm $FILEADDR
 EOF
