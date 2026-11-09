@@ -3,7 +3,8 @@
 //! One tool, one interface (`status`, `stock`) for iod, the web UI's restore
 //! control, the EA's front-button watcher and the flasher. The HC-800
 //! has its own backend (hc800.rs: a one-shot GRUB entry into Control4's factory
-//! restore); everything below this point is the EA / CEFDK one.
+//! restore), as does the HC-250 (hc250.rs: a restore request U-Boot reads from the
+//! EEPROM); everything below this point is the EA / CEFDK one.
 //!
 //! openHC's install makes exactly ONE change to the boot path: it appends a
 //! `script` item to the CEFDK Master Flash Header (MFH) in SPI-NOR so CEFDK runs
@@ -41,6 +42,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
 use ohc_flash_core::{cefdk, mfh};
+mod hc250;
 mod hc800;
 mod iomcu;
 mod radio;
@@ -704,6 +706,22 @@ fn main() {
             eprintln!("restore stock: {e}");
             std::process::exit(1);
         }
+    }
+    // The HC-250 leaves its radio and IO firmware to the restored stock OS.
+    if hc250::is_hc250() {
+        let r = match cmd {
+            "status" => hc250::status(),
+            "stock" => hc250::stock(!args.iter().any(|a| a == "--no-reboot")),
+            _ => {
+                eprintln!("usage: restore {{status|stock [--no-reboot]}}   (HC-250)");
+                std::process::exit(2);
+            }
+        };
+        if let Err(e) = r {
+            eprintln!("restore {cmd}: {e}");
+            std::process::exit(1);
+        }
+        return;
     }
     if cmd == "radio" || (cmd == "stock" && !keep_radio) {
         if let Err(e) = radio::restore() {

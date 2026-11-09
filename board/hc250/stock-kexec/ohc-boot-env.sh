@@ -8,7 +8,8 @@
 # install  bootohc/bootohcm/ohc_bootargs, restoresystem += "setenv bootmode nand;
 #          saveenv" (factory restore then returns U-Boot to stock), and last
 #          bootmode=ohc. bootohc counts tries in EEPROM byte 6 and boots stock
-#          (bootnand) at 3 or when the SD has no image.
+#          (bootnand) at 3 or when the SD has no image; EEPROM byte 7 = 'R' runs
+#          the factory restore (openHC's `restore stock`).
 # uninstall bootmode=nand and stock's restoresystem back; the ohc variables go.
 set -e
 
@@ -17,7 +18,12 @@ OHC_RESTORE="$STOCK_RESTORE; setenv bootmode nand; saveenv"
 BOOTARGS='console=ttyS0,115200n8 video=HDMI-A-1:1280x720@60e panic=10 ohc.boot=sd'
 BOOTOHCM='setenv bootargs mem=${memsize} eth=${ethaddr} ${ohc_bootargs}; bootm ${bootload}'
 # U-Boot 2011.03: i2c bus 0 = I2C1 (the 24C02 at 0x50); generic MMC, no "mmc init".
-BOOTOHC='i2c dev 0; i2c read 50 6 1 8a000000;'
+# EEPROM byte 7 = 0x52 ('R', set by openHC's `restore stock`): clear it, zero the
+# c4sys counters as the button does, run Control4's factory restore (which, with
+# the install's hook, also sets bootmode=nand), and boot the restored stock.
+BOOTOHC='i2c dev 0; i2c read 50 7 1 8a000000;'
+BOOTOHC="$BOOTOHC"' if itest.b *8a000000 -eq 52; then i2c mw 50 7 ff; i2c mw 50 0 0 4; echo openHC: factory restore requested; run restoresystem; run bootnand; fi;'
+BOOTOHC="$BOOTOHC"' i2c read 50 6 1 8a000000;'
 BOOTOHC="$BOOTOHC"' if itest.b *8a000000 -ge 3; then echo openHC: 3 failed boots, booting stock; run bootnand; fi;'
 BOOTOHC="$BOOTOHC"' if itest.b *8a000000 -eq 2; then i2c mw 50 6 3; elif itest.b *8a000000 -eq 1; then i2c mw 50 6 2; else i2c mw 50 6 1; fi;'
 BOOTOHC="$BOOTOHC"' if mmc rescan 0 && fatload mmc 0:3 ${bootload} openhc.img; then run bootohcm;'

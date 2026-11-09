@@ -1,0 +1,5 @@
+# openHC feature: restore — on-box return to stock for the HC-250. The work is
+# the restore Rust package (features/restore/packages): `restore stock` sets the
+# EEPROM restore request that the SD install's bootohc reads, and reboots into
+# Control4's factory restore. It needs only reboot, which busybox provides, so
+# this half adds no Buildroot package.
