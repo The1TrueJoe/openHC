@@ -9,9 +9,9 @@
 # address, it zeroes the count. The EEPROM, not U-Boot's env: mainline's NAND ECC
 # layout is not Control4's, so openHC never writes the NAND.
 #
-# It also zeroes stock's own counters for the slot U-Boot ran (bytes 0/1) and the
-# clean count (2), which c4sys init bumps every boot and stock's setbootcnt clears;
-# left alone they switch stock to its other slot after three boots.
+# It also zeroes stock's own boot counters (bytes 0/1, both slots) and the clean
+# count (2), which c4sys init bumps every boot and stock's setbootcnt clears; left
+# alone they switch stock to its other slot after three boots.
 #
 # "Up" means reachable, not merely booted: if the uplink is not up within five
 # minutes this reboots and lets the count go on climbing. A RAM boot (kexec from
@@ -40,9 +40,9 @@ confirm() {
     t=0
     while [ "$t" -lt "$LIMIT" ]; do
         if reachable; then
-            sys=$(fw_printenv -n bootsystem 2>/dev/null)
-            case "$sys" in 0|1) zero "$sys" ;; esac
-            zero 2
+            # Both slots' counts, not the env's bootsystem: Linux cannot read the
+            # env reliably (Control4's NAND ECC layout), and zero is stock's own reset.
+            zero 0; zero 1; zero 2
             zero "$TRY"
             logger -t ohcboot "boot confirmed"
             return 0

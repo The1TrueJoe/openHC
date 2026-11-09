@@ -146,8 +146,10 @@ The install sets `bootmode=ohc` and adds `bootohc`:
 
 `S95ohcboot` zeroes byte 6 once eth0 has an address (and reboots after five
 minutes without one, so the count keeps climbing). It also zeroes stock's own
-`c4sys init` counters for the slot U-Boot ran (bytes 0/1) and the clean count
-(byte 2), as stock's `setbootcnt` does after a good boot. Left alone, U-Boot
+`c4sys init` counters (bytes 0/1, both slots, and the clean count in byte 2), as
+stock's `setbootcnt` does after a good boot. Not via the env's `bootsystem`: after
+stock's writes, Linux reads both env copies as bad CRC (bit flips only U-Boot's
+ECC corrects). Left alone, U-Boot
 switches stock to its other slot after three boots, then stalls at "All
 Bootsystems Failed".
 
