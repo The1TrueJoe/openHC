@@ -1,6 +1,6 @@
 ---
 title: Ethernet and the BCM53125 switch
-description: The fake-PHY e1000, the managed switch behind it, and a port map settled by a controlled traffic test.
+description: The PHY-less e1000, the managed switch behind it, and a port map settled by a controlled traffic test.
 sidebar:
   order: 7
 ---
@@ -9,6 +9,7 @@ The EA3's networking is the one genuinely new subsystem versus the EA1, and it
 is not shaped the way it looks.
 
 ```
+stock:
 eth0        e1000 (PCI 01:0c.0), MAC 00:0F:FF:94:EE:02
             dmesg: "GBE working in Internal Fake Phy Mode"
                    "e1000_copper_link_preconfig: Phy ID = 0x3625f20"
@@ -16,14 +17,15 @@ switch      spi-bcm53125 on spi0.1
             resets: gb_sw_reset (gpio8), gb_eth_reset (gpio5)
 ```
 
-**The e1000 MAC doesn't talk to a PHY at all.** It runs in "internal fake phy"
-mode against a fixed link, and the **BCM53125 managed switch sits behind it on
-SPI, not MDIO**. The two external RJ45s are switch ports; the CPU is another
-switch port.
+**The e1000 MAC doesn't talk to a PHY at all.** It runs a fixed RGMII link
+into switch port 5 (stock calls this "internal fake phy" mode), and the
+**BCM53125 managed switch sits behind it on SPI, not MDIO**. The two external
+RJ45s are switch ports; the CPU is another switch port.
 
-This is why openHC carries an `e1000` fake-PHY patch, and it's applied always —
-not as part of the `switch` feature, because it's what gives `eth0` a link on
-the primary jack at all.
+This is why openHC carries an `e1000` patch that reads the GbE's `fixed-link`
+node ([device tree](/ea/device-tree/#the-gbe-fixed-link)), and it's applied
+always, not as part of the `switch` feature, because it's what gives `eth0` a
+link on the primary jack at all.
 
 ## The switch is fully inspectable from a running stock unit
 
@@ -173,7 +175,7 @@ interface and the primary jack works as before.
 
 The feature is switched off by default, partly to keep an image under the
 [copy window](/ea/boot-chain/#the-copy-window). It isn't needed to reach
-the network: the always-applied fake-PHY patch gives `eth0` on the primary jack
+the network: the always-applied e1000 fixed-link patch gives `eth0` on the primary jack
 on its own.
 
 ## The CE5300 SSP is Quark's SSP (patch 0009)

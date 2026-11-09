@@ -60,7 +60,7 @@ falconfalls.
 | 01:0b.2 | 8086:2e68 | i2c-pxa-pci | `i2c@b,2` | Four adapters, one per BAR |
 | 01:0b.4 | 8086:2e6a | spi-pxa2xx-pci | `ssp` | `CE5X00_SSP` via patch 0009 |
 | 01:0b.6 | 8086:089f | pwm-ce5300 | `pwm` | The CE5300's own; not on falconfalls. Also measured on an EA1. |
-| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | Fake-PHY mode, patch 0003. The DSA conduit. |
+| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | `fixed-link`, patch 0003. The DSA conduit. |
 | 01:0d.1 | 192e:0101 | ehci-pci | `usb_rear` | TDI host, patch 0014. The rear USB port. |
 | 01:17.0 | 8086:08a0 | spi-ea-ce5xx | `bootflash` | Not on falconfalls; devfn from `lspci` on an EA1. |
 
@@ -263,6 +263,56 @@ manual hold, was `ohc-fand`'s CRITICAL. A device tree cannot say "hold for
 hold at the floor. The LM75 and fan `label`s ("Heatsink", "Fan") are the hwmon
 labels the Health panel shows.
 
+## The GbE fixed link
+
+The GbE MAC has no PHY on any EA: nothing answers on its MDIO bus, and the
+MAC talks RGMII straight to a switch port (the BCM53125's port 5 on the EA3). The `gbe` node says so the
+standard way:
+
+```dts
+gbe: ethernet@c,0 {
+	reg = <0x16000 0 0 0 0>;
+	phy-mode = "rgmii";
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
+};
+```
+
+Mainline `e1000` ignores all of this and fails probe with `-EIO` after
+scanning 32 MDIO addresses. Patch `0003` makes it read the node instead:
+
+- **Probe** takes speed and duplex from `fixed-link` and skips the PHY scan.
+  Only `phy-mode = "rgmii"` is accepted. No `pause` in the node means flow
+  control off, which matches the switch side (port 5's override, 0x4b, has
+  no pause bits).
+- **Link setup** forces the MAC: CTRL gets `SLU|FRCSPD|FRCDPX` with the speed
+  bits and `FD` written explicitly, not inherited from CEFDK, and CTL_AUX bit
+  0 is cleared (RGMII).
+- **Link state** is always up, with no PHY reads.
+- **PHY access** fails: register reads and writes return an error, PHY reset
+  is a no-op, the MII ioctls, `ethtool -s` and the PHY loopback self-test
+  return `EOPNOTSUPP` or are skipped. `ethtool eth0` reports 1000/full on an
+  MII port.
+
+The node is read through the device's OF node, not its fwnode. 01:0c.0 has
+no ACPI companion (the DSDT's GbE `_ADR` is the wildcard `0x000CFFFF`, which
+Linux never matches; no `firmware_node` in sysfs), so today the two are the
+same. If patch 0017 is ever replaced by keeping the bridge's ACPI companion
+as the fwnode, `dev->of_node` still points at this node and e1000 keeps
+working.
+
+It replaced Control4's "internal fake PHY" mode (ported from their GPL drop),
+which answered MDIO reads from a canned register table with a made-up
+BCM53125 PHY ID and keyed on the CE5300 host bridge's PCI ID. That one also
+set CTL_AUX bit 1; see below for what that bit turned out to be.
+
+The patch is meant for net-next. A DT binding question comes with it: the
+node's compatible would be the generic `pci8086,2e6e`, which has no binding
+today (falconfalls' CE4100 tree already uses it undocumented).
+
 ## The switch
 
 `ea-switch.dtsi` puts the BCM53125 on SSP chip-select 1 with its CPU port, for
@@ -278,7 +328,7 @@ live EA3:
   cost the most time.
 - **Port 5 is the CPU port, not the IMP port 8.** Link summary 0x24 (ports 2
   and 5), their MIB counters mirror each other, and port 5's GMII override reads
-  0x4b (forced 1000/full), the vendor's "internal fake phy" link. Port 2 is the
+  0x4b (forced 1000/full), the other end of the GbE fixed link. Port 2 is the
   primary jack; port 1 is the second jack, isolated in the stock config.
 - **The CPU port has no `phy-mode`/`fixed-link` on purpose.** b53 is on DSA's
   `dsa_switches_apply_workarounds` list, so DSA logs that and skips phylink for
