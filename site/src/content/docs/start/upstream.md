@@ -36,6 +36,7 @@ the build, openHC keeps its own copy:
 - **shairport-sync D-Bus names**: `board/common/patches/shairport-sync/0001`
   and `0002`, until a shairport-sync release with #2330 reaches Buildroot.
   The two merged pull requests are on the `development` branch.
-- **gl4es**: the five patches in
-  [openhc-minecraft](https://github.com/The1TrueJoe/openhc-minecraft)
-  `runtime/gl4es`, until it moves to a gl4es commit that includes them.
+
+The gl4es fixes are no longer carried:
+[openhc-minecraft](https://github.com/The1TrueJoe/openhc-minecraft) builds
+gl4es at upstream `c1d7d014`, which includes all five.
