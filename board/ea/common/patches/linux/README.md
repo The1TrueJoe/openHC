@@ -29,7 +29,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
-| 0017 | ACPI _PRT of a DT bridge | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which costs it its ACPI companion and every bus-1 device its IRQ; find the bridge's _PRT by _ADR instead |
+| 0017 | PCI bridge keeps its ACPI companion | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which used to cost it its ACPI companion and so every bus-1 device its IRQ (the _PRT lives there); a bridge with a DT node now gets its companion too, with the node kept as of_node only, as `device_add_of_node()` does |
 | 0019 | b53 BPDU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode traps BPDUs to the unwired IMP port 8, so STP never sees a loop; mirror them to port 5 (WAN-port select also delivers them but stops lan1↔lan2 forwarding) |
 | 0020 | simple-card `link-name` | name a link's PCM from the DT (`simple-audio-card,link-name` or `link-name` on a dai-link) instead of `<cpu dai>-<codec dai>`, so the EA3's PCMs are `Analog`, `Coax` and `Coax in`; also stops passing the name as a format string |
 
