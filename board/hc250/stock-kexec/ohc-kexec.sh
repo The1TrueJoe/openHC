@@ -25,7 +25,8 @@ if [ ! -c $dev ]; then
     mknod $dev c ${mm%:*} ${mm#*:}
 fi
 
-echo "console=ttyS0,115200n8 eth=$mac ohc.ramboot=1 $*" > $p/cmdline
+# 720p forced on: the DPI bus (component, splash) runs with no HDMI monitor.
+echo "console=ttyS0,115200n8 eth=$mac video=HDMI-A-1:1280x720@60e ohc.ramboot=1 $*" > $p/cmdline
 case "$img" in
     http://*|ftp://*) wget -O - "$img" > $dev ;;
     *) cat "$img" > $dev ;;
