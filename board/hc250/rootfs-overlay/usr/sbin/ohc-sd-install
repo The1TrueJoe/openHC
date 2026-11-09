@@ -1,5 +1,5 @@
 #!/bin/sh
-# ohc-sd-install install <image|http-url> | stock-io | stock | status
+# ohc-sd-install install <image|http-url|-> | stock-io | arm | stock | status
 #
 # HC-250: the openHC half of the SD install. Run it from openHC in RAM (kexec'd
 # from stock); stock-kexec/ohc-boot-env.sh, run on stock, does the other half.
@@ -9,6 +9,7 @@
 #   EEPROM  byte 6 = U-Boot's bootohc try count: install arms it (0); at 3 U-Boot
 #           boots stock. "stock" sets it to 3, so every boot goes to stock until
 #           ohc-boot-env.sh uninstall (on stock) or the next install.
+#   arm     EEPROM byte 6 back to 0 (after a fallback to stock, or `stock`).
 #   stock-io  keep stock's IO firmware tree (a tar on stdin, from ohc-boot-env.sh
 #           stock-io) on p4 under stock-io/, where `restore stock` finds it.
 #
@@ -58,8 +59,11 @@ partition() {
     echo "shrinking p2 (Apps) to 2 GiB"
     e2fsck -fy "$P2" || [ $? -le 1 ] || die "e2fsck $P2 failed"
     resize2fs "$P2" 1900M
+    # The same disk identifier, so the partitions keep their PARTUUIDs.
+    id=$(sfdisk -d "$DEV" | sed -n 's/^label-id: *//p')
     sfdisk --no-reread "$DEV" <<SF
 label: dos
+label-id: $id
 start=16, size=1750064, type=83
 start=1750080, size=$p2, type=83
 start=$p3s, size=$p3, type=c
@@ -77,6 +81,7 @@ put_image() {
     trap 'umount "$mnt" 2>/dev/null' EXIT
     case "$src" in
         http://*|https://*) wget -O "$mnt/$IMG.new" "$src" ;;
+        -) cat > "$mnt/$IMG.new" ;;
         *) cp "$src" "$mnt/$IMG.new" ;;
     esac
     magic=$(dd if="$mnt/$IMG.new" bs=4 count=1 2>/dev/null | hexdump -ve '1/1 "%02x"')
@@ -100,6 +105,13 @@ install() {
     [ "$(byte "$TRY")" = 0 ] || die "EEPROM byte $TRY did not stick"
     echo "SD ready. Next, on stock: ohc-boot-env.sh install (sets bootmode=ohc), and"
     echo "  ohc-boot-env.sh stock-io | (ssh to openHC) ohc-sd-install stock-io"
+}
+
+arm() {
+    check_board
+    setbyte "$TRY" 0
+    [ "$(byte "$TRY")" = 0 ] || die "EEPROM byte $TRY did not stick"
+    echo "armed: the next boot tries openHC from the SD again"
 }
 
 stock() {
@@ -133,7 +145,8 @@ status() {
 case "$1" in
     install) shift; install "$@" ;;
     stock) stock ;;
+    arm) arm ;;
     stock-io) stock_io ;;
     status) status ;;
-    *) echo "usage: $0 install <image|http-url> | stock-io | stock | status" >&2; exit 2 ;;
+    *) echo "usage: $0 install <image|http-url|-> | stock-io | arm | stock | status" >&2; exit 2 ;;
 esac

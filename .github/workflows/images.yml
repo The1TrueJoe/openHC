@@ -494,6 +494,12 @@ jobs:
         if: success() && matrix.board == 'hc800'
         run: bash build/kexec-i686.sh "output/build/${{ matrix.board }}/images/kexec-i686-static"
 
+      # The HC-250's stock-side kexec module and env script, built with the
+      # board's own Buildroot cross gcc (no extra host packages).
+      - name: Stock-side kit (HC-250 kexec + env)
+        if: success() && matrix.board == 'hc250'
+        run: bash build/hc250-stock-kit.sh "output/build/${{ matrix.board }}/images"
+
       # One zip the flasher reads directly: openhc-<board>-<version>.zip.
       - name: Bundle images
         if: success()

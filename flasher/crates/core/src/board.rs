@@ -25,6 +25,8 @@ pub enum Family {
     Iox,
     /// Atom D525 (HC800) — a PC, really.
     Hc,
+    /// TI OMAP3630 (HC-250) — stock U-Boot 2011.03, openHC on the interior SD.
+    Omap,
 }
 
 /// A model openHC can run on.
@@ -242,6 +244,25 @@ pub const BOARDS: &[Board] = &[
                 mainline, so openHC has no wlan0 on this board yet.",
         netboot: None,
     },
+    Board {
+        name: "hc250",
+        family: Family::Omap,
+        desc: "HC-250 (TI OMAP3630, U-Boot)",
+        // No /proc/c4board and no SMBIOS: stock's kernel names the machine in
+        // /proc/cpuinfo (`Hardware : HC250`), which is what identifies it.
+        c4_type: None,
+        c4_revs: &[],
+        secure_boot: false,
+        has_switch: false,
+        has_wifi: false,
+        dmi: None,
+        notes: "board rev 8 read. openHC boots from the interior SD card through stock U-Boot \
+                (bootmode=ohc) and falls back to stock after three failed boots; a factory \
+                restore, by button or remotely, returns it to stock. Linux never writes the \
+                NAND (Control4's BCH4 layout is not mainline's): the env is written by stock's \
+                own fw_setenv. Wi-Fi is a BCM4319 with no mainline driver.",
+        netboot: None,
+    },
 ];
 
 /// Look a board up by its openHC name (`ea3-v2`).
@@ -435,6 +456,23 @@ pub fn from_dmi(vendor: Option<&str>, product: Option<&str>, running: Running) -
     match hit {
         Some(b) => Identity { board: Some(b), candidates: vec![b], running, version: None, raw },
         None => Identity { board: None, candidates: vec![], running, version: None, raw },
+    }
+}
+
+/// Identify from `/proc/cpuinfo`'s `Hardware` line. The HC-250's stock kernel has
+/// no /proc/c4board and no SMBIOS; its machine name (`HC250`) is the identifier.
+/// openHC's DT kernel says `Generic OMAP36xx`, so this only ever matches stock.
+pub fn from_cpuinfo(cpuinfo: &str, running: Running) -> Identity {
+    let hw = cpuinfo
+        .lines()
+        .find_map(|l| l.split_once(':').filter(|(k, _)| k.trim() == "Hardware").map(|(_, v)| v.trim()));
+    let raw: Vec<(String, String)> = hw.map(|h| vec![("Hardware".into(), h.to_string())]).unwrap_or_default();
+    match hw.map(str::to_ascii_uppercase).as_deref() {
+        Some("HC250") => {
+            let b = by_name("hc250");
+            Identity { board: b, candidates: b.into_iter().collect(), running, version: None, raw }
+        }
+        _ => Identity { raw, ..Identity::none(running) },
     }
 }
 

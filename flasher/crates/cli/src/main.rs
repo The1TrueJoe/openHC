@@ -2,7 +2,7 @@
 //! for power users and scripts.
 
 use ohc_flash_core::{board, cefdk, image, method, Method};
-use ohc_flash_engine::{ca1, ea, hc800, iox, netboot, network, Progress, Release};
+use ohc_flash_engine::{ca1, ea, hc250, hc800, iox, netboot, network, Progress, Release};
 use ohc_flash_transport as tp;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -71,6 +71,11 @@ fn help() {
                                     IO Extender: --method nand writes the half of the\n\
                                     NAND stock never uses, from stock or openHC; three\n\
                                     failed openHC boots fall back to stock on their own.\n\
+                                    HC-250: --method sd (default) puts openHC on the\n\
+                                    interior SD card, booted by stock U-Boot (stock ->\n\
+                                    RAM openHC -> stock -> openHC from the SD, about\n\
+                                    5 min); --method kexec runs it from RAM, writing\n\
+                                    nothing. `boot` and `uninstall` take --images too.\n\
                                     --netconsole <ip>[:port] ships the boot log to you\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
@@ -292,6 +297,17 @@ fn validate(rest: &[String]) -> bool {
             let kern = rel.get("openhc-hc800-kernel.img").or_else(|| rel.get("bzImage"));
             let head = kern.map(|b| b[..b.len().min(0x400)].to_vec());
             let klen = kern.map(|b| b.len() as u64).unwrap_or(0);
+            if family == Some(board::Family::Omap) {
+                let kit = ["ohc_kexec.ko", "ohc-kexec.sh", "ohc-boot-env.sh"];
+                let mut probs: Vec<String> = match rel.get(ohc_flash_core::hc250::IMAGE_FILE) {
+                    Some(img) => ohc_flash_core::hc250::check_image(img).err().into_iter().collect(),
+                    None => vec![format!("no {}", ohc_flash_core::hc250::IMAGE_FILE)],
+                };
+                probs.extend(kit.iter().filter(|k| !rel.has(k)).map(|k| format!("no {k} (stock-side kit)")));
+                for p in &probs { println!("  ! {p}"); }
+                if probs.is_empty() { println!("  ok: {} — HC-250 image and stock-side kit", rel.source); }
+                return probs.is_empty();
+            }
             let (probs, note) = match family {
                 Some(board::Family::Hc) => {
                     let initrd = rel.has("rootfs.cpio.gz") || rel.has("openhc-initrd.gz");
@@ -409,7 +425,11 @@ fn boot(rest: &[String]) -> bool {
     let r = match id.board.map(|b| b.family) {
         Some(Family::Hc) => hc800::boot_installed(&ssh, &Progress::stdout()),
         Some(Family::Iox) => iox::boot_installed(&ssh, &Progress::stdout()),
-        _ => { eprintln!("  `boot` is for the HC-800 and IO Extender; this is {}", id.describe()); return false }
+        Some(Family::Omap) => match Release::open(&images_arg(rest)) {
+            Ok(rel) => hc250::boot_installed(&ssh, &rel, &Progress::stdout()),
+            Err(e) => { eprintln!("  the HC-250 needs its release (--images): {e}"); return false }
+        },
+        _ => { eprintln!("  `boot` is for the HC-800, HC-250 and IO Extender; this is {}", id.describe()); return false }
     };
     if let Err(e) = r {
         eprintln!("  {e:#}");
@@ -591,10 +611,24 @@ fn uninstall(rest: &[String]) -> bool {
     use ohc_flash_core::board::Family;
     let Some((_host, ssh)) = connect(rest) else { return false };
     let id = tp::identify(&ssh);
+    if id.board.map(|b| b.family) == Some(Family::Omap) {
+        let rel = match Release::open(&images_arg(rest)) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("  the HC-250 needs its release (--images): {e}"); return false }
+        };
+        if !rest.iter().any(|a| a == "--yes") && !confirm("boot stock from the NAND again (openHC stays on the SD)") {
+            return false;
+        }
+        if let Err(e) = hc250::uninstall(&ssh, &rel, &Progress::stdout()) {
+            eprintln!("  {e:#}");
+            return false;
+        }
+        return true;
+    }
     let (what, f): (&str, fn(&tp::ssh::Ssh, &Progress) -> anyhow::Result<()>) = match id.board.map(|b| b.family) {
         Some(Family::Hc) => ("remove the openHC entry and restore the stock menu.lst", hc800::uninstall),
         Some(Family::Iox) => ("set U-Boot's bootcmd back to stock", iox::uninstall),
-        _ => { eprintln!("  `uninstall` is for the HC-800 and IO Extender; this is {}", id.describe()); return false }
+        _ => { eprintln!("  `uninstall` is for the HC-800, HC-250 and IO Extender; this is {}", id.describe()); return false }
     };
     if !rest.iter().any(|a| a == "--yes") && !confirm(what) {
         return false;
@@ -621,6 +655,7 @@ fn restore(rest: &[String]) -> bool {
         Some(Family::Hc) => ("boot Control4's factory-restore system and let it wipe openHC", hc800::restore),
         Some(Family::Ea) => ("remove openHC's autoscript and let Control4's recovery re-image the box", ea::restore),
         Some(Family::Ca) => ("delete openHC's boot files and run Control4's factoryrestore once", ca1::restore),
+        Some(Family::Omap) => ("put Control4's IO firmware back and run its factory restore once", hc250::restore),
         None => { eprintln!("  refusing to restore an unidentified board"); return false }
     };
     if !rest.iter().any(|a| a == "--yes") && !confirm(what) {
@@ -692,6 +727,7 @@ fn install(rest: &[String]) -> bool {
         }
         let p = Progress::stdout();
         let r = match m {
+            Method::Kexec if board.family == board::Family::Omap => hc250::kexec(&ssh, &rel, &p),
             Method::Kexec => {
                 let nc = netconsole_arg(rest);
                 hc800::kexec(&ssh, &rel, nc.as_ref().map(|(i, p)| (i.as_str(), *p)), &p)
@@ -712,6 +748,17 @@ fn install(rest: &[String]) -> bool {
         }
         if let Ok(st) = iox::status(&ssh) {
             for (k, v) in st { println!("    {k} = {v}"); }
+        }
+        return true;
+    }
+
+    if m == Method::Sd {
+        if !yes && !confirm("put openHC on the SD card and point U-Boot at it (reboots the box three times)") {
+            return false;
+        }
+        if let Err(e) = hc250::install_sd(&ssh, &rel, &Progress::stdout()) {
+            eprintln!("  {e:#}");
+            return false;
         }
         return true;
     }

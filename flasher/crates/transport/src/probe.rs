@@ -68,6 +68,16 @@ pub fn identify(ssh: &Ssh) -> Identity {
         }
     }
 
+    // The HC-250: no /proc/c4board, no SMBIOS; stock's kernel names the machine
+    // in /proc/cpuinfo (`Hardware : HC250`). openHC was matched above already.
+    if let Some(cpuinfo) = ssh.read_file("/proc/cpuinfo") {
+        let mut id = board::from_cpuinfo(&cpuinfo, Running::Stock);
+        if id.board.is_some() {
+            id.version = version_of(ssh);
+            return id;
+        }
+    }
+
     // SMBIOS. `running` is decided by what we found above, not by DMI, which
     // says what the HARDWARE is and nothing about what booted on it.
     let vendor = ssh.read_file("/sys/class/dmi/id/sys_vendor");

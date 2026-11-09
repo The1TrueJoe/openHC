@@ -32,6 +32,10 @@ pub enum Method {
     /// partitioned and make U-Boot boot it, falling back to stock after three
     /// failed boots. Works from stock or openHC, over SSH.
     Nand,
+    /// HC-250: openHC on the interior SD card, booted by stock U-Boot
+    /// (`bootmode=ohc`), falling back to stock after three failed boots. The SD
+    /// and EEPROM are written from openHC in RAM, the U-Boot env by stock.
+    Sd,
 }
 
 impl Method {
@@ -43,6 +47,7 @@ impl Method {
             Method::Kexec => "kexec",
             Method::Grub => "grub",
             Method::Nand => "nand",
+            Method::Sd => "sd",
         }
     }
 
@@ -54,6 +59,7 @@ impl Method {
             Method::Kexec => "run it from RAM — writes nothing to disk, reverts on a power cycle",
             Method::Grub => "install to the kernel partition — survives a power cut (HC-800)",
             Method::Nand => "install to the unused half of the NAND — falls back to stock on its own (IOX)",
+            Method::Sd => "install to the interior SD card — falls back to stock on its own (HC-250)",
         }
     }
 
@@ -61,8 +67,10 @@ impl Method {
         match self {
             Method::Network | Method::Serial => &[Family::Ea],
             Method::Uboot => &[Family::Ca],
-            Method::Kexec | Method::Grub => &[Family::Hc],
+            Method::Kexec => &[Family::Hc, Family::Omap],
+            Method::Grub => &[Family::Hc],
             Method::Nand => &[Family::Iox],
+            Method::Sd => &[Family::Omap],
         }
     }
 
@@ -94,7 +102,7 @@ impl Method {
                 board.name, board.family
             ));
         }
-        if matches!(self, Method::Network | Method::Uboot | Method::Kexec | Method::Grub | Method::Nand)
+        if matches!(self, Method::Network | Method::Uboot | Method::Kexec | Method::Grub | Method::Nand | Method::Sd)
             && !matches!(id.running, Stock | Openhc)
         {
             return Err("needs a running system to log into".into());
@@ -115,7 +123,7 @@ impl Method {
 /// `ohc-flash restore` run Control4's factory restore once, which wipes our
 /// files from sda3 and leaves the next boot falling back to stock.
 pub const METHODS: &[Method] =
-    &[Method::Network, Method::Uboot, Method::Grub, Method::Kexec, Method::Nand, Method::Serial];
+    &[Method::Network, Method::Uboot, Method::Grub, Method::Sd, Method::Kexec, Method::Nand, Method::Serial];
 
 /// Choose a method for an identity, optionally forced. Returns the chosen
 /// method and the reasons the others were rejected (for display).
@@ -197,6 +205,54 @@ pub fn plan(board: &Board, method: Method) -> Plan {
             reversible: "delete boot.scr from the vfat partition; the stock boot path returns"
                 .into(),
         },
+        Method::Kexec if board.family == Family::Omap => Plan {
+            method,
+            steps: vec![
+                "copy ohc_kexec.ko + ohc-kexec.sh to stock's /tmp and insmod the module".into(),
+                "stream the uImage into /dev/ohc-kexec (page chunks in RAM; /tmp is too small)".into(),
+                "stop WDT2, shut stock down, and jump into openHC with stock's ATAGs".into(),
+            ],
+            writes: vec!["nothing. The image lives in RAM pages the module holds".into()],
+            needs_serial: false,
+            needs_button: false,
+            reversible: "a reboot or power cycle boots stock again: U-Boot, its env and the NAND \
+                         are never touched"
+                .into(),
+        },
+        Method::Sd => {
+            use crate::hc250::*;
+            Plan {
+                method,
+                steps: vec![
+                    format!(
+                        "on stock: write U-Boot's env with stock's own fw_setenv (bootohc, the restoresystem \
+                         hook, bootmode=ohc last) and save Control4's IO firmware tree; U-Boot keeps booting \
+                         stock until openHC arms EEPROM byte {TRY_BYTE}"
+                    ),
+                    "kexec openHC into RAM".into(),
+                    format!(
+                        "on openHC: shrink SD p2 to 2 GiB, add p3 vfat {BOOT_LABEL} and p4 ext4 {DATA_LABEL} \
+                         (once), write {SD_IMAGE} to p3, arm EEPROM byte {TRY_BYTE}"
+                    ),
+                    "reboot into openHC from the SD, and keep the IO tree on p4".into(),
+                    "(from openHC in RAM, a reboot to stock does the env half first; from openHC on the SD, \
+                     only the image is replaced)"
+                        .into(),
+                ],
+                writes: vec![
+                    "the interior SD card: p2 resized (its files kept), p3 and p4 created; p1 untouched".into(),
+                    format!("EEPROM bytes {TRY_BYTE} and {REQUEST_BYTE} (openHC's), and stock's boot counters 0-2"),
+                    "U-Boot env (written by stock's fw_setenv, never from Linux)".into(),
+                ],
+                needs_serial: false,
+                needs_button: false,
+                reversible: format!(
+                    "{MAX_TRIES} failed openHC boots in a row boot stock on their own. The factory-restore \
+                     button, or `ohc-flash restore`, puts Control4's IO firmware and the recovery image back \
+                     and sets bootmode=nand; `ohc-flash uninstall` only sets bootmode=nand"
+                ),
+            }
+        }
         Method::Kexec => Plan {
             method,
             steps: vec![

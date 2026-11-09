@@ -40,6 +40,10 @@ pure data and testable with no hardware attached.
 | `network` | over SSH — no serial, no button (default) | EA |
 | `uboot` | copy files to the vfat partition — no serial | CA |
 | `serial` | via the CEFDK shell — needs a console and the ID button | EA |
+| `grub` | install to the spare kernel partition as GRUB's default (default) | HC-800 |
+| `nand` | install to the half of the NAND stock never partitioned (default) | IO Extender |
+| `sd` | install to the interior SD card, booted by stock U-Boot (default) | HC-250 |
+| `kexec` | run openHC from RAM, writing nothing | HC-800, HC-250 |
 
 When a method does not apply, the API returns **the reason** rather than a
 boolean, so the interface can explain why an option is greyed out instead of

@@ -8,6 +8,7 @@
 pub mod event;
 pub mod ca1;
 pub mod ea;
+pub mod hc250;
 pub mod hc800;
 pub mod iox;
 pub mod mfgmode;

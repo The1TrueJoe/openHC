@@ -22,7 +22,7 @@ use eframe::egui::{self, Color32, RichText};
 use ohc_flash_core::board::Running;
 use ohc_flash_core::board::Family;
 use ohc_flash_core::{board, image, method, Board, Identity, Method};
-use ohc_flash_engine::{hc800, iox, network, updates, Event, GhRelease, Progress, Release};
+use ohc_flash_engine::{hc250, hc800, iox, network, updates, Event, GhRelease, Progress, Release};
 use ohc_flash_transport as tp;
 
 /// This flasher's own version, baked in by CI (`OHC_VERSION`) so it can tell
@@ -970,7 +970,7 @@ impl App {
 
         ui.add_space(12.0);
         match chosen {
-            Some(m @ (Method::Network | Method::Kexec | Method::Grub | Method::Nand)) => {
+            Some(m @ (Method::Network | Method::Kexec | Method::Grub | Method::Nand | Method::Sd)) => {
                 let plan = method::plan(b, m);
                 // Said before anything else, because on the HC-800 the default
                 // method writes to no partition at all, and that is the single
@@ -1382,7 +1382,18 @@ impl App {
                     let head = kern.map(|b| &b[..b.len().min(0x400)]);
                     let klen = kern.map(|b| b.len() as u64).unwrap_or(0);
                     let hc = matches!(family, Some(Family::Hc));
-                    let problems = if hc {
+                    let problems = if matches!(family, Some(Family::Omap)) {
+                        let mut v: Vec<String> = match rel.get(ohc_flash_core::hc250::IMAGE_FILE) {
+                            Some(img) => ohc_flash_core::hc250::check_image(img).err().into_iter().collect(),
+                            None => vec![format!("no {}", ohc_flash_core::hc250::IMAGE_FILE)],
+                        };
+                        for k in ["ohc_kexec.ko", "ohc-kexec.sh", "ohc-boot-env.sh"] {
+                            if !rel.has(k) {
+                                v.push(format!("no {k} (the HC-250's stock-side kit)"));
+                            }
+                        }
+                        v
+                    } else if hc {
                         let initrd = rel.has("rootfs.cpio.gz") || rel.has("openhc-initrd.gz");
                         image::hc_problems(head, klen, initrd)
                     } else {
@@ -1644,8 +1655,17 @@ fn run_install(
     // wait-for-reboot machinery below, which would sit watching an address that
     // was never going to change.
     match method {
+        // The HC-250's kexec is its own (a module, no kexec-tools); the release
+        // says which board it is for.
+        Method::Kexec if rel.has(ohc_flash_core::hc250::IMAGE_FILE) => {
+            return hc250::kexec(ssh, rel, p).map_err(|e| format!("{e:#}"));
+        }
         Method::Kexec => {
             return hc800::kexec(ssh, rel, None, p).map_err(|e| format!("{e:#}"));
+        }
+        // Waits for its own reboots (stock -> RAM -> stock -> SD) internally.
+        Method::Sd => {
+            return hc250::install_sd(ssh, rel, p).map_err(|e| format!("{e:#}"));
         }
         Method::Grub => {
             // The GUI installs openHC as the DEFAULT. Boot-once is a
@@ -1719,7 +1739,7 @@ fn gate(
                 raw: vec![],
             };
             match method::choose(&probe, None).0 {
-                Some(Method::Network | Method::Kexec | Method::Grub | Method::Nand) => None,
+                Some(Method::Network | Method::Kexec | Method::Grub | Method::Nand | Method::Sd) => None,
                 Some(other) => Some(format!("the {} method is command-line only", other.name())),
                 None => Some("no install method applies to this controller".into()),
             }

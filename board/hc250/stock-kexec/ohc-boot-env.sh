@@ -7,7 +7,8 @@
 #
 # install  bootohc/bootohcm/ohc_bootargs, restoresystem += "setenv bootmode nand;
 #          saveenv" (factory restore then returns U-Boot to stock), and last
-#          bootmode=ohc. bootohc counts tries in EEPROM byte 6 and boots stock
+#          bootmode=ohc; ohc_arm=1 makes the next boot zero the try count.
+#          bootohc counts tries in EEPROM byte 6 and boots stock
 #          (bootnand) at 3 or when the SD has no image; EEPROM byte 7 = 'R' runs
 #          the factory restore (openHC's `restore stock`).
 # uninstall bootmode=nand and stock's restoresystem back; the ohc variables go.
@@ -27,6 +28,9 @@ BOOTOHCM='setenv bootargs mem=${memsize} eth=${ethaddr} ${ohc_bootargs}; bootm $
 # the install's hook, also sets bootmode=nand), and boot the restored stock.
 BOOTOHC='i2c dev 0; i2c read 50 7 1 8a000000;'
 BOOTOHC="$BOOTOHC"' if itest.b *8a000000 -eq 52; then i2c mw 50 7 ff; i2c mw 50 0 0 4; echo openHC: factory restore requested; run restoresystem; run bootnand; fi;'
+# ohc_arm=1 (set by install): zero the try count once, so a stock that cannot
+# reach the EEPROM still points the box back at openHC after a fallback.
+BOOTOHC="$BOOTOHC"' if itest.s "x${ohc_arm}" == x1; then i2c mw 50 6 0; setenv ohc_arm; saveenv; fi;'
 BOOTOHC="$BOOTOHC"' i2c read 50 6 1 8a000000;'
 BOOTOHC="$BOOTOHC"' if itest.b *8a000000 -ge 3; then echo openHC: 3 failed boots, booting stock; run bootnand; fi;'
 BOOTOHC="$BOOTOHC"' if itest.b *8a000000 -eq 2; then i2c mw 50 6 3; elif itest.b *8a000000 -eq 1; then i2c mw 50 6 2; else i2c mw 50 6 1; fi;'
@@ -54,6 +58,7 @@ case "$1" in
         setv bootohcm "$BOOTOHCM"
         setv bootohc "$BOOTOHC"
         setv restoresystem "$OHC_RESTORE"
+        setv ohc_arm 1
         setv bootmode ohc
         echo "installed: next boot is openHC from the SD"
         ;;
@@ -61,7 +66,7 @@ case "$1" in
         check
         setv bootmode nand
         setv restoresystem "$STOCK_RESTORE"
-        for v in bootohc bootohcm ohc_bootargs; do fw_setenv "$v"; done
+        for v in bootohc bootohcm ohc_bootargs ohc_arm; do fw_setenv "$v"; done
         echo "uninstalled: U-Boot boots stock from NAND"
         ;;
     stock-io)
