@@ -17,7 +17,8 @@ kln=$(grep ' T kallsyms_lookup_name$' /proc/kallsyms | cut -d' ' -f1)
 [ -n "$kln" ] || { echo "no kallsyms_lookup_name in /proc/kallsyms" >&2; exit 1; }
 mac=$(sed -n 's/.*eth=\([0-9a-fA-F:]*\).*/\1/p' /proc/cmdline)
 
-[ -d $p ] || insmod "$ko" kallsyms=0x$kln
+# max_mb: room for the image at load_addr (the audio build is ~47 MB).
+[ -d $p ] || insmod "$ko" kallsyms=0x$kln max_mb=${MAX_MB:-96}
 dev=/dev/ohc-kexec
 if [ ! -c $dev ]; then
     mm=$(cat /sys/class/misc/ohc-kexec/dev)

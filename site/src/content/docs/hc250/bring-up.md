@@ -93,6 +93,42 @@ everything else (`__get_free_pages`, `kernel_restart_prepare`,
 the copy plan to `dmesg` without leaving stock. `shutdown=0` skips
 `device_shutdown`, if a stock driver hangs in it.
 
+## First boot (2026-11-08)
+
+Kexec from stock works: stock to stock, then stock to openHC (Linux 7.1.8) in
+about 30 s, back on the same DHCP address. `reboot` in openHC comes back up in
+stock. No serial, no stick, nothing written.
+
+| Block | Under openHC |
+|---|---|
+| Ethernet | up, MAC from `eth=` |
+| Interior SD | `mmcblk0`, 8 GB: stock's `Internal_896M` and `Apps` partitions |
+| NAND | all 13 partitions, read-only |
+| IO-MCU | Control4 03.26.15: relay 1, contact 1, IR out 1–4, blaster, receiver, 2 MCU serial ports |
+| Zigbee (EM357) | answers on `ttyS1`, see below |
+| TPS65950 | RTC, GPIO, USB PHY, MADC (`iio:device0`, 16 channels) |
+| I2C 2 | THS8200 at `0x21`, ADV7513 at `0x39` (maps at `0x38`/`0x3c`/`0x3f`), unknown at `0x4e` |
+| LEDs, watchdogs | all six LEDs, both watchdogs |
+| USB host | root hubs up; no device tried |
+
+Two things stock leaves behind:
+
+- **The IO-MCU app is mute.** Stock's `ioserver` runs the MCU's UART at
+  460800, and after the hand-off the app answers nothing at any rate.
+  `gpio-ohc-iomcu` now pulses `reset-gpios` when its first knock goes unanswered;
+  the part comes up in the TI bootloader and the driver starts the app as usual.
+- **The EM357 sits in its serial bootloader** (`EM357 Serial Bootloader v45 bA8`,
+  menu on `\r`). `2` (run) starts the EZSP app, which then answers an ASH reset
+  with `RSTACK`. Whether stock's shutdown or our `zigbee_reset` hog puts it there
+  is not known yet.
+
+Noise in `dmesg`, none of it blocking: `twl4030_keypad` (no keymap; the board has
+no keypad), `omap_ssi_port` (-2), `ti-sysc 48318000` (-16), and one L3 in-band
+error early in boot.
+
+MADC raw values on an idle unit: ch2 257, ch6 154, ch7 567, ch8 761, ch12 572,
+the rest near 0. Which inputs are wired to what is not mapped yet.
+
 ## What the first image is
 
 - **Kernel:** mainline 7.1.8, `omap2plus_defconfig` + `linux/hc250.fragment`.
@@ -145,16 +181,17 @@ What may still need one:
 - **Wi-Fi** depends on the module: `brcmfmac` if it is a supported Broadcom SDIO
   part.
 
-The one openHC driver change for this board was in our own `gpio-ohc-iomcu`: a
+The openHC driver changes for this board are in our own `gpio-ohc-iomcu`: a
 combo jack may now have a single serial-enable line (the HC-250's PB0/PB1), not
-only the EA's pair.
+only the EA's pair, and a silent part gets one reset pulse before the driver
+gives up (above).
 
 ## Next
 
-1. First RAM boot (USB stick or kexec from stock): serial console, Ethernet, USB,
-   the IO-MCU answering.
-2. Find the interior SD card; a persistent rootfs there (Zigbee/Node can live on it).
-3. TPS65950 audio (codec DAC/ADC) and the MADC.
+1. Zigbee: start the EM357 app from its bootloader at boot, and find what puts
+   it there.
+2. A persistent rootfs on the interior SD card (Zigbee/Node can live on it).
+3. TPS65950 audio (codec DAC/ADC) and what the MADC inputs measure.
 4. Video: DPI → ADV7513, then the THS8200.
 5. Wi-Fi on MMC2.
 6. openHC's own LM3S1162 firmware on this board's pins.

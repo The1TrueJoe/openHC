@@ -7,9 +7,12 @@
 set -euo pipefail
 IMAGES="$1"
 BOARD="${2:-hc250}"
-LOADADDR=0x80008000   # kernel entry; bootm copies the image here
-FILEADDR=0x82000000   # where the script fatloads it (stock ${bootload})
-MAX=$((0x82000000 - 0x80008000))
+FILEADDR=0x82000000   # where U-Boot loads it (stock ${bootload})
+# Load/entry = the data right after the 64-byte header, so bootm runs it in place
+# (no copy down to 0x80008000, which would cap the image at 32 MiB); the zImage
+# relocates itself. Below 0x8a000000: bootohc's scratch byte, then imgaddr.
+LOADADDR=0x82000040
+MAX=$((0x8a000000 - 0x82000040))
 
 MKIMAGE="${HOST_DIR:-}/bin/mkimage"
 [ -x "$MKIMAGE" ] || MKIMAGE=mkimage
