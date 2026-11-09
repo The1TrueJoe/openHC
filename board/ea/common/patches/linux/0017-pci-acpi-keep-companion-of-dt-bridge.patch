@@ -1,0 +1,58 @@
+PCI: ACPI: keep the ACPI companion of a bridge that has a device-tree node
+
+openHC's EA boards (Intel CE5300) boot with ACPI and link a device tree into
+the kernel (patch 0015) to describe board devices behind the CE5300 A/V bridge
+00:01.0: GPIO hogs and names, the I2C devices, the SPI switch, the USB VBUS
+supply. Bus 1 only gets an OF node through that bridge's node, so the bridge
+must be in the tree. pci_set_of_node() then gives it an OF fwnode, and
+pci_set_acpi_fwnode() skips attaching its ACPI companion. That companion
+(\_SB.PCI0.PCI1 in CEFDK's DSDT) holds the _PRT for bus 1, so without it
+every device there comes up "PCI INT x: no GSI" (measured on an EA3: gpio,
+spi, i2c, e1000, sdhci, ehci, the i2s).
+
+Attach the companion to a bridge that has an OF node, and keep the node as
+of_node only. That is how device_add_of_node() attaches a node the PCI core
+creates (PCI_DYNAMIC_OF_NODES), and pci_set_bus_of_node() reads of_node, so
+the bus below still inherits the tree. A bridge without a companion keeps
+its OF fwnode, and nothing changes for any device that is not a bridge.
+
+On the EA no device on bus 1 has a companion of its own: CEFDK's DSDT names
+them with wildcard _ADRs (0x000CFFFF etc.), which never match. So their
+fwnode stays the OF node and their drivers keep reading the tree.
+
+Replaces the earlier 0017, which looked the bridge's ACPI node up by _ADR in
+drivers/acpi/pci_irq.c instead.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/pci/pci-acpi.c
++++ b/drivers/pci/pci-acpi.c
+@@ -945,9 +945,27 @@
+ 
+ void pci_set_acpi_fwnode(struct pci_dev *dev)
+ {
+-	if (!dev_fwnode(&dev->dev) && !pci_dev_is_added(dev))
++	struct acpi_device *adev;
++
++	if (pci_dev_is_added(dev))
++		return;
++
++	if (!dev_fwnode(&dev->dev)) {
+ 		ACPI_COMPANION_SET(&dev->dev,
+ 				   acpi_pci_find_companion(&dev->dev));
++		return;
++	}
++
++	/*
++	 * A bridge with a device tree node still needs its ACPI companion,
++	 * which holds the _PRT for the bus below. Keep the node as of_node
++	 * only, as device_add_of_node() does; the bus below inherits that.
++	 */
++	if (pci_is_bridge(dev) && dev_of_node(&dev->dev)) {
++		adev = acpi_pci_find_companion(&dev->dev);
++		if (adev)
++			ACPI_COMPANION_SET(&dev->dev, adev);
++	}
+ }
+ 
+ /**
