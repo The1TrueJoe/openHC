@@ -22,6 +22,8 @@ TRY=6
 
 die() { echo "ohc-sd-install: $*" >&2; exit 1; }
 getenv() { fw_printenv -n "$1" 2>/dev/null; }
+# BusyBox's and util-linux's blkid both print LABEL="..."
+label() { blkid "$1" 2>/dev/null | sed -n 's/.* LABEL="\([^"]*\)".*/\1/p'; }
 
 check_board() {
     grep -q "Control4 HC-250" /proc/device-tree/model 2>/dev/null || die "not an HC-250"
@@ -36,7 +38,7 @@ layout() {
 
 partition() {
     if [ -b "$P3" ] && [ -b "$P4" ]; then
-        [ "$(blkid -s LABEL -o value "$P3")" = OHCBOOT ] || die "$P3 exists and is not OHCBOOT; refusing"
+        [ "$(label "$P3")" = OHCBOOT ] || die "$P3 exists and is not OHCBOOT; refusing"
         echo "SD already partitioned"; return 0
     fi
     l=$(layout)
