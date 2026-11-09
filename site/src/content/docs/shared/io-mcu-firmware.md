@@ -20,7 +20,9 @@ The TM4C image has run on an EA-3 (2026-11-04): the host link, the pin table,
 IR out, the relay (heard) and contact, a driver rebind, and the writer in both
 directions. The rest of the EA IO is accepted on it from the decode. Every EA
 sets `firmware-name` in `ea.dtsi`, so an EA writes the TM4C image at boot. The
-LM3S image has not run on a part, and the HC-800 does not set it. See
+LM3S image runs on an HC-250 (2026-11-08): written over Control4's 03.26.15 by the
+driver at boot, pin table 26 of 26, relay readback and contact; the HC-800 does
+not set it yet. See
 [what is left](#what-hardware-verification-is-left).
 :::
 
@@ -300,7 +302,10 @@ contact polarity with the input shorted, and the user serial loopback.
 
 Left:
 
-- The LM3S image on the HC-800, and the writer on its bootloader.
+- The LM3S image on the HC-800, and the writer on its bootloader. (On the HC-250
+  the writer and the image work: stock → openHC over the reset line, pin table
+  26/26.)
+- The HC-250's IR out and receiver, and the relay heard switching.
 - The HC-800's IR out and receiver on PD4 (carrier or envelope), and its gates:
   polarity, and which line goes with which carrier (both inferred in the decode).
 - A write cut short by a power cut (the stub path).

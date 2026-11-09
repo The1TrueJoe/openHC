@@ -284,6 +284,8 @@
 		compatible = "control4,lm3s1162-io-mcu", "control4,io-mcu";
 		current-speed = <115200>;
 		reset-gpios = <&gpio4 0 GPIO_ACTIVE_LOW>;	/* gpio96 io_reset */
+		/* openHC's image; a factory restore's stock OS puts Control4's back. */
+		firmware-name = "openhc/io-mcu-lm3s1162.bin";
 		control4,ir-carriers = <IOMCU_PORT_D 1>, <IOMCU_PORT_F 3>;
 		control4,ir-gates-active-low;
 		control4,hold-low-pins = <IOMCU_PORT_F 4>, <IOMCU_PORT_F 5>,

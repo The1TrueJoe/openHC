@@ -254,8 +254,10 @@ does not initialize yet either: `MMCHS_CON` differs from stock's (0x600 against
   `${ethaddr}`), falling back to the copy in the board EEPROM at offset 8.
 - **IO:** the `iomcu` feature. The IO-MCU node describes block 1 — four jacks,
   blaster, receiver, one relay, one contact — so `gpio-ohc-iomcu` names the lines
-  and lirc devices exactly as on the HC-800. No `firmware-name` yet: it talks to
-  Control4's firmware until ours is proven on this board.
+  and lirc devices exactly as on the HC-800. `firmware-name` is set: the driver
+  writes openHC's LM3S1162 image over Control4's 03.26.15 at the first boot
+  (8,644 bytes, about 3.5 s), then applies the pin table. A factory restore's
+  stock OS puts Control4's image back.
 - **NAND:** described with every partition `read-only` (see the install section).
 - **Held lines:** `zigbee_reset` and `zigrf_enable` high, the 12 V enable high,
   and the Wi-Fi radio held in reset, all as stock leaves them.
