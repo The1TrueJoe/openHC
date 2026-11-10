@@ -177,7 +177,7 @@ mod tests {
         let mut img = vec![0u8; 100];
         img[..4].copy_from_slice(&[0x27, 0x05, 0x19, 0x56]);
         assert!(check_image(&img).is_err(), "unnamed image");
-        img[32..58].copy_from_slice(b"openHC ioxv1 (DM355 7.1.8)");
+        img[32..58].copy_from_slice(b"openHC ioxv1 (DM355 7.3.3)");
         assert_eq!(check_image(&img), Ok(()));
         let p = padded(&img);
         assert_eq!(p.len() as u64, BLOCK);

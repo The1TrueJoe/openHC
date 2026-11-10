@@ -499,8 +499,7 @@ static int ce5300_hdmi_pcm_trigger(struct snd_pcm_substream *ss, int cmd)
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
 		atomic_set(&h->running, 0);
-		if (!hrtimer_callback_running(&h->tick))
-			hrtimer_try_to_cancel(&h->tick);
+		hrtimer_try_to_cancel(&h->tick);
 		/*
 		 * Up to two more periods play before the engine is back on the
 		 * silence (the latch again): make them silent too.

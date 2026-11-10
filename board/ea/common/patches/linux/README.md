@@ -1,6 +1,6 @@
 # EA-family kernel patches (Buildroot `BR2_GLOBAL_PATCH_DIR`)
 
-Applied to vanilla Linux 7.1.8 for every `ea*` board, after the x86 patches
+Applied to vanilla Linux 7.3.3 for every `ea*` board, after the x86 patches
 the EA family shares with the HC-800 in `board/common/patches/linux/`
 (today one: **0015**, the built-in device tree). Both directories are in
 `BR2_GLOBAL_PATCH_DIR` (`common_defconfig`).
@@ -24,7 +24,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 |---|---|---|
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
 | 0010 | 8250 polled TX from the LSR | a polled port is serviced through the IIR, which the CE5300's XScale UARTs never set for THRE; check the LSR in the poll timer, as the backup timer already does (generic, upstream-shaped) |
-| 0003 | e1000 fake PHY | changes upstream probe behaviour |
+| 0003 | e1000 fixed link | the CE4100 GbE has no PHY here; e1000 reads `fixed-link` from the DT instead of failing probe. Upstream candidate (net-next) |
 | 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR, and its CS drops whenever the TX FIFO runs dry, so multi-transfer messages are merged and a transfer that fits the FIFO is queued with the clock stopped |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
@@ -175,31 +175,23 @@ supply is present (single-port controllers only). The regulator core is only in
 the fat kernel (`linux/real-kernel.fragment`); the bootstrap kernel has none and
 leaves the rear port unpowered.
 
-### 0003 — e1000 CE5300 fake PHY
+### 0003 — e1000 fixed link on the CE4100 GbE
 
-**Necessary as a patch: yes, unavoidably.** Modifies three upstream files in
-`drivers/net/ethernet/intel/e1000/`. Mainline claims `8086:2e6e` as
-`e1000_ce4100` and then fails PHY detection with `-EIO`, because the EA1/EA3
-have **no PHY on the GbE MDIO bus** — the MAC is wired to the switch's port 5 on
-a fixed forced link.
+Modifies `drivers/net/ethernet/intel/e1000/`. Mainline claims `8086:2e6e` as
+`e1000_ce4100`, scans 32 MDIO addresses for a PHY, finds none (the EAs wire
+the MAC over RGMII straight to the switch's port 5) and fails probe with a
+bare `-EIO`, so there is no `eth0` and nothing for DSA to attach to.
 
-This is a behavioural change inside upstream probe logic; no config, DT, or
-out-of-tree file can express it. Proven on hardware:
-`CE5300: no GbE PHY, using fake-PHY mode` → link up at 1 Gbps.
+The patch makes e1000 honor the standard `phy-mode` + `fixed-link` properties
+on the GbE's DT node (`gbe` in `ce5300.dtsi`): speed and duplex come from the
+node, the PHY scan is skipped, the MAC is forced (CTRL `SLU|FRCSPD|FRCDPX`,
+speed and `FD` written explicitly), link is reported up without PHY reads,
+and every PHY access fails cleanly. Boards without the node are unchanged.
+Written to go to net-next as is; background, test results and the CTL_AUX
+finding are on the [device tree page](/ea/device-tree/#the-gbe-fixed-link).
 
-**Getting the switch working does NOT retire this patch — it makes it load
-bearing.** The hook is in `e1000_probe()`, not in link management: without it
-the CE4100 PHY-address autodetect scans all 32 MDIO addresses, finds nothing,
-and `e1000_probe()` returns a bare `-EIO`, so there is **no `eth0` netdev at
-all**. DSA then has nothing to attach to — `eth0` is the conduit, and
-`dsa_port_parse()` resolves the CPU port by finding a net-class device under the
-e1000. The switch cannot stand in for the PHY because it hangs off **SPI**, not
-the GbE MDIO bus; it never appears to e1000 as a PHY however DSA is configured.
-That is also why the patch reports `BCM53125_PHY_ID` as a canned constant rather
-than reading it off the wire.
-
-A DTB does not help here either: e1000 is a pre-phylink driver with its own PHY
-code in `e1000_hw.c` and never consults DT, so a `fixed-link` node is ignored.
+It replaced Control4/Intel's "internal fake PHY" port (canned MDIO register
+table, a made-up BCM53125 PHY ID, a check for host bridge `8086:0c40`).
 
 ### 0007 — ASoC CE5300 AUD_IO (**disabled**)
 
