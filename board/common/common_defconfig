@@ -16,12 +16,12 @@ BR2_OPTIMIZE_S=y
 # --- kernel: one mainline stable across the fleet (image type is per-board) ---
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.1.8"
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="7.3.3"
 # The toolchain is built against this kernel's own headers, and Buildroot checks
 # the series it was told to expect, so this follows the kernel's series. Left
 # unset it defaults to "really old" (2.6), which the strict check rejects:
-#   Incorrect selection of kernel headers: expected 2.6.x, got 7.1.x
-BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_7_1=y
+#   Incorrect selection of kernel headers: expected 2.6.x, got 7.3.x
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_7_3=y
 
 # --- init / login ---
 # Password login on serial + ssh. root's password is "openhc"; board/common/

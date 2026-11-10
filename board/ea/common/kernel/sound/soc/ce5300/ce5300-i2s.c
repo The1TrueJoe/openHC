@@ -495,8 +495,7 @@ static int ce5300_pcm_trigger(struct snd_soc_component *comp,
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 		atomic_set(&st->running, 0);
-		if (!hrtimer_callback_running(&st->tick))
-			hrtimer_try_to_cancel(&st->tick);
+		hrtimer_try_to_cancel(&st->tick);
 		/*
 		 * Stop by flow control, never by a register: STOP_AFTER on every
 		 * descriptor halts the engine at the end of the one it is in.
