@@ -128,13 +128,16 @@ pub const G_RD_ADDR: u64 = 0x837564; // ord4 <this> = RAMDISK_ADDR (when G_RD_FL
 pub const G_RD_SIZE: u64 = 0x837568; // ord4 <this> = initramfs length in bytes
 
 pub const DEFAULT_CMDLINE: &str =
-    "console=ttyS0,115200 pci=realloc,nocrs root=/dev/mmcblk0p1 rootwait rw";
+    "console=uart8250,io,0x3f8 pci=realloc,nocrs root=/dev/mmcblk0p1 rootwait rw";
 
 /// Command line for a pure-RAM boot off an initramfs: no `root=`, the rootfs IS
 /// the ramdisk. `routeirq` is carried because the EA's SoC UARTs need it, and
 /// `nocrs` because CEFDK's E820 does not describe the PCI host-bridge windows.
+/// The console names the UART, not a baud: the kernel's earlycon has already set
+/// the divisor at the UART's real 14.7456 MHz clock, and `ttyS0,115200` would
+/// redo it at the legacy port's assumed 1.8432 MHz.
 pub const RAMBOOT_CMDLINE: &str =
-    "console=ttyS0,115200 pci=realloc,nocrs,routeirq rw";
+    "console=uart8250,io,0x3f8 pci=realloc,nocrs,routeirq rw";
 
 /// The five commands that boot our kernel from raw eMMC.
 ///
