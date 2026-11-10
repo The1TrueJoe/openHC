@@ -1,0 +1,52 @@
+serial: 8250: service the transmitter of a polled port from the LSR
+
+A port without an interrupt is serviced by serial8250_timeout(), which
+hands the IIR to the normal interrupt handler. serial8250_handle_irq()
+returns early when the IIR says no interrupt is pending, so a UART that
+never reports THRE in its IIR never gets its TX FIFO refilled: the tty
+layer queues data, and nothing reaches the wire.
+
+The Intel CE5300's XScale UARTs are such UARTs (Intel documents the same
+erratum for the CE4100, see 8250_ce4100.c). openHC runs them polled
+because the device tree cannot name their interrupt on this ACPI
+platform, and the IO-MCU on ttyS1 then never sees a byte.
+
+serial8250_backup_timeout() already handles UARTs that do not report
+THRE reliably, by checking the LSR. Do the same in the polled path: when
+THRI is enabled and the LSR says the transmitter is empty, transmit.
+A UART whose IIR does report THRE has already been serviced by then, so
+this only adds an LSR read per poll.
+
+Replaces the earlier 0010, which special-cased polled XScale ports in
+serial8250_handle_irq().
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/drivers/tty/serial/8250/8250_core.c
++++ b/drivers/tty/serial/8250/8250_core.c
+@@ -209,9 +209,23 @@
+ static void serial8250_timeout(struct timer_list *t)
+ {
+ 	struct uart_8250_port *up = timer_container_of(up, t, timer);
++	struct uart_port *port = &up->port;
+ 
+-	up->port.handle_irq(&up->port);
+-	mod_timer(&up->timer, jiffies + uart_poll_timeout(&up->port));
++	port->handle_irq(port);
++
++	/*
++	 * A polled port has no interrupt to lose, so do not rely on the IIR
++	 * to report THRE: some UARTs never set it there. Service the
++	 * transmitter from the LSR, as serial8250_backup_timeout() does.
++	 */
++	scoped_guard(serial8250_rpm, up)
++	scoped_guard(uart_port_lock_irqsave, port) {
++		if ((up->ier & UART_IER_THRI) &&
++		    (serial_lsr_in(up) & UART_LSR_THRE))
++			serial8250_tx_chars(up);
++	}
++
++	mod_timer(&up->timer, jiffies + uart_poll_timeout(port));
+ }
+ 
+ static void serial8250_backup_timeout(struct timer_list *t)

@@ -14,7 +14,7 @@ CONFIG_CMDLINE_BOOL=y
 # x86 prepends this to whatever line CEFDK or kexec passes. pci=realloc,nocrs
 # is required; memmap=exactmap reclaims CEFDK's 1.8 GB carve-out and every entry
 # is load-bearing. See docs ea/kernel-config.
-CONFIG_CMDLINE="console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
+CONFIG_CMDLINE="earlycon=uart8250,io,0x3f8,115200n8,14745600 console=uart8250,io,0x3f8 pci=realloc,nocrs,routeirq memmap=exactmap memmap=68K@0 memmap=60K#0x11000 memmap=512K@0x20000 memmap=255M@1M memmap=1536M@0x10000000"
 
 # --- external initrd (Buildroot supplies a separate rootfs.cpio.gz) ---
 CONFIG_BLK_DEV_INITRD=y

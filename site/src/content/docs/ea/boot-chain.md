@@ -202,12 +202,16 @@ limit.
 
 ## Three board quirks you will hit
 
-**The UART is at 921600, not 115200.** The CE5310's legacy `0x3f8` UART clock is
-**8× standard** (14.7456 MHz), so a mainline kernel asked for 115200 drives the
-wire at `8 × 115200 = 921600`. CEFDK knows the real clock and prints fine at
-115200; the kernel does not. Read the kernel console at 921600 — output is clean,
-typing back is overrun-prone. Proper fix: set the legacy `uartclk`, or use
-`console=ttyS0,14400` (divisor 8 → true 115200 on the wire).
+**The UART clock is 8× standard.** The CE5310's `0x3f8` UART runs at 14.7456
+MHz, but the kernel's legacy COM table assumes 1.8432 MHz, so `console=ttyS0,115200`
+drives the wire at `8 × 115200 = 921600`. openHC's kernels avoid the table's
+clock without a patch: `earlycon=uart8250,io,0x3f8,115200n8,14745600` sets divisor
+8 at the real clock, and `console=uart8250,io,0x3f8` (no baud) keeps the divisor
+it finds, until `8250_of` takes the port over with the clock from the device
+tree. Measured on an EA-3: the divisor reads 8, which is 115200 on the wire. An
+install whose CEFDK autoscript still passes `console=ttyS0,115200` shows the
+bootstrap kernel's log at 921600 until it kexecs; reinstalling with the current
+flasher fixes that.
 
 **PCI BARs come up unassigned.** CEFDK only programs the BARs for what it uses,
 so the kernel finds `ath9k` and `e1000` with BAR 0 = `0x00000000` and cannot
