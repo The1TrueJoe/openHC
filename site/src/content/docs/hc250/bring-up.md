@@ -207,9 +207,12 @@ ohc-flash uninstall <unit> --images ...   # stock from the NAND, openHC kept on 
 ohc-flash boot <unit> --images ...        # back into openHC (after a fallback, too)
 ```
 
-From stock 2.10.6 it kexecs openHC into RAM to do the SD; a factory-restored unit
-(Control4 2.5.x, whose kernel the module does not load into) reaches the openHC
-already on the SD instead. `install` from stock sets `ohc_arm=1`, which makes the
+From stock it kexecs openHC into RAM to do the SD. The module loads into every
+Control4 2.6.32 kernel, not just the one it was built against: it carries export
+CRCs, so the loader skips vermagic's release, and the kernel functions it calls
+it finds through kallsyms (proven on 2.10.6 and on the factory-restore image,
+2.5.3). If a kexec ever fails, the env is written already and `install` boots the
+openHC already on the SD instead. `install` from stock sets `ohc_arm=1`, which makes the
 next `bootohc` zero the try count through U-Boot, so a stock that cannot touch the
 EEPROM still points the box back at openHC. Proven on the unit 2026-11-09:
 restore → install (from 2.5.3) → uninstall → boot, with no hands on the box.
