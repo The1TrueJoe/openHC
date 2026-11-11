@@ -18,7 +18,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y flex bison libelf-dev libssl-dev bc clang lld llvm sparse yamllint
       - name: net-next + the series
         run: |
-          git clone -q --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git "$RUNNER_TEMP/linux"
+          # git.kernel.org 502s now and then: retry, then fall back to mainline
+          for i in 1 2 3; do
+            git clone -q --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git "$RUNNER_TEMP/linux" && break
+            rm -rf "$RUNNER_TEMP/linux"; sleep 30
+          done
+          [ -d "$RUNNER_TEMP/linux" ] || { echo "::warning::net-next unreachable, using mainline"; git clone -q --depth 1 https://github.com/torvalds/linux.git "$RUNNER_TEMP/linux"; }
           cd "$RUNNER_TEMP/linux"
           git log --oneline -1
           git -c user.name=ci -c user.email=ci@localhost am -q "$GITHUB_WORKSPACE"/.github/test-e1000/*.patch
