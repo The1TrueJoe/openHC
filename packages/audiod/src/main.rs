@@ -106,7 +106,7 @@ impl App {
             let levels = self.levels.lock().unwrap().clone();
             for i in inst.iter().filter(|i| i.kind == "airplay") {
                 let level = i.output.as_ref().and_then(|o| levels.get(o)).copied().unwrap_or(levels::DEFAULT);
-                airplay::set_start_volume_when_up(i.pid_cell(), levels::airplay_volume(level));
+                airplay::set_start_volume_when_up(&i.tag, i.pid_cell(), levels::airplay_volume(level));
             }
             // One metadata reader per AirPlay endpoint, for the life of the
             // daemon (its FIFO outlives a shairport-sync restart).
@@ -137,7 +137,7 @@ impl App {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(2));
             let pid = app.instances.lock().unwrap().iter().find(|i| i.tag == tag).map(|i| i.pid()).unwrap_or(0);
-            airplay::set_sender_volume(pid, level);
+            airplay::set_sender_volume(&tag, pid, level);
         });
     }
 
@@ -167,8 +167,8 @@ impl App {
             match i.kind {
                 "spotify" => i.poke(),
                 "airplay" => {
-                    airplay::set_sender_volume(i.pid(), percent);
-                    airplay::set_start_volume(i.pid(), levels::airplay_volume(percent));
+                    airplay::set_sender_volume(&i.tag, i.pid(), percent);
+                    airplay::set_start_volume(&i.tag, i.pid(), levels::airplay_volume(percent));
                 }
                 _ => {}
             }

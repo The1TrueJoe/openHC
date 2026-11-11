@@ -1,0 +1,40 @@
+From 7a0fc179a01d18189bc64fdbf57b170709f600cb Mon Sep 17 00:00:00 2001
+From: Bernd Kuhls <bernd@kuhls.net>
+Date: Tue, 27 Oct 2026 07:33:18 +0100
+Subject: [PATCH] package/shairport-sync: security bump version to 5.6.2
+
+https://github.com/mikebrady/shairport-sync/releases/tag/5.6.2
+https://github.com/mikebrady/shairport-sync/releases/tag/5.6.1
+
+Fixes GHSA-vfxr-hxq9-9h35:
+https://github.com/mikebrady/shairport-sync/security/advisories/GHSA-vfxr-hxq9-9h35
+
+Signed-off-by: Bernd Kuhls <bernd@kuhls.net>
+Signed-off-by: Thomas Petazzoni <thomas.petazzoni@bootlin.com>
+---
+ package/shairport-sync/shairport-sync.hash | 2 +-
+ package/shairport-sync/shairport-sync.mk   | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/package/shairport-sync/shairport-sync.hash b/package/shairport-sync/shairport-sync.hash
+index 1eafe03b53b..ed30ad50a43 100644
+--- a/package/shairport-sync/shairport-sync.hash
++++ b/package/shairport-sync/shairport-sync.hash
+@@ -1,3 +1,3 @@
+ # Locally calculated
+-sha256  20271e220e859b8f60a707597187564d3bda7dbf69dd61aa1357ec1656285246  shairport-sync-5.6.tar.gz
++sha256  0747706e19a64ec550ec8a6a5c26bf8e231a4d032de31644f5a5daa0632c41c4  shairport-sync-5.6.2.tar.gz
+ sha256  5ffb12379c3293e48010d0ed04185940e107b54e48b520d58d847da53a153c33  LICENSES
+diff --git a/package/shairport-sync/shairport-sync.mk b/package/shairport-sync/shairport-sync.mk
+index 7fd1a23eb33..0d0b4ca4046 100644
+--- a/package/shairport-sync/shairport-sync.mk
++++ b/package/shairport-sync/shairport-sync.mk
+@@ -4,7 +4,7 @@
+ #
+ ################################################################################
+ 
+-SHAIRPORT_SYNC_VERSION = 5.6
++SHAIRPORT_SYNC_VERSION = 5.6.2
+ SHAIRPORT_SYNC_SITE = $(call github,mikebrady,shairport-sync,$(SHAIRPORT_SYNC_VERSION))
+ 
+ SHAIRPORT_SYNC_LICENSE = MIT, BSD-3-Clause

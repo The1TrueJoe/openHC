@@ -434,9 +434,10 @@ with the device already enabled.
 Both are plain ALSA clients and need no special kernel support beyond a working
 card.
 
-**AirPlay** is Buildroot's `shairport-sync` 5.6, built for AirPlay 2 and
+**AirPlay** is Buildroot's `shairport-sync` 5.6.3, built for AirPlay 2 and
 announced via Avahi over D-Bus. Each named AirPlay endpoint is its own receiver
-on its own port with its own device ID, all sharing one `nqptp` (1.2.9, which
+on its own port with its own device ID and D-Bus name
+(`org.gnome.ShairportSync.airplay-<n>`), all sharing one `nqptp` (1.2.9, which
 serves several receivers; 1.2.4 served one). It also takes classic AirPlay
 senders.
 

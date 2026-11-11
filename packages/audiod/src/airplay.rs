@@ -8,18 +8,18 @@
 //! usual, and because openHC's level and shairport-sync's mixer share one curve
 //! (levels::airplay_volume) the echo lands on the level that was just set.
 //!
-//! Every endpoint is its own shairport-sync on the system bus: the first to
-//! start owns `org.gnome.ShairportSync`, each later one
-//! `org.gnome.ShairportSync.i<pid>` (board/common/patches/shairport-sync 0001 —
-//! 5.x dropped that fallback; the ohc-shairport.conf D-Bus policy lets them). The
-//! bus says which pid owns the plain name. Best effort: with no sender
-//! connected, or one without DACP, there is nothing to move.
+//! Every endpoint is its own shairport-sync on the system bus, named by its
+//! instance tag (`dbus_nametag`, runner::shairport_conf):
+//! `org.gnome.ShairportSync.airplay-0`. One that finds the name still held (its
+//! old process not gone yet) adds its pid, `….airplay-0.i<pid>`; the bus says
+//! which pid owns the tagged name. Best effort: with no sender connected, or
+//! one without DACP, there is nothing to move.
 //!
 //! The other half is where a session STARTS: AirPlay applies, and reports to a
 //! connecting sender as its `initialVolume`, the receiver's last volume —
 //! −24 (20%) on a fresh start — which would yank the output to it the moment a
 //! phone connects. `set_start_volume` keeps it at the output's level instead
-//! (the `Volume` D-Bus property; patch 0002 makes setting it do that).
+//! (the `Volume` D-Bus property, which sets it).
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -32,18 +32,19 @@ fn dbus_send(args: &[&str]) -> Option<String> {
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
-/// The bus name the shairport-sync with this pid answers on.
-fn name_for(pid: u32) -> String {
+/// The bus name the shairport-sync tagged `tag` with this pid answers on.
+fn name_for(tag: &str, pid: u32) -> String {
+    let name = format!("{NAME}.{tag}");
     let owner = dbus_send(&[
         "--dest=org.freedesktop.DBus",
         "/org/freedesktop/DBus",
         "org.freedesktop.DBus.GetConnectionUnixProcessID",
-        &format!("string:{NAME}"),
+        &format!("string:{name}"),
     ]);
     if owner.as_deref().and_then(parse_uint32) == Some(pid) {
-        NAME.to_string()
+        name
     } else {
-        format!("{NAME}.i{pid}")
+        format!("{name}.i{pid}")
     }
 }
 
@@ -61,12 +62,13 @@ fn parse_uint32(reply: &str) -> Option<u32> {
 ///   * classic AirPlay: `RemoteControl.SetAirplayVolume(-30 … 0)` over DACP.
 ///
 /// Whichever has no session does nothing. Runs off the caller's thread.
-pub fn set_sender_volume(pid: u32, percent: u8) {
+pub fn set_sender_volume(tag: &str, pid: u32, percent: u8) {
     if pid == 0 {
         return;
     }
+    let tag = tag.to_string();
     std::thread::spawn(move || {
-        let dest = format!("--dest={}", name_for(pid));
+        let dest = format!("--dest={}", name_for(&tag, pid));
         let _ = dbus_send(&[
             &dest,
             "/org/gnome/ShairportSync",
@@ -85,14 +87,15 @@ pub fn set_sender_volume(pid: u32, percent: u8) {
 /// Make `volume` the receiver's starting volume (see the module comment). Off
 /// the caller's thread, and retried for a few seconds: a receiver that has
 /// just started may not have its name on the bus yet.
-pub fn set_start_volume(pid: u32, volume: f64) {
+pub fn set_start_volume(tag: &str, pid: u32, volume: f64) {
     if pid == 0 {
         return;
     }
+    let tag = tag.to_string();
     std::thread::spawn(move || {
         for _ in 0..10 {
             let set = dbus_send(&[
-                &format!("--dest={}", name_for(pid)),
+                &format!("--dest={}", name_for(&tag, pid)),
                 "/org/gnome/ShairportSync",
                 "org.freedesktop.DBus.Properties.Set",
                 "string:org.gnome.ShairportSync",
@@ -108,12 +111,13 @@ pub fn set_start_volume(pid: u32, volume: f64) {
 }
 
 /// `set_start_volume` for a receiver being started now: waits for its process.
-pub fn set_start_volume_when_up(pid: Arc<AtomicU32>, volume: f64) {
+pub fn set_start_volume_when_up(tag: &str, pid: Arc<AtomicU32>, volume: f64) {
+    let tag = tag.to_string();
     std::thread::spawn(move || {
         for _ in 0..20 {
             let p = pid.load(Ordering::Relaxed);
             if p != 0 {
-                set_start_volume(p, volume);
+                set_start_volume(&tag, p, volume);
                 return;
             }
             std::thread::sleep(Duration::from_millis(500));
