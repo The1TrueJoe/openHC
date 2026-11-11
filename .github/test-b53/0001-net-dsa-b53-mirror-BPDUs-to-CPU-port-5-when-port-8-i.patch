@@ -1,44 +1,27 @@
-From 7086800dc8d659c088d4d3c8c72b5da9502ef1c4 Mon Sep 17 00:00:00 2001
+From c8cda0f8a57f7c142758a2d9858f64c9b34c1b56 Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
 Date: Mon, 9 Nov 2026 17:45:43 -0500
 Subject: [PATCH] net: dsa: b53: mirror BPDUs to CPU port 5 when port 8 is not
  a CPU port
 
-When a BCM531x5 uses port 5 as its CPU port, b53_brcm_hdr_setup() puts
-the switch in dual-IMP mode (GC_FRM_MGMT_PORT_M). The BCM53125 data
-sheet (Global Management Configuration, page 02h address 00h) says that
-in this mode the frames trapped for the CPU, among them the BPDUs that
-GC_RX_BPDU_EN traps, go to the IMP port (8) when they come from a LAN
-port, and to port 5 only when they come from a WAN port.
+With port 5 as the CPU port, a BCM531x5 runs in dual-IMP mode and traps
+BPDUs from LAN ports to port 8. On boards where port 8 is unconnected
+they are lost, so STP never sees its peers and a loop between two user
+ports takes the host off the network.
 
-Some boards wire only port 5 to the host, the Control4 EA-3 among them,
-and leave port 8 unconnected. There the BPDUs of the user ports are
-lost: the bridge never sees its STP peers, and two user ports cabled
-into the same LAN make a loop that takes the host off the network.
+Mirror frames sent to the bridge group address from the user ports to
+port 5 instead. The multiport address registers cannot do this, since
+reserved multicast is resolved before them, and marking the user ports
+as WAN ports stops forwarding between them.
 
-Selecting the user ports as WAN ports does deliver the BPDUs to port 5,
-but a WAN port's traffic only goes to the CPU, so forwarding between
-lan1 and lan2 stops. The multiport address registers do not help
-either: RoboSwitch parts resolve the reserved 01-80-C2-00-00-xx
-addresses before they look at the multiport addresses.
-
-Use the ingress mirror instead, filtered on the bridge group address,
-from the user ports to port 5. Measured on an EA-3 with a host sending
-BPDUs into lan1: without this change none reached the CPU and the bridge
-stayed its own root; with it, all of them did, the bridge took the
-sender as root, and forwarding between lan1 and lan2 kept working.
-
-The switch has one mirror, so b53_mirror_add() refuses with -EBUSY while
-it carries BPDUs, and the mirror is released if the CPU port setup no
-longer needs it. Only the bridge group address is covered: anything else
-the switch traps for the CPU in dual-IMP mode still goes to port 8.
+The switch has one mirror, so refuse tc mirroring while it carries BPDUs.
 ---
  drivers/net/dsa/b53/b53_common.c | 32 ++++++++++++++++++++++++++++++++
  drivers/net/dsa/b53/b53_priv.h   |  1 +
  2 files changed, 33 insertions(+)
 
 diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
-index a2a5754c4..a4ba7d0ca 100644
+index a2a5754c413c..a4ba7d0ca01f 100644
 --- a/drivers/net/dsa/b53/b53_common.c
 +++ b/drivers/net/dsa/b53/b53_common.c
 @@ -758,6 +758,29 @@ void b53_disable_port(struct dsa_switch *ds, int port)
@@ -95,7 +78,7 @@ index a2a5754c4..a4ba7d0ca 100644
  		loc = B53_IG_MIR_CTL;
  	else
 diff --git a/drivers/net/dsa/b53/b53_priv.h b/drivers/net/dsa/b53/b53_priv.h
-index c4d2a41c7..6269c8b3c 100644
+index c4d2a41c714f..6269c8b3c95a 100644
 --- a/drivers/net/dsa/b53/b53_priv.h
 +++ b/drivers/net/dsa/b53/b53_priv.h
 @@ -170,6 +170,7 @@ struct b53_device {

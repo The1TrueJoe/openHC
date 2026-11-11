@@ -51,3 +51,21 @@ jobs:
           make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- W=1 drivers/net/dsa/b53/ 2>&1 | tee b53-arm64.log | tail -5
           if grep -E "b53_(common|priv)\.[ch].*(warning|error)" b53-arm64.log; then exit 1; fi
           echo "arm64 b53 built in, W=1, no warnings"
+      - name: clang W=1, sparse, and i386 (netdev patchwork-style)
+        working-directory: ${{ runner.temp }}/linux
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y clang lld llvm sparse
+          make -s mrproper
+          make -s LLVM=1 x86_64_defconfig
+          scripts/config -e NET_DSA -m B53 -m B53_SPI_DRIVER -m B53_MDIO_DRIVER -m B53_MMAP_DRIVER -m B53_SRAB_DRIVER -e SPI -e OF
+          make -s LLVM=1 olddefconfig
+          make -j"$(nproc)" LLVM=1 W=1 C=2 drivers/net/dsa/b53/ 2>&1 | tee clang.log | tail -5
+          if grep -E "b53_(common|priv)\.[ch].*(warning|error)" clang.log; then exit 1; fi
+          make -s mrproper
+          make -s ARCH=i386 i386_defconfig
+          scripts/config -e NET_DSA -e B53 -e B53_SPI_DRIVER -e B53_MDIO_DRIVER -e SPI -e OF
+          make -s ARCH=i386 olddefconfig
+          make -j"$(nproc)" ARCH=i386 W=1 drivers/net/dsa/b53/ 2>&1 | tee i386.log | tail -5
+          if grep -E "b53_(common|priv)\.[ch].*(warning|error)" i386.log; then exit 1; fi
+          echo "clang+sparse and i386 clean"
