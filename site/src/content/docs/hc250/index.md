@@ -141,7 +141,7 @@ From `/proc/iomem`, `/sys`, and the GPIO table under debugfs:
 | Audio | TPS65950 codec (card `magneto`: DAC2 → headset/line out, TX1 analog in) + HDMI audio over McBSP4 (card `magneto-hdmi`) |
 | Video | DSS DPI → ADV7513 (HDMI) and THS8200 (component), `omapfb.mode=dvi:1280x720-24@60` |
 
-The Wi-Fi driver on the rootfs is Broadcom's `dhd.ko` (FullMAC SDIO), never
+The Wi-Fi driver is Broadcom's `dhd.ko` (FullMAC SDIO, with its firmware and nvram in `/mnt/jffs2/dhd`), never
 loaded on this unit: the radio is held in reset, which is why MMC2 is empty.
 
 ## IO: the LM3S1162, block 1

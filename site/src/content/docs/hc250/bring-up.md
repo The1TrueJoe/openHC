@@ -286,10 +286,24 @@ Details that came from the unit:
 The module is fitted. Under stock, raising `wifi_reset` (GPIO176) and pulling the
 card-detect loop low makes it enumerate: SDIO `02d0:4319`, a **BCM4319**.
 GPIO101 (`wifi_carddetect`) is wired back to GPIO94, MMC2's card-detect input.
-Mainline `brcmfmac` has no 4319 entry, and stock 2.10.6 ships no firmware for it
-(its `dhd.ko` is never loaded). So MMC2 stays disabled. Under mainline the card
-does not initialize yet either: `MMCHS_CON` differs from stock's (0x600 against
-0x10e00; CTPL, CLKEXTFREE).
+Stock 2.10.6 carries the driver and firmware in the `/mnt/jffs2` partition
+(`dhd/`, installed by dpkg), not the rootfs, and never loads them:
+
+| File | What |
+|---|---|
+| `dhd.ko` | Broadcom DHD 4.218.248.26, built for 2.6.32-51.48 |
+| `rtecdc.bin` | `4319b0sdio/sdio-g-cdc-full11n-reclaim-roml-wme-idsup-40m`, 4.218.248.26 (2011-03-17), 231,766 bytes |
+| `wl-nvram.txt` | `bcm94319lcsdn4l` board file, 26 MHz crystal, 2.4 GHz only |
+
+The firmware is FullMAC over SDIO with the BCDC protocol, which `brcmfmac`
+speaks (its 4329 firmware is the same generation). It is Broadcom's and not
+redistributable, so openHC would take it off the unit's own stock partition,
+not ship it.
+
+Mainline `brcmfmac` has no 4319 entry, so MMC2 stays disabled. The 4319 is a
+Sonics SB chip like the 4329, which `brcmfmac` handles with a hard-coded core
+list. Under mainline the card does not initialize yet either: `MMCHS_CON`
+differs from stock's (0x600 against 0x10e00: CTPL, CLKEXTFREE).
 
 ## What the first image is
 
