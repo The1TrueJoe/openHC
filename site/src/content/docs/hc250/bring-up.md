@@ -361,6 +361,14 @@ What may still need one:
   `magneto` machine driver is not needed.
 - **Wi-Fi** needs BCM4319 support added to `brcmfmac`, plus firmware.
 
+Carried as a backport, `board/hc250/patches/linux/0002`: upstream commit
+0d3a67b1954a (timer-ti-dm registers a clocksource and clockevent only on
+am654). Linux 7.3 made the first always-on dmtimer the clocksource and
+sched_clock on every OMAP. On the HC-250 that is GPTIMER12, and the box hangs
+about 10 s into boot, right after "Switched to clocksource omap_dm_timer". With
+no panic, it sits there until the watchdog resets it. Drop the patch once a
+7.3.y stable release carries the fix (7.3.4 does not).
+
 The openHC driver changes for this board are in our own `gpio-ohc-iomcu`: a
 combo jack may now have a single serial-enable line (the HC-250's PB0/PB1), not
 only the EA's pair, and a silent part gets one reset pulse before the driver
