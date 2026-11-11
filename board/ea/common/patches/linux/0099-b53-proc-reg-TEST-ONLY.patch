@@ -1,0 +1,131 @@
+TEST ONLY, never merge: /proc/b53_reg switch register peek/poke.
+
+diff -ruN b/drivers/net/dsa/b53/b53_common.c c/drivers/net/dsa/b53/b53_common.c
+--- b/drivers/net/dsa/b53/b53_common.c	2026-11-02 13:56:56
++++ c/drivers/net/dsa/b53/b53_common.c	2026-11-02 13:57:29
+@@ -25,6 +25,8 @@
+ #include <linux/minmax.h>
+ #include <linux/module.h>
+ #include <linux/platform_data/b53.h>
++#include <linux/proc_fs.h>
++#include <linux/uaccess.h>
+ #include <linux/phy.h>
+ #include <linux/phylink.h>
+ #include <linux/etherdevice.h>
+@@ -1282,6 +1284,99 @@
+ }
+ EXPORT_SYMBOL(b53_setup_devlink_resources);
+ 
++/* TEST ONLY: /proc/b53_reg. Write "page reg width [value]" (hex, hex, bits,
++ * hex) to select a register and optionally write it; read to get its value.
++ */
++static struct b53_device *b53_dbg_dev;
++static unsigned int b53_dbg_page, b53_dbg_reg, b53_dbg_width = 8;
++
++static ssize_t b53_dbg_write(struct file *f, const char __user *ubuf,
++			     size_t len, loff_t *ppos)
++{
++	unsigned int page, reg, width;
++	unsigned long long val;
++	char buf[64];
++	int n;
++
++	if (!b53_dbg_dev || len >= sizeof(buf))
++		return -EINVAL;
++	if (copy_from_user(buf, ubuf, len))
++		return -EFAULT;
++	buf[len] = '\0';
++	n = sscanf(buf, "%x %x %u %llx", &page, &reg, &width, &val);
++	if (n < 3)
++		return -EINVAL;
++	if (width != 8 && width != 16 && width != 32 && width != 48 && width != 64)
++		return -EINVAL;
++	b53_dbg_page = page;
++	b53_dbg_reg = reg;
++	b53_dbg_width = width;
++	if (n == 4) {
++		switch (width) {
++		case 8:
++			b53_write8(b53_dbg_dev, page, reg, val);
++			break;
++		case 16:
++			b53_write16(b53_dbg_dev, page, reg, val);
++			break;
++		case 32:
++			b53_write32(b53_dbg_dev, page, reg, val);
++			break;
++		case 48:
++			b53_write48(b53_dbg_dev, page, reg, val);
++			break;
++		default:
++			b53_write64(b53_dbg_dev, page, reg, val);
++			break;
++		}
++	}
++	return len;
++}
++
++static ssize_t b53_dbg_read(struct file *f, char __user *ubuf, size_t len,
++			    loff_t *ppos)
++{
++	u64 v64 = 0;
++	u32 v32;
++	u16 v16;
++	char buf[64];
++	u8 v8;
++	int n;
++
++	if (!b53_dbg_dev)
++		return -ENODEV;
++	if (*ppos)
++		return 0;
++	switch (b53_dbg_width) {
++	case 8:
++		b53_read8(b53_dbg_dev, b53_dbg_page, b53_dbg_reg, &v8);
++		v64 = v8;
++		break;
++	case 16:
++		b53_read16(b53_dbg_dev, b53_dbg_page, b53_dbg_reg, &v16);
++		v64 = v16;
++		break;
++	case 32:
++		b53_read32(b53_dbg_dev, b53_dbg_page, b53_dbg_reg, &v32);
++		v64 = v32;
++		break;
++	case 48:
++		b53_read48(b53_dbg_dev, b53_dbg_page, b53_dbg_reg, &v64);
++		break;
++	default:
++		b53_read64(b53_dbg_dev, b53_dbg_page, b53_dbg_reg, &v64);
++		break;
++	}
++	n = scnprintf(buf, sizeof(buf), "%02x:%02x/%u = 0x%llx\n", b53_dbg_page,
++		      b53_dbg_reg, b53_dbg_width, v64);
++	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
++}
++
++static const struct proc_ops b53_dbg_ops = {
++	.proc_read	= b53_dbg_read,
++	.proc_write	= b53_dbg_write,
++};
++
+ static int b53_setup(struct dsa_switch *ds)
+ {
+ 	struct b53_device *dev = ds->priv;
+@@ -1343,11 +1438,16 @@
+ 			b53_disable_port(ds, port);
+ 	}
+ 
++	b53_dbg_dev = dev;
++	proc_create("b53_reg", 0600, NULL, &b53_dbg_ops);
++
+ 	return b53_setup_devlink_resources(ds);
+ }
+ 
+ static void b53_teardown(struct dsa_switch *ds)
+ {
++	remove_proc_entry("b53_reg", NULL);
++	b53_dbg_dev = NULL;
+ 	dsa_devlink_resources_unregister(ds);
+ }
+ 
