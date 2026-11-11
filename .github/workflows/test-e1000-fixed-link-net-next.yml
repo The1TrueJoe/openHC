@@ -32,8 +32,8 @@ jobs:
           set -euo pipefail
           pip install -q dtschema
           make -s x86_64_defconfig
-          make dt_binding_check DT_SCHEMA_FILES=net/intel,ce4100-gbe.yaml 2>&1 | tee dtb.log | tail -20
-          if grep -iE "intel,ce4100-gbe.*(warning|error)" dtb.log; then exit 1; fi
+          make dt_binding_check DT_SCHEMA_FILES=net/pci8086,2e6e.yaml 2>&1 | tee dtb.log | tail -20
+          if grep -iE "pci8086,2e6e.*(warning|error)" dtb.log; then exit 1; fi
       - name: x86_64 gcc W=1, e1000 as a module
         working-directory: ${{ runner.temp }}/linux
         run: |
