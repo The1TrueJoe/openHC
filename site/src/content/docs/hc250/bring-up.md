@@ -288,11 +288,12 @@ Details that came from the unit:
 
 ## Wi-Fi: a BCM4319
 
-The module is fitted. Under stock, raising `wifi_reset` (GPIO176) and pulling the
-card-detect loop low makes it enumerate: SDIO `02d0:4319`, a **BCM4319**.
-GPIO101 (`wifi_carddetect`) is wired back to GPIO94, MMC2's card-detect input.
-Stock 2.10.6 carries the driver and firmware in the `/mnt/jffs2` partition
-(`dhd/`, installed by dpkg), not the rootfs, and never loads them:
+The module is fitted: SDIO `02d0:4319`, a **BCM4319** B0. Stock brings it up in
+`/etc/scripts/wifipower.sh`: raise `wifi_reset` (GPIO176), then pulse
+`wifi_carddetect` (GPIO101), which is wired back to GPIO94, MMC2's card detect
+(low = card in), then load `dhd.ko`. The driver and firmware sit in stock's
+`/etc/hotplug/firmware` (on 2.10.6, dpkg puts them in the `/mnt/jffs2`
+partition):
 
 | File | What |
 |---|---|
@@ -302,13 +303,28 @@ Stock 2.10.6 carries the driver and firmware in the `/mnt/jffs2` partition
 
 The firmware is FullMAC over SDIO with the BCDC protocol, which `brcmfmac`
 speaks (its 4329 firmware is the same generation). It is Broadcom's and not
-redistributable, so openHC would take it off the unit's own stock partition,
-not ship it.
+redistributable, so openHC never ships it: the SD install copies it off the
+unit's own stock with the IO firmware (`ohc-boot-env.sh stock-io`), and
+`S38wifi-radio` loads it from there.
 
-Mainline `brcmfmac` has no 4319 entry, so MMC2 stays disabled. The 4319 is a
-Sonics SB chip like the 4329, which `brcmfmac` handles with a hard-coded core
-list. Under mainline the card does not initialize yet either: `MMCHS_CON`
-differs from stock's (0x600 against 0x10e00: CTPL, CLKEXTFREE).
+**Why MMC2 was silent under mainline.** Not power and not the controller: on
+stock the TWL4030's VMMC2 is off while the card runs (a fixed rail feeds it),
+and the MMC2 pads and DEVCONF1 clock loopback match. The two card-detect pads
+do not: U-Boot leaves GPIO94 (`cam_hs`) and GPIO101 (`cam_d2`) in camera mode,
+and stock's kernel muxes them as GPIOs. The DT now does too, and describes the
+loop as MMC2's `cd-gpios`. The radio also needs 200 ms after `wifi_reset` goes
+high; with 50 ms, CMD5 goes unanswered. Inserting the card at runtime (drive
+`wifi_carddetect` low), as stock does, then enumerates it every time. The probe
+at boot, with the card present from the start, did not (seen on kexec'd
+kernels, cause not pinned down).
+
+**The driver.** Mainline `brcmfmac` has no 4319 entry, and its Sonics-backplane
+(SB) path is hard-coded to the 4329's core addresses. `brcmfmac-bcm4319`
+(`board/hc250/packages`) builds the kernel's own `brcmfmac` out of tree with
+`bcm4319.diff`: the SDIO id, the firmware name (`brcm/brcmfmac4319-sdio.bin`
+and `.txt`), and a generic SB core scan (core count from the chip id, each
+core's id from its `sbidhigh`). It replaces the in-tree module, so a kernel bump
+only has to re-apply the diff.
 
 ## What the first image is
 
@@ -330,11 +346,11 @@ differs from stock's (0x600 against 0x10e00: CTPL, CLKEXTFREE).
   (8,644 bytes, about 3.5 s), then applies the pin table. A factory restore's
   stock OS puts Control4's image back.
 - **NAND:** described with every partition `read-only` (see the install section).
-- **Held lines:** `zigbee_reset` and `zigrf_enable` high, the 12 V enable high,
-  and the Wi-Fi radio held in reset, all as stock leaves them.
+- **Held lines:** `zigbee_reset` and `zigrf_enable` high and the 12 V enable
+  high, as stock leaves them. The Wi-Fi radio stays in reset until
+  `S38wifi-radio` inserts the card.
 
-Not in the image yet: Zigbee (the feature brings Node, too big for a RAM image)
-and Wi-Fi (no driver, above).
+Not in the image yet: Zigbee (the feature brings Node, too big for a RAM image).
 
 ## Kernel patches
 
@@ -359,7 +375,7 @@ What may still need one:
 - **Audio** needs no driver patch: the TPS65950 codec is `ti,omap-twl4030` and
   HDMI audio is McBSP4 into the ADV7513, both expressible in the DT. Control4's
   `magneto` machine driver is not needed.
-- **Wi-Fi** needs BCM4319 support added to `brcmfmac`, plus firmware.
+- **Wi-Fi**: the BCM4319 in an out-of-tree `brcmfmac` (above), firmware from the unit's stock.
 
 The openHC driver changes for this board are in our own `gpio-ohc-iomcu`: a
 combo jack may now have a single serial-enable line (the HC-250's PB0/PB1), not
@@ -368,10 +384,8 @@ gives up (above).
 
 ## Next
 
-1. A picture on a TV: HDMI with a monitor attached, and component.
+1. Component video on a TV.
 2. Zigbee: start the EM357 app from its bootloader at boot, then a root filesystem
    on `ohcdata` (Zigbee/Node is too big for RAM).
-3. The HC-250 in the flasher, calling the two install scripts.
-4. Wi-Fi: BCM4319 in `brcmfmac`, plus firmware.
-5. What the MADC inputs measure.
-6. openHC's own LM3S1162 firmware on this board's pins.
+3. Wi-Fi: `brcmfmac` against stock's 4.218 firmware, then association.
+4. What the MADC inputs measure.
