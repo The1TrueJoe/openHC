@@ -247,9 +247,11 @@ U-Boot and X-Loader GPL patches.
 
 **HDMI audio clock.** The ADV7513 has no MCLK here and plays only with a 64 fs
 bit clock (silent at 40 fs). McBSP4 is the bit-clock provider off the 96 MHz
-PER clock, and mainline left its divider at 1: a 96 MHz bit clock. Patch 0001
-(`board/hc250/patches/linux`) makes omap-mcbsp pick the divider for 32-bit
-slots and offer only the rates it lands within 0.1%. From 96 MHz that is
+PER clock, and with a generic card only a machine driver could set its divider,
+so it stays at 1: a 96 MHz bit clock. Patch 0001 (`board/hc250/patches/linux`,
+written to go upstream) gives omap-mcbsp `set_tdm_slot`. The DT asks for two
+32-bit slots, and the driver derives the divider and offers only the rates it
+lands within 0.1%. From 96 MHz that is
 44.1 kHz (+400 ppm), the rate the HDMI dmix and every receiver already use; 48 kHz
 would be 0.8% off. The connector is forced on so component keeps its DPI clock,
 which also means a display plugged in after power-on gets no EDID read (DVI mode,
