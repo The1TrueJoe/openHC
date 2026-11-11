@@ -93,8 +93,11 @@
 		simple-audio-card,bitclock-master = <&hdmi_dai_cpu>;
 		simple-audio-card,frame-master = <&hdmi_dai_cpu>;
 
+		/* No MCLK: the ADV7513 needs a 64 fs bit clock (2 x 32-bit slots). */
 		hdmi_dai_cpu: simple-audio-card,cpu {
 			sound-dai = <&mcbsp4>;
+			dai-tdm-slot-num = <2>;
+			dai-tdm-slot-width = <32>;
 		};
 		simple-audio-card,codec {
 			sound-dai = <&adv7513>;
