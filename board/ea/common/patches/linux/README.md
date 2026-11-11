@@ -219,8 +219,15 @@ GPL `CONFIG_GEN3_USB` quirk (has_hostpc for device 0x0101 rev >= 6, plus
 case. has_hostpc also fixes PORTSC line-status decoding, which is what lets a
 full-speed device — the EM357 Zigbee module's CP2104 on 01:0d.2 — enumerate. Needs
 `CONFIG_USB_EHCI_ROOT_HUB_TT` (common.fragment) because has_tt=1 and there is no
-companion controller. **Upstreamable** on its own; kept as a patch because it edits
-`drivers/usb/host/ehci-pci.c`.
+companion controller.
+
+Carried as the two patches sent to linux-usb as v2 (2026-10-27): `0014-…-1`
+skips ehci-pci's SBRN and port-wake config reads (0x60-0x62 shadow a BAR on this
+core, so SBRN read 0, the controller reported USB 0.0 and `ehci_shutdown()`
+returned early), and `0014-…-2` sets has_hostpc and reads host mode back from
+USBMODE_EX, because USBMODE reads 0 here and `ehci_halt()` would otherwise skip
+stopping the controller. v1 had only the has_hostpc half. Drop both once they
+land upstream.
 
 ---
 
