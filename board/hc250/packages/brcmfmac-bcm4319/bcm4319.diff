@@ -1,0 +1,121 @@
+--- a/brcmfmac/bcmsdh.c
++++ b/brcmfmac/bcmsdh.c
+@@ -46,6 +46,9 @@
+ #define SDIO_4373_FUNC2_BLOCKSIZE	256
+ #define SDIO_435X_FUNC2_BLOCKSIZE	256
+ #define SDIO_4329_FUNC2_BLOCKSIZE	128
++#ifndef SDIO_DEVICE_ID_BROADCOM_4319
++#define SDIO_DEVICE_ID_BROADCOM_4319	0x4319
++#endif
+ /* Maximum milliseconds to wait for F2 to come up */
+ #define SDIO_WAIT_F2RDY	3000
+ 
+@@ -920,6 +923,7 @@
+ 	case SDIO_DEVICE_ID_BROADCOM_4356:
+ 		f2_blksz = SDIO_435X_FUNC2_BLOCKSIZE;
+ 		break;
++	case SDIO_DEVICE_ID_BROADCOM_4319:
+ 	case SDIO_DEVICE_ID_BROADCOM_4329:
+ 		f2_blksz = SDIO_4329_FUNC2_BLOCKSIZE;
+ 		break;
+@@ -980,6 +984,7 @@
+ static const struct sdio_device_id brcmf_sdmmc_ids[] = {
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43143, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43241, WCC),
++	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4319, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4329, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4330, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4334, WCC),
+--- a/brcmfmac/chip.c
++++ b/brcmfmac/chip.c
+@@ -997,44 +997,30 @@
+ 		  socitype == SOCI_SB ? "SB" : "AXI", ci->pub.name);
+ 
+ 	if (socitype == SOCI_SB) {
+-		if (ci->pub.chip != BRCM_CC_4329_CHIP_ID) {
+-			brcmf_err("SB chip is not supported\n");
++		/* Sonics backplane: each core's ID is in its sbidhigh */
++		u32 ncores = (regdata & CID_CC_MASK) >> CID_CC_SHIFT;
++		u32 base, sbidh;
++		u32 n;
++
++		if (!ncores || ncores > 16) {
++			brcmf_err("SB chip with %u cores\n", ncores);
+ 			return -ENODEV;
+ 		}
+ 		ci->iscoreup = brcmf_chip_sb_iscoreup;
+ 		ci->coredisable = brcmf_chip_sb_coredisable;
+ 		ci->resetcore = brcmf_chip_sb_resetcore;
+ 
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_CHIPCOMMON,
+-					   SI_ENUM_BASE_DEFAULT, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_SDIO_DEV,
+-					   BCM4329_CORE_BUS_BASE, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_INTERNAL_MEM,
+-					   BCM4329_CORE_SOCRAM_BASE, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_ARM_CM3,
+-					   BCM4329_CORE_ARM_BASE, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_80211, 0x18001000, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
++		for (n = 0; n < ncores; n++) {
++			base = SI_ENUM_BASE_DEFAULT + n * 0x1000;
++			sbidh = ci->ops->read32(ci->ctx, CORE_SB(base, sbidhigh));
++			core = brcmf_chip_add_core(ci, (sbidh & 0x8ff0) >> 4,
++						   base, 0);
++			if (IS_ERR(core))
++				return PTR_ERR(core);
++			brcmf_chip_sb_corerev(ci, core);
++			brcmf_dbg(INFO, "SB core %u: 0x%03x rev %u at 0x%08x\n", n,
++				  core->id, core->rev, base);
++		}
+ 	} else if (socitype == SOCI_AI) {
+ 		ci->iscoreup = brcmf_chip_ai_iscoreup;
+ 		ci->coredisable = brcmf_chip_ai_coredisable;
+--- a/brcmfmac/sdio.c
++++ b/brcmfmac/sdio.c
+@@ -605,6 +605,7 @@
+ BRCMF_FW_DEF(43241B0, "brcmfmac43241b0-sdio");
+ BRCMF_FW_DEF(43241B4, "brcmfmac43241b4-sdio");
+ BRCMF_FW_DEF(43241B5, "brcmfmac43241b5-sdio");
++BRCMF_FW_DEF(4319, "brcmfmac4319-sdio");
+ BRCMF_FW_DEF(4329, "brcmfmac4329-sdio");
+ BRCMF_FW_DEF(4330, "brcmfmac4330-sdio");
+ BRCMF_FW_DEF(4334, "brcmfmac4334-sdio");
+@@ -637,6 +638,7 @@
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0x0000001F, 43241B0),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0x00000020, 43241B4),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0xFFFFFFC0, 43241B5),
++	BRCMF_FW_ENTRY(BRCM_CC_4319_CHIP_ID, 0xFFFFFFFF, 4319),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4329_CHIP_ID, 0xFFFFFFFF, 4329),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4330_CHIP_ID, 0xFFFFFFFF, 4330),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4334_CHIP_ID, 0xFFFFFFFF, 4334),
+--- a/include/brcm_hw_ids.h
++++ b/include/brcm_hw_ids.h
+@@ -22,6 +22,7 @@
+ #define BRCM_CC_43238_CHIP_ID		43238
+ #define BRCM_CC_43241_CHIP_ID		0x4324
+ #define BRCM_CC_43242_CHIP_ID		43242
++#define BRCM_CC_4319_CHIP_ID		0x4319
+ #define BRCM_CC_4329_CHIP_ID		0x4329
+ #define BRCM_CC_4330_CHIP_ID		0x4330
+ #define BRCM_CC_4334_CHIP_ID		0x4334

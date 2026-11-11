@@ -1,0 +1,12 @@
+config BR2_PACKAGE_BRCMFMAC_BCM4319
+	bool "brcmfmac with BCM4319 support (out of tree)"
+	depends on BR2_LINUX_KERNEL
+	help
+	  The kernel's own brcmfmac, built out of tree with the BCM4319
+	  (an older Sonics-backplane SDIO chip) added: its SDIO id, its
+	  firmware name and a generic SB core scan. Replaces the in-tree
+	  brcmfmac module. The firmware is not shipped; the board copies
+	  it off its own stock partition.
+
+comment "brcmfmac-bcm4319 needs a Linux kernel"
+	depends on !BR2_LINUX_KERNEL

@@ -12,9 +12,10 @@
 #          (bootnand) at 3 or when the SD has no image; EEPROM byte 7 = 'R' runs
 #          the factory restore (openHC's `restore stock`).
 # uninstall bootmode=nand and stock's restoresystem back; the ohc variables go.
-# stock-io  a tar of this stock's IO firmware (/control4/firmware/io) on stdout,
-#           for openHC's `ohc-sd-install stock-io` to keep on the SD: `restore
-#           stock` writes it back to the IO microcontroller (openHC cannot read
+# stock-io  a tar of this stock's IO firmware (/control4/firmware/io) and its
+#           Wi-Fi firmware (/etc/hotplug/firmware) on stdout, for openHC's
+#           `ohc-sd-install stock-io` to keep on the SD: `restore stock` writes
+#           the IO image back, S38wifi-radio loads the radio (openHC cannot read
 #           the stock rootfs on the NAND).
 set -e
 
@@ -71,7 +72,11 @@ case "$1" in
         ;;
     stock-io)
         [ -d /control4/firmware/io ] || die "no /control4/firmware/io on this stock"
-        tar -C / -cf - control4/firmware/io
+        wifi=""
+        for f in rtecdc.bin wl-nvram.txt; do
+            [ -r /etc/hotplug/firmware/$f ] && wifi="$wifi etc/hotplug/firmware/$f"
+        done
+        tar -C / -chf - control4/firmware/io $wifi
         ;;
     status)
         echo "bootmode=$(getenv bootmode)"
