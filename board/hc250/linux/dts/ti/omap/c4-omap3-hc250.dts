@@ -130,7 +130,8 @@
 	wifi_pwrseq: wifi-pwrseq {
 		compatible = "mmc-pwrseq-simple";
 		reset-gpios = <&gpio6 16 GPIO_ACTIVE_LOW>;	/* wifi_reset */
-		post-power-on-delay-ms = <50>;
+		/* 50 ms is too short: CMD5 goes unanswered. 200 ms works. */
+		post-power-on-delay-ms = <200>;
 	};
 
 	usb_vbus: regulator-usb-vbus {
