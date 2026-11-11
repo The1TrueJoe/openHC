@@ -1,70 +1,66 @@
-From c8cda0f8a57f7c142758a2d9858f64c9b34c1b56 Mon Sep 17 00:00:00 2001
+From 7d99d34e00eed1e61944f608fafca7560be205ae Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
 Date: Mon, 9 Nov 2026 17:45:43 -0500
 Subject: [PATCH] net: dsa: b53: mirror BPDUs to CPU port 5 when port 8 is not
  a CPU port
 
-With port 5 as the CPU port, a BCM531x5 runs in dual-IMP mode and traps
-BPDUs from LAN ports to port 8. On boards where port 8 is unconnected
-they are lost, so STP never sees its peers and a loop between two user
-ports takes the host off the network.
+A BCM531x5 can be connected to the host through its IMP port (8) or
+through port 5. With port 5 as the CPU port, b53_brcm_hdr_setup() puts
+the switch in dual-IMP mode, in which frames trapped for the CPU, BPDUs
+among them, go to port 8 when they come from a LAN port. b53 sets up no
+WAN ports, so that is every user port. On boards that use only port 5
+and leave port 8 unconnected, BPDUs are lost: STP never sees its peers,
+and a loop between two user ports takes the host off the network.
 
 Mirror frames sent to the bridge group address from the user ports to
 port 5 instead. The multiport address registers cannot do this, since
-reserved multicast is resolved before them, and marking the user ports
-as WAN ports stops forwarding between them.
+the RoboSwitch data sheets resolve reserved multicast before them, and
+marking the user ports as WAN ports stopped forwarding between them
+when tried. Other frames trapped for the CPU still go to port 8, as the
+mirror matches a single destination address. The switch has one mirror,
+so tc mirroring is refused on these boards.
 
-The switch has one mirror, so refuse tc mirroring while it carries BPDUs.
+This was observed on a BCM53125 board in real use, when both user ports
+were cabled into the same LAN. Tested on that board with a host sending
+BPDUs into a user port: before, none reached the CPU and the bridge
+stayed its own root; after, all of them did, the bridge took the sender
+as root, and forwarding between the user ports kept working. No
+selftests were run.
 ---
- drivers/net/dsa/b53/b53_common.c | 32 ++++++++++++++++++++++++++++++++
+ drivers/net/dsa/b53/b53_common.c | 24 ++++++++++++++++++++++++
  drivers/net/dsa/b53/b53_priv.h   |  1 +
- 2 files changed, 33 insertions(+)
+ 2 files changed, 25 insertions(+)
 
 diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
-index a2a5754c413c..a4ba7d0ca01f 100644
+index a2a5754c413c..6b33775c7598 100644
 --- a/drivers/net/dsa/b53/b53_common.c
 +++ b/drivers/net/dsa/b53/b53_common.c
-@@ -758,6 +758,29 @@ void b53_disable_port(struct dsa_switch *ds, int port)
- }
- EXPORT_SYMBOL(b53_disable_port);
- 
-+/* With port 5 as its CPU port, a BCM531x5 runs in dual-IMP mode, which
-+ * traps the BPDUs of LAN ports to the IMP port (8), not to port 5. When
-+ * port 8 is not a CPU port, mirror them to port 5 instead. The switch has
-+ * one mirror, so tc mirroring is refused while this holds it.
-+ */
-+static void b53_bpdu_mirror(struct b53_device *dev, int port, bool enable)
-+{
-+	if (enable) {
-+		b53_write48(dev, B53_MGMT_PAGE, B53_IG_MIR_MAC,
-+			    ether_addr_to_u64(eth_stp_addr));
-+		b53_write16(dev, B53_MGMT_PAGE, B53_IG_MIR_CTL,
-+			    MIRROR_DA << MIRROR_FILTER_SHIFT |
-+			    (dsa_user_ports(dev->ds) & MIRROR_MASK));
-+		b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL,
-+			    MIRROR_EN | port);
-+	} else if (dev->bpdu_mirror) {
-+		b53_write16(dev, B53_MGMT_PAGE, B53_IG_MIR_CTL, 0);
-+		b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL, 0);
-+	}
-+
-+	dev->bpdu_mirror = enable;
-+}
-+
- void b53_brcm_hdr_setup(struct dsa_switch *ds, int port)
- {
- 	struct b53_device *dev = ds->priv;
-@@ -797,6 +820,9 @@ void b53_brcm_hdr_setup(struct dsa_switch *ds, int port)
+@@ -797,6 +797,24 @@ void b53_brcm_hdr_setup(struct dsa_switch *ds, int port)
  		hdr_ctl |= GC_FRM_MGMT_PORT_M;
  	b53_write8(dev, B53_MGMT_PAGE, B53_GLOBAL_CONFIG, hdr_ctl);
  
-+	b53_bpdu_mirror(dev, port, tag_en && port == 5 && is531x5(dev) &&
-+			!dsa_is_cpu_port(ds, B53_CPU_PORT));
++	/* With port 5 as the CPU port, a BCM531x5 runs in dual-IMP mode and
++	 * traps BPDUs from LAN ports to port 8. When port 8 is not a CPU
++	 * port, mirror them to port 5 instead. This takes the switch's only
++	 * mirror, so tc mirroring is refused.
++	 */
++	if (tag_en && port == 5 && is531x5(dev) &&
++	    !dsa_is_cpu_port(ds, B53_CPU_PORT)) {
++		b53_write48(dev, B53_MGMT_PAGE, B53_IG_MIR_MAC,
++			    ether_addr_to_u64(eth_stp_addr));
++		b53_write16(dev, B53_MGMT_PAGE, B53_IG_MIR_CTL,
++			    (MIRROR_DA << MIRROR_FILTER_SHIFT) |
++			    (dsa_user_ports(ds) & MIRROR_MASK));
++		b53_write16(dev, B53_MGMT_PAGE, B53_EG_MIR_CTL, 0);
++		b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL,
++			    MIRROR_EN | port);
++		dev->bpdu_mirror = true;
++	}
 +
  	/* B53_BRCM_HDR not present on devices with legacy tags */
  	if (dev->tag_protocol == DSA_TAG_PROTO_BRCM_LEGACY ||
  	    dev->tag_protocol == DSA_TAG_PROTO_BRCM_LEGACY_FCS)
-@@ -2604,6 +2630,12 @@ int b53_mirror_add(struct dsa_switch *ds, int port,
+@@ -2604,6 +2622,12 @@ int b53_mirror_add(struct dsa_switch *ds, int port,
  	struct b53_device *dev = ds->priv;
  	u16 reg, loc;
  
