@@ -1,0 +1,66 @@
+name: test-e1000-fixed-link-net-next
+
+# TEST ONLY: the e1000 fixed-link series (binding + driver) on net-next:
+# checkpatch, dt_binding_check, and W=1 builds with gcc, clang+sparse and i386.
+on:
+  push:
+    branches: [test-e1000-fixed-link-net-next]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y flex bison libelf-dev libssl-dev bc clang lld llvm sparse yamllint
+      - name: net-next + the series
+        run: |
+          git clone -q --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git "$RUNNER_TEMP/linux"
+          cd "$RUNNER_TEMP/linux"
+          git log --oneline -1
+          git -c user.name=ci -c user.email=ci@localhost am -q "$GITHUB_WORKSPACE"/.github/test-e1000/*.patch
+          git log --oneline -3
+      - name: checkpatch --strict
+        working-directory: ${{ runner.temp }}/linux
+        run: ./scripts/checkpatch.pl --strict --no-signoff -g HEAD~1 -g HEAD || true; ./scripts/checkpatch.pl --strict --no-signoff --ignore CAMELCASE,FILE_PATH_CHANGES -g HEAD~1 -g HEAD
+      - name: dt_binding_check
+        working-directory: ${{ runner.temp }}/linux
+        run: |
+          set -euo pipefail
+          pip install -q dtschema
+          make -s x86_64_defconfig
+          make dt_binding_check DT_SCHEMA_FILES=net/intel,ce4100-gbe.yaml 2>&1 | tee dtb.log | tail -20
+          if grep -iE "intel,ce4100-gbe.*(warning|error)" dtb.log; then exit 1; fi
+      - name: x86_64 gcc W=1, e1000 as a module
+        working-directory: ${{ runner.temp }}/linux
+        run: |
+          set -euo pipefail
+          make -s mrproper && make -s x86_64_defconfig
+          scripts/config -m E1000 -e OF
+          make -s olddefconfig
+          make -j"$(nproc)" W=1 drivers/net/ethernet/intel/e1000/ 2>&1 | tee gcc.log | tail -5
+          if grep -E "e1000/.*(warning|error)" gcc.log; then exit 1; fi
+      - name: x86_64 clang W=1 + sparse, OF off
+        working-directory: ${{ runner.temp }}/linux
+        run: |
+          set -euo pipefail
+          make -s mrproper && make -s LLVM=1 x86_64_defconfig
+          scripts/config -m E1000 -d OF
+          make -s LLVM=1 olddefconfig
+          grep -E "^CONFIG_OF=|^# CONFIG_OF " .config || true
+          make -j"$(nproc)" LLVM=1 W=1 C=2 drivers/net/ethernet/intel/e1000/ 2>&1 | tee clang.log | tail -5
+          if grep -E "e1000/.*(warning|error)" clang.log; then exit 1; fi
+      - name: i386 W=1, e1000 built in (the CE4100's own arch)
+        working-directory: ${{ runner.temp }}/linux
+        run: |
+          set -euo pipefail
+          make -s mrproper && make -s ARCH=i386 i386_defconfig
+          scripts/config -e E1000 -e OF -e X86_INTEL_CE -e X86_EXTENDED_PLATFORM || true
+          make -s ARCH=i386 olddefconfig
+          grep -E "^CONFIG_(E1000|OF|X86_INTEL_CE)=" .config || true
+          make -j"$(nproc)" ARCH=i386 W=1 drivers/net/ethernet/intel/e1000/ 2>&1 | tee i386.log | tail -5
+          if grep -E "e1000/.*(warning|error)" i386.log; then exit 1; fi
+          echo "all builds clean"
