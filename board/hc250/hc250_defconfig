@@ -26,6 +26,7 @@ BR2_LINUX_KERNEL_ZIMAGE=y
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
 # In ti/omap/ like the in-tree boards: omap36xx.dtsi /include/s its clock files by bare name.
 BR2_LINUX_KERNEL_CUSTOM_DTS_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/hc250/linux/dts"
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_OPENHC_PATH)/hc250/patches"
 
 # --- rootfs: initramfs in the uImage (RAM boot from a USB stick) ---
 BR2_TARGET_ROOTFS_INITRAMFS=y

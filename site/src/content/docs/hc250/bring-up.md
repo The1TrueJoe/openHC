@@ -241,9 +241,19 @@ U-Boot and X-Loader GPL patches.
 |---|---|---|
 | Rear audio out / line in | TPS65950 codec on McBSP2 (`ti,omap-twl4030`); DAC2 into HSOL/HSOR like stock, line in on AUXL/AUXR | **proven**: 1 kHz out → cable → in, 100% tone at −30 dBFS, gone when muted, L→L with −52 dB crosstalk |
 | Splash | omapdrm fbdev, 1280×720×32; fbcon and the Tux logo off | **proven** on an SD boot (`Splash: OK`) |
-| HDMI | DSS DPI, 24 lines → ADV7513 (`adv7511`), 720p forced on (`video=HDMI-A-1:1280x720@60e`) | DISPC runs; no monitor tried |
-| HDMI audio | McBSP4 → ADV7513 I2S (`simple-audio-card`) | card registers; needs an HDMI sink |
+| HDMI | DSS DPI, 24 lines → ADV7513 (`adv7511`), 720p forced on (`video=HDMI-A-1:1280x720@60e`) | **proven**: splash on a 1080p monitor at 720p (pixel clock 72 MHz, the closest DPLL4 gets to 74.25); EDID read and HDMI mode when the display is on at power-on |
+| HDMI audio | McBSP4 → ADV7513 I2S (`simple-audio-card`), 44.1 kHz only (patch 0001) | **proven**: a tone out of the monitor's speakers |
 | Component | THS8200 from userspace (`S47video`, the HC-800's `ths8200` tool), registers captured off this unit at 720p60 | configured (137 registers, VERSION 0x04); no TV tried |
+
+**HDMI audio clock.** The ADV7513 has no MCLK here and plays only with a 64 fs
+bit clock (silent at 40 fs). McBSP4 is the bit-clock provider off the 96 MHz
+PER clock, and mainline left its divider at 1: a 96 MHz bit clock. Patch 0001
+(`board/hc250/patches/linux`) makes omap-mcbsp pick the divider for 32-bit
+slots and offer only the rates it lands within 0.1%. From 96 MHz that is
+44.1 kHz (+400 ppm), the rate the HDMI dmix and every receiver already use; 48 kHz
+would be 0.8% off. The connector is forced on so component keeps its DPI clock,
+which also means a display plugged in after power-on gets no EDID read (DVI mode,
+no audio) until the next boot.
 
 **Receivers.** audiod runs one AirPlay 2 (shairport-sync, one shared nqptp) and
 one Spotify Connect receiver per output: "HC-250 Analog" and "HC-250 HDMI", both
