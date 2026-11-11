@@ -118,10 +118,11 @@ What is still carried:
     `libwpe`, is gone. The EA's i386 tree builds with `wpebackend-fdo` present,
     against the SGX EGL, and still loads the PowerVR backend. That costs about
     264 KB of unused libraries.
-- **The two shairport-sync D-Bus patches** (`board/common/patches/shairport-sync`,
-  on `BR2_GLOBAL_PATCH_DIR` for the EA family and the HC-800). They give a
-  second receiver its own bus name and make a D-Bus volume set the next
-  session's starting volume. Upstream 5.6.2 does neither yet.
+- **`build/buildroot-patches/0006` and `0007`**, Buildroot's own shairport-sync
+  bumps to 5.6.2 and 5.6.3, taken from master until the pin passes them. 5.6.3
+  has `dbus_nametag`, which audiod sets on every receiver so each has its own
+  D-Bus name. It replaced openHC's two shairport-sync patches and its D-Bus
+  policy file.
 - **An `S90nqptp` overlay stub**, which replaces the init script Buildroot's
   nqptp installs. audiod and `S99shairport-sync` start the one shared nqptp
   themselves, the same way `S95mpd` is handled.

@@ -33,9 +33,8 @@ the build, openHC keeps its own copy:
 - **ALSA `indep_dig_outs`**:
   `board/hc800/patches/linux/0001-ALSA-hda-generic-Add-indep_dig_outs-hint.patch`,
   until the kernel openHC builds contains it.
-- **shairport-sync D-Bus names**: `board/common/patches/shairport-sync/0001`
-  and `0002`, until a shairport-sync release with #2330 reaches Buildroot.
-  The two merged pull requests are on the `development` branch.
+The shairport-sync D-Bus names are no longer carried: both pull requests are in
+shairport-sync 5.6.3, which openHC builds.
 
 The gl4es fixes are no longer carried:
 [openhc-minecraft](https://github.com/The1TrueJoe/openhc-minecraft) builds

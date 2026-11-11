@@ -138,7 +138,7 @@ the display path uses it.
 `BR2_GLOBAL_PATCH_DIR` and `BR2_ROOTFS_POST_IMAGE_SCRIPT` both point into
 `board/ea/common`, so they are family settings, not per-board. The patch list
 starts with `board/common/patches`, shared with the HC-800: `0015` (the
-built-in device tree) and the shairport-sync patches of the audio feature.
+built-in device tree).
 
 ## External toolchain
 

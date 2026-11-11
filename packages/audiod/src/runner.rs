@@ -136,6 +136,8 @@ fn libconfig_str(s: &str) -> String {
 /// curve as openHC's own slider (dasl_tapered; levels.rs), which is what lets
 /// audiod move the sender's slider to a level set here (airplay.rs).
 ///
+/// Its D-Bus name carries its instance tag, `airplay-<n>` (airplay.rs).
+///
 /// `ap2`: an AirPlay 2 receiver (nqptp is there). Several share this host and
 /// its address, each on its own RTSP port: 7000+n, which also keeps it clear of
 /// the classic range (5000+n). `service_type = "airplay2"` makes a receiver that
@@ -144,13 +146,14 @@ fn libconfig_str(s: &str) -> String {
 pub fn shairport_conf(name: &str, out: &Port, n: usize, ap2: bool) -> String {
     let (port, service) = if ap2 { (7000 + n, "\n    service_type = \"airplay2\";") } else { (5000 + n, "") };
     format!(
-        "general = {{\n    name = {};\n    port = {};{service}\n    udp_port_base = {};\n    udp_port_range = 20;\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n    volume_control_profile = \"dasl_tapered\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
+        "general = {{\n    name = {};\n    port = {};{service}\n    udp_port_base = {};\n    udp_port_range = 20;\n    dbus_nametag = {tag};\n    output_backend = \"alsa\";\n    mdns_backend = \"avahi\";\n    volume_control_profile = \"dasl_tapered\";\n}};\nalsa = {{\n    output_device = {};\n    mixer_device = {};\n    mixer_control_name = {};\n}};\nmetadata = {{\n    enabled = \"yes\";\n    include_cover_art = \"yes\";\n    pipe_name = {pipe};\n}};\n",
         libconfig_str(name),
         port,
         6001 + 20 * n,
         libconfig_str(&out.pcm),
         libconfig_str(&format!("hw:{}", out.card())),
         libconfig_str(&out.pcm),
+        tag = libconfig_str(&format!("airplay-{n}")),
         pipe = libconfig_str(&crate::meta::fifo(&format!("airplay-{n}")).display().to_string()),
     )
 }
@@ -409,6 +412,7 @@ mod tests {
         assert!(c.contains(r#"mixer_control_name = "ohc_hdmi";"#));
         assert!(c.contains(r#"enabled = "yes";"#) && c.contains(r#"include_cover_art = "yes";"#), "{c}");
         assert!(c.contains(r#"pipe_name = "/run/ohc/audio/meta/airplay-1.pipe";"#));
+        assert!(c.contains(r#"dbus_nametag = "airplay-1";"#), "{c}");
     }
     #[test]
     fn asound_has_a_dmix_per_output_and_dsnoop_per_input() {
