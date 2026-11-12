@@ -1,0 +1,18 @@
+# Kconfig fragment merged onto omap2plus_defconfig for the SGX530 vendor capture.
+# ARM, OMAP3 (DM3730/OMAP3630 class). Built-in module, no .ko.
+
+CONFIG_SGX=y
+CONFIG_SGX_OMAP=y
+CONFIG_PVRSGX_1_14_3699939=y
+# The pvrsgx Makefile picks the omap3630 / sgx530 / rev 125 build from ARCH_OMAP3.
+
+# Log channel off the board (no serial): netconsole over the LAN9220.
+CONFIG_NETCONSOLE=y
+CONFIG_SMSC911X=y
+
+# RAM-boot: initramfs built in (armhf userspace assembled by build.sh).
+CONFIG_INITRAMFS_SOURCE="initramfs"
+CONFIG_BLK_DEV_INITRD=y
+
+# Keep it small and bootable; no modules to avoid vermagic/.ko load.
+CONFIG_MODULES=n

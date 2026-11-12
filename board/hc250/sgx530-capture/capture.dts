@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: GPL-2.0
+// Trimmed OMAP3630 (DM3730-class) DT for the SGX530 vendor capture, built in the
+// openpvrsgx 6.0-rc7 tree. Derived from the board's own 7.1.8 DT, cut to what an
+// init-only capture needs: memory, the GPMC LAN9220 (smsc911x) for netconsole,
+// twl4030 (board power rails) and a console UART. The SoC GPU node comes from
+// omap36xx.dtsi. The board's custom nodes (IO-MCU, audio, HDMI, display, SD) are
+// left out so it compiles against mainline 6.0.
+//
+// Not omap3-beagle-xm: its ethernet is USB (smsc95xx); this board's is a LAN9220
+// on GPMC CS5, which is the netconsole NIC. Memory is 512 MB on both.
+//
+// Thermal: the capture runs seconds from a cold board, below the omap3 cpu
+// thermal trip, so the mainline thermal zone is left as-is (no override).
+
+/dts-v1/;
+
+#include "omap36xx.dtsi"
+
+/ {
+	model = "OMAP3630 SGX530 capture";
+	compatible = "ti,omap3630", "ti,omap3";
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		/* console= and netconsole= are added on the kernel cmdline */
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x20000000>; /* 512 MB */
+	};
+};
+
+/* twl4030 PMIC: the board power rails must come up for the GPU module to clock. */
+&i2c1 {
+	clock-frequency = <400000>;
+
+	twl: twl@48 {
+		reg = <0x48>;
+		interrupts = <7>;		/* SYS_NIRQ */
+		interrupt-parent = <&intc>;
+	};
+};
+
+#include "twl4030.dtsi"
+#include "twl4030_omap3.dtsi"
+
+&uart1 {
+	status = "okay";
+};
+
+/* LAN9220 on GPMC CS5 — the netconsole NIC. Timings from omap-gpmc-smsc911x.dtsi. */
+&gpmc {
+	ranges = <5 0 0x2c000000 0x01000000>;	/* CS5: LAN9220 */
+
+	ethernet@gpmc {
+		reg = <5 0 0xff>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <27 IRQ_TYPE_LEVEL_LOW>;		/* gpio27 */
+		reset-gpios = <&gpio6 17 GPIO_ACTIVE_LOW>;	/* gpio177 */
+	};
+};
+
+#include "omap-gpmc-smsc911x.dtsi"

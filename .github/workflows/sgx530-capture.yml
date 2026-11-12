@@ -1,0 +1,39 @@
+# GitHub-hosted CI: build the SGX530 vendor-stack capture uImage.
+# Lives on a wip/ branch only and builds on push to it; it is heavy and one-off.
+# The GPL module source is fetched at build time. The TI user space is never
+# fetched or packaged here: the board loads it from the Mac at run time.
+name: sgx530-capture
+
+on:
+  push:
+    branches: [wip/hc250-sgx530-capture]
+
+env:
+  # The Mac on the board LAN: netconsole sink and the run-time http server.
+  NETCONSOLE_TARGET: 10.0.0.105:6666
+  MAC_HTTP: http://10.0.0.105:8530
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf u-boot-tools \
+            flex bison libssl-dev bc qemu-user-static debootstrap cpio
+
+      - name: Build capture uImage
+        env:
+          CROSS: arm-linux-gnueabihf-
+          WORK: ${{ github.workspace }}/build
+        run: bash board/hc250/sgx530-capture/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openhc-sgx530-capture-uImage
+          path: build/openhc-sgx530-capture.uImage
+          if-no-files-found: error
+          retention-days: 14

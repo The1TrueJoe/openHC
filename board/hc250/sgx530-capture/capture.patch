@@ -1,0 +1,55 @@
+# SGX530 vendor-stack capture — build-time patch for the openpvrsgx module
+# (applied in CI, never committed to any repo). This is a capture-only build on
+# a wip branch, so the logging is unconditional; a normal build does not carry it.
+#
+# Captured, all to dmesg (carried off the board by netconsole), named data only:
+#  - (CAP-SCRIPT-WR) every init-script register write: offset = value, in order.
+#  - (CAP-INIT) the launch/task-setup fields the user space computed
+#    (EDM task regs, clock-gate control/status, cache control).
+#  - (CAP-DONE) ui32InitStatus after init: reached only if the microkernel
+#    reported INIT_COMPLETE, which is the proof the vendor launch makes the
+#    task's temps, pa writes and stores work on this silicon.
+# No MMIO sweep: every offset logged comes from the script the user space built.
+#
+# Verified to apply cleanly against the 1.14.3699939 module source
+# (git apply --check). Follow-on (v2, needs the services handle->kaddr walk):
+# dump the uploaded microkernel + five PDS buffers to confirm the launch words
+# against the static decode in docs/porting/cores/sgx530-vendor-setup.md.
+diff --git a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c
+index 965d10d..c81a39b 100644
+--- a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c
++++ b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c
+@@ -306,6 +306,13 @@ static PVRSRV_ERROR InitDevInfo(PVRSRV_PER_PROCESS_DATA *psPerProc,
+ 	/* Initialise Dev Data */
+ 	OSMemCopy(&psDevInfo->asSGXDevData, &psInitInfo->asInitDevData, sizeof(psDevInfo->asSGXDevData));
+ 
++	/* (CAP) the launch/task-setup fields the user space computed. */
++	PVR_LOG(("(CAP-INIT) EDMTaskReg 0x%08X 0x%08X  ClkGateCtl 0x%08X 0x%08X  ClkGateStatus 0x%08X/0x%08X  CacheControl 0x%08X",
++		psInitInfo->ui32EDMTaskReg0, psInitInfo->ui32EDMTaskReg1,
++		psInitInfo->ui32ClkGateCtl, psInitInfo->ui32ClkGateCtl2,
++		psInitInfo->ui32ClkGateStatusReg, psInitInfo->ui32ClkGateStatusMask,
++		psInitInfo->ui32CacheControl));
++
+ 	return PVRSRV_OK;
+ 
+ failed_allockernelccb:
+@@ -397,6 +404,9 @@ static PVRSRV_ERROR SGXRunScriptOnCore(PVRSRV_SGXDEV_INFO *psDevInfo, SGX_INIT_C
+ 			case SGX_INIT_OP_WRITE_HW_REG:
+ 			{
+ 				OSWriteHWReg(psDevInfo->pvRegsBaseKM, SGX_MP_CORE_SELECT(psComm->sWriteHWReg.ui32Offset,ui32CoreNum), psComm->sWriteHWReg.ui32Value);
++				PVR_LOG(("(CAP-SCRIPT-WR) 0x%08X = 0x%08X",
++					SGX_MP_CORE_SELECT(psComm->sWriteHWReg.ui32Offset, ui32CoreNum),
++					psComm->sWriteHWReg.ui32Value));
+ 				PDUMPCOMMENT("SGXRunScriptOnCore: Write HW reg operation");
+ 				PDUMPREG(SGX_PDUMPREG_NAME, SGX_MP_CORE_SELECT(psComm->sWriteHWReg.ui32Offset,ui32CoreNum), psComm->sWriteHWReg.ui32Value);
+ 				break;
+@@ -729,6 +739,9 @@ PVRSRV_ERROR SGXInitialise(PVRSRV_SGXDEV_INFO	*psDevInfo,
+ 
+ 	PVR_ASSERT(psDevInfo->psKernelCCBCtl->ui32ReadOffset == psDevInfo->psKernelCCBCtl->ui32WriteOffset);
+ 
++	/* (CAP) init reached here only if the microkernel reported INIT_COMPLETE. */
++	PVR_LOG(("(CAP-DONE) ui32InitStatus 0x%08X", psSGXHostCtl->ui32InitStatus));
++
+ 	bFirstTime = IMG_FALSE;
+ 	
+ 	return PVRSRV_OK;
