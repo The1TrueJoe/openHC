@@ -68,8 +68,11 @@ i=0; while [ \$i -lt 15 ]; do ping -c1 -W1 $sink_host >/dev/null 2>&1 && break; 
 echo "CAP: fetch TI user space from the Mac" > /dev/kmsg
 wget -q -O /tmp/ti.tar "$MAC_HTTP/ti-userspace.tar" && tar -C /tmp -xf /tmp/ti.tar || echo "CAP: FETCH FAILED" > /dev/kmsg
 export LD_LIBRARY_PATH=/tmp/ti/lib:/usr/lib:/lib
+echo "CAP: dev=\$(ls /dev 2>/dev/null | tr '\n' ' ')" > /dev/kmsg
+echo "CAP: pvr-dmesg-lines=\$(dmesg | grep -ic pvr)  ls-ti=\$(ls -l /tmp/ti/bin/pvrsrvctl 2>&1)" > /dev/kmsg
 echo "CAP: start vendor init" > /dev/kmsg
-timeout 90 /tmp/ti/bin/pvrsrvctl --start --no-module 2>&1 | while read l; do echo "CAP: \$l" > /dev/kmsg; done
+# busybox (stretch) timeout uses -t SECONDS; a bare duration is read as the command.
+timeout -t 90 /tmp/ti/bin/pvrsrvctl --start --no-module 2>&1 | while read l; do echo "CAP: \$l" > /dev/kmsg; done
 echo "CAP: vendor init returned; shipping dmesg to the Mac" > /dev/kmsg
 # Primary: ship the whole kernel log to the Mac (the CAP-* lines are in it).
 { echo "===CAP-DMESG-BEGIN==="; dmesg; echo "===CAP-DMESG-END==="; } | nc $sink_host $sink_port
