@@ -361,6 +361,14 @@
 	};
 };
 
+/*
+ * omap3-cpu-thermal's 90 °C critical trip (sensor + 20 °C) shuts a warm HC-250
+ * down at boot; stock has no thermal shutdown. 105 °C, the DM3730 extended Tj max.
+ */
+&cpu_crit {
+	temperature = <105000>;
+};
+
 &mcbsp2 {
 	status = "okay";
 };
