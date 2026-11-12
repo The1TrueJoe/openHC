@@ -119,3 +119,90 @@
  #define BRCM_CC_4329_CHIP_ID		0x4329
  #define BRCM_CC_4330_CHIP_ID		0x4330
  #define BRCM_CC_4334_CHIP_ID		0x4334
+--- a/brcmfmac/bcdc.c
++++ b/brcmfmac/bcdc.c
+@@ -46,6 +46,7 @@
+  */
+ #define	BCDC_HEADER_LEN		4
+ #define BCDC_PROTO_VER		2	/* Protocol version */
++#define BCDC_PROTO_VER_1	1	/* Pre-2011 firmware: no data offset */
+ #define BCDC_FLAG_VER_MASK	0xf0	/* Protocol version mask */
+ #define BCDC_FLAG_VER_SHIFT	4	/* Protocol version shift */
+ #define BCDC_FLAG_SUM_GOOD	0x04	/* Good RX checksums */
+@@ -95,6 +96,7 @@
+ 	struct brcmf_proto_bcdc_dcmd msg;
+ 	unsigned char buf[BRCMF_DCMD_MAXLEN];
+ 	struct brcmf_fws_info *fws;
++	u8 proto_ver;		/* BCDC version the firmware sends */
+ };
+ 
+ 
+@@ -257,6 +259,7 @@
+ brcmf_proto_bcdc_hdrpush(struct brcmf_pub *drvr, int ifidx, u8 offset,
+ 			 struct sk_buff *pktbuf)
+ {
++	struct brcmf_bcdc *bcdc = drvr->proto->pd;
+ 	struct brcmf_proto_bcdc_header *h;
+ 
+ 	brcmf_dbg(BCDC, "Enter\n");
+@@ -266,7 +269,7 @@
+ 
+ 	h = (struct brcmf_proto_bcdc_header *)(pktbuf->data);
+ 
+-	h->flags = (BCDC_PROTO_VER << BCDC_FLAG_VER_SHIFT);
++	h->flags = (bcdc->proto_ver << BCDC_FLAG_VER_SHIFT);
+ 	if (pktbuf->ip_summed == CHECKSUM_PARTIAL)
+ 		h->flags |= BCDC_FLAG_SUM_NEEDED;
+ 
+@@ -281,8 +284,10 @@
+ brcmf_proto_bcdc_hdrpull(struct brcmf_pub *drvr, bool do_fws,
+ 			 struct sk_buff *pktbuf, struct brcmf_if **ifp)
+ {
++	struct brcmf_bcdc *bcdc = drvr->proto->pd;
+ 	struct brcmf_proto_bcdc_header *h;
+ 	struct brcmf_if *tmp_if;
++	u8 ver, offset;
+ 
+ 	brcmf_dbg(BCDC, "Enter\n");
+ 
+@@ -301,12 +306,18 @@
+ 		brcmf_dbg(INFO, "no matching ifp found\n");
+ 		return -EBADE;
+ 	}
+-	if (((h->flags & BCDC_FLAG_VER_MASK) >> BCDC_FLAG_VER_SHIFT) !=
+-	    BCDC_PROTO_VER) {
++	ver = (h->flags & BCDC_FLAG_VER_MASK) >> BCDC_FLAG_VER_SHIFT;
++	if (ver != BCDC_PROTO_VER && ver != BCDC_PROTO_VER_1) {
+ 		bphy_err(drvr, "%s: non-BCDC packet received, flags 0x%x\n",
+ 			 brcmf_ifname(tmp_if), h->flags);
+ 		return -EBADE;
++	}
++	if (ver != bcdc->proto_ver) {
++		brcmf_dbg(INFO, "firmware speaks BCDC v%u\n", ver);
++		bcdc->proto_ver = ver;
+ 	}
++	/* v1 has no data offset; that byte is undefined there */
++	offset = ver == BCDC_PROTO_VER_1 ? 0 : h->data_offset << 2;
+ 
+ 	if (h->flags & BCDC_FLAG_SUM_GOOD) {
+ 		brcmf_dbg(BCDC, "%s: BDC rcv, good checksum, flags 0x%x\n",
+@@ -318,9 +329,9 @@
+ 
+ 	skb_pull(pktbuf, BCDC_HEADER_LEN);
+ 	if (do_fws)
+-		brcmf_fws_hdrpull(tmp_if, h->data_offset << 2, pktbuf);
++		brcmf_fws_hdrpull(tmp_if, offset, pktbuf);
+ 	else
+-		skb_pull(pktbuf, h->data_offset << 2);
++		skb_pull(pktbuf, offset);
+ 
+ 	if (pktbuf->len == 0)
+ 		return -ENODATA;
+@@ -468,6 +479,7 @@
+ 	drvr->proto->reset_if = brcmf_proto_bcdc_reset_if;
+ 	drvr->proto->init_done = brcmf_proto_bcdc_init_done;
+ 	drvr->proto->debugfs_create = brcmf_proto_bcdc_debugfs_create;
++	bcdc->proto_ver = BCDC_PROTO_VER;
+ 	drvr->proto->pd = bcdc;
+ 
+ 	drvr->hdrlen += BCDC_HEADER_LEN + BRCMF_PROT_FW_SIGNAL_MAX_TXBYTES;

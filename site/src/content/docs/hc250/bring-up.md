@@ -326,6 +326,14 @@ and `.txt`), and a generic SB core scan (core count from the chip id, each
 core's id from its `sbidhigh`). It replaces the in-tree module, so a kernel bump
 only has to re-apply the diff.
 
+**BCDC v1.** With those, the card enumerates, the firmware loads and `wlan0`
+appears (2026-11-12, kernel 7.3.3), but scans time out. Every packet from the
+firmware was dropped as `non-BCDC packet received, flags 0x10`: this 2011
+firmware writes BCDC version 1 in the header's top nibble, and `brcmfmac` only
+accepts 2. Version 2 added the data-offset byte that version 1 leaves undefined.
+The diff also accepts version 1 on receive (with no offset), records it, and
+sends with the version the firmware uses.
+
 ## What the first image is
 
 - **Kernel:** mainline 7.1.8, `omap2plus_defconfig` + `linux/hc250.fragment`.
