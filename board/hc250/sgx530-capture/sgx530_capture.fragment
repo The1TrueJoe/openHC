@@ -16,3 +16,7 @@ CONFIG_BLK_DEV_INITRD=y
 
 # Keep it small and bootable; no modules to avoid vermagic/.ko load.
 CONFIG_MODULES=n
+
+# Drop SATA/AHCI: not needed for an initramfs capture, and libahci trips a
+# BUILD_BUG_ON (sizeof > long) with the newer cross-GCC on this 6.0-rc7 tree.
+# CONFIG_ATA is not set
