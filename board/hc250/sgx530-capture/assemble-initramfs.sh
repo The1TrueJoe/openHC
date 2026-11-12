@@ -15,19 +15,28 @@ work=$(mktemp -d)
 rm -rf "$out"; mkdir -p "$out"/{bin,sbin,lib,dev,proc,sys,etc,tmp,usr/lib,usr/bin}
 
 # --- fetch armhf packages from Debian stretch (archived) ---------------------
-dpkg --add-architecture armhf
-cat >/etc/apt/sources.list.d/stretch-armhf.list <<'EOF'
-deb [trusted=yes arch=armhf] http://archive.debian.org/debian stretch main
-EOF
-apt-get -o Acquire::Check-Valid-Until=false update
+# CI runs as non-root: sudo the privileged apt/dpkg steps. Pin the runner's own
+# (Ubuntu) sources to amd64 first, so adding the armhf arch does not make apt
+# try to fetch armhf from Ubuntu's amd64-only mirrors (which 404 the update).
+for f in /etc/apt/sources.list.d/ubuntu.sources; do
+  [ -f "$f" ] && sudo sed -i '/^Signed-By:/a Architectures: amd64' "$f"
+done
+sudo dpkg --add-architecture armhf
+echo 'deb [trusted=yes arch=armhf] http://archive.debian.org/debian stretch main' \
+  | sudo tee /etc/apt/sources.list.d/stretch-armhf.list >/dev/null
+sudo apt-get -o Acquire::Check-Valid-Until=false update
 # busybox + the runtime libs the vendor stack links (all GPL/MIT/LGPL). gbm,
 # wayland-server and libdrm_omap are linked for the display path and are inert
 # at init; present only for the loader. libdrm-omap1 is the one to confirm in
 # the archive — if absent, take libdrm_omap.so.1 from a TI SDK's libdrm build
 # (freedesktop MIT, not an Imagination binary, so still fine in a GPL initramfs).
-pkgs="busybox:armhf libc6:armhf libdrm2:armhf libdrm-omap1:armhf libgbm1:armhf \
+# Required set (static busybox needs no libs of its own).
+pkgs="busybox-static:armhf libc6:armhf libdrm2:armhf libgbm1:armhf \
       libwayland-server0:armhf libudev1:armhf libffi6:armhf"
 ( cd "$work"; apt-get download $pkgs )
+# libdrm_omap is linked but inert at init; best-effort (not in every archive).
+( cd "$work"; apt-get download libdrm-omap1:armhf 2>/dev/null || \
+  echo "note: libdrm-omap1 not in archive; take libdrm_omap.so.1 from a TI SDK libdrm (MIT) if the loader needs it" )
 for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 
 # --- stage into the initramfs ------------------------------------------------
