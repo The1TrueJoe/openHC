@@ -341,6 +341,11 @@ v2, `bsscfgidx` came from the payload's first byte and the payload started two
 bytes late. For a v1 event (version field 1) the diff takes the payload right
 after `ifname` and uses interface 0, the firmware's only one.
 
+**BSS info v108.** Scan results then arrived, and `brcmf_inform_bss` dropped
+them: `Version 108 != WL_BSS_INFO_VERSION` (109). Version 109 only appends
+`SNR`, which `brcmfmac` never reads, and records carry their own length and IE
+offset. So the diff accepts 108 as well.
+
 ## What the first image is
 
 - **Kernel:** mainline 7.1.8, `omap2plus_defconfig` + `linux/hc250.fragment`.
