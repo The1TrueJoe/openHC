@@ -352,6 +352,28 @@ only has to re-apply the diff.
 
 Not in the image yet: Zigbee (the feature brings Node, too big for a RAM image).
 
+## Thermal shutdown (2026-11-11)
+
+openHC boots that followed a few minutes of stock powered the box off about 30 s
+in: LEDs out, dark until a power cycle. The kernel logged it at 3.8 s:
+
+```
+thermal thermal_zone0: cpu-thermal: critical temperature reached
+reboot: HARDWARE PROTECTION shutdown (Temperature too high)
+```
+
+The trips come from mainline's `omap3-cpu-thermal.dtsi`: passive at 80 °C and
+critical at 90 °C, applied to the bandgap reading plus a 20 °C hotspot offset
+(`coefficients = <0 20000>`). The 90 °C trip therefore fires at a 70 °C sensor
+reading, which a box warmed by stock reaches. The power-off waits for init,
+which is why it lands near 30 s. Stock has no thermal shutdown at all. A boot
+right after a quick stock start reads about 82 °C at 20 s and settles near
+78 °C.
+
+The HC-250 DT raises `cpu_crit` to 105 °C, the DM3730's extended-range junction
+limit. The passive trip stays, but it does nothing here: `ti-cpufreq` finds no
+CPU regulator, so there is nothing to throttle.
+
 ## Kernel patches
 
 **None for the first boot.** Everything the board needs is mainline:
@@ -376,6 +398,14 @@ What may still need one:
   HDMI audio is McBSP4 into the ADV7513, both expressible in the DT. Control4's
   `magneto` machine driver is not needed.
 - **Wi-Fi**: the BCM4319 in an out-of-tree `brcmfmac` (above), firmware from the unit's stock.
+
+Carried as a backport, `board/hc250/patches/linux/0002`: upstream commit
+0d3a67b1954a (timer-ti-dm registers a clocksource and clockevent only on
+am654). Linux 7.3 made the first always-on dmtimer the clocksource and
+sched_clock on every OMAP. On the HC-250 that is GPTIMER12, and the box hangs
+about 10 s into boot, right after "Switched to clocksource omap_dm_timer". With
+no panic, it sits there until the watchdog resets it. Drop the patch once a
+7.3.y stable release carries the fix (7.3.4 does not).
 
 The openHC driver changes for this board are in our own `gpio-ohc-iomcu`: a
 combo jack may now have a single serial-enable line (the HC-250's PB0/PB1), not

@@ -1,0 +1,90 @@
+From 08d10b85c292098ebdb985a608294e9264ddc49f Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <joseph@telaak.dev>
+Date: Tue, 27 Oct 2026 19:38:35 -0400
+Subject: [PATCH 2/2] usb: ehci-pci: Set has_hostpc for TDI EHCI on Intel
+ CE5300
+
+The TransDimension EHCI core in the Intel CE5300 SoCs (192e:0101,
+revision >= 6) has the Moorestown-style register extensions: host
+mode is selected in USBMODE_EX rather than USBMODE, and the port speed
+is reported in HOSTPC.
+
+Without has_hostpc, ehci_reset() never programs USBMODE_EX, so the
+core stays in idle mode: USBMODE_EX reads back 0, USBCMD.RS never
+sets and no device is ever reported as connected, even though the
+probe itself succeeds. With it, USBMODE_EX reads back 0x23 and
+devices enumerate.
+
+USBMODE itself always reads back 0 on this core, so
+tdi_in_host_mode() would report a running controller as not in host
+mode and ehci_halt() would return without stopping it. Add
+has_usbmode_ex so that, for this core only, tdi_in_host_mode() reads
+host mode back from USBMODE_EX. ChipIdea also sets has_hostpc but
+keeps host mode in USBMODE, so it is unaffected.
+
+Intel's CE5300 BSP sets has_hostpc for device 0x0101, revision >= 6.
+
+Tested on a Control4 EA-3 (Intel Atom CE5310) with v7.3-rc6: a
+full-speed CP2104 USB-UART bridge (10c4:ea60) and a high-speed USB
+flash drive (0781:5575) enumerate with this change, and
+ehci_shutdown() leaves the controller halted (USBCMD.RS clear,
+USBSTS.HCHalted set); without the USBMODE_EX check it stays running.
+
+Assisted-by: LLM
+Signed-off-by: Joseph Telaak <joseph@telaak.dev>
+Link: https://patch.msgid.link/20261027-ehci-ce5300-hostpc-v2-2-375e9d362d74@telaak.dev
+---
+ drivers/usb/host/ehci-hcd.c |  5 +++++
+ drivers/usb/host/ehci-pci.c | 10 ++++++++++
+ drivers/usb/host/ehci.h     |  1 +
+ 3 files changed, 16 insertions(+)
+
+diff --git a/drivers/usb/host/ehci-hcd.c b/drivers/usb/host/ehci-hcd.c
+index 3c46bb1..1111ed8 100644
+--- a/drivers/usb/host/ehci-hcd.c
++++ b/drivers/usb/host/ehci-hcd.c
+@@ -170,6 +170,11 @@ static int tdi_in_host_mode (struct ehci_hcd *ehci)
+ {
+ 	u32		tmp;
+ 
++	if (ehci->has_usbmode_ex) {
++		tmp = ehci_readl(ehci, &ehci->regs->usbmode_ex);
++		return (tmp & USBMODE_EX_HC) == USBMODE_EX_HC;
++	}
++
+ 	tmp = ehci_readl(ehci, &ehci->regs->usbmode);
+ 	return (tmp & 3) == USBMODE_CM_HC;
+ }
+diff --git a/drivers/usb/host/ehci-pci.c b/drivers/usb/host/ehci-pci.c
+index 3c7430a..183002e 100644
+--- a/drivers/usb/host/ehci-pci.c
++++ b/drivers/usb/host/ehci-pci.c
+@@ -155,6 +155,16 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
+ 	case PCI_VENDOR_ID_TDI:
+ 		if (pdev->device == PCI_DEVICE_ID_TDI_EHCI)
+ 			hcd->has_tt = 1;
++		/*
++		 * The Intel CE5300 core selects host mode in USBMODE_EX and
++		 * reports port speed in HOSTPC, as on Moorestown. USBMODE
++		 * reads as 0 on it, so host mode is read back from
++		 * USBMODE_EX too.
++		 */
++		if (is_intel_ce_tdi(pdev)) {
++			ehci->has_hostpc = 1;
++			ehci->has_usbmode_ex = 1;
++		}
+ 		break;
+ 	case PCI_VENDOR_ID_AMD:
+ 		/* AMD PLL quirk */
+diff --git a/drivers/usb/host/ehci.h b/drivers/usb/host/ehci.h
+index d7a3c8d..4769fa8 100644
+--- a/drivers/usb/host/ehci.h
++++ b/drivers/usb/host/ehci.h
+@@ -232,6 +232,7 @@ struct ehci_hcd {			/* one per controller */
+ 	#define OHCI_HCCTRL_LEN         0x4
+ 	__hc32			*ohci_hcctrl_reg;
+ 	unsigned		has_hostpc:1;
++	unsigned		has_usbmode_ex:1; /* host mode is in USBMODE_EX */
+ 	unsigned		has_tdi_phy_lpm:1;
+ 	unsigned		has_ppcd:1; /* support per-port change bits */
+ 	u8			sbrn;		/* packed release number */
