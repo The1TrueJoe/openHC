@@ -206,3 +206,73 @@
  	drvr->proto->pd = bcdc;
  
  	drvr->hdrlen += BCDC_HEADER_LEN + BRCMF_PROT_FW_SIGNAL_MAX_TXBYTES;
+--- a/brcmfmac/fweh.h
++++ b/brcmfmac/fweh.h
+@@ -220,6 +220,10 @@
+ 	__be16 usr_subtype;
+ } __packed;
+ 
++/* Event message v1 ends at ifname; v2 appends ifidx and bsscfgidx. */
++#define BRCMF_EVENT_MSG_V1	1
++#define BRCMF_EVENT_V2_TAIL	2
++
+ struct brcmf_event_msg_be {
+ 	__be16 version;
+ 	__be16 flags;
+@@ -373,7 +377,8 @@
+ 	if (skb->protocol != cpu_to_be16(ETH_P_LINK_CTL))
+ 		return;
+ 
+-	if ((skb->len + ETH_HLEN) < sizeof(*event_packet))
++	/* v1 events (pre-2011 firmware) lack the last two bytes of the v2 header */
++	if ((skb->len + ETH_HLEN) < sizeof(*event_packet) - BRCMF_EVENT_V2_TAIL)
+ 		return;
+ 
+ 	event_packet = (struct brcmf_event *)skb_mac_header(skb);
+--- a/brcmfmac/fweh.c
++++ b/brcmfmac/fweh.c
+@@ -485,12 +485,15 @@
+ 	struct brcmf_fweh_info *fweh = drvr->fweh;
+ 	struct brcmf_fweh_queue_item *event;
+ 	void *data;
+-	u32 datalen;
++	u32 datalen, hdrlen;
++	bool v1;
+ 
+ 	/* get event info */
+ 	fwevt_idx = get_unaligned_be32(&event_packet->msg.event_type);
+ 	datalen = get_unaligned_be32(&event_packet->msg.datalen);
+-	data = &event_packet[1];
++	v1 = get_unaligned_be16(&event_packet->msg.version) == BRCMF_EVENT_MSG_V1;
++	hdrlen = sizeof(*event_packet) - (v1 ? BRCMF_EVENT_V2_TAIL : 0);
++	data = (u8 *)event_packet + hdrlen;
+ 
+ 	if (fwevt_idx >= fweh->num_event_codes)
+ 		return;
+@@ -498,8 +501,7 @@
+ 	if (fwevt_idx != BRCMF_E_IF && !fweh->evt_handler[fwevt_idx])
+ 		return;
+ 
+-	if (datalen > BRCMF_DCMD_MAXLEN ||
+-	    datalen + sizeof(*event_packet) > packet_len)
++	if (datalen > BRCMF_DCMD_MAXLEN || datalen + hdrlen > packet_len)
+ 		return;
+ 
+ 	event = kzalloc_flex(*event, data, datalen, gfp);
+@@ -508,10 +510,15 @@
+ 
+ 	event->code = fwevt_idx;
+ 	event->datalen = datalen;
+-	event->ifidx = event_packet->msg.ifidx;
++	event->ifidx = v1 ? 0 : event_packet->msg.ifidx;
+ 
+ 	/* use memcpy to get aligned event message */
+ 	memcpy(&event->emsg, &event_packet->msg, sizeof(event->emsg));
++	if (v1) {
++		/* v1 firmware has one interface; those bytes are payload */
++		event->emsg.ifidx = 0;
++		event->emsg.bsscfgidx = 0;
++	}
+ 	memcpy(event->data, data, datalen);
+ 	memcpy(event->ifaddr, event_packet->eth.h_dest, ETH_ALEN);
+ 

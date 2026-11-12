@@ -334,6 +334,13 @@ accepts 2. Version 2 added the data-offset byte that version 1 leaves undefined.
 The diff also accepts version 1 on receive (with no offset), records it, and
 sends with the version the firmware uses.
 
+**Event message v1.** The packets then arrived, but every firmware event failed
+with `no interface object`. The same generation gap one layer up: the v1 event
+message ends at `ifname[16]`, and v2 appends `ifidx` and `bsscfgidx`. Read as
+v2, `bsscfgidx` came from the payload's first byte and the payload started two
+bytes late. For a v1 event (version field 1) the diff takes the payload right
+after `ifname` and uses interface 0, the firmware's only one.
+
 ## What the first image is
 
 - **Kernel:** mainline 7.1.8, `omap2plus_defconfig` + `linux/hc250.fragment`.
