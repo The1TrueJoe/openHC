@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-arm-linux-gnueabihf u-boot-tools \
-            flex bison libssl-dev bc qemu-user-static debootstrap cpio
+            flex bison libssl-dev bc qemu-user-static debootstrap cpio device-tree-compiler
 
       - name: Build capture uImage
         env:

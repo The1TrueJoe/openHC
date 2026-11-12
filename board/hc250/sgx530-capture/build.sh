@@ -35,15 +35,21 @@ MAC_HTTP="${MAC_HTTP:?set MAC_HTTP=http://<mac-ip>:<port>}" \
 cp -a "$work/initramfs" ./initramfs
 make olddefconfig
 
-# 4. Build: zImage + the capture DTB. The board's ethernet is a GPMC LAN9220,
-#    not beagle-xm's USB NIC, so netconsole needs the board's own DT: a trimmed
-#    OMAP3630 magneto DT (ci/capture.dts), compiled in-tree.
-cp "$here/capture.dts" arch/arm/boot/dts/omap3630-sgx530-capture.dts
+# 4. Build zImage.
 make -j"$(nproc)" zImage
-make arch/arm/boot/dts/omap3630-sgx530-capture.dtb
-cat arch/arm/boot/zImage arch/arm/boot/dts/omap3630-sgx530-capture.dtb > "$work/zImage-dtb"
 
-# 5. uImage for bootm (load/entry match the board's c4test.img flow).
+# 5. Build the capture DTB directly with cpp + dtc (kbuild's per-dtb target path
+#    differs by kernel version; this is version-independent). The board's
+#    ethernet is a GPMC LAN9220, not beagle-xm's USB NIC, so netconsole needs the
+#    board's own DT: a trimmed OMAP3630 magneto DT (ci/capture.dts).
+cp "$here/capture.dts" arch/arm/boot/dts/omap3630-sgx530-capture.dts
+gcc -E -P -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+    -I arch/arm/boot/dts -I include \
+    arch/arm/boot/dts/omap3630-sgx530-capture.dts -o "$work/capture.pp.dts"
+dtc -I dts -O dtb -i arch/arm/boot/dts -o "$work/capture.dtb" "$work/capture.pp.dts"
+cat arch/arm/boot/zImage "$work/capture.dtb" > "$work/zImage-dtb"
+
+# 6. uImage for bootm (load/entry match the board's c4test.img flow).
 mkimage -A arm -O linux -T kernel -C none -a 0x80008000 -e 0x80008000 \
   -n sgx530-capture -d "$work/zImage-dtb" "$work/openhc-sgx530-capture.uImage"
 echo "artifact: $work/openhc-sgx530-capture.uImage"
