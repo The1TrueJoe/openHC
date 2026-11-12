@@ -1,0 +1,301 @@
+--- a/brcmfmac/bcmsdh.c
++++ b/brcmfmac/bcmsdh.c
+@@ -46,6 +46,9 @@
+ #define SDIO_4373_FUNC2_BLOCKSIZE	256
+ #define SDIO_435X_FUNC2_BLOCKSIZE	256
+ #define SDIO_4329_FUNC2_BLOCKSIZE	128
++#ifndef SDIO_DEVICE_ID_BROADCOM_4319
++#define SDIO_DEVICE_ID_BROADCOM_4319	0x4319
++#endif
+ /* Maximum milliseconds to wait for F2 to come up */
+ #define SDIO_WAIT_F2RDY	3000
+ 
+@@ -920,6 +923,7 @@
+ 	case SDIO_DEVICE_ID_BROADCOM_4356:
+ 		f2_blksz = SDIO_435X_FUNC2_BLOCKSIZE;
+ 		break;
++	case SDIO_DEVICE_ID_BROADCOM_4319:
+ 	case SDIO_DEVICE_ID_BROADCOM_4329:
+ 		f2_blksz = SDIO_4329_FUNC2_BLOCKSIZE;
+ 		break;
+@@ -980,6 +984,7 @@
+ static const struct sdio_device_id brcmf_sdmmc_ids[] = {
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43143, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43241, WCC),
++	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4319, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4329, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4330, WCC),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4334, WCC),
+--- a/brcmfmac/chip.c
++++ b/brcmfmac/chip.c
+@@ -997,44 +997,30 @@
+ 		  socitype == SOCI_SB ? "SB" : "AXI", ci->pub.name);
+ 
+ 	if (socitype == SOCI_SB) {
+-		if (ci->pub.chip != BRCM_CC_4329_CHIP_ID) {
+-			brcmf_err("SB chip is not supported\n");
++		/* Sonics backplane: each core's ID is in its sbidhigh */
++		u32 ncores = (regdata & CID_CC_MASK) >> CID_CC_SHIFT;
++		u32 base, sbidh;
++		u32 n;
++
++		if (!ncores || ncores > 16) {
++			brcmf_err("SB chip with %u cores\n", ncores);
+ 			return -ENODEV;
+ 		}
+ 		ci->iscoreup = brcmf_chip_sb_iscoreup;
+ 		ci->coredisable = brcmf_chip_sb_coredisable;
+ 		ci->resetcore = brcmf_chip_sb_resetcore;
+ 
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_CHIPCOMMON,
+-					   SI_ENUM_BASE_DEFAULT, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_SDIO_DEV,
+-					   BCM4329_CORE_BUS_BASE, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_INTERNAL_MEM,
+-					   BCM4329_CORE_SOCRAM_BASE, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_ARM_CM3,
+-					   BCM4329_CORE_ARM_BASE, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
+-
+-		core = brcmf_chip_add_core(ci, BCMA_CORE_80211, 0x18001000, 0);
+-		if (IS_ERR(core))
+-			return PTR_ERR(core);
+-
+-		brcmf_chip_sb_corerev(ci, core);
++		for (n = 0; n < ncores; n++) {
++			base = SI_ENUM_BASE_DEFAULT + n * 0x1000;
++			sbidh = ci->ops->read32(ci->ctx, CORE_SB(base, sbidhigh));
++			core = brcmf_chip_add_core(ci, (sbidh & 0x8ff0) >> 4,
++						   base, 0);
++			if (IS_ERR(core))
++				return PTR_ERR(core);
++			brcmf_chip_sb_corerev(ci, core);
++			brcmf_dbg(INFO, "SB core %u: 0x%03x rev %u at 0x%08x\n", n,
++				  core->id, core->rev, base);
++		}
+ 	} else if (socitype == SOCI_AI) {
+ 		ci->iscoreup = brcmf_chip_ai_iscoreup;
+ 		ci->coredisable = brcmf_chip_ai_coredisable;
+--- a/brcmfmac/sdio.c
++++ b/brcmfmac/sdio.c
+@@ -605,6 +605,7 @@
+ BRCMF_FW_DEF(43241B0, "brcmfmac43241b0-sdio");
+ BRCMF_FW_DEF(43241B4, "brcmfmac43241b4-sdio");
+ BRCMF_FW_DEF(43241B5, "brcmfmac43241b5-sdio");
++BRCMF_FW_DEF(4319, "brcmfmac4319-sdio");
+ BRCMF_FW_DEF(4329, "brcmfmac4329-sdio");
+ BRCMF_FW_DEF(4330, "brcmfmac4330-sdio");
+ BRCMF_FW_DEF(4334, "brcmfmac4334-sdio");
+@@ -637,6 +638,7 @@
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0x0000001F, 43241B0),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0x00000020, 43241B4),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0xFFFFFFC0, 43241B5),
++	BRCMF_FW_ENTRY(BRCM_CC_4319_CHIP_ID, 0xFFFFFFFF, 4319),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4329_CHIP_ID, 0xFFFFFFFF, 4329),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4330_CHIP_ID, 0xFFFFFFFF, 4330),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4334_CHIP_ID, 0xFFFFFFFF, 4334),
+--- a/include/brcm_hw_ids.h
++++ b/include/brcm_hw_ids.h
+@@ -22,6 +22,7 @@
+ #define BRCM_CC_43238_CHIP_ID		43238
+ #define BRCM_CC_43241_CHIP_ID		0x4324
+ #define BRCM_CC_43242_CHIP_ID		43242
++#define BRCM_CC_4319_CHIP_ID		0x4319
+ #define BRCM_CC_4329_CHIP_ID		0x4329
+ #define BRCM_CC_4330_CHIP_ID		0x4330
+ #define BRCM_CC_4334_CHIP_ID		0x4334
+--- a/brcmfmac/bcdc.c
++++ b/brcmfmac/bcdc.c
+@@ -46,6 +46,7 @@
+  */
+ #define	BCDC_HEADER_LEN		4
+ #define BCDC_PROTO_VER		2	/* Protocol version */
++#define BCDC_PROTO_VER_1	1	/* Pre-2011 firmware: no data offset */
+ #define BCDC_FLAG_VER_MASK	0xf0	/* Protocol version mask */
+ #define BCDC_FLAG_VER_SHIFT	4	/* Protocol version shift */
+ #define BCDC_FLAG_SUM_GOOD	0x04	/* Good RX checksums */
+@@ -95,6 +96,7 @@
+ 	struct brcmf_proto_bcdc_dcmd msg;
+ 	unsigned char buf[BRCMF_DCMD_MAXLEN];
+ 	struct brcmf_fws_info *fws;
++	u8 proto_ver;		/* BCDC version the firmware sends */
+ };
+ 
+ 
+@@ -257,6 +259,7 @@
+ brcmf_proto_bcdc_hdrpush(struct brcmf_pub *drvr, int ifidx, u8 offset,
+ 			 struct sk_buff *pktbuf)
+ {
++	struct brcmf_bcdc *bcdc = drvr->proto->pd;
+ 	struct brcmf_proto_bcdc_header *h;
+ 
+ 	brcmf_dbg(BCDC, "Enter\n");
+@@ -266,7 +269,7 @@
+ 
+ 	h = (struct brcmf_proto_bcdc_header *)(pktbuf->data);
+ 
+-	h->flags = (BCDC_PROTO_VER << BCDC_FLAG_VER_SHIFT);
++	h->flags = (bcdc->proto_ver << BCDC_FLAG_VER_SHIFT);
+ 	if (pktbuf->ip_summed == CHECKSUM_PARTIAL)
+ 		h->flags |= BCDC_FLAG_SUM_NEEDED;
+ 
+@@ -281,8 +284,10 @@
+ brcmf_proto_bcdc_hdrpull(struct brcmf_pub *drvr, bool do_fws,
+ 			 struct sk_buff *pktbuf, struct brcmf_if **ifp)
+ {
++	struct brcmf_bcdc *bcdc = drvr->proto->pd;
+ 	struct brcmf_proto_bcdc_header *h;
+ 	struct brcmf_if *tmp_if;
++	u8 ver, offset;
+ 
+ 	brcmf_dbg(BCDC, "Enter\n");
+ 
+@@ -301,12 +306,18 @@
+ 		brcmf_dbg(INFO, "no matching ifp found\n");
+ 		return -EBADE;
+ 	}
+-	if (((h->flags & BCDC_FLAG_VER_MASK) >> BCDC_FLAG_VER_SHIFT) !=
+-	    BCDC_PROTO_VER) {
++	ver = (h->flags & BCDC_FLAG_VER_MASK) >> BCDC_FLAG_VER_SHIFT;
++	if (ver != BCDC_PROTO_VER && ver != BCDC_PROTO_VER_1) {
+ 		bphy_err(drvr, "%s: non-BCDC packet received, flags 0x%x\n",
+ 			 brcmf_ifname(tmp_if), h->flags);
+ 		return -EBADE;
++	}
++	if (ver != bcdc->proto_ver) {
++		brcmf_dbg(INFO, "firmware speaks BCDC v%u\n", ver);
++		bcdc->proto_ver = ver;
+ 	}
++	/* v1 has no data offset; that byte is undefined there */
++	offset = ver == BCDC_PROTO_VER_1 ? 0 : h->data_offset << 2;
+ 
+ 	if (h->flags & BCDC_FLAG_SUM_GOOD) {
+ 		brcmf_dbg(BCDC, "%s: BDC rcv, good checksum, flags 0x%x\n",
+@@ -318,9 +329,9 @@
+ 
+ 	skb_pull(pktbuf, BCDC_HEADER_LEN);
+ 	if (do_fws)
+-		brcmf_fws_hdrpull(tmp_if, h->data_offset << 2, pktbuf);
++		brcmf_fws_hdrpull(tmp_if, offset, pktbuf);
+ 	else
+-		skb_pull(pktbuf, h->data_offset << 2);
++		skb_pull(pktbuf, offset);
+ 
+ 	if (pktbuf->len == 0)
+ 		return -ENODATA;
+@@ -468,6 +479,7 @@
+ 	drvr->proto->reset_if = brcmf_proto_bcdc_reset_if;
+ 	drvr->proto->init_done = brcmf_proto_bcdc_init_done;
+ 	drvr->proto->debugfs_create = brcmf_proto_bcdc_debugfs_create;
++	bcdc->proto_ver = BCDC_PROTO_VER;
+ 	drvr->proto->pd = bcdc;
+ 
+ 	drvr->hdrlen += BCDC_HEADER_LEN + BRCMF_PROT_FW_SIGNAL_MAX_TXBYTES;
+--- a/brcmfmac/fweh.h
++++ b/brcmfmac/fweh.h
+@@ -220,6 +220,10 @@
+ 	__be16 usr_subtype;
+ } __packed;
+ 
++/* Event message v1 ends at ifname; v2 appends ifidx and bsscfgidx. */
++#define BRCMF_EVENT_MSG_V1	1
++#define BRCMF_EVENT_V2_TAIL	2
++
+ struct brcmf_event_msg_be {
+ 	__be16 version;
+ 	__be16 flags;
+@@ -373,7 +377,8 @@
+ 	if (skb->protocol != cpu_to_be16(ETH_P_LINK_CTL))
+ 		return;
+ 
+-	if ((skb->len + ETH_HLEN) < sizeof(*event_packet))
++	/* v1 events (pre-2011 firmware) lack the last two bytes of the v2 header */
++	if ((skb->len + ETH_HLEN) < sizeof(*event_packet) - BRCMF_EVENT_V2_TAIL)
+ 		return;
+ 
+ 	event_packet = (struct brcmf_event *)skb_mac_header(skb);
+--- a/brcmfmac/fweh.c
++++ b/brcmfmac/fweh.c
+@@ -485,12 +485,15 @@
+ 	struct brcmf_fweh_info *fweh = drvr->fweh;
+ 	struct brcmf_fweh_queue_item *event;
+ 	void *data;
+-	u32 datalen;
++	u32 datalen, hdrlen;
++	bool v1;
+ 
+ 	/* get event info */
+ 	fwevt_idx = get_unaligned_be32(&event_packet->msg.event_type);
+ 	datalen = get_unaligned_be32(&event_packet->msg.datalen);
+-	data = &event_packet[1];
++	v1 = get_unaligned_be16(&event_packet->msg.version) == BRCMF_EVENT_MSG_V1;
++	hdrlen = sizeof(*event_packet) - (v1 ? BRCMF_EVENT_V2_TAIL : 0);
++	data = (u8 *)event_packet + hdrlen;
+ 
+ 	if (fwevt_idx >= fweh->num_event_codes)
+ 		return;
+@@ -498,8 +501,7 @@
+ 	if (fwevt_idx != BRCMF_E_IF && !fweh->evt_handler[fwevt_idx])
+ 		return;
+ 
+-	if (datalen > BRCMF_DCMD_MAXLEN ||
+-	    datalen + sizeof(*event_packet) > packet_len)
++	if (datalen > BRCMF_DCMD_MAXLEN || datalen + hdrlen > packet_len)
+ 		return;
+ 
+ 	event = kzalloc_flex(*event, data, datalen, gfp);
+@@ -508,10 +510,15 @@
+ 
+ 	event->code = fwevt_idx;
+ 	event->datalen = datalen;
+-	event->ifidx = event_packet->msg.ifidx;
++	event->ifidx = v1 ? 0 : event_packet->msg.ifidx;
+ 
+ 	/* use memcpy to get aligned event message */
+ 	memcpy(&event->emsg, &event_packet->msg, sizeof(event->emsg));
++	if (v1) {
++		/* v1 firmware has one interface; those bytes are payload */
++		event->emsg.ifidx = 0;
++		event->emsg.bsscfgidx = 0;
++	}
+ 	memcpy(event->data, data, datalen);
+ 	memcpy(event->ifaddr, event_packet->eth.h_dest, ETH_ALEN);
+ 
+--- a/brcmfmac/fwil_types.h
++++ b/brcmfmac/fwil_types.h
+@@ -19,6 +19,8 @@
+ #define BRCMF_ARP_OL_PEER_AUTO_REPLY	0x00000008
+ 
+ #define	BRCMF_BSS_INFO_VERSION	109 /* curr ver of brcmf_bss_info_le struct */
++/* 108 (pre-2011 firmware) is 109 without the trailing SNR */
++#define BRCMF_BSS_INFO_VERSION_108	108
+ #define BRCMF_BSS_RSSI_ON_CHANNEL	0x0004
+ 
+ #define BRCMF_STA_BRCM			0x00000001	/* Running a Broadcom driver */
+--- a/brcmfmac/cfg80211.c
++++ b/brcmfmac/cfg80211.c
+@@ -3436,7 +3436,8 @@
+ 
+ 	bss_list = (struct brcmf_scan_results *)cfg->escan_info.escan_buf;
+ 	if (bss_list->count != 0 &&
+-	    bss_list->version != BRCMF_BSS_INFO_VERSION) {
++	    bss_list->version != BRCMF_BSS_INFO_VERSION &&
++	    bss_list->version != BRCMF_BSS_INFO_VERSION_108) {
+ 		bphy_err(drvr, "Version %d != WL_BSS_INFO_VERSION\n",
+ 			 bss_list->version);
+ 		return -EOPNOTSUPP;

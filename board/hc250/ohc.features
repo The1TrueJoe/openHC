@@ -3,4 +3,5 @@ iomcu       # LM3S1162 on ttyS2: 1 relay, 1 contact, 4 IR + blaster, 2 MCU seria
 audio       # TPS65950 codec (rear out + line in) and HDMI via the ADV7513
 splash      # a framebuffer on the DPI bus: HDMI and component
 restore     # remote factory restore: an EEPROM request bootohc runs (SD install)
+wifi        # BCM4319 on MMC2: brcmfmac (out of tree), stock's firmware, the setup AP
 # zigbee waits for a rootfs on the SD card: it brings Node, too big for the RAM image.

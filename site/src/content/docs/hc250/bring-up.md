@@ -288,11 +288,12 @@ Details that came from the unit:
 
 ## Wi-Fi: a BCM4319
 
-The module is fitted. Under stock, raising `wifi_reset` (GPIO176) and pulling the
-card-detect loop low makes it enumerate: SDIO `02d0:4319`, a **BCM4319**.
-GPIO101 (`wifi_carddetect`) is wired back to GPIO94, MMC2's card-detect input.
-Stock 2.10.6 carries the driver and firmware in the `/mnt/jffs2` partition
-(`dhd/`, installed by dpkg), not the rootfs, and never loads them:
+The module is fitted: SDIO `02d0:4319`, a **BCM4319** B0. Stock brings it up in
+`/etc/scripts/wifipower.sh`: raise `wifi_reset` (GPIO176), then pulse
+`wifi_carddetect` (GPIO101), which is wired back to GPIO94, MMC2's card detect
+(low = card in), then load `dhd.ko`. The driver and firmware sit in stock's
+`/etc/hotplug/firmware` (on 2.10.6, dpkg puts them in the `/mnt/jffs2`
+partition):
 
 | File | What |
 |---|---|
@@ -302,13 +303,48 @@ Stock 2.10.6 carries the driver and firmware in the `/mnt/jffs2` partition
 
 The firmware is FullMAC over SDIO with the BCDC protocol, which `brcmfmac`
 speaks (its 4329 firmware is the same generation). It is Broadcom's and not
-redistributable, so openHC would take it off the unit's own stock partition,
-not ship it.
+redistributable, so openHC never ships it: the SD install copies it off the
+unit's own stock with the IO firmware (`ohc-boot-env.sh stock-io`), and
+`S38wifi-radio` loads it from there.
 
-Mainline `brcmfmac` has no 4319 entry, so MMC2 stays disabled. The 4319 is a
-Sonics SB chip like the 4329, which `brcmfmac` handles with a hard-coded core
-list. Under mainline the card does not initialize yet either: `MMCHS_CON`
-differs from stock's (0x600 against 0x10e00: CTPL, CLKEXTFREE).
+**Why MMC2 was silent under mainline.** Not power and not the controller: on
+stock the TWL4030's VMMC2 is off while the card runs (a fixed rail feeds it),
+and the MMC2 pads and DEVCONF1 clock loopback match. The two card-detect pads
+do not: U-Boot leaves GPIO94 (`cam_hs`) and GPIO101 (`cam_d2`) in camera mode,
+and stock's kernel muxes them as GPIOs. The DT now does too, and describes the
+loop as MMC2's `cd-gpios`. The radio also needs 200 ms after `wifi_reset` goes
+high; with 50 ms, CMD5 goes unanswered. Inserting the card at runtime (drive
+`wifi_carddetect` low), as stock does, then enumerates it every time. The probe
+at boot, with the card present from the start, did not (seen on kexec'd
+kernels, cause not pinned down).
+
+**The driver.** Mainline `brcmfmac` has no 4319 entry, and its Sonics-backplane
+(SB) path is hard-coded to the 4329's core addresses. `brcmfmac-bcm4319`
+(`board/hc250/packages`) builds the kernel's own `brcmfmac` out of tree with
+`bcm4319.diff`: the SDIO id, the firmware name (`brcm/brcmfmac4319-sdio.bin`
+and `.txt`), and a generic SB core scan (core count from the chip id, each
+core's id from its `sbidhigh`). It replaces the in-tree module, so a kernel bump
+only has to re-apply the diff.
+
+**BCDC v1.** With those, the card enumerates, the firmware loads and `wlan0`
+appears (2026-11-12, kernel 7.3.3), but scans time out. Every packet from the
+firmware was dropped as `non-BCDC packet received, flags 0x10`: this 2011
+firmware writes BCDC version 1 in the header's top nibble, and `brcmfmac` only
+accepts 2. Version 2 added the data-offset byte that version 1 leaves undefined.
+The diff also accepts version 1 on receive (with no offset), records it, and
+sends with the version the firmware uses.
+
+**Event message v1.** The packets then arrived, but every firmware event failed
+with `no interface object`. The same generation gap one layer up: the v1 event
+message ends at `ifname[16]`, and v2 appends `ifidx` and `bsscfgidx`. Read as
+v2, `bsscfgidx` came from the payload's first byte and the payload started two
+bytes late. For a v1 event (version field 1) the diff takes the payload right
+after `ifname` and uses interface 0, the firmware's only one.
+
+**BSS info v108.** Scan results then arrived, and `brcmf_inform_bss` dropped
+them: `Version 108 != WL_BSS_INFO_VERSION` (109). Version 109 only appends
+`SNR`, which `brcmfmac` never reads, and records carry their own length and IE
+offset. So the diff accepts 108 as well.
 
 ## What the first image is
 
@@ -330,11 +366,11 @@ differs from stock's (0x600 against 0x10e00: CTPL, CLKEXTFREE).
   (8,644 bytes, about 3.5 s), then applies the pin table. A factory restore's
   stock OS puts Control4's image back.
 - **NAND:** described with every partition `read-only` (see the install section).
-- **Held lines:** `zigbee_reset` and `zigrf_enable` high, the 12 V enable high,
-  and the Wi-Fi radio held in reset, all as stock leaves them.
+- **Held lines:** `zigbee_reset` and `zigrf_enable` high and the 12 V enable
+  high, as stock leaves them. The Wi-Fi radio stays in reset until
+  `S38wifi-radio` inserts the card.
 
-Not in the image yet: Zigbee (the feature brings Node, too big for a RAM image)
-and Wi-Fi (no driver, above).
+Not in the image yet: Zigbee (the feature brings Node, too big for a RAM image).
 
 ## Thermal shutdown (2026-11-11)
 
@@ -381,7 +417,7 @@ What may still need one:
 - **Audio** needs no driver patch: the TPS65950 codec is `ti,omap-twl4030` and
   HDMI audio is McBSP4 into the ADV7513, both expressible in the DT. Control4's
   `magneto` machine driver is not needed.
-- **Wi-Fi** needs BCM4319 support added to `brcmfmac`, plus firmware.
+- **Wi-Fi**: the BCM4319 in an out-of-tree `brcmfmac` (above), firmware from the unit's stock.
 
 Carried as a backport, `board/hc250/patches/linux/0002`: upstream commit
 0d3a67b1954a (timer-ti-dm registers a clocksource and clockevent only on
@@ -398,10 +434,8 @@ gives up (above).
 
 ## Next
 
-1. A picture on a TV: HDMI with a monitor attached, and component.
+1. Component video on a TV.
 2. Zigbee: start the EM357 app from its bootloader at boot, then a root filesystem
    on `ohcdata` (Zigbee/Node is too big for RAM).
-3. The HC-250 in the flasher, calling the two install scripts.
-4. Wi-Fi: BCM4319 in `brcmfmac`, plus firmware.
-5. What the MADC inputs measure.
-6. openHC's own LM3S1162 firmware on this board's pins.
+3. Wi-Fi: `brcmfmac` against stock's 4.218 firmware, then association.
+4. What the MADC inputs measure.

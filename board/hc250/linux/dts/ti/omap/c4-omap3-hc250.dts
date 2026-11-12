@@ -118,6 +118,22 @@
 	};
 
 	/* Rear USB 5 V: TPS2553 enabled by TWL GPIO 7 (U-Boot c4sys usbcheck). */
+	/* The BCM4319 module runs off a fixed rail (stock leaves the TWL LDOs off). */
+	wifi_vmmc: regulator-wifi {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi_vmmc";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+	};
+
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&gpio6 16 GPIO_ACTIVE_LOW>;	/* wifi_reset */
+		/* 50 ms is too short: CMD5 goes unanswered. 200 ms works. */
+		post-power-on-delay-ms = <200>;
+	};
+
 	usb_vbus: regulator-usb-vbus {
 		compatible = "regulator-fixed";
 		regulator-name = "usb_vbus";
@@ -158,14 +174,6 @@
 		/* 112 */ "", "", "", "", "", "", "", "",
 		/* 120 */ "", "", "", "", "", "", "", "";
 
-	/* Stock tps2533 driver holds this high; its fault input is gpio110. */
-	/* Wi-Fi is a BCM4319 (SDIO 02d0:4319), which brcmfmac does not support. */
-	wifi-cd-hog {
-		gpio-hog;
-		gpios = <5 GPIO_ACTIVE_HIGH>;	/* looped to gpio94, mmc2's card detect */
-		output-low;
-		line-name = "wifi_carddetect";
-	};
 	/* X-Loader holds the THS8200 in reset; stock releases it. */
 	ths8200-reset-hog {
 		gpio-hog;
@@ -173,6 +181,7 @@
 		output-high;
 		line-name = "ths8200_reset";
 	};
+	/* Stock tps2533 driver holds this high; its fault input is gpio110. */
 	pwr-12v-hog {
 		gpio-hog;
 		gpios = <8 GPIO_ACTIVE_HIGH>;
@@ -187,13 +196,6 @@
 		/* 168 */ "", "", "", "", "", "", "", "",
 		/* 176 */ "wifi_reset", "eth_reset", "", "", "", "", "", "",
 		/* 184 */ "", "", "", "", "", "", "", "";
-
-	wifi-reset-hog {
-		gpio-hog;
-		gpios = <16 GPIO_ACTIVE_HIGH>;
-		output-low;
-		line-name = "wifi_reset";
-	};
 };
 
 /* 400 kHz, not the TWL's 2.6 MHz HS mode: the 24C02 at 0x50 shares the bus. */
@@ -422,6 +424,14 @@
 		>;
 	};
 
+	/* U-Boot leaves both in camera mode; stock's kernel muxes them as GPIOs. */
+	wifi_pins: wifi-pins {
+		pinctrl-single,pins = <
+			OMAP3_CORE1_IOPAD(0x210c, PIN_INPUT_PULLUP | MUX_MODE4)	/* cam_hs.gpio94: card detect in */
+			OMAP3_CORE1_IOPAD(0x211a, PIN_OUTPUT | MUX_MODE4)	/* cam_d2.gpio101: wifi_carddetect */
+		>;
+	};
+
 	mcbsp4_pins: mcbsp4-pins {
 		pinctrl-single,pins = <
 			OMAP3_CORE1_IOPAD(0x2184, PIN_INPUT | MUX_MODE0)	/* mcbsp4_clkx */
@@ -463,11 +473,20 @@
 
 /*
  * BCM4319 SDIO Wi-Fi behind a direction-controlled level shifter (dat4-7 =
- * dir/clkin, U-Boot's mux; X-Loader sets DEVCONF1 clock loopback). Off until
- * there is a driver: wifi_reset low, as stock leaves it.
+ * dir/clkin, U-Boot's mux; X-Loader sets DEVCONF1 clock loopback). Card detect
+ * is wifi_carddetect looped back to gpio94, as on stock: the radio comes up
+ * when S38wifi-radio drives it low, after the firmware is in place.
  */
 &mmc2 {
-	status = "disabled";
+	pinctrl-names = "default";
+	pinctrl-0 = <&wifi_pins>;
+	vmmc-supply = <&wifi_vmmc>;
+	mmc-pwrseq = <&wifi_pwrseq>;
+	bus-width = <4>;
+	cd-gpios = <&gpio3 30 GPIO_ACTIVE_LOW>;
+	cap-power-off-card;
+	keep-power-in-suspend;
+	status = "okay";
 };
 
 &mmc3 {

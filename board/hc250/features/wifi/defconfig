@@ -1,0 +1,8 @@
+# wifi: the BCM4319 on MMC2. brcmfmac with the 4319 added (out of tree), the
+# firmware copied off the unit's own stock partition at install.
+BR2_PACKAGE_BRCMFMAC_BCM4319=y
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
+BR2_PACKAGE_IW=y
