@@ -41,7 +41,8 @@ for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 
 # --- stage into the initramfs ------------------------------------------------
 cp -a "$work"/root/bin/busybox "$out/bin/busybox"
-for a in sh mount ip ifconfig wget tar sleep mkdir cat echo insmod; do
+for a in sh mount umount ip ifconfig wget tar sleep mkdir cat echo \
+         ping timeout nc dmesg grep head date; do
   ln -sf busybox "$out/bin/$a"
 done
 # ld-linux + the runtime .so (keep symlinks)
@@ -49,20 +50,34 @@ cp -a "$work"/root/lib/arm-linux-gnueabihf/. "$out/lib/" 2>/dev/null || true
 cp -a "$work"/root/lib/ld-linux-armhf.so.3 "$out/lib/" 2>/dev/null || true
 cp -a "$work"/root/usr/lib/arm-linux-gnueabihf/. "$out/usr/lib/" 2>/dev/null || true
 
-# --- init: fetch the TI user space from the Mac and run it once --------------
+# --- init ---------------------------------------------------------------------
+# The board has no serial and this initramfs runs no sshd, so the log must come
+# back over the network: the init time-bounds pvrsrvctl (a GPU hang can't block
+# it) and ships the whole dmesg to the Mac's sink (NETCONSOLE_TARGET host:port)
+# over nc. The sink is the Mac's `nc -l <port> > cap.log`.
+: "${NETCONSOLE_TARGET:?set NETCONSOLE_TARGET=<mac-ip>:<port>}"
+sink_host=${NETCONSOLE_TARGET%:*}; sink_port=${NETCONSOLE_TARGET##*:}
 cat > "$out/init" <<INIT
 #!/bin/sh
 mount -t proc none /proc; mount -t sysfs none /sys
 mount -t devtmpfs none /dev 2>/dev/null || true
 mount -t tmpfs none /tmp
 ifconfig eth0 10.0.0.123 up 2>/dev/null || ip addr add 10.0.0.123/24 dev eth0
+# wait for the link to the Mac (up to ~15 s)
+i=0; while [ \$i -lt 15 ]; do ping -c1 -W1 $sink_host >/dev/null 2>&1 && break; i=\$((i+1)); sleep 1; done
 echo "CAP: fetch TI user space from the Mac" > /dev/kmsg
-wget -q -O /tmp/ti.tar "$MAC_HTTP/ti-userspace.tar" && tar -C /tmp -xf /tmp/ti.tar
+wget -q -O /tmp/ti.tar "$MAC_HTTP/ti-userspace.tar" && tar -C /tmp -xf /tmp/ti.tar || echo "CAP: FETCH FAILED" > /dev/kmsg
 export LD_LIBRARY_PATH=/tmp/ti/lib:/usr/lib:/lib
 echo "CAP: start vendor init" > /dev/kmsg
-/tmp/ti/bin/pvrsrvctl --start --no-module 2>&1 | while read l; do echo "CAP: \$l" > /dev/kmsg; done
-echo "CAP: done; the module log above has the register writes and InitStatus" > /dev/kmsg
-sleep 20
+timeout 90 /tmp/ti/bin/pvrsrvctl --start --no-module 2>&1 | while read l; do echo "CAP: \$l" > /dev/kmsg; done
+echo "CAP: vendor init returned; shipping dmesg to the Mac" > /dev/kmsg
+# Primary: ship the whole kernel log to the Mac (the CAP-* lines are in it).
+{ echo "===CAP-DMESG-BEGIN==="; dmesg; echo "===CAP-DMESG-END==="; } | nc $sink_host $sink_port
+sleep 3
+# Retry just the CAP lines, in case the first shipment raced boot.
+{ echo "===CAP-ONLY-BEGIN==="; dmesg | grep -E 'CAP|SGX|PVR|BIF'; echo "===CAP-ONLY-END==="; } | nc $sink_host $sink_port
+echo "CAP: shipped; board can be rebooted" > /dev/kmsg
+sleep 60
 exec sh
 INIT
 chmod +x "$out/init"

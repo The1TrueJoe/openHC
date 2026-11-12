@@ -62,3 +62,15 @@
 };
 
 #include "omap-gpmc-smsc911x.dtsi"
+
+/* The mainline omap3 cpu_thermal has no trips; add a 105 C critical trip so the
+ * bandgap TSHUT does not power the board off mid-capture (openHC #172's fix). */
+&cpu_thermal {
+	trips {
+		cpu_crit: cpu-crit {
+			temperature = <105000>;
+			hysteresis = <2000>;
+			type = "critical";
+		};
+	};
+};
