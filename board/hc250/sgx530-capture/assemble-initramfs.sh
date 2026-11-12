@@ -41,8 +41,8 @@ for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 
 # --- stage into the initramfs ------------------------------------------------
 cp -a "$work"/root/bin/busybox "$out/bin/busybox"
-for a in sh mount umount ip ifconfig wget tar sleep mkdir cat echo \
-         ping timeout nc dmesg grep head date; do
+for a in sh mount umount ip ifconfig wget tar sleep mkdir cat echo ls tr \
+         ping timeout nc dmesg grep head date basename; do
   ln -sf busybox "$out/bin/$a"
 done
 # ld-linux + the runtime .so (keep symlinks)
@@ -68,8 +68,21 @@ i=0; while [ \$i -lt 15 ]; do ping -c1 -W1 $sink_host >/dev/null 2>&1 && break; 
 echo "CAP: fetch TI user space from the Mac" > /dev/kmsg
 wget -q -O /tmp/ti.tar "$MAC_HTTP/ti-userspace.tar" && tar -C /tmp -xf /tmp/ti.tar || echo "CAP: FETCH FAILED" > /dev/kmsg
 export LD_LIBRARY_PATH=/tmp/ti/lib:/usr/lib:/lib
-echo "CAP: dev=\$(ls /dev 2>/dev/null | tr '\n' ' ')" > /dev/kmsg
-echo "CAP: pvr-dmesg-lines=\$(dmesg | grep -ic pvr)  ls-ti=\$(ls -l /tmp/ti/bin/pvrsrvctl 2>&1)" > /dev/kmsg
+# Bind diagnostics: run 1 showed the GPU ti-sysc module never probed, so gpu@0
+# was never created and openpvrsgx (binds "ti,omap3-sgx530-125") had nothing to
+# attach to. Surface the platform device/driver state, and if the device exists
+# but is unbound, try a manual bind — all in this one slot.
+echo "CAP: dev=\$(ls /dev 2>/dev/null | grep -iE 'pvr|drm|dri' | tr '\n' ' ')" > /dev/kmsg
+echo "CAP: platdev=\$(ls /sys/bus/platform/devices/ 2>/dev/null | grep -iE '5000|gpu|sgx' | tr '\n' ' ')" > /dev/kmsg
+echo "CAP: platdrv=\$(ls /sys/bus/platform/drivers/ 2>/dev/null | grep -iE 'sgx|pvr|omap3-sgx' | tr '\n' ' ')" > /dev/kmsg
+drv=\$(ls /sys/bus/platform/drivers/ 2>/dev/null | grep -iE 'sgx|pvr|omap3-sgx' | head -1)
+for dev in \$(ls /sys/bus/platform/devices/ 2>/dev/null | grep -iE '5000.*(gpu|sgx)|sgx530'); do
+  if [ -n "\$drv" ] && [ ! -e /sys/bus/platform/devices/\$dev/driver ]; then
+    echo "CAP: manual bind \$dev -> \$drv" > /dev/kmsg
+    echo "\$dev" > /sys/bus/platform/drivers/\$drv/bind 2>&1 | while read l; do echo "CAP: bind: \$l" > /dev/kmsg; done
+  fi
+done
+echo "CAP: pvr-dmesg-lines=\$(dmesg | grep -ic pvr)  ti=\$(ls -l /tmp/ti/bin/pvrsrvctl 2>&1 | head -c 80)" > /dev/kmsg
 echo "CAP: start vendor init" > /dev/kmsg
 # busybox (stretch) timeout uses -t SECONDS; a bare duration is read as the command.
 timeout -t 90 /tmp/ti/bin/pvrsrvctl --start --no-module 2>&1 | while read l; do echo "CAP: \$l" > /dev/kmsg; done
