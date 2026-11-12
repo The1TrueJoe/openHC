@@ -336,6 +336,28 @@ differs from stock's (0x600 against 0x10e00: CTPL, CLKEXTFREE).
 Not in the image yet: Zigbee (the feature brings Node, too big for a RAM image)
 and Wi-Fi (no driver, above).
 
+## Thermal shutdown (2026-11-11)
+
+openHC boots that followed a few minutes of stock powered the box off about 30 s
+in: LEDs out, dark until a power cycle. The kernel logged it at 3.8 s:
+
+```
+thermal thermal_zone0: cpu-thermal: critical temperature reached
+reboot: HARDWARE PROTECTION shutdown (Temperature too high)
+```
+
+The trips come from mainline's `omap3-cpu-thermal.dtsi`: passive at 80 °C and
+critical at 90 °C, applied to the bandgap reading plus a 20 °C hotspot offset
+(`coefficients = <0 20000>`). The 90 °C trip therefore fires at a 70 °C sensor
+reading, which a box warmed by stock reaches. The power-off waits for init,
+which is why it lands near 30 s. Stock has no thermal shutdown at all. A boot
+right after a quick stock start reads about 82 °C at 20 s and settles near
+78 °C.
+
+The HC-250 DT raises `cpu_crit` to 105 °C, the DM3730's extended-range junction
+limit. The passive trip stays, but it does nothing here: `ti-cpufreq` finds no
+CPU regulator, so there is nothing to throttle.
+
 ## Kernel patches
 
 **None for the first boot.** Everything the board needs is mainline:
