@@ -35,8 +35,17 @@ MAC_HTTP="${MAC_HTTP:?set MAC_HTTP=http://<mac-ip>:<port>}" \
 cp -a "$work/initramfs" ./initramfs
 make olddefconfig
 
-# 4. Build zImage.
-make -j"$(nproc)" zImage
+# 4. First pass: build vmlinux/zImage and the modules. The pvrsgx dir's
+#    `always += pvr` builds pvrsrvkm_<soc>_<sgx>_<rev>.ko as a module.
+make -j"$(nproc)" zImage modules
+
+# 4b. Stage the omap3630 services module into the initramfs and re-pack it
+#     (CONFIG_INITRAMFS_SOURCE packs ./initramfs at the zImage link).
+ko=$(find drivers/gpu/drm/pvrsgx -name 'pvrsrvkm_omap3630_sgx530_125.ko' | head -1)
+[ -n "$ko" ] || { echo "ERROR: pvrsrvkm omap3630 module not built"; find drivers/gpu/drm/pvrsgx -name '*.ko'; exit 1; }
+cp "$ko" ./initramfs/pvrsrvkm.ko
+echo "staged module: $ko ($(du -h ./initramfs/pvrsrvkm.ko | cut -f1))"
+make -j"$(nproc)" zImage   # re-link zImage, re-packing the initramfs with the .ko
 
 # 5. Build the capture DTB directly with cpp + dtc (kbuild's per-dtb target path
 #    differs by kernel version; this is version-independent). The board's

@@ -42,13 +42,16 @@ for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 # --- stage into the initramfs ------------------------------------------------
 cp -a "$work"/root/bin/busybox "$out/bin/busybox"
 for a in sh mount umount ip ifconfig wget tar sleep mkdir cat echo ls tr \
-         ping timeout nc dmesg grep head date basename; do
+         ping timeout nc dmesg grep head date basename insmod modprobe lsmod; do
   ln -sf busybox "$out/bin/$a"
 done
-# ld-linux + the runtime .so (keep symlinks)
-cp -a "$work"/root/lib/arm-linux-gnueabihf/. "$out/lib/" 2>/dev/null || true
-cp -a "$work"/root/lib/ld-linux-armhf.so.3 "$out/lib/" 2>/dev/null || true
-cp -a "$work"/root/usr/lib/arm-linux-gnueabihf/. "$out/usr/lib/" 2>/dev/null || true
+# Runtime libs: copy /lib and /usr/lib PRESERVING the Debian multiarch layout,
+# so /lib/ld-linux-armhf.so.3 (the ELF interpreter, a symlink into
+# arm-linux-gnueabihf/) resolves. Flattening it breaks exec with ENOENT.
+cp -a "$work"/root/lib/. "$out/lib/" 2>/dev/null || true
+[ -d "$work"/root/usr/lib ] && cp -a "$work"/root/usr/lib/. "$out/usr/lib/" 2>/dev/null || true
+# Fail the build if the ARM dynamic linker is missing (run 2: pvrsrvctl ENOENT).
+[ -e "$out/lib/ld-linux-armhf.so.3" ] || { echo "ERROR: ld-linux-armhf.so.3 missing"; ls -la "$out/lib"; exit 1; }
 
 # --- init ---------------------------------------------------------------------
 # The board has no serial and this initramfs runs no sshd, so the log must come
@@ -65,6 +68,10 @@ mount -t tmpfs none /tmp
 ifconfig eth0 10.0.0.123 up 2>/dev/null || ip addr add 10.0.0.123/24 dev eth0
 # wait for the link to the Mac (up to ~15 s)
 i=0; while [ \$i -lt 15 ]; do ping -c1 -W1 $sink_host >/dev/null 2>&1 && break; i=\$((i+1)); sleep 1; done
+# Load the openpvrsgx services module: it registers the platform driver that
+# binds 50000000.gpu and creates /dev/pvrsrvkm for the user space.
+echo "CAP: insmod pvrsrvkm" > /dev/kmsg
+insmod /pvrsrvkm.ko 2>&1 | while read l; do echo "CAP: insmod: \$l" > /dev/kmsg; done
 echo "CAP: fetch TI user space from the Mac" > /dev/kmsg
 wget -q -O /tmp/ti.tar "$MAC_HTTP/ti-userspace.tar" && tar -C /tmp -xf /tmp/ti.tar || echo "CAP: FETCH FAILED" > /dev/kmsg
 export LD_LIBRARY_PATH=/tmp/ti/lib:/usr/lib:/lib

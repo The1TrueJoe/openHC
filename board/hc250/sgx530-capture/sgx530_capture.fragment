@@ -2,9 +2,16 @@
 # ARM, OMAP3 (DM3730/OMAP3630 class). Built-in module, no .ko.
 
 CONFIG_SGX=y
-CONFIG_SGX_OMAP=y
+# =m, not =y: the pvrsgx Makefile always builds the services as a module
+# (pvrsrvkm_<soc>_<sgx>_<rev>.ko via a sub-make); built-in produces nothing
+# loadable (run 2: the GPU device existed but no driver was registered). The
+# init insmods pvrsrvkm_omap3630_sgx530_125.ko (which links in pvr-drv.c's
+# platform_driver binding ti,omap3-sgx530-125).
+CONFIG_SGX_OMAP=m
 CONFIG_PVRSGX_1_14_3699939=y
 # The pvrsgx Makefile picks the omap3630 / sgx530 / rev 125 build from ARCH_OMAP3.
+# DRM built-in so the single insmod'd pvrsrvkm.ko has no module dep to resolve.
+CONFIG_DRM=y
 
 # Log channel off the board (no serial): netconsole over the LAN9220.
 CONFIG_NETCONSOLE=y
@@ -14,8 +21,10 @@ CONFIG_SMSC911X=y
 CONFIG_INITRAMFS_SOURCE="initramfs"
 CONFIG_BLK_DEV_INITRD=y
 
-# Keep it small and bootable; no modules to avoid vermagic/.ko load.
-CONFIG_MODULES=n
+# Modules on: the openpvrsgx services only build as a .ko, loaded from the
+# initramfs (same-kernel .ko, so vermagic matches).
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
 
 # Drop SATA/AHCI: not needed for an initramfs capture, and libahci trips a
 # BUILD_BUG_ON (sizeof > long) with the newer cross-GCC on this 6.0-rc7 tree.
