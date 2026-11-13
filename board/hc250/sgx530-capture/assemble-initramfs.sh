@@ -25,18 +25,11 @@ sudo dpkg --add-architecture armhf
 echo 'deb [trusted=yes arch=armhf] http://archive.debian.org/debian stretch main' \
   | sudo tee /etc/apt/sources.list.d/stretch-armhf.list >/dev/null
 sudo apt-get -o Acquire::Check-Valid-Until=false update
-# busybox + the runtime libs the vendor stack links (all GPL/MIT/LGPL). gbm,
-# wayland-server and libdrm_omap are linked for the display path and are inert
-# at init; present only for the loader. libdrm-omap1 is the one to confirm in
-# the archive — if absent, take libdrm_omap.so.1 from a TI SDK's libdrm build
-# (freedesktop MIT, not an Imagination binary, so still fine in a GPL initramfs).
-# Required set (static busybox needs no libs of its own).
-pkgs="busybox-static:armhf libc6:armhf libdrm2:armhf libgbm1:armhf \
+# The REAL libs the vendor stack actually calls at init: glibc, libdrm, libudev,
+# libffi, libwayland-server. These are present and version-compatible in stretch.
+pkgs="busybox-static:armhf libc6:armhf libdrm2:armhf \
       libwayland-server0:armhf libudev1:armhf libffi6:armhf"
 ( cd "$work"; apt-get download $pkgs )
-# libdrm_omap is linked but inert at init; best-effort (not in every archive).
-( cd "$work"; apt-get download libdrm-omap1:armhf 2>/dev/null || \
-  echo "note: libdrm-omap1 not in archive; take libdrm_omap.so.1 from a TI SDK libdrm (MIT) if the loader needs it" )
 for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 
 # --- stage into the initramfs ------------------------------------------------
@@ -52,6 +45,30 @@ cp -a "$work"/root/lib/. "$out/lib/" 2>/dev/null || true
 [ -d "$work"/root/usr/lib ] && cp -a "$work"/root/usr/lib/. "$out/usr/lib/" 2>/dev/null || true
 # Fail the build if the ARM dynamic linker is missing (run 2: pvrsrvctl ENOENT).
 [ -e "$out/lib/ld-linux-armhf.so.3" ] || { echo "ERROR: ld-linux-armhf.so.3 missing"; ls -la "$out/lib"; exit 1; }
+
+# Stub the display-path sonames the 2019-era TI binaries link but do NOT call at
+# `pvrsrvctl --start`: libgbm.so.2 (stretch ships only .so.1) and libdrm_omap.so.1
+# (dropped from Debian). A minimal .so with the right SONAME satisfies the loader
+# (NEEDED is resolved by soname; the unused symbols bind lazily and are never
+# called at init). This is a GPL/trivial stub, no TI/Imagination code.
+cc="${CROSS:-arm-linux-gnueabihf-}gcc"
+mkdir -p "$out/usr/lib/arm-linux-gnueabihf"
+for soname in libgbm.so.2 libdrm_omap.so.1; do
+  printf 'int __stub(void){return 0;}\n' | \
+    "$cc" -shared -nostdlib -fPIC -Wl,-soname,"$soname" \
+      -o "$out/usr/lib/arm-linux-gnueabihf/$soname" -x c - \
+    || { echo "ERROR: could not build stub $soname"; exit 1; }
+done
+
+# Fail the build NOW (not on the board) if any lib the TI user space needs is
+# absent — real or stub. Search the whole initramfs lib tree by soname.
+for need in ld-linux-armhf.so.3 libc.so.6 libdrm.so.2 libudev.so.1 libffi.so.6 \
+            libwayland-server.so.0 libgbm.so.2 libdrm_omap.so.1; do
+  find "$out/lib" "$out/usr/lib" -name "$need" 2>/dev/null | grep -q . \
+    || { echo "ERROR: required lib $need missing from the initramfs"; \
+         find "$out/lib" "$out/usr/lib" -name '*.so*' | sort; exit 1; }
+done
+echo "initramfs libs OK (reals + stubs for gbm/drm_omap)"
 
 # --- init ---------------------------------------------------------------------
 # The board has no serial and this initramfs runs no sshd, so the log must come
@@ -74,7 +91,7 @@ echo "CAP: insmod pvrsrvkm" > /dev/kmsg
 insmod /pvrsrvkm.ko 2>&1 | while read l; do echo "CAP: insmod: \$l" > /dev/kmsg; done
 echo "CAP: fetch TI user space from the Mac" > /dev/kmsg
 wget -q -O /tmp/ti.tar "$MAC_HTTP/ti-userspace.tar" && tar -C /tmp -xf /tmp/ti.tar || echo "CAP: FETCH FAILED" > /dev/kmsg
-export LD_LIBRARY_PATH=/tmp/ti/lib:/usr/lib:/lib
+export LD_LIBRARY_PATH=/tmp/ti/lib:/usr/lib/arm-linux-gnueabihf:/lib/arm-linux-gnueabihf:/usr/lib:/lib
 # Bind diagnostics: run 1 showed the GPU ti-sysc module never probed, so gpu@0
 # was never created and openpvrsgx (binds "ti,omap3-sgx530-125") had nothing to
 # attach to. Surface the platform device/driver state, and if the device exists
