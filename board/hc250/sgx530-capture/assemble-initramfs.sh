@@ -25,9 +25,9 @@ sudo dpkg --add-architecture armhf
 echo 'deb [trusted=yes arch=armhf] http://archive.debian.org/debian stretch main' \
   | sudo tee /etc/apt/sources.list.d/stretch-armhf.list >/dev/null
 sudo apt-get -o Acquire::Check-Valid-Until=false update
-# The REAL libs the vendor stack actually calls at init: glibc, libdrm, libudev,
-# libffi, libwayland-server. These are present and version-compatible in stretch.
-pkgs="busybox-static:armhf libc6:armhf libdrm2:armhf \
+# The REAL libs the vendor stack actually calls at init: glibc, the GCC runtime
+# (libgcc_s, pulled in transitively), libdrm, libudev, libffi, libwayland-server.
+pkgs="busybox-static:armhf libc6:armhf libgcc1:armhf libdrm2:armhf \
       libwayland-server0:armhf libudev1:armhf libffi6:armhf"
 ( cd "$work"; apt-get download $pkgs )
 for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
@@ -62,13 +62,25 @@ done
 
 # Fail the build NOW (not on the board) if any lib the TI user space needs is
 # absent — real or stub. Search the whole initramfs lib tree by soname.
-for need in ld-linux-armhf.so.3 libc.so.6 libdrm.so.2 libudev.so.1 libffi.so.6 \
-            libwayland-server.so.0 libgbm.so.2 libdrm_omap.so.1; do
+for need in ld-linux-armhf.so.3 libc.so.6 libgcc_s.so.1 libdrm.so.2 libudev.so.1 \
+            libffi.so.6 libwayland-server.so.0 libgbm.so.2 libdrm_omap.so.1 \
+            libdl.so.2 libpthread.so.0 librt.so.1; do
   find "$out/lib" "$out/usr/lib" -name "$need" 2>/dev/null | grep -q . \
     || { echo "ERROR: required lib $need missing from the initramfs"; \
          find "$out/lib" "$out/usr/lib" -name '*.so*' | sort; exit 1; }
 done
-echo "initramfs libs OK (reals + stubs for gbm/drm_omap)"
+# Transitive closure: every NEEDED soname of every staged .so must itself be
+# present (catches deps-of-deps like libgcc_s that a direct-NEEDED walk misses).
+rd="${CROSS:-arm-linux-gnueabihf-}readelf"
+miss=0
+for so in $(find "$out/lib" "$out/usr/lib" -name '*.so*' -type f); do
+  for n in $("$rd" -d "$so" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(.*\)\].*/\1/p'); do
+    find "$out/lib" "$out/usr/lib" -name "$n" 2>/dev/null | grep -q . \
+      || { echo "ERROR: transitive dep $n (needed by $(basename "$so")) missing"; miss=1; }
+  done
+done
+[ "$miss" -eq 0 ] || { echo "transitive lib closure incomplete"; exit 1; }
+echo "initramfs libs OK (reals + stubs for gbm/drm_omap; transitive closure complete)"
 
 # --- init ---------------------------------------------------------------------
 # The board has no serial and this initramfs runs no sshd, so the log must come
