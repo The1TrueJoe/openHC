@@ -37,12 +37,15 @@ cname=stretch-rt-$$
 docker run --name "$cname" -v "$here:/src:ro" debian/eol:stretch bash -ec '
   apt-get -o Acquire::Check-Valid-Until=false update >/dev/null
   apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross >/dev/null
-  arm-linux-gnueabihf-gcc -O2 -Wall -o /render-test /src/render-test.c -ldl'
+  arm-linux-gnueabihf-gcc -O2 -Wall -o /render-test /src/render-test.c -ldl
+  arm-linux-gnueabihf-gcc -O2 -Wall -shared -fPIC -o /drmname-shim.so /src/drmname-shim.c -ldl'
 docker cp "$cname:/render-test" "$work/render-test"
+docker cp "$cname:/drmname-shim.so" "$work/drmname-shim.so"
 docker rm "$cname" >/dev/null
 file "$work/render-test"
 
 RENDER_TEST="$work/render-test" \
+DRMNAME_SHIM="$work/drmname-shim.so" \
 MAC_HTTP="${MAC_HTTP:?set MAC_HTTP=http://<mac-ip>:<port>}" \
   "$here/assemble-initramfs.sh" "$work/initramfs"
 cp -a "$work/initramfs" ./initramfs

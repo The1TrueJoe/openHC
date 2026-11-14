@@ -59,6 +59,7 @@ echo 'root:x:0:' > "$out/etc/group"
 echo '/bin/sh' > "$out/etc/shells"
 # The render test (built in a stretch container by build.sh).
 [ -n "${RENDER_TEST:-}" ] && cp "$RENDER_TEST" "$out/render-test" && chmod +x "$out/render-test"
+[ -n "${DRMNAME_SHIM:-}" ] && cp "$DRMNAME_SHIM" "$out/drmname-shim.so"
 
 # Fail the build if the ARM dynamic linker is missing (run 2: pvrsrvctl ENOENT).
 [ -e "$out/lib/ld-linux-armhf.so.3" ] || { echo "ERROR: ld-linux-armhf.so.3 missing"; ls -la "$out/lib"; exit 1; }
