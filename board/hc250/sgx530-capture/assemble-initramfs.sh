@@ -37,7 +37,8 @@ for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 cp -a "$work"/root/bin/busybox "$out/bin/busybox"
 for a in sh mount umount ip ifconfig wget tar sleep mkdir cat echo ls tr \
          ping timeout nc dmesg grep head date basename insmod modprobe lsmod \
-         chown chmod cp rm md5sum hexdump od sed awk ps kill uptime free df; do
+         chown chmod cp rm mv md5sum hexdump od sed awk ps kill uptime free df \
+         dd sync printf; do
   ln -sf busybox "$out/bin/$a"
 done
 # Runtime libs: copy /lib and /usr/lib PRESERVING the Debian multiarch layout,

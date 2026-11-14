@@ -82,6 +82,24 @@
 		interrupts = <7>;		/* SYS_NIRQ */
 		interrupt-parent = <&intc>;
 	};
+
+	/* Boot-try EEPROM: lets the capture boot re-arm the SD boot itself. */
+	eeprom@50 {
+		compatible = "atmel,24c02";
+		reg = <0x50>;
+		pagesize = <8>;
+	};
+};
+
+/* Interior SD: lets the capture boot put the normal SD image back. */
+&mmc1 {
+	vmmc-supply = <&vmmc1>;
+	bus-width = <4>;
+	broken-cd;
+};
+
+&mmc2 {
+	status = "disabled";
 };
 
 #include "twl4030.dtsi"
