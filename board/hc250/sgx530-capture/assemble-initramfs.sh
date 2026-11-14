@@ -121,7 +121,8 @@ ship() { name=\$1; shift; { echo "==\$name=="; "\$@"; } | nc $sink_host $sink_po
 # Host key: generated now, its public half shipped before dropbear listens.
 dropbearkey -t ecdsa -s 256 -f /etc/dropbear/dropbear_ecdsa_host_key >/dev/null 2>&1
 ship HOSTKEY dropbearkey -y -f /etc/dropbear/dropbear_ecdsa_host_key
-dropbear -r /etc/dropbear/dropbear_ecdsa_host_key -s -p 22
+mkdir -p /var/run /var/log
+( dropbear -F -E -r /etc/dropbear/dropbear_ecdsa_host_key -s -p 22 > /tmp/dropbear.log 2>&1 & )
 echo "CAP: insmod pvrsrvkm" > /dev/kmsg
 insmod /pvrsrvkm.ko 2>&1 | while read l; do echo "CAP: insmod: \$l" > /dev/kmsg; done
 wget -q -O /tmp/ti.tar "$MAC_HTTP/ti-userspace.tar" && tar -C /tmp -xf /tmp/ti.tar || echo "CAP: FETCH FAILED" > /dev/kmsg
@@ -133,14 +134,15 @@ timeout -t 90 /tmp/ti/bin/pvrsrvctl --start --no-module > /tmp/pvrsrvctl.log 2>&
 echo "CAP: eglinfo" > /dev/kmsg
 timeout -t 30 /tmp/ti/bin/eglinfo > /tmp/eglinfo.log 2>&1
 # What the vendor EGL opens while it initialises (its window system's device).
-timeout -t 30 strace -f -e trace=open,openat,stat64,lstat64,access,readlink /tmp/ti/bin/eglinfo > /dev/null 2> /tmp/strace-eglinfo.log
+timeout -t 30 strace -f -v -s 64 -e trace=open,openat,ioctl,close,mmap2 /tmp/ti/bin/eglinfo > /dev/null 2> /tmp/strace-all.log
+grep -vE "\\.so|powervr.ini|/proc/self|ENOENT" /tmp/strace-all.log > /tmp/strace-eglinfo.log
 echo "CAP: render-test" > /dev/kmsg
 timeout -t 60 /render-test > /tmp/rt.log 2>&1
 echo "CAP: render-test rc=\$?" > /dev/kmsg
 echo "CAP: gles2test1" > /dev/kmsg
 ( cd /tmp/ti/bin && timeout -t 15 ./gles2test1 > /tmp/gles2test1.log 2>&1 )
 echo "CAP: gles2test1 rc=\$?" > /dev/kmsg
-ship LOGS sh -c 'for f in /tmp/pvrsrvctl.log /tmp/eglinfo.log /tmp/strace-eglinfo.log /tmp/rt.log /tmp/gles2test1.log; do echo "--- \$f"; cat \$f; done; echo "--- dmesg"; dmesg'
+ship LOGS sh -c 'for f in /tmp/dropbear.log /tmp/pvrsrvctl.log /tmp/eglinfo.log /tmp/strace-eglinfo.log /tmp/rt.log /tmp/gles2test1.log; do echo "--- \$f"; cat \$f; done; echo "--- dmesg"; dmesg'
 [ -f /tmp/rt.rgba ] && ship RTRGBA cat /tmp/rt.rgba
 for n in 0 1 2; do
   [ -e /sys/kernel/debug/sgxsnap\$n ] && ship SNAP\$n cat /sys/kernel/debug/sgxsnap\$n
