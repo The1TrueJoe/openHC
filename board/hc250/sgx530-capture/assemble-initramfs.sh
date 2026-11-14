@@ -29,7 +29,7 @@ sudo apt-get -o Acquire::Check-Valid-Until=false update
 # (libgcc_s, pulled in transitively), libdrm, libudev, libffi, libwayland-server.
 pkgs="busybox-static:armhf libc6:armhf libgcc1:armhf libdrm2:armhf \
       libwayland-server0:armhf libudev1:armhf libffi6:armhf \
-      dropbear-bin:armhf libtomcrypt0:armhf libtommath1:armhf zlib1g:armhf libgmp10:armhf"
+      dropbear-bin:armhf libtomcrypt0:armhf libtommath1:armhf zlib1g:armhf libgmp10:armhf strace:armhf"
 ( cd "$work"; apt-get download $pkgs )
 for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 
@@ -50,6 +50,7 @@ cp -a "$work"/root/lib/. "$out/lib/" 2>/dev/null || true
 # session on the capture boot; key login only, the Mac's capture key.
 cp -a "$work"/root/usr/sbin/dropbear "$out/sbin/dropbear"
 cp -a "$work"/root/usr/bin/dropbearkey "$out/bin/dropbearkey"
+cp -a "$work"/root/usr/bin/strace "$out/bin/strace"
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$out/root/.ssh" "$out/etc/dropbear" "$out/dev/pts"
 cp "$here/capture_authorized_key.pub" "$out/root/.ssh/authorized_keys"
@@ -131,19 +132,22 @@ echo "CAP: start vendor init" > /dev/kmsg
 timeout -t 90 /tmp/ti/bin/pvrsrvctl --start --no-module > /tmp/pvrsrvctl.log 2>&1
 echo "CAP: eglinfo" > /dev/kmsg
 timeout -t 30 /tmp/ti/bin/eglinfo > /tmp/eglinfo.log 2>&1
+# What the vendor EGL opens while it initialises (its window system's device).
+timeout -t 30 strace -f -e trace=open,openat,stat64,lstat64,access,readlink /tmp/ti/bin/eglinfo > /dev/null 2> /tmp/strace-eglinfo.log
 echo "CAP: render-test" > /dev/kmsg
 timeout -t 60 /render-test > /tmp/rt.log 2>&1
 echo "CAP: render-test rc=\$?" > /dev/kmsg
 echo "CAP: gles2test1" > /dev/kmsg
 ( cd /tmp/ti/bin && timeout -t 15 ./gles2test1 > /tmp/gles2test1.log 2>&1 )
 echo "CAP: gles2test1 rc=\$?" > /dev/kmsg
-ship LOGS sh -c 'for f in /tmp/pvrsrvctl.log /tmp/eglinfo.log /tmp/rt.log /tmp/gles2test1.log; do echo "--- \$f"; cat \$f; done; echo "--- dmesg"; dmesg'
+ship LOGS sh -c 'for f in /tmp/pvrsrvctl.log /tmp/eglinfo.log /tmp/strace-eglinfo.log /tmp/rt.log /tmp/gles2test1.log; do echo "--- \$f"; cat \$f; done; echo "--- dmesg"; dmesg'
 [ -f /tmp/rt.rgba ] && ship RTRGBA cat /tmp/rt.rgba
 for n in 0 1 2; do
   [ -e /sys/kernel/debug/sgxsnap\$n ] && ship SNAP\$n cat /sys/kernel/debug/sgxsnap\$n
 done
 ship DONE echo "capture done; dropbear on :22"
-exec sh
+# Never return: init exiting panics the kernel, and the reboot lands in stock.
+while :; do sleep 3600; done
 INIT
 chmod +x "$out/init"
 
