@@ -29,7 +29,7 @@ sudo apt-get -o Acquire::Check-Valid-Until=false update
 # (libgcc_s, pulled in transitively), libdrm, libudev, libffi, libwayland-server.
 pkgs="busybox-static:armhf libc6:armhf libgcc1:armhf libdrm2:armhf \
       libwayland-server0:armhf libudev1:armhf libffi6:armhf \
-      dropbear-bin:armhf libtomcrypt0:armhf libtommath1:armhf zlib1g:armhf"
+      dropbear-bin:armhf libtomcrypt0:armhf libtommath1:armhf zlib1g:armhf libgmp10:armhf"
 ( cd "$work"; apt-get download $pkgs )
 for d in "$work"/*.deb; do dpkg-deb -x "$d" "$work/root"; done
 
