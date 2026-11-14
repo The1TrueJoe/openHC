@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Trimmed OMAP3630 (DM3730-class) DT for the SGX530 vendor capture, built in the
 // openpvrsgx 6.0-rc7 tree. Derived from the board's own 7.1.8 DT, cut to what an
-// init-only capture needs: memory, the GPMC LAN9220 (smsc911x) for netconsole,
+// capture needs: memory, a fixed DPI panel for omapdrm, the GPMC LAN9220 (smsc911x) for netconsole,
 // twl4030 (board power rails) and a console UART. The SoC GPU node comes from
 // omap36xx.dtsi. The board's custom nodes (IO-MCU, audio, HDMI, display, SD) are
 // left out so it compiles against mainline 6.0.
@@ -28,6 +28,48 @@
 	memory@80000000 {
 		device_type = "memory";
 		reg = <0x80000000 0x20000000>; /* 512 MB */
+	};
+
+	/* A fixed 640x480 DPI panel so omapdrm has an always-connected output and the
+	 * vendor EGL's KMS window system can initialise. Nothing needs to be on the
+	 * pins: the render capture reads pixels back, it does not look at a screen. */
+	panel {
+		compatible = "panel-dpi";
+		label = "capture";
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dpi_out>;
+			};
+		};
+
+		panel-timing {
+			clock-frequency = <25175000>;
+			hactive = <640>;
+			vactive = <480>;
+			hfront-porch = <16>;
+			hback-porch = <48>;
+			hsync-len = <96>;
+			vfront-porch = <10>;
+			vback-porch = <33>;
+			vsync-len = <2>;
+			hsync-active = <0>;
+			vsync-active = <0>;
+			de-active = <1>;
+			pixelclk-active = <1>;
+		};
+	};
+};
+
+&dss {
+	vdds_dsi-supply = <&vpll2>;
+	status = "okay";
+
+	port {
+		dpi_out: endpoint {
+			remote-endpoint = <&panel_in>;
+			data-lines = <24>;
+		};
 	};
 };
 

@@ -29,3 +29,10 @@ CONFIG_MODULE_UNLOAD=y
 # Drop SATA/AHCI: not needed for an initramfs capture, and libahci trips a
 # BUILD_BUG_ON (sizeof > long) with the newer cross-GCC on this 6.0-rc7 tree.
 # CONFIG_ATA is not set
+
+# Render capture: omapdrm with a fixed DPI panel (capture.dts) so the vendor EGL's
+# KMS window system initialises, and debugfs for the kick snapshots (sgxsnap<N>).
+CONFIG_DRM_OMAP=y
+CONFIG_OMAP2_DSS_DPI=y
+CONFIG_DRM_PANEL_SIMPLE=y
+CONFIG_DEBUG_FS=y

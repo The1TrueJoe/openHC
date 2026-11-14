@@ -1,0 +1,194 @@
+diff -ru a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.c b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.c
+--- a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.c
++++ b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.c
+@@ -4697,3 +4697,145 @@
+ ******************************************************************************/
+ 
+ 
++
++/*
++ * (CAP-SNAP) capture-only: snapshot what the GPU can see at a TA kick.
++ *
++ * For the first CAPSNAP_SLOTS TA kicks, copy the kick's CCB command words and
++ * every page mapped in every MMU context (except the parameter buffer and the
++ * USSE code heaps) into a vmalloc buffer, exposed read-only as debugfs blobs
++ * sgxsnap<N>. Pages are read through a write-combined alias so CPU caches do
++ * not hide what the GPU will read. Record format (little-endian u32s):
++ *   "SGXSNAP1" slot cmdbytes <cmd> kickbytes <kick>
++ *   "CTX " idx pd_phys pid name[52]
++ *   "PAGE" ctx va phys <4096 bytes>
++ *   "END " pages truncated
++ */
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/mm.h>
++#include <linux/vmalloc.h>
++#include <linux/debugfs.h>
++#include <asm/pgtable.h>
++
++#define CAPSNAP_SLOTS	3
++#define CAPSNAP_MAX	(32u << 20)
++
++static struct debugfs_blob_wrapper capsnap_blob[CAPSNAP_SLOTS];
++static IMG_UINT32 capsnap_n;
++
++static int capsnap_skip(IMG_UINT32 va)
++{
++	if (va >= 0x08800000 && va < 0x0C800000)	/* 3D parameters (PB) */
++		return 1;
++	if (va >= 0x0E400000 && va < 0x0E480000)	/* microkernel code */
++		return 1;
++	if (va >= 0x0F400000 && va < 0x0F900000)	/* pixel shader code */
++		return 1;
++	if (va >= 0x0FC00000 && va < 0x0FE00000)	/* vertex shader code */
++		return 1;
++	return 0;
++}
++
++static unsigned char *capsnap_put(unsigned char *p, const void *s, size_t n)
++{
++	memcpy(p, s, n);
++	return p + n;
++}
++
++static unsigned char *capsnap_u32(unsigned char *p, IMG_UINT32 v)
++{
++	return capsnap_put(p, &v, 4);
++}
++
++IMG_VOID MMU_CapSnapshot(PVRSRV_SGXDEV_INFO *psDevInfo, const IMG_VOID *pvCmd, IMG_UINT32 ui32CmdBytes,
++			 const IMG_VOID *pvKick, IMG_UINT32 ui32KickBytes)
++{
++	MMU_CONTEXT *ctx;
++	unsigned char *buf, *p, *end;
++	IMG_UINT32 slot = capsnap_n, ctxidx = 0, pages = 0, trunc = 0, i, j;
++	char name[16];
++
++	if (slot >= CAPSNAP_SLOTS)
++		return;
++	capsnap_n++;
++	buf = vmalloc(CAPSNAP_MAX);
++	if (!buf) {
++		printk(KERN_ERR "(CAP-SNAP) slot %u: vmalloc failed\n", slot);
++		return;
++	}
++	p = buf;
++	end = buf + CAPSNAP_MAX;
++	p = capsnap_put(p, "SGXSNAP1", 8);
++	p = capsnap_u32(p, slot);
++	p = capsnap_u32(p, ui32CmdBytes);
++	p = capsnap_put(p, pvCmd, ui32CmdBytes);
++	p = capsnap_u32(p, ui32KickBytes);
++	p = capsnap_put(p, pvKick, ui32KickBytes);
++
++	for (ctx = (MMU_CONTEXT *)psDevInfo->pvMMUContextList; ctx; ctx = ctx->psNext, ctxidx++) {
++		IMG_UINT32 *pd = (IMG_UINT32 *)ctx->pvPDCpuVAddr;
++		char cname[52] = { 0 };
++
++		memcpy(cname, ctx->szName, min_t(size_t, sizeof(cname) - 1, MMU_CONTEXT_NAME_SIZE));
++		p = capsnap_put(p, "CTX ", 4);
++		p = capsnap_u32(p, ctxidx);
++		p = capsnap_u32(p, (IMG_UINT32)ctx->sPDDevPAddr.uiAddr);
++		p = capsnap_u32(p, ctx->ui32PID);
++		p = capsnap_put(p, cname, sizeof(cname));
++		printk(KERN_INFO "(CAP-SNAP) slot %u ctx %u pd 0x%08x pid %u '%s'\n", slot, ctxidx,
++		       (IMG_UINT32)ctx->sPDDevPAddr.uiAddr, ctx->ui32PID, cname);
++		if (!pd)
++			continue;
++		for (i = 0; i < SGX_MAX_PD_ENTRIES; i++) {
++			MMU_PT_INFO *pt = ctx->apsPTInfoList[i];
++			IMG_UINT32 pde = pd[i], *pte;
++
++			if (!pt || !pt->PTPageCpuVAddr || !(pde & SGX_MMU_PDE_VALID))
++				continue;
++			if (pde & SGX_MMU_PDE_PAGE_SIZE_MASK) {
++				printk(KERN_INFO "(CAP-SNAP) ctx %u pde %u = 0x%08x not 4K, skipped\n", ctxidx, i, pde);
++				continue;
++			}
++			pte = (IMG_UINT32 *)pt->PTPageCpuVAddr;
++			for (j = 0; j < 1024; j++) {
++				IMG_UINT32 va = i << 22 | j << 12;
++				unsigned long phys;
++				struct page *pg;
++				void *v;
++
++				if (!(pte[j] & SGX_MMU_PTE_VALID) || capsnap_skip(va))
++					continue;
++				phys = (unsigned long)(pte[j] & SGX_MMU_PTE_ADDR_MASK) << SGX_MMU_PTE_ADDR_ALIGNSHIFT;
++				if (!pfn_valid(phys >> PAGE_SHIFT))
++					continue;
++				if (p + 16 + 4096 > end) {
++					trunc++;
++					continue;
++				}
++				pg = pfn_to_page(phys >> PAGE_SHIFT);
++				v = vmap(&pg, 1, VM_MAP, pgprot_writecombine(PAGE_KERNEL));
++				if (!v)
++					continue;
++				p = capsnap_put(p, "PAGE", 4);
++				p = capsnap_u32(p, ctxidx);
++				p = capsnap_u32(p, va);
++				p = capsnap_u32(p, (IMG_UINT32)phys);
++				p = capsnap_put(p, v, 4096);
++				vunmap(v);
++				pages++;
++			}
++		}
++	}
++	if (p + 12 <= end) {
++		p = capsnap_put(p, "END ", 4);
++		p = capsnap_u32(p, pages);
++		p = capsnap_u32(p, trunc);
++	}
++	capsnap_blob[slot].data = buf;
++	capsnap_blob[slot].size = p - buf;
++	snprintf(name, sizeof(name), "sgxsnap%u", slot);
++	debugfs_create_blob(name, 0400, NULL, &capsnap_blob[slot]);
++	printk(KERN_INFO "(CAP-SNAP) slot %u: %u pages, %u truncated, %zu bytes -> debugfs %s\n",
++	       slot, pages, trunc, (size_t)(p - buf), name);
++}
+diff -ru a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.h b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.h
+--- a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.h
++++ b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/mmu.h
+@@ -498,4 +498,8 @@
+ IMG_UINT32 MMU_GetPDumpContextID(IMG_HANDLE hDevMemContext);
+ #endif /* #ifdef PDUMP */
+ 
++/* (CAP-SNAP) capture-only: snapshot the GPU-visible memory at a TA kick. */
++IMG_VOID MMU_CapSnapshot(PVRSRV_SGXDEV_INFO *psDevInfo, const IMG_VOID *pvCmd, IMG_UINT32 ui32CmdBytes,
++			 const IMG_VOID *pvKick, IMG_UINT32 ui32KickBytes);
++
+ #endif /* #ifndef _MMU_H_ */
+diff -ru a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxkick.c b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxkick.c
+--- a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxkick.c
++++ b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxkick.c
+@@ -51,6 +51,10 @@
+ #include "osfunc.h"
+ #include "pvr_debug.h"
+ #include "sgxutils.h"
++
++/* (CAP-SNAP) capture-only, in mmu.c */
++IMG_VOID MMU_CapSnapshot(PVRSRV_SGXDEV_INFO *psDevInfo, const IMG_VOID *pvCmd, IMG_UINT32 ui32CmdBytes,
++			 const IMG_VOID *pvKick, IMG_UINT32 ui32KickBytes);
+ #include "ttrace.h"
+ 
+ #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
+@@ -723,6 +727,18 @@
+ 
+ 	PVR_TTRACE(PVRSRV_TRACE_GROUP_KICK, PVRSRV_TRACE_CLASS_CMD_END,
+ 			KICK_TOKEN_DOKICK);
++
++	/* (CAP-SNAP) the client's TA command (up to 2 KiB of the CCB from the
++	 * kick's offset) and the whole GPU-visible memory, before the GPU sees it. */
++	{
++		PVRSRV_DEVICE_NODE *psCapNode = (PVRSRV_DEVICE_NODE *)hDevHandle;
++		IMG_SIZE_T uCapBytes = psCCBMemInfo->uAllocSize - psCCBKick->ui32CCBOffset;
++
++		if (uCapBytes > 2048)
++			uCapBytes = 2048;
++		MMU_CapSnapshot((PVRSRV_SGXDEV_INFO *)psCapNode->pvDevice, psTACmd, (IMG_UINT32)uCapBytes,
++				&psCCBKick->sCommand, sizeof(psCCBKick->sCommand));
++	}
+ 
+ 	eError = SGXScheduleCCBCommandKM(hDevHandle, SGXMKIF_CMD_TA, &psCCBKick->sCommand, KERNEL_ID, 0, hDevMemContext, psCCBKick->bLastInScene);
+ 	if (eError == PVRSRV_ERROR_RETRY)

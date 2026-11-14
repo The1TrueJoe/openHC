@@ -21,6 +21,7 @@ if [ ! -d linux ]; then
 fi
 cd linux
 git apply "$here/capture.patch"            # build-time only
+git apply "$here/capture-snap.patch"       # kick snapshots, build-time only
 
 # 2. Config: omap2plus + the capture fragment.
 export ARCH=arm CROSS_COMPILE=${CROSS:-arm-linux-gnueabihf-}
@@ -30,6 +31,18 @@ make omap2plus_defconfig
 # 3. GPL-only initramfs. assemble-initramfs.sh stages busybox (armhf static)
 #    and the GPL/distro armhf runtime libs. NO TI binaries: the closed TI user
 #    space is fetched from the Mac at run time (MAC_HTTP), never into CI.
+# 2b. The render test, built against Debian stretch's armhf glibc (2.24) so it
+#     runs on the initramfs libc the vendor user space also uses.
+cname=stretch-rt-$$
+docker run --name "$cname" -v "$here:/src:ro" debian/eol:stretch bash -ec '
+  apt-get -o Acquire::Check-Valid-Until=false update >/dev/null
+  apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross >/dev/null
+  arm-linux-gnueabihf-gcc -O2 -Wall -o /render-test /src/render-test.c -ldl'
+docker cp "$cname:/render-test" "$work/render-test"
+docker rm "$cname" >/dev/null
+file "$work/render-test"
+
+RENDER_TEST="$work/render-test" \
 MAC_HTTP="${MAC_HTTP:?set MAC_HTTP=http://<mac-ip>:<port>}" \
   "$here/assemble-initramfs.sh" "$work/initramfs"
 cp -a "$work/initramfs" ./initramfs
