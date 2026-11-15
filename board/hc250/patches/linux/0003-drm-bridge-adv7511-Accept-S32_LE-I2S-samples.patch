@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <joseph@telaak.dev>
+Date: Sun, 15 Nov 2026 17:32:17 -0500
+Subject: [PATCH] drm/bridge: adv7511: Accept S32_LE I2S samples
+
+Commit 7c3127e4814c ("drm: bridge: adv7511: remove s32 format from i2s
+capabilities") dropped S32_LE because hw_params rejected it.
+
+Some I2S controllers can only send a sample that fills its slot, so with
+32-bit slots S32_LE is the only format they can offer. Accept it as a
+24-bit sample: the ADV7511 takes the top 24 bits of the slot, hdmi-codec
+already reports 24 significant bits, and the IEC958 channel status
+already treats 32-bit samples as 24-bit.
+---
+ drivers/gpu/drm/bridge/adv7511/adv7511_audio.c | 4 +---
+ drivers/gpu/drm/bridge/adv7511/adv7511_drv.c   | 1 +
+ 2 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c b/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c
+index 87e7e820810a..474834a94f7c 100644
+--- a/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c
++++ b/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c
+@@ -105,9 +105,7 @@ int adv7511_hdmi_audio_prepare(struct drm_bridge *bridge,
+ 		len = ADV7511_I2S_SAMPLE_LEN_20;
+ 		break;
+ 	case 32:
+-		if (fmt->bit_fmt != SNDRV_PCM_FORMAT_IEC958_SUBFRAME_LE)
+-			return -EINVAL;
+-		fallthrough;
++		/* S32_LE: the top 24 bits of the slot, as for IEC958 */
+ 	case 24:
+ 		len = ADV7511_I2S_SAMPLE_LEN_24;
+ 		break;
+diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
+index d3964adbb106..0cff81a6c086 100644
+--- a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
++++ b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
+@@ -1351,6 +1351,7 @@ static int adv7511_probe(struct i2c_client *i2c)
+ 						  SNDRV_PCM_FMTBIT_S20_3LE |
+ 						  SNDRV_PCM_FMTBIT_S24_3LE |
+ 						  SNDRV_PCM_FMTBIT_S24_LE |
++						  SNDRV_PCM_FMTBIT_S32_LE |
+ 						  SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_LE),
+ 	adv7511->bridge.hdmi_audio_spdif_playback = 1;
+ 	adv7511->bridge.hdmi_audio_dai_port = 2;
