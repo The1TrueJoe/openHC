@@ -4,13 +4,18 @@ Date: Sun, 15 Nov 2026 17:32:17 -0500
 Subject: [PATCH] drm/bridge: adv7511: Accept S32_LE I2S samples
 
 Commit 7c3127e4814c ("drm: bridge: adv7511: remove s32 format from i2s
-capabilities") dropped S32_LE because hw_params rejected it.
+capabilities") dropped S32_LE, which hw_params rejected, as the ADV7511
+takes at most 24 bits per I2S sample.
 
 Some I2S controllers can only send a sample that fills its slot, so with
 32-bit slots S32_LE is the only format they can offer. Accept it as a
 24-bit sample: the ADV7511 takes the top 24 bits of the slot, hdmi-codec
 already reports 24 significant bits, and the IEC958 channel status
 already treats 32-bit samples as 24-bit.
+
+Tested on an OMAP3630 board whose McBSP sends 2 x 32-bit I2S slots to
+an ADV7513: a left-only and a right-only S32_LE tone at 44.1 kHz both
+play at full level.
 ---
  drivers/gpu/drm/bridge/adv7511/adv7511_audio.c | 4 +---
  drivers/gpu/drm/bridge/adv7511/adv7511_drv.c   | 1 +

@@ -20,9 +20,10 @@ ones, and I2S or left-justified to two slots. This applies only when
 McBSP provides both clocks; without slots nothing changes.
 
 Tested on an OMAP3630 board whose McBSP4 drives the I2S input of an
-ADV7513 with no MCLK, with 2 x 32-bit slots: 44.1 kHz plays (96 MHz /
-34 gives 44117.6 Hz), 48 kHz (0.8% off) is refused, and S16 is
-converted to S32 by plughw.
+ADV7513 with no MCLK, with 2 x 32-bit slots and adv7511 taking S32_LE:
+a left-only and a right-only 44.1 kHz tone each play at full level
+(96 MHz / 34 gives 44117.6 Hz), 48 kHz (0.8% off) and S16_LE are
+refused, and plughw converts S16 to S32.
 ---
  sound/soc/ti/omap-mcbsp-priv.h |   4 +
  sound/soc/ti/omap-mcbsp.c      | 147 ++++++++++++++++++++++++++++++++-
