@@ -375,6 +375,19 @@
 	status = "okay";
 };
 
+/* Unused, and their sDMA channels leave McBSP4 none of the 32. */
+&mcspi2 {
+	status = "disabled";
+};
+
+&mcspi3 {
+	status = "disabled";
+};
+
+&mcspi4 {
+	status = "disabled";
+};
+
 &mcbsp4 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&mcbsp4_pins>;
