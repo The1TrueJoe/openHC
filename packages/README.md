@@ -18,7 +18,7 @@ it in and `board/Config.in` sources its `Config.in`:
 |---|---|
 | `board/common/packages/splash`, `figlet` | base firmware features, on every board |
 | `board/hc800/packages/ths8200` | HC-800 video DAC — that silicon is on one board |
-| `board/ea/common/packages/sgx545-*`, `wpebackend-pvr`, `webview` | the CE5300 graphics stack |
+| `board/ea/common/packages/powervr-sgx-firmware` | the CE5300 GPU's microkernel |
 
 And things that are just *files* are just files: `/etc/motd` is
 `board/common/rootfs-overlay/etc/motd`, not a package that shells out to figlet
@@ -83,16 +83,14 @@ the binary into the overlay. The init script `S90ohcweb` runs this one binary
 
 ## The display stack
 
-Three packages that only make sense together, on boards with the `sgx` feature:
+The on-screen view, on boards with the `wpe` feature (the EAs and the HC-800):
 
 ```
 webview            creates one WebKit view, loads a URL, runs a main loop
    |  links
-WPE WebKit             browser engine, renders through EGL/GLES, no X, no
-   |  dlopens          window system of its own
-wpebackend-pvr         libwpe backend: hands WPE the DDK's framebuffer EGL
-   |  draws through
-sgx545-um  +  sgx545-ce    PowerVR DDK userspace + our GPL kernel driver
+WPE WebKit             browser engine; its DRM platform scans out on KMS
+   |  renders through
+Mesa (EGL, GBM)        sgx on the EAs (powervr_sgx), i915 on the HC-800
 ```
 
 Out of the box the screen shows the splash, not a web page: `S01splash` draws

@@ -1,13 +1,13 @@
 # openHC feature: wpe — the on-screen web surface, HC-800 edition.
 #
-# Same job as board/ea/common/features/wpe (one full-screen WPE WebKit page on
-# the TV, opt-in from the web UI; S95ohc-display), on very
-# different graphics: the HC-800's GMA 3150 ("Pineview", 8086:a001) is driven by
+# Same job and stack as board/ea/common/features/wpe (one full-screen WPE WebKit
+# page on the TV, opt-in from the web UI; S95ohc-display), on different
+# graphics: the HC-800's GMA 3150 ("Pineview", 8086:a001) is driven by
 # Mesa's open i915 gallium driver, which gives real EGL + GBM + dmabuf. So this
 # board runs WebKit's own WPE Platform API: openHC's webview on WebKit's DRM
 # platform, which scans the GPU-rendered buffers straight out on KMS — no
-# compositor, no X, no copies, and no launcher patches. (The EAs stay on the
-# libwpe backend API for their SGX545; openHC issue #55.)
+# compositor, no X, no copies, and no launcher patches. (The EAs run the same
+# on Mesa's sgx driver over powervr_sgx.)
 #
 # The GPU is Shader Model 2.0 class (GLSL 1.20, 64 ALU / 32 TEX instructions)
 # with NO vertex shader hardware: Mesa runs vertex shaders on the CPU through

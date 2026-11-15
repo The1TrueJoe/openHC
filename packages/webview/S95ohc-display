@@ -1,17 +1,15 @@
 #!/bin/sh
-# Opt-in on-screen web view — HC-800.
+# Opt-in on-screen web view (the webview package; the EAs and the HC-800).
 #
-# Same contract as the EAs' S95ohc-display (board/ea/common): DISABLED BY
-# DEFAULT, the screen shows the openHC splash (S01splash) until the web UI turns
-# the view on. webd's POST /api/display writes the config (OHC_DISPLAY_ENABLE=1,
-# OHC_DISPLAY_URL=..., OHC_DISPLAY_THEME=auto|light|dark) and reloads this.
-# Here the config lives on /data (board.env OHC_DISPLAY_CONF): /opt is the
-# initramfs on this board, so it would not survive a reboot.
+# DISABLED BY DEFAULT: the screen shows the openHC splash (S01splash) until the
+# web UI turns the view on. webd's POST /api/display writes the config
+# (OHC_DISPLAY_ENABLE=1, OHC_DISPLAY_URL=..., OHC_DISPLAY_THEME=auto|light|dark)
+# and reloads this. board.env can move the config (OHC_DISPLAY_CONF): the
+# HC-800 keeps it on /data, its /opt being the initramfs.
 #
-# The view is the same program as the EAs' (packages/webview), built here on
-# WebKit's WPE Platform API: its DRM platform renders on the GMA 3150 through
-# Mesa i915 and scans out straight to KMS (the wpe feature). Restarted if it
-# exits.
+# webview runs on WebKit's WPE Platform API: its DRM platform renders through
+# Mesa (sgx on the EAs, i915 on the HC-800) and scans out straight to KMS (the
+# EAs' simpledrm, the HC-800's i915). Restarted if it exits.
 #
 # reload is live: a running view takes the URL and theme on its control FIFO, so
 # a URL or theme change never drops to the splash — only enabling/disabling
@@ -50,7 +48,7 @@ start() {
 		exit 0
 	}
 	[ -x /usr/bin/webview ] || { echo "ohc-display: no webview — the wpe feature is not in this image" >&2; exit 0; }
-	[ -e /dev/dri/card0 ] || { echo "ohc-display: no /dev/dri/card0" >&2; exit 0; }
+	ls -d /sys/class/drm/card*-* >/dev/null 2>&1 || { echo "ohc-display: no KMS display (no DRM connector)" >&2; exit 0; }
 	mkdir -p "$RUN" && chmod 0700 "$RUN"
 	echo "ohc-display: starting the on-screen web view -> $url (theme=$theme)"
 	start-stop-daemon -S -q -b -m -p "$PIDF" -x /bin/sh -- "$0" run
