@@ -59,15 +59,14 @@
 
 /* UPP n at VDC_UPP + base (gdl_server's __init_upp_reg_table). */
 #define VDC_UPP			0x30000
-#define VDC_UPP_PITCH		0x064	/* Y pitch << 16 | UV pitch */
 #define VDC_UPP_SURF		0x100
-#define VDC_UPP_SIZE		0x118	/* (h - 1)? << 16 | (w - 1)?: read back */
+#define VDC_UPP_PITCH		0x118	/* bytes; read back 2944 under CEFDK */
 #define VDC_UPP_CTRL		0x168
 #define   UPP_CTRL_ENABLE	BIT(0)
 #define   UPP_CTRL_PIPE_B	BIT(3)
 #define   UPP_CTRL_FMT		GENMASK(14, 10)
 #define   UPP_FMT_RGB_32	0x4800	/* GDL_PF_RGB_32 */
-#define   UPP_FMT_ARGB_32	0x4c00	/* GDL_PF_ARGB_32 */
+#define   UPP_FMT_ARGB_32	0x4c00	/* GDL_PF_ARGB_32: what CEFDK scans out */
 
 static const u32 upp_bases[] = { 0x0000, 0x1000, 0x2000, 0x3000, 0xf000 };
 
@@ -150,10 +149,9 @@ static int ce5300_find_plane(struct ce5300 *p)
 		ctrl = vdc_read(p, VDC_UPP + upp_bases[i] + VDC_UPP_CTRL);
 		if ((ctrl & UPP_CTRL_ENABLE) && !(ctrl & UPP_CTRL_PIPE_B)) {
 			p->upp = VDC_UPP + upp_bases[i];
-			drm_info(&p->drm, "firmware scanout: UPP %#x ctrl %#x surface %#x pitch %#x size %#x\n",
+			drm_info(&p->drm, "firmware scanout: UPP %#x ctrl %#x surface %#x pitch %u\n",
 				 p->upp, ctrl, vdc_read(p, p->upp + VDC_UPP_SURF),
-				 vdc_read(p, p->upp + VDC_UPP_PITCH),
-				 vdc_read(p, p->upp + VDC_UPP_SIZE));
+				 vdc_read(p, p->upp + VDC_UPP_PITCH));
 			return 0;
 		}
 	}
@@ -164,7 +162,6 @@ static int ce5300_find_plane(struct ce5300 *p)
 
 static const u32 ce5300_formats[] = {
 	DRM_FORMAT_XRGB8888,
-	DRM_FORMAT_ARGB8888,
 };
 
 static int ce5300_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_commit *state)
@@ -189,9 +186,9 @@ static void ce5300_plane_atomic_update(struct drm_plane *plane, struct drm_atomi
 		return;
 	pitch = fb->pitches[0];
 	ctrl = vdc_read(p, p->upp + VDC_UPP_CTRL) & ~UPP_CTRL_FMT;
-	ctrl |= fb->format->format == DRM_FORMAT_ARGB8888 ? UPP_FMT_ARGB_32 : UPP_FMT_RGB_32;
+	ctrl |= UPP_FMT_RGB_32;
 
-	vdc_write(p, p->upp + VDC_UPP_PITCH, pitch << 16 | pitch);
+	vdc_write(p, p->upp + VDC_UPP_PITCH, pitch);
 	vdc_write(p, p->upp + VDC_UPP_SURF, drm_fb_dma_get_gem_addr(fb, ps, 0));
 	vdc_write(p, p->upp + VDC_UPP_CTRL, ctrl | UPP_CTRL_ENABLE);
 }
@@ -457,7 +454,7 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* The firmware framebuffer lives in RAM, not in a BAR. */
 	surf = vdc_read(p, p->upp + VDC_UPP_SURF);
 	ret = aperture_remove_conflicting_devices(surf,
-						  p->mode.vdisplay * (vdc_read(p, p->upp + VDC_UPP_PITCH) >> 16),
+						  p->mode.vdisplay * vdc_read(p, p->upp + VDC_UPP_PITCH),
 						  DRIVER_NAME);
 	if (ret)
 		return ret;

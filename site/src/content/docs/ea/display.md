@@ -119,15 +119,17 @@ three plane types, each at a block base (`vdc_get_plane`):
 | IAP, indexed/alpha plane | `0x106`–`0x108` | `0x10000` + `0xf000`, `0`, `0x1000` | 8-bit indexed, A1/A4/A8 only |
 | cursor | `0x109` | `0x40000` | |
 
-So CEFDK's `a8r8g8b8` console has to be on a UPP. Per UPP, from
+CEFDK's `a8r8g8b8` console is on the UPP at `0x31000`: `ce5300-drm` read its
+control as `0x08ff4c01` (enabled, pipe A, ARGB 32), its surface as
+`0x7fc00000` and its pitch as 2944 on an EA-3. Per UPP, from
 `__init_upp_reg_table` and `vdc_plane_buffers_set`:
 
 | Offset | Meaning |
 |---|---|
 | `+0x168` | control: bit 0 enable, bit 3 pipe B, bits 14:10 pixel format |
-| `+0x064` | pitch: Y `<< 16` \| UV |
-| `+0x100`, `+0x104`, `+0x108`, `+0x10c` | surface addresses (Y, then chroma) |
-| `+0x118` | size, `h << 16 \| w` |
+| `+0x100`, `+0x104`, `+0x108`, `+0x10c` | surface addresses (Y, then chroma). `+0x100` read `0x7fc00000` |
+| `+0x118` | pitch in bytes (read 2944) |
+| `+0x064` | read 0 on the console plane (YUV pitches?) |
 | `+0x164`, `+0x16c`, `+0x178`, `+0x00c` | further control and attribute bits |
 | `+0x12c`–`+0x150` | keys and alpha |
 | `+0x200`–`+0x23c` | the scaler |
