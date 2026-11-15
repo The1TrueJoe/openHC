@@ -82,14 +82,22 @@ source "$BR2_EXTERNAL_OPENHC_PATH/../packages/webview/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/ths8200/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc800/packages/hc800-acpi/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/hc250/packages/brcmfmac-bcm4319/Config.in"
-# sgx545-ce (the submodule at board/ea/common/sgx545-ce) is not a package: its
-# kernel/ is mirrored in-tree as the SGX545 driver (external.mk), and srvinit, the
-# open GPU bring-up built from its srvinit/ + libpvr/, is the package below. The
-# DDK userspace (sgx545-um) and its libwpe backend are packages here too; webview,
-# the on-screen browser every display board runs, is in packages/.
-source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-srvinit/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/sgx545-um/Config.in"
-source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/wpebackend-pvr/Config.in"
+# powervr_sgx (the submodule at board/ea/common/powervr_sgx) is not a package:
+# its kernel driver is mirrored in-tree (external.mk) and its Mesa driver is
+# overlaid on Buildroot's mesa3d (the option below). Its firmware is a package.
+source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/packages/powervr-sgx-firmware/Config.in"
+
+config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SGX
+	bool "Gallium sgx driver (powervr_sgx)"
+	depends on BR2_PACKAGE_MESA3D
+	depends on BR2_i386 || BR2_x86_64
+	select BR2_PACKAGE_MESA3D_GALLIUM_DRIVER
+	help
+	  Mesa's sgx gallium driver for the PowerVR SGX545 under the
+	  powervr_sgx kernel driver, from the powervr_sgx submodule's
+	  mesa/ overlay (board/external.mk). Render-only: kmsro pairs it
+	  with the display device (simpledrm).
+
 # Built firmware (not a package): its rule lives with its source in firmware/.
 source "$BR2_EXTERNAL_OPENHC_PATH/ea/common/firmware/dsp/adau1451/Config.in"
 source "$BR2_EXTERNAL_OPENHC_PATH/common/firmware/io-mcu/Config.in"

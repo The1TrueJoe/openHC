@@ -1,0 +1,9 @@
+config BR2_PACKAGE_POWERVR_SGX_FIRMWARE
+	bool "powervr-sgx-firmware"
+	depends on BR2_i386 || BR2_x86_64
+	help
+	  The open SGX545 microkernel (MIT) that the powervr_sgx kernel
+	  driver loads at probe: /lib/firmware/powervr_sgx/sgx545_ukernel.bin,
+	  from the powervr_sgx release that matches the submodule.
+
+	  https://github.com/The1TrueJoe/powervr_sgx

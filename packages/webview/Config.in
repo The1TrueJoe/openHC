@@ -1,24 +1,19 @@
 config BR2_PACKAGE_WEBVIEW
 	bool "webview"
-	depends on BR2_PACKAGE_WPEWEBKIT
-	select BR2_PACKAGE_LIBXKBCOMMON
-	select BR2_PACKAGE_XKEYBOARD_CONFIG # runtime, keymaps
+	depends on BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM
 	help
 	  Full-screen web surface for openHC.
 
-	  Creates one WPE WebKit view, loads a URL and runs a main loop. No
-	  chrome, no navigation, no tabs -- the display path lives entirely in
-	  the libwpe backend, so this is only the part WPE does not ship
-	  (Buildroot builds WebKit with ENABLE_MINIBROWSER=OFF).
+	  Creates one WPE WebKit view on the WPE Platform DRM display,
+	  loads a URL and runs a main loop. No chrome, no navigation, no
+	  tabs (Buildroot builds WebKit with ENABLE_MINIBROWSER=OFF).
+	  S95ohc-display runs it when the web UI turns the view on.
 
 	  The URL comes from argv[1] or $WEBVIEW_URL, defaulting to
 	  http://localhost/ -- the dashboard webd already serves on :80.
-	  What any other URL serves is not openHC's concern.
 
-	  USB keyboards and mice drive the page: through libinput on WPE
-	  Platform's DRM display, and on the libwpe path by reading
-	  /dev/input directly (keymaps from xkeyboard-config). The page
-	  draws the mouse cursor itself.
+	  USB keyboards and mice drive the page through libinput. The
+	  page draws the mouse cursor itself.
 
-comment "webview needs wpewebkit"
-	depends on !BR2_PACKAGE_WPEWEBKIT
+comment "webview needs wpewebkit with the WPE Platform DRM display"
+	depends on !BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM

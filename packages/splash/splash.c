@@ -200,7 +200,9 @@ static void draw_addresses(void)
 		in = (const struct sockaddr_in *)p->ifa_addr;
 		if (!inet_ntop(AF_INET, &in->sin_addr, ip, sizeof(ip)))
 			continue;
-		snprintf(lines[n], sizeof(lines[n]), "%s %s", p->ifa_name, ip);
+		/* an alias label (wlan0:avahi) shows as its interface */
+		snprintf(lines[n], sizeof(lines[n]), "%.*s %s",
+			 (int)strcspn(p->ifa_name, ":"), p->ifa_name, ip);
 		n++;
 	}
 	freeifaddrs(ifa);

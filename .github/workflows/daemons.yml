@@ -47,8 +47,7 @@ jobs:
           # every EA variant ships the same crates (ea/common's features), so one
           # entry covers the series. EA runs a modern 64-bit userspace (see
           # packages/build.sh): x86_64 static-musl daemons on the x86_64 glibc
-          # rootfs — only the 32-bit PowerVR SGX545 GLES/WPE sub-stack uses IA32
-          # emulation, so the daemons are NOT i686.
+          # rootfs, so the daemons are NOT i686.
           - board: ea1-v1
             target: x86_64-unknown-linux-musl
             cc: musl-gcc

@@ -77,37 +77,12 @@ if [ ! -e "$TARGET/sbin/switch_root" ] && [ ! -L "$TARGET/sbin/switch_root" ]; t
     echo "post-build: WARNING /sbin/switch_root missing — busybox needs CONFIG_SWITCH_ROOT" >&2
 fi
 
-# ---- bake in the on-panel WPE/SGX sysroot (EA, opt-in) ----------------------
-# The on-screen UI is a 32-bit sysroot: the only SGX545 DDK is i386, so WPE WebKit
-# + the DDK blobs are built in a SEPARATE i386 Buildroot tree (board/ea/common/gpu-wpe-i386
-# -> sgx-wpe.yml; /opt/sgx-i386 -> sgx-gpu.yml) and HARVESTED as tarballs, because
-# Buildroot cannot multilib an i386 WebKit into this x86_64 image — the `wpe`
-# feature's package lines `depend on BR2_i386` and kconfig drops them here. So the
-# stack cannot be built in-tree; it is BAKED in from the harvested tarball instead,
-# which is what S95ohc-display runs under IA32 emulation.
-#
-# CI (images.yml) downloads the latest tarballs and points these env vars at them;
-# a local build can set them too. Absent => no-op: the image just has no on-panel
-# browser (S95ohc-display then stays a clean no-op). This must never fail the
-# build, so every step tolerates a missing or bad tarball.
-for spec in "${OHC_SGX_WPE_SYSROOT:-}|/opt/sgx-i386-wpe" \
-            "${OHC_SGX_I386_SYSROOT:-}|/opt/sgx-i386"; do
-    tb="${spec%%|*}"; dest="${spec##*|}"
-    [ -n "$tb" ] && [ -f "$tb" ] || continue
-    # Clean extract: target/ is cached between CI builds, so drop any stale copy
-    # first rather than layering a new sysroot over an old one.
-    rm -rf "$TARGET$dest"; mkdir -p "$TARGET$dest"
-    # Each tarball wraps a single top dir (sgx-i386-wpe / sgx-i386) whose contents
-    # are a sysroot tree (usr/, lib/ld-linux.so.2, etc/fonts, usr/bin/webview, …).
-    # --strip-components=1 drops that wrapper so the tree lands directly under
-    # $dest, exactly where S95ohc-display expects $R/usr/bin/webview etc.
-    if tar xzf "$tb" -C "$TARGET$dest" --strip-components=1 2>/dev/null; then
-        echo "post-build: baked $(basename "$tb") -> $dest ($(du -sh "$TARGET$dest" 2>/dev/null | cut -f1))"
-    else
-        echo "post-build: WARNING could not extract $tb into $dest; on-panel view will be absent" >&2
-        rm -rf "$TARGET$dest"
-    fi
-done
+# ---- the retired DDK GPU stack (EA) -----------------------------------------
+# target/ is cached between CI builds and Buildroot never removes what a dropped
+# package or overlay file installed: clear what the DDK-era stack left behind.
+rm -rf "$TARGET/opt/sgx-i386" "$TARGET/opt/sgx-i386-wpe" "$TARGET/usr/sbin/srvinit" \
+    "$TARGET"/lib/firmware/sgx545-ukernel-*.bin "$TARGET/etc/init.d/S60sgx" \
+    "$TARGET/etc/powervr.ini" "$TARGET/usr/lib/sgx-busidshim.so"
 
 # ---- EM357 Zigbee NCP image -------------------------------------------------
 # zigbee reflashes the radio to this image at boot when it runs anything
