@@ -767,7 +767,13 @@ fn install(rest: &[String]) -> bool {
         eprintln!("  {} is not wired into the CLI yet", m.name());
         return false;
     }
-    if !yes && !confirm("proceed with stage 1 (RAM installer)") { return false; }
+    if network::p1_holds_openhc(&ssh) {
+        println!("\n  WARNING: p1 already holds openHC. This re-images p1: everything on it");
+        println!("  (/opt, /root, /etc config, ssh keys) is lost. Back it up first.");
+        if !yes && !confirm("re-image p1 and proceed with stage 1 (RAM installer)") { return false; }
+    } else if !yes && !confirm("proceed with stage 1 (RAM installer)") {
+        return false;
+    }
 
     let p = Progress::stdout();
     // The tiny self-installer is opt-in, NOT the default. It writes a separate

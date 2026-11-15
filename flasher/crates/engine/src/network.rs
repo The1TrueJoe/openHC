@@ -508,6 +508,19 @@ fn ensure_p1_marker(ssh: &Ssh, p: &Progress) -> Result<()> {
 /// on the network for stage 2 (board/ea/common/boot-init/init).
 const REINSTALL_FLAG: &str = ".ohc-reinstall-pending";
 
+/// Does p1 hold an openHC rootfs (the running root, or mountable)? Stage 2 then
+/// re-images it, losing everything on it.
+pub fn p1_holds_openhc(ssh: &Ssh) -> bool {
+    let cmd = if is_root_on_p1(ssh) {
+        "[ -f /etc/openhc-release ] && echo OHC; true".to_string()
+    } else {
+        "mkdir -p /mnt/ohcp1 && mount -o ro /dev/mmcblk0p1 /mnt/ohcp1 2>/dev/null && { \
+         [ -f /mnt/ohcp1/etc/openhc-release ] && echo OHC; umount /mnt/ohcp1; }; true"
+            .to_string()
+    };
+    ssh.run(&cmd, false).map(|o| o.contains("OHC")).unwrap_or(false)
+}
+
 /// Over an installed openHC, boot-init would pivot into the OLD p1 and stage 2
 /// would refuse a mounted root. Flag p1 so the next boot waits for stage 2
 /// instead. Stock p1 has no /etc/openhc-release and needs no flag.
@@ -817,7 +830,9 @@ pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
 
     // 6. kernel + initrd -> eMMC USER partition (Linux offsets; 0x400 stock kernel
     //    is left intact as a clean fallback). Only now that every check passed:
-    //    new images under the old autoscript's sizes do not boot.
+    //    new images under the old autoscript's sizes do not boot. Between here
+    //    and the table write in 7 they still disagree; both must change, so that
+    //    window (seconds) cannot be closed, only kept free of anything that fails.
     p.emit(Event::step(format!("kernel {klen} B -> eMMC {RB_KERNEL_OFF:#x} (user partition)")));
     dd_to_emmc(ssh, kernel, RB_KERNEL_OFF)?;
     p.emit(Event::step(format!("initrd {ilen} B -> eMMC {RB_INITRD_OFF:#x}")));

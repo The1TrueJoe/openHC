@@ -70,7 +70,10 @@ written**:
 The fuse is blown on every EA measured so far (the ea3-v2 and an ea1-v1 rev 5),
 so the autoscript is required — see [secure boot](/ea/secure-boot/).
 
-The same command upgrades a box that already runs openHC:
+The same command re-installs over a box that already runs openHC. It is not an
+in-place upgrade: **stage 2 re-images p1**, so everything on it (`/opt`, `/root`,
+`/etc` config, ssh keys) is lost unless you back it up first. The CLI warns and
+asks before stage 1 when it finds openHC on p1.
 
 - **The MFH item is reused.** openHC's existing MFH item is rewritten in place
   rather than a second one appended. The table has no room for a second item on
