@@ -1,6 +1,6 @@
 ---
 title: Graphics — the PowerVR SGX545
-description: GLES2 on a Series5 PowerVR with an open stack: the powervr_sgx kernel driver, its open microkernel and Mesa's sgx driver.
+description: "GLES2 on a Series5 PowerVR with an open stack: the powervr_sgx kernel driver, its open microkernel and Mesa's sgx driver."
 sidebar:
   order: 10
 ---
