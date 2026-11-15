@@ -32,7 +32,16 @@ the build, openHC keeps its own copy:
 
 - **ALSA `indep_dig_outs`**:
   `board/hc800/patches/linux/0001-ALSA-hda-generic-Add-indep_dig_outs-hint.patch`,
-  until the kernel openHC builds contains it.
+  until the kernel openHC builds contains it (expected in 7.5).
+
+openHC also carries other people's upstream fixes until its base has them:
+
+| Patch | Upstream | Drop when |
+|---|---|---|
+| `board/hc250/patches/linux/0002-clocksource-drivers-timer-ti-dm-...am654.patch` | mainline `0d3a67b1954a`, in 7.4-rc1 | the kernel is 7.4 or later, or 7.3.y picks it up |
+| `build/buildroot-patches/0006-package-shairport-sync-security-bump-version-to-5.6.2.patch` | Buildroot master, 2026-10-27 | `build/buildroot.ref` moves past 2026-11-10 |
+| `build/buildroot-patches/0007-package-shairport-sync-bump-to-version-5.6.3.patch` | Buildroot master, 2026-11-10 | same as 0006 |
+
 The shairport-sync D-Bus names are no longer carried: both pull requests are in
 shairport-sync 5.6.3, which openHC builds.
 
