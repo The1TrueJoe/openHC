@@ -1,6 +1,6 @@
-From 5ef15d483b5a79be72a697a681645d535cf54662 Mon Sep 17 00:00:00 2001
+From 9c387b4c0539ceb1e140b4b87fcf5f7add3a7db0 Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <joseph@telaak.dev>
-Date: Sat, 14 Nov 2026 19:14:16 -0500
+Date: Sun, 15 Nov 2026 01:04:32 -0500
 Subject: [PATCH] ASoC: ti: omap-mcbsp: Implement set_tdm_slot
 
 As bit clock and frame provider, McBSP sizes the frame from the SRG
@@ -13,43 +13,52 @@ Implement set_tdm_slot() so these cards can ask for a frame of
 slots x slot_width bit clocks with dai-tdm-slot-num and
 dai-tdm-slot-width. hw_params() then picks the divider for the rate,
 and startup() offers only the rates the SRG input divides to within
-0.1%, the IEC 60958 level II clock tolerance. Without a slot width
-nothing changes.
+0.1%, the IEC 60958 level II clock tolerance. McBSP sends a frame's
+words back to back, so startup() also limits the sample width to the
+slot width and the channels to the active slots, which must be the low
+ones, and I2S or left-justified to two slots. This applies only when
+McBSP provides both clocks; without slots nothing changes.
 
 Tested on an OMAP3630 board whose McBSP4 drives the I2S input of an
-ADV7513 with no MCLK. With 2 x 32-bit slots it plays 44.1 kHz
-(96 MHz / 34 gives 44117.6 Hz); 48 kHz is 0.8% off and not offered.
+ADV7513 with no MCLK, with 2 x 32-bit slots: 44.1 kHz plays (96 MHz /
+34 gives 44117.6 Hz), 48 kHz (0.8% off) is refused, and S16 is
+converted to S32 by plughw.
 ---
- sound/soc/ti/omap-mcbsp-priv.h |  4 ++
- sound/soc/ti/omap-mcbsp.c      | 98 +++++++++++++++++++++++++++++++++-
- 2 files changed, 101 insertions(+), 1 deletion(-)
+ sound/soc/ti/omap-mcbsp-priv.h |   4 +
+ sound/soc/ti/omap-mcbsp.c      | 147 ++++++++++++++++++++++++++++++++-
+ 2 files changed, 150 insertions(+), 1 deletion(-)
 
 diff --git a/sound/soc/ti/omap-mcbsp-priv.h b/sound/soc/ti/omap-mcbsp-priv.h
-index da519ea..124ca35 100644
+index da519ea..33d97be 100644
 --- a/sound/soc/ti/omap-mcbsp-priv.h
 +++ b/sound/soc/ti/omap-mcbsp-priv.h
 @@ -275,6 +275,10 @@ struct omap_mcbsp {
  	unsigned int latency[2];
  	int clk_div;
  	int wlen;
-+	int slots;
-+	int slot_width;
-+	unsigned int slot_rates[9];
-+	struct snd_pcm_hw_constraint_list slot_rate_list;
++	unsigned int slots;
++	unsigned int slot_width;
++	unsigned int tx_slots;
++	unsigned int rx_slots;
  
  	struct pm_qos_request pm_qos_req;
  };
 diff --git a/sound/soc/ti/omap-mcbsp.c b/sound/soc/ti/omap-mcbsp.c
-index 26af616..ce7b5b4 100644
+index 26af616..2fa7361 100644
 --- a/sound/soc/ti/omap-mcbsp.c
 +++ b/sound/soc/ti/omap-mcbsp.c
-@@ -759,6 +759,54 @@ static int omap_mcbsp_hwrule_min_buffersize(struct snd_pcm_hw_params *params,
+@@ -759,12 +759,113 @@ static int omap_mcbsp_hwrule_min_buffersize(struct snd_pcm_hw_params *params,
  	return snd_interval_refine(buffer_size, &frames);
  }
  
++static const unsigned int omap_mcbsp_slot_rates[] = {
++	8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000,
++};
++
 +/*
-+ * The SRG divider that makes a frame of slots x slot_width bit clocks run at
-+ * @rate, or 0 if none gets within 0.1% (IEC 60958 level II).
++ * The SRG divider that runs a frame of slots x slot_width bit clocks at
++ * @rate, or 0 if none gets within 0.1% (IEC 60958 level II). CLKGDV() keeps
++ * 7 bits, so the divider is at most 128.
 + */
 +static unsigned int omap_mcbsp_slot_div(struct omap_mcbsp *mcbsp,
 +					unsigned int rate)
@@ -61,7 +70,7 @@ index 26af616..ce7b5b4 100644
 +		return 0;
 +
 +	div = DIV_ROUND_CLOSEST(mcbsp->in_freq, bclk);
-+	if (!div || div > 256)
++	if (!div || div > 128)
 +		return 0;
 +	if ((u64)abs_diff(mcbsp->in_freq / div, bclk) * 1000 > bclk)
 +		return 0;
@@ -69,82 +78,114 @@ index 26af616..ce7b5b4 100644
 +	return div;
 +}
 +
-+static int omap_mcbsp_slot_rates(struct snd_pcm_substream *substream,
-+				 struct omap_mcbsp *mcbsp)
++static unsigned int omap_mcbsp_slot_rate_list(struct omap_mcbsp *mcbsp,
++					      unsigned int *list)
 +{
-+	static const unsigned int rates[] = {
-+		8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000,
-+	};
 +	unsigned int i, n = 0;
 +
-+	for (i = 0; i < ARRAY_SIZE(rates); i++)
-+		if (omap_mcbsp_slot_div(mcbsp, rates[i]))
-+			mcbsp->slot_rates[n++] = rates[i];
++	for (i = 0; i < ARRAY_SIZE(omap_mcbsp_slot_rates); i++)
++		if (omap_mcbsp_slot_div(mcbsp, omap_mcbsp_slot_rates[i]))
++			list[n++] = omap_mcbsp_slot_rates[i];
 +
-+	if (!n) {
-+		dev_err(mcbsp->dev, "no rate for %d x %d-bit slots from %u Hz\n",
++	return n;
++}
++
++static int omap_mcbsp_hwrule_slot_rate(struct snd_pcm_hw_params *params,
++				       struct snd_pcm_hw_rule *rule)
++{
++	unsigned int list[ARRAY_SIZE(omap_mcbsp_slot_rates)];
++	unsigned int n = omap_mcbsp_slot_rate_list(rule->private, list);
++
++	return snd_interval_list(hw_param_interval(params,
++						   SNDRV_PCM_HW_PARAM_RATE),
++				 n, list, 0);
++}
++
++/*
++ * With TDM slots the frame is slots x slot_width bit clocks. McBSP sends its
++ * words back to back, so a sample must fill its slot, channels go to the
++ * first slots, and I2S/left-justified (one word per phase) need two slots.
++ */
++static int omap_mcbsp_slot_constraints(struct snd_pcm_substream *substream,
++				       struct omap_mcbsp *mcbsp)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	unsigned int format = mcbsp->fmt & SND_SOC_DAIFMT_FORMAT_MASK;
++	unsigned int list[ARRAY_SIZE(omap_mcbsp_slot_rates)];
++	unsigned int active;
++	int ret;
++
++	if ((format == SND_SOC_DAIFMT_I2S || format == SND_SOC_DAIFMT_LEFT_J) &&
++	    mcbsp->slots != 2) {
++		dev_err(mcbsp->dev, "I2S needs 2 slots, not %u\n", mcbsp->slots);
++		return -EINVAL;
++	}
++	if (!omap_mcbsp_slot_rate_list(mcbsp, list)) {
++		dev_err(mcbsp->dev, "no rate for %u x %u-bit slots from %u Hz\n",
 +			mcbsp->slots, mcbsp->slot_width, mcbsp->in_freq);
 +		return -EINVAL;
 +	}
 +
-+	mcbsp->slot_rate_list.count = n;
-+	mcbsp->slot_rate_list.list = mcbsp->slot_rates;
++	active = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
++		 mcbsp->tx_slots : mcbsp->rx_slots;
 +
-+	return snd_pcm_hw_constraint_list(substream->runtime, 0,
-+					  SNDRV_PCM_HW_PARAM_RATE,
-+					  &mcbsp->slot_rate_list);
++	ret = snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_CHANNELS,
++					   1, active);
++	if (ret < 0)
++		return ret;
++	ret = snd_pcm_hw_constraint_single(runtime,
++					   SNDRV_PCM_HW_PARAM_SAMPLE_BITS,
++					   mcbsp->slot_width);
++	if (ret < 0)
++		return ret;
++
++	return snd_pcm_hw_rule_add(runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
++				   omap_mcbsp_hwrule_slot_rate, mcbsp,
++				   SNDRV_PCM_HW_PARAM_RATE, -1);
 +}
 +
  static int omap_mcbsp_dai_startup(struct snd_pcm_substream *substream,
  				  struct snd_soc_dai *cpu_dai)
  {
-@@ -801,6 +849,12 @@ static int omap_mcbsp_dai_startup(struct snd_pcm_substream *substream,
- 					   SNDRV_PCM_HW_PARAM_PERIOD_SIZE, 2);
- 	}
+ 	struct omap_mcbsp *mcbsp = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int err = 0;
  
-+	/* A fixed slot frame from the SRG only reaches some rates */
-+	if (!err && mcbsp->slot_width &&
++	if (mcbsp->slot_width &&
 +	    (mcbsp->fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) ==
-+	    SND_SOC_DAIFMT_BP_FP)
-+		err = omap_mcbsp_slot_rates(substream, mcbsp);
++	    SND_SOC_DAIFMT_BP_FP) {
++		err = omap_mcbsp_slot_constraints(substream, mcbsp);
++		if (err)
++			return err;
++	}
 +
- 	return err;
- }
+ 	if (!snd_soc_dai_active(cpu_dai))
+ 		err = omap_mcbsp_request(mcbsp);
  
-@@ -1020,7 +1074,23 @@ static int omap_mcbsp_dai_hw_params(struct snd_pcm_substream *substream,
+@@ -1020,7 +1121,15 @@ static int omap_mcbsp_dai_hw_params(struct snd_pcm_substream *substream,
  	/* In McBSP master modes, FRAME (i.e. sample rate) is generated
  	 * by _counting_ BCLKs. Calculate frame size in BCLKs */
  	master = mcbsp->fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK;
 -	if (master == SND_SOC_DAIFMT_BP_FP) {
 +	if (master == SND_SOC_DAIFMT_BP_FP && mcbsp->slot_width) {
-+		if (wlen > mcbsp->slot_width || channels > mcbsp->slots) {
-+			dev_err(mcbsp->dev, "%d x %d-bit does not fit %d x %d-bit slots\n",
-+				channels, wlen, mcbsp->slots,
-+				mcbsp->slot_width);
-+			return -EINVAL;
-+		}
++		/* startup() limited channels, width and rate to the slots */
 +		div = omap_mcbsp_slot_div(mcbsp, params_rate(params));
-+		if (!div) {
-+			dev_err(mcbsp->dev, "no divider for %u Hz from %u Hz\n",
-+				params_rate(params), mcbsp->in_freq);
++		if (!div)
 +			return -EINVAL;
-+		}
-+		regs->srgr1	&= ~CLKGDV(0xff);
++		regs->srgr1	&= ~CLKGDV(0x7f);
 +		regs->srgr1	|= CLKGDV(div - 1);
 +		framesize = mcbsp->slots * mcbsp->slot_width;
 +	} else if (master == SND_SOC_DAIFMT_BP_FP) {
  		div = mcbsp->clk_div ? mcbsp->clk_div : 1;
  		framesize = (mcbsp->in_freq / div) / params_rate(params);
  
-@@ -1184,6 +1254,31 @@ static int omap_mcbsp_dai_set_clkdiv(struct snd_soc_dai *cpu_dai,
+@@ -1184,6 +1293,41 @@ static int omap_mcbsp_dai_set_clkdiv(struct snd_soc_dai *cpu_dai,
  	return 0;
  }
  
 +/*
-+ * As bit clock provider, a slot width makes the frame slots x slot_width bit
-+ * clocks long, with the SRG divider picked per rate instead of set_clkdiv().
-+ * McBSP sends the first channels slots in order, so only masks of the low
-+ * slots are accepted.
++ * As bit clock and frame provider, a frame of slots x slot_width bit clocks
++ * instead of one sized by set_clkdiv(), the divider picked per rate. Only
++ * masks of the low slots: McBSP sends a frame's words in order.
 + */
 +static int omap_mcbsp_dai_set_tdm_slot(struct snd_soc_dai *cpu_dai,
 +				       unsigned int tx_mask,
@@ -152,15 +193,26 @@ index 26af616..ce7b5b4 100644
 +				       int slots, int slot_width)
 +{
 +	struct omap_mcbsp *mcbsp = snd_soc_dai_get_drvdata(cpu_dai);
++	unsigned int max_width = mcbsp->pdata->reg_size == 2 ? 16 : 32;
++	unsigned int all;
 +
-+	if (slots < 0 || slot_width < 0 || slot_width > 32 ||
-+	    (slots && slot_width < 8) || slots > 128)
++	if (slots <= 0 || slot_width <= 0) {
++		mcbsp->slots = 0;
++		mcbsp->slot_width = 0;
++		return 0;
++	}
++
++	if (slots > 16 || (slot_width != 16 && slot_width != max_width))
 +		return -EINVAL;
-+	if ((tx_mask & (tx_mask + 1)) || (rx_mask & (rx_mask + 1)))
++	all = (1U << slots) - 1;
++	if ((tx_mask & ~all) || (tx_mask & (tx_mask + 1)) ||
++	    (rx_mask & ~all) || (rx_mask & (rx_mask + 1)))
 +		return -EINVAL;
 +
 +	mcbsp->slots = slots;
-+	mcbsp->slot_width = slots ? slot_width : 0;
++	mcbsp->slot_width = slot_width;
++	mcbsp->tx_slots = tx_mask ? hweight32(tx_mask) : slots;
++	mcbsp->rx_slots = rx_mask ? hweight32(rx_mask) : slots;
 +
 +	return 0;
 +}
@@ -168,7 +220,7 @@ index 26af616..ce7b5b4 100644
  static int omap_mcbsp_dai_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
  					 int clk_id, unsigned int freq,
  					 int dir)
-@@ -1281,6 +1376,7 @@ static const struct snd_soc_dai_ops mcbsp_dai_ops = {
+@@ -1281,6 +1425,7 @@ static const struct snd_soc_dai_ops mcbsp_dai_ops = {
  	.set_fmt	= omap_mcbsp_dai_set_dai_fmt,
  	.set_clkdiv	= omap_mcbsp_dai_set_clkdiv,
  	.set_sysclk	= omap_mcbsp_dai_set_dai_sysclk,
