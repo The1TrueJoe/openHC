@@ -169,9 +169,9 @@ Two are off for reasons other than size:
   `__stack_chk_fail` panics as soon as `swapper/1` enters `do_idle`
   (`stack-protector: Kernel stack is corrupted in: do_idle`).
 - **`WERROR`.** The mainline x86 defconfigs set it. Buildroot's `linux.mk` forced
-  it off through 2025.x; 2026.02 dropped that. This kernel builds the vendor SGX
-  DDK (32-bit-era code, hundreds of size and format warnings on x86_64), and a
-  newer gcc must not fail the image over a warning.
+  it off through 2025.x; 2026.02 dropped that. This kernel builds out-of-tree
+  drivers (openHC's own and powervr_sgx), and a newer gcc must not fail the
+  image over a warning.
 
 ## The fat real kernel
 
@@ -188,11 +188,12 @@ subsystems in and the size check in `post-image.sh` is never in the way. Modules
 stay on; the ASoC audio stack is still `obj-m` and loads from p1.
 
 - **GPU.** `CONFIG_DRM` built in brings the DRM core and KMS/display helpers
-  (~1.25 MiB), the only reason it was a module. `SGX545_CE` depends on DRM and
-  follows it; its `objs.mk` line is `obj-$(CONFIG_SGX545_CE)`. With the GPU built
-  in it is simply present at boot, which retired the `pvrsrvkm` rmmod/insmod
-  dance.
-- **simplefb** stays built in, as on the bootstrap.
+  (~1.25 MiB), the only reason it was a module. `DRM_POWERVR_SGX` depends on DRM
+  and follows it; its `objs.mk` line is `obj-$(CONFIG_DRM_POWERVR_SGX)`. Built in,
+  it probes before p1 is mounted, so `mk-real-kernel.sh` links its microkernel
+  into the kernel (`EXTRA_FIRMWARE`, from the target tree).
+- **simpledrm** replaces simplefb on the same `simple-framebuffer` node: a KMS
+  device for the GPU's buffers, with fbdev emulation for `/dev/fb0` and the splash.
 - **Regulator core**, for the rear USB port's 5 V switch (GPIO 44), which the
   board DTB makes the EHCI's `vbus-supply` (patch `0016`). It does not fit the
   bootstrap, where the rear port stays unpowered
@@ -345,18 +346,17 @@ a text console clears the framebuffer on takeover and ate the first splash.
 
 ### sgx
 
-Userspace finds the GPU through libdrm's `drmOpen()`, so a DRM node must exist
-([graphics](/ea/graphics/#the-correction-drm-is-not-optional)). The driver
-registers no modesetting and owns no GEM objects; display stays on simplefb.
-`SGX545_CE` is the driver's own Kconfig symbol (sgx545ce, mirrored in-tree via
-`objs.mk`), not a Buildroot package. DRM and `SGX545_CE` are modules on the bootstrap (the driver depends on DRM, so
-module is the only option while DRM is one) and built in on the real kernel.
+`powervr_sgx` is render-only: it registers no modesetting, and display stays on
+simplefb (bootstrap) or simpledrm (real kernel). `DRM_POWERVR_SGX` is the
+driver's own Kconfig symbol (mirrored in-tree via `objs.mk`), not a Buildroot
+package. DRM and `DRM_POWERVR_SGX` are modules on the bootstrap (the driver
+depends on DRM, so module is the only option while DRM is one) and built in on
+the real kernel ([graphics](/ea/graphics/#the-stack)).
 
-- `X86_PAT` and `MTRR` give real write-combining for the SGX command buffers.
-  Without them the driver falls back to uncached: correct, markedly slower.
-- `DEVMEM` without `STRICT_DEVMEM`: `sgxregs` reads the SGX identity registers
-  through `/dev/mem` before any driver is loaded, and strict devmem blocks
-  exactly that BAR.
+- `X86_PAT` and `MTRR` give real write-combining for the GPU's buffers.
+  Without them they are uncached: correct, markedly slower.
+- `DEVMEM` without `STRICT_DEVMEM`: `devmem` reads the SGX's registers when
+  debugging, and strict devmem blocks exactly that BAR.
 - DRM drivers for hardware the board lacks (`i915` alone is 2.6 MB, plus
   virtio-gpu, TTM, `INTEL_GTT`, `AGP`) are off. They cost nothing in the bzImage
   either way; this keeps them off the rootfs.

@@ -1,272 +1,56 @@
 ---
 title: Graphics — the PowerVR SGX545
-description: GLES2 on a Series5 PowerVR, via the GPL kernel source Intel published for Cedarview.
+description: GLES2 on a Series5 PowerVR with an open stack: the powervr_sgx kernel driver, its open microkernel and Mesa's sgx driver.
 sidebar:
   order: 10
 ---
 
-**Verdict: it works.** GLES2 rendering is confirmed on hardware. The kernel driver
-builds clean against 7.1.8, binds the device, registers `/dev/dri/card0`, and the
-vendor userspace compiles and links shaders through it.
+**The EA's GPU runs a fully open stack:** [powervr_sgx](https://github.com/The1TrueJoe/powervr_sgx)
+0.2.1, a DRM kernel driver, an open microkernel and a Mesa gallium driver for the
+SGX545. No Intel or Imagination code runs on the box, and the userspace is
+native 64-bit. The on-screen web view is the HC-800's: WebKit's WPE Platform DRM
+display, on Mesa.
 
-The prevailing "Series5 SGX is a dead end" assumption is **wrong for this part**,
-for a specific reason: SGX545 also shipped in Intel **Cedarview** (GMA 3600/3650),
-and **Intel published the complete GPL `services4`/`srvkm` kernel source for it.**
-It is still downloadable from the Ubuntu archive. We don't need to reverse
-engineer a kernel driver, and we do not need a shader compiler.
+Until this, the GPU ran Intel's 32-bit Cedarview DDK 1.7 under IA32 emulation,
+on a port of its GPL kernel driver. That story is in
+[The impossible GPU](/log/the-impossible-gpu/).
 
-The folklore is true in general, nobody has ever produced a Mesa driver for
-Series5, and irrelevant here, because the FOSS-Mesa path is not the path.
+## The stack
 
-## The decisive find
-
-```
-old-releases.ubuntu.com/ubuntu/pool/multiverse/c/cedarview-drm-drivers/
-  cedarview-drm-drivers_20120717.orig.tar.gz
-  cedarview-drm-drivers_20120717-0ubuntu1.debian.tar.gz
-```
-
-The `orig` tarball ships the directory skeleton **empty**; the actual source is in
-`debian/patches/07_kernel-3.2-cdv.diff`, 3.47 MB. Apply the quilt series and you
-get:
-
-| | |
-|---|---|
-| Tree | `staging/cdv/pvr/` |
-| DDK version | **1.7.862890** |
-| Size | 51 `.c` + 93 `.h`, **78,349 lines** |
-| License | **GPL v2**, Imagination Technologies, `gpl-support@imgtec.com` |
-| Layout | `services4/srvkm/{common,devices/sgx,env/linux,bridged/sgx,hwdefs,include}` — the exact layout named in `pvrsrvkm.ko`'s embedded build paths |
-
-Including **`hwdefs/sgx545defs.h` — 62 KB of SGX545 register definitions.** The
-programmer's reference everyone assumed had never been published. Intel published
-it, machine-readable, under GPL, in 2012.
-
-There is a **matched i386 userspace** package at the same DDK version, carrying
-`libEGL`, `libGLESv2`, `libIMGegl`, `libsrv_um`, `libglslcompiler`, `libusc` and
-five window-system backends. One of them is
-**`libpvrPVR2D_LINUXFBWSEGL.so` — EGL directly on `/dev/fb0`, no X server**, which
-our stock blob set does not have and which is a *better* fit for openHC than the
-stock one.
-
-## Three checks before believing it
-
-**The core revision matches exactly.** `sgxerrata.h` enumerates SGX545 revisions
-`100, 109, 1012, 1013, 10131, 1014, 10141`; our EA3 reports **1014**. Cedarview
-builds for `10131`. Those two carry the **identical** erratum set —
-`FIX_HW_BRN_SAMPLE_CACHE` and nothing else, so rebuilding for our silicon changes
-one `-D` and produces the same workaround set as a shipped, known-working driver.
-
-**The trees are the same tree.** Our stock `pvrsrvkm.ko` isn't stripped and embeds
-`__FILE__` paths: it was compiled from 43 files, and **40 of the 43 are present**
-in Intel's tree. The missing three are a debug refcount wrapper (no-op in release
-builds), a mutex wrapper, and Android explicit fencing that the 1.7 userspace
-doesn't use.
-
-**The build path is self-contained.** Of 17 locally-included headers absent from
-the tree, all 17 are unreachable in an SGX545 build, other cores behind
-`#if defined(SGXnnn)`, video-decode bridges behind their own options, and
-kernel-supplied headers.
-
-## The microkernel is in userspace, and it is not signed
-
-The expected wall was firmware. Measured on our own `libsrv_init.so`:
-
-```
-.text    0x2648   (9,800 bytes)   — one exported symbol: SrvInit
-.rodata  0xd2f8  (54,008 bytes)   — entropy 4.53 bits/byte
-```
-
-The `.rodata` opens with the microkernel's config-key table — `MaxEDMTasks`,
-`DisableClockGating`, `USETmpRegCount`, `CacheCtrl`, `YUVCoef00`…`YUVCoef14` — and
-the tail is 8-byte-aligned USSE machine words. "EDM" is Imagination's Event Driven
-Microkernel.
-
-Cedarview's equivalent has a 53,640-byte `.rodata`, same size class, and **34 %
-of its 32-byte windows appear verbatim in ours.** Same microkernel, two DDK builds.
-
-**A kernel driver never has to contain, sign or synthesize firmware.** It only has
-to accept the upload. The hard gate wasn't a gate.
-
-The remaining ABI constraints are real but ordinary, and all four are enforced by
-string-identified checks in the module — DDK version exact-match, struct sizes,
-a build-option bitmask, and a core-rev check with a skip path. All are satisfied
-by construction if you build the kernel module from the same DDK tree and flag set
-as the userspace you pair it with. The build-option bitmask was checked ahead of
-time and is identical to Cedarview's release build.
-
-## The correction: DRM is not optional
-
-An earlier draft assumed we could build with `SUPPORT_DRI_DRM` off, use the DDK's
-plain character-device path, and drop the vendored DRM tree entirely.
-
-**That's wrong.** Three things say so: both candidate userspace blob sets link
-`libdrm.so.2` and import `drmOpen`/`drmClose`/`drmCommandWrite`; Control4's own
-`pvrsrvkm.ko` contains `pvr_drm.c` and `sPVRDrmIoctls` in its embedded strings;
-and `/dev/dri/card0` on the stock system is that node.
-
-Userspace reaches the driver *through DRM*, so a DRM device has to exist.
-
-What is still true is that Cedarview's vendored Linux 3.2 DRM subsystem isn't
-needed. The DDK's DRM usage is tiny — `pvr_drm.c` is 479 lines and uses DRM purely
-as a named device node plus five vendor ioctls, so it was rewritten against
-mainline DRM. **The port is ~43 files plus one shim, not 558.**
-
-The 3.2 → 7.1 API surface was small and enumerable: removed macros (`__devinit`,
-`asm/system.h`, `drmP.h`), signature churn (`get_user_pages`, `access_ok`,
-`class_create`, `__vmalloc`), renames (`mmap_sem`, `del_timer_sync`,
-`VM_RESERVED`), and four structural items — procfs, timers, five-level page
-tables, and the page-table walk.
-
-`CONFIG_MODULES=n` in openHC is **not** a blocker here, because we build from
-source and it goes in-tree as `obj-y`. It *is* an absolute blocker for the stock
-`.ko`, which additionally has `vermagic=3.12.74` and depends on Intel's OSAL
-shims.
-
-## The port
-
-Implemented in a separate repository, `sgx545-ce`, structured so the
-upstream/ours boundary stays verifiable — the first commit is Intel's tree
-imported verbatim, everything after it's ours.
-
-```
-pvrsrvkm.ko   156 KB   Linux 7.1.8 / i686   0 unresolved symbols
-alias:   pci:v00008086d0000089B
-depends: (none)
-```
-
-For scale, Control4's stock DDK 1.12 module is 182 KB and depends on two Intel
-shim modules.
-
-`sgx545-ce` is a submodule at `board/ea/common/sgx545-ce`. Its `kernel/` is
-mirrored into the kernel tree as `drivers/gpu/drm/sgx545ce` (`board/external.mk`).
-The rest of it is the open userspace: `srvinit/`, `libpvr/`, the Mesa driver and
-the reverse-engineering tools.
-
-## Bringing the GPU up at boot
-
-The services need one init client per boot before any GL client can connect.
-`S60sgx` runs `srvinit`, our open replacement for the DDK's `libsrv_init`
-(package `sgx545-srvinit`). It's native x86_64 and assembles everything itself
-except the 53,096-byte microkernel. The build cuts that out of the DDK tarball
-into `/lib/firmware`, so the repository holds no Imagination code. The DDK's GL
-clients run on a GPU it started.
-
-The DDK's own `sgxinit` (from `/opt/sgx-i386`) stays for A/B testing: boot with
-`ohc.sgxinit=ddk` on the kernel command line, or put `SGX_INIT=ddk` in
-`/opt/ohc/sgx.conf`.
-
-## Verified on silicon
-
-```
-[drm] Initialized pvrsrvkm 1.7.862890 for 0000:01:02.0 on minor 0
-```
-
-And the two things that could only ever be settled on hardware came back as
-predicted, read straight off BAR0:
-
-| Register | Value | Meaning |
+| Layer | What | Where it comes from |
 |---|---|---|
-| `CORE_REVISION` @0x20 | `0x0001000E` | **1.0.14 → SGX_CORE_REV 1014** — matches the build default exactly |
-| `CORE_ID` @0x1C | `0x01150000` | stable across reads → **core is clocked and alive at boot** |
-| register window | **BAR0+0** | the CE5300-specific offset, reverse-engineered from Control4's binary, **confirmed** |
+| Kernel driver | `powervr_sgx`, render-only (`/dev/dri/renderD128`) | `drm/powervr_sgx` of the `board/ea/common/powervr_sgx` submodule, mirrored to `drivers/gpu/drm/powervr_sgx` (`board/external.mk`) |
+| Microkernel | `/lib/firmware/powervr_sgx/sgx545_ukernel.bin` (MIT) | the release's firmware package (`powervr-sgx-firmware`) |
+| Display | `simpledrm` on the framebuffer CEFDK leaves running (`/dev/dri/card0`, and `/dev/fb0` through fbdev emulation) | mainline |
+| GL | Mesa 26.2.5 with the `sgx` gallium driver: EGL, OpenGL ES 2.0, GBM | Buildroot's `mesa3d` with the submodule's `mesa/` overlay (`BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SGX`) |
+| Web view | WPE WebKit's DRM platform, run by `webview` | Buildroot's `wpewebkit` (WPE Platform, `build/buildroot-patches/0005`) |
 
-## GLES2, on the panel
+The GPU only renders. Mesa's kmsro pairs it with simpledrm: a buffer to show is
+a simpledrm buffer the SGX renders into. simpledrm copies it to the CEFDK
+framebuffer, because nothing drives the display controller itself (see
+[the 720x480 ceiling](#the-720x480-ceiling-and-why)).
+
+The driver loads the microkernel when it probes and starts the GPU itself, so
+nothing runs at boot for the GPU. On the bootstrap kernel `powervr_sgx` is a
+module (udev loads it from p1). The real kernel builds it in, and the
+microkernel with it (`EXTRA_FIRMWARE`, `build/mk-real-kernel.sh`), because it
+probes before p1 is mounted.
+
+dmesg on a good boot:
 
 ```
-GL_VENDOR   : Imagination Technologies
-GL_RENDERER : PowerVR SGX 545
-GL_VERSION  : OpenGL ES 2.0 build 1.7@862890
-
-  compile shaders (USSE compiler)       ok
-  link program                          ok
-  draw a triangle                       ok
-  read back the centre pixel            rgba(0,255,0,255) -- the shader's green
-  eglSwapBuffers (to the panel)         ok
+powervr_sgx 0000:01:02.0: SGX core id 0x01150000 revision 0x0001000e: Intel CE5300 ...
+powervr_sgx 0000:01:02.0: powervr_sgx/sgx545_ukernel.bin: open microkernel ..., features 0x2
+powervr_sgx 0000:01:02.0: microkernel started
 ```
 
-Blue background, green triangle, visually confirmed.
+`kmscube` is in the image as a GL check: it draws a spinning cube on the
+display. Stop the web view first, since only one program can drive the
+display.
 
-### Four bugs stood between "it builds" and that
-
-None was findable without hardware.
-
-| # | Bug | Symptom |
-|---|---|---|
-| 1 | fops missing `FOP_UNSIGNED_OFFSET` | userspace could never `open()` the DRM node |
-| 2 | bus id hardcoded to Cedarview's `0000:00:02.0` **inside the blob** | `drmOpen` returned −1, no ioctl ever issued, empty dmesg |
-| 3 | the DDK's core-rev exception loop bound counts pairs but indexes elements | our exception was never compared |
-| 4 | fbdev PFN check assumes `remap_pfn_range` semantics | blocked every GLES surface |
-
-**Bug 1**, in detail, because it's the instructive one. Since 6.12,
-`drm_open_helper()` contains:
-
-```c
-if (WARN_ON_ONCE(!(filp->f_op->fop_flags & FOP_UNSIGNED_OFFSET)))
-        return -EINVAL;
-```
-
-DRM passes the mmap offset through as an unsigned token rather than a signed file
-position, and `PVRMMap` keys its lookup on exactly that. `DRM_GEM_FOPS` sets the
-flag for GEM drivers; ours is hand-rolled because the driver owns no GEM objects,
-so it had to be set explicitly. **The module builds, loads, binds and registers
-`card0` perfectly well without it.** Only `open()` fails.
-
-**Bug 2** is the one to remember when reusing vendor blobs: `libsrv_um` calls
-`drmOpen(NULL, "pci:0000:00:02.0")`. Because the *name* argument is NULL, libdrm
-has no name-based fallback to reach — the open just fails, with no ioctl issued
-and nothing in dmesg. Without the shim a GLES program is not degraded, it's
-broken. It is installed via `/etc/ld.so.preload` rather than per caller, because a
-browser engine does its rendering in a separate process and that's the process
-that needs it.
-
-Plus the insight that **`SGX_CORE_REV` must follow the microkernel, not the
-silicon**, because it selects the shared interface struct layout.
-
-## Performance, and what it diagnoses
-
-At 720x480:
-
-| Layers | Opaque | Blended | Textured |
-|---|---|---|---|
-| 1 | 30.3 fps | 28.8 | 28.8 |
-| 2 | 28.8 | 28.8 | 28.8 |
-| 4 | 28.8 | 28.8 | 28.8 |
-| 8 | 28.8 | 28.8 | 28.8 |
-
-**Flat.** Eight layers of full-screen blended compositing cost exactly what one
-does, so fill rate is nowhere near the limit, the GPU is massively
-over-provisioned for a launcher UI. The ~29 fps ceiling is a fixed per-frame cost,
-pointing at the LinuxFB backend blitting the whole 720x480x4 surface on every
-swap. `eglSwapInterval(0)` is accepted and changes nothing, so it isn't vsync.
-
-If 60 fps is wanted, attack the **present path** — a page-flipping backend ships
-alongside the blit one, not the rendering.
-
-For comparison the CPU manages ~302 Mpix/s of memcpy-to-framebuffer, so for a
-*static* 2D launcher the CPU isn't hopeless either. The GPU's win is shaders,
-transforms and effects coming for free.
-
-## What it costs
-
-**1.25 MB of the boot window**, taking an image from 64.6 % to 80.1 % of CEFDK's
-copy ceiling:
-
-| | bytes | % of copy window |
-|---|---|---|
-| without the `sgx` feature | 5,468,672 | 64.6 % |
-| with it | 6,779,392 | **80.1 %** |
-| delta | **+1,310,720** | |
-
-Almost none of that's the driver. The build compiles **41 objects for the driver
-and 417 for DRM core** — atomic modeset, DP/MST, HDCP, DSC, SCDC, EDID, bridge and
-panel helpers — none of which the driver calls.
-
-**It isn't trimmable from a defconfig.** `CONFIG_DRM=y` defaults `DRM_BRIDGE` and
-`DRM_PANEL` on, and those select helper libraries with no prompt. A fragment
-trying to unset any of them is silently ignored, tried it, the image came back
-byte-identical. Reclaiming the space needs a kernel patch making the helper
-libraries conditional on a driver actually wanting them.
+A job that hangs the GPU is reset (`job timed out ...; resetting`, then
+`microkernel started again`); the GL context that caused it is reported lost
+and other clients carry on.
 
 ## What the panel shows
 
@@ -277,17 +61,20 @@ for the panel.
 
 The on-panel web view is opt-in. In the web UI, **Display → Show a web page on
 the controller's own screen** (`POST /api/display`, kept in
-`/opt/ohc/display.conf`) has `S95ohc-display` start `webview` on the libwpe +
-SGX545 path above, loading the dashboard webd already serves (or any URL you
-give it). Turning it off stops the view and redraws the splash, no reboot.
+`/opt/ohc/display.conf`) has `S95ohc-display` start `webview` on WPE WebKit's
+DRM display, loading the dashboard webd already serves (or any URL you give
+it). Turning it off stops the view and redraws the splash, no reboot. The
+script and `webview` are the HC-800's too (`packages/webview`).
 
 ## The 720x480 ceiling, and why
 
 The panel is 720x480 and that isn't a setting anywhere in openHC. CEFDK leaves
 the display pipe enabled with a 720x480 timing scanning ARGB8888 out of
 `0x7fc00000`; the board device tree just describes that existing buffer to
-`simple-framebuffer` (a `/chosen/framebuffer` node). **simplefb has no modeset path by design**, it describes a
-framebuffer somebody else configured.
+`simple-framebuffer` (a `/chosen/framebuffer` node). **simplefb and simpledrm
+have no modeset path by design**: they describe a framebuffer somebody else
+configured. simpledrm offers it as one fixed mode, and every frame shown is a
+CPU copy of its damaged area into that framebuffer.
 
 So the UI is SD until someone drives the display controller properly, which means
 a real modeset driver against the register map in the vendor's `gdl_server.ko`.
@@ -297,20 +84,10 @@ That is a separate project from 3D and is not required for any of the above.
 
 The on-panel UI takes USB keyboards and mice, plugged in directly or through a
 hub (the `usb-input` feature brings the kernel side: evdev, usbhid, hid-generic).
-A libwpe backend is only ever told what to draw, so on this path nothing in WebKit
-reads input. `webview` does it itself (`packages/webview/src/input.c`). It opens
-every `/dev/input/event*` that is a keyboard or a pointer, watches `/dev/input`
-with inotify so an unplugged keyboard comes back on its own, turns keys into
-keysyms with libxkbcommon and hands everything to WebKit through
-`wpe_view_backend_dispatch_*_event`. Absolute devices (a touch panel, a KVM's
-mouse) are scaled to the view. Game controllers are left alone, and nothing is
-grabbed, so another program reading the same keyboard still gets its keys.
+WebKit's DRM display reads them through libinput, as on the HC-800. The layout is
+US unless `XKB_DEFAULT_LAYOUT` says otherwise.
 
-The keymap comes from xkeyboard-config inside the i386 sysroot, so
-`S95ohc-display` points `XKB_CONFIG_ROOT` there. The layout is US unless
-`XKB_DEFAULT_LAYOUT` says otherwise.
-
-fb0 has no cursor plane, so the page draws the cursor itself: `webview` injects a
+simpledrm has no cursor plane, so the page draws the cursor itself: `webview` injects a
 small script that keeps a click-through element under the pointer. It shows a hand
 over links and an I-beam over text fields, and hides while you type or after a few
 idle seconds. `WEBVIEW_CURSOR=0` turns it off for a touch-only panel. The HC-800
@@ -360,7 +137,10 @@ can strand the board.
 
 ## Kexec out of a GPU kernel breaks the next one
 
-Once `pvrsrvkm` has bound the SGX (01:02.0), **a kexec out of that kernel leaves
+Everything in this section was measured with the DDK's `pvrsrvkm`. It hasn't
+been measured again with `powervr_sgx`, so the rule below still stands.
+
+Once `pvrsrvkm` had bound the SGX (01:02.0), **a kexec out of that kernel leaves
 the next kernel broken**, every time. Measured on an EA1, 2026-10-26:
 
 - **Legacy-block reads run one behind.** Reads of the HPET (`0xfed00000`) and
@@ -388,15 +168,15 @@ different fat kernels.
 
 The fat kernel does it by itself (#90):
 `board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c` registers a syscore
-`.shutdown`. It runs after every driver's `.shutdown`, so it comes after PVR's
-own power-down handshake. It writes the reset only if a driver is still bound to
-the SGX. The next PVR probe releases the reset itself (`sgxreset.c`).
+`.shutdown`. It runs after every driver's `.shutdown`, so it comes after the GPU
+driver's own. It writes the reset only if a driver is still bound to the SGX.
+The next driver probe releases the reset itself.
 
 ### GPU used: not recoverable without a power-cycle
 
 Once the GPU has rendered, nothing tried brings back a clean kexec. That includes
-the panel web view or any GL client, and probably `S60sgx`, which brings the
-services up at every boot since #96. That last case wasn't measured separately.
+the panel web view or any GL client, and probably the DDK's services init at
+boot (`S60sgx`, retired). That last case wasn't measured separately.
 None of these fixed it:
 
 - unbinding the driver, plus the soft reset (PCI bus master was already off,
@@ -452,49 +232,9 @@ since the GPU last rendered. Three ways to set that up:
   kernel with `pvrsrvkm` never loaded, each after its services had run. So on the
   EA3 the GPU isn't the only thing that breaks the hand-off. All three showed
   the HPET symptom; EHCI `-110` was seen on the last two.
-- **Proven on the EA1:** keep the outgoing kernel from binding the GPU at all. Add
-  `initcall_blacklist=PVRSRVDrmInit` to `OHC_KEXEC_CMDLINE_EXTRA` in
-  `board.env`, then power-cycle.
-- **Proven only before `S60sgx` existed:** set `OHC_DISPLAY_ENABLE=0` and
-  power-cycle. Then unbind `pvrsrvkm`, run `devmem 0xdc000080 32 0x3f`, and
-  kexec. Unbind and reset by hand anyway, because a kernel without the quiesce
-  won't do it. With `S60sgx` bringing the GPU up at boot, assume this no longer
-  counts as idle until it's measured.
+- **Proven on the EA1 with `pvrsrvkm`:** keep the outgoing kernel from binding
+  the GPU at all, with `initcall_blacklist=` of the driver's init in
+  `OHC_KEXEC_CMDLINE_EXTRA` in `board.env`, then power-cycle.
 
 If a kexec'd kernel shows the HPET or DMA symptoms above, the fault is the
 hand-off, not the kernel under test.
-
-## Recovered material index
-
-| What | Where | DDK |
-|---|---|---|
-| **Intel SGX545 kernel source, GPL v2** | `old-releases.ubuntu.com/.../cedarview-drm-drivers/` | **1.7.862890** |
-| **Matched i386 userspace blobs** (incl. `libusc.so`, LinuxFB backend) | `old-releases.ubuntu.com/.../cedarview-graphics-drivers/` | **1.7.862890** |
-| Port prior art (→ Linux 3.10/3.11) | `github.com/thomas001/cedarview-drm` | 1.7 |
-| TI `services4`, modern kernels, **no SGX545 hwdefs** | `git.ti.com/cgit/graphics/omap5-sgx-ddk-linux/` | 1.14, 1.17 |
-| SGX540 reverse engineering (partial, dormant) | `codeberg.org/Garnet/sgx540-reversing` | n/a |
-
-The userspace license is Intel's binary-redistribution license: redistribution in
-binary form is permitted with notice, and it **forbids reverse engineering the
-blobs**. Using them as-is is fine; disassembling them isn't.
-
-### Negative results, verified
-
-- Control4's CEFDK drop contains **no** graphics, bootloader only.
-- **No CE4100/CE5300 licensee ever published graphics source.** The platform was
-  contractually closed; SDK access required an Intel field engineer. Intel never
-  published the CE graphics SDK and it has not leaked. That grievance stands, it
-  just no longer matters, because Cedarview is the same GPU and Intel *did*
-  publish that one.
-- TI's tree has `sgx530defs.h`, `sgx540defs.h` and `sgx544defs.h` and **no
-  `sgx545defs.h`** — TI never shipped a 545. It's a porting scaffold, not a
-  source.
-- **A pure FOSS Mesa/Gallium route isn't viable.** The high-water mark for SGX
-  reverse engineering is a partial assembler, explicitly unfinished on instruction
-  encoding and semantics, SGX540 only, dormant since 2022. Mainline's `powervr`
-  driver is Rogue-only. Even with `sgx545defs.h` in hand, which is the register
-  map, not the ISA. This is multiple person-years, because the missing piece is
-  the shader compiler.
-- **OpenCL is worse, not better.** SGX545 does support OpenCL 1.0 and the DDK has
-  a module for it, but **neither Intel nor Control4 ever shipped that `.so`**. It
-  needs the same kernel driver *plus* a userspace runtime nobody distributed.
