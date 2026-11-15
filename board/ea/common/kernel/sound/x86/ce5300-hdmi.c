@@ -39,9 +39,11 @@
  *
  * HOTPLUG
  * -------
- * HPD is polled (+0x1008 bit 0, plus the latched change bit for a quick
- * replug). On a plug the EDID is read over the transmitter's own DDC master
- * (the SoC's I2C buses don't reach the connector); it is also an i2c adapter.
+ * The connector's +5V (+0x1000 bit 3) goes on first, as the stock driver does:
+ * a sink raises HPD from it. HPD is polled (+0x1008 bit 0, plus the latched
+ * change bit for a quick replug). On a plug the EDID is read over the
+ * transmitter's own DDC master (the SoC's I2C buses don't reach the
+ * connector); it is also an i2c adapter.
  * A DVI sink keeps the link in DVI and refuses audio. An HDMI sink plugged in
  * while audio runs gets the HDMI setup above again, so the stream carries on.
  * "HDMI Jack" reports the state.
@@ -102,6 +104,7 @@
 /* ---- General ----------------------------------------------------------- */
 #define HDMI_CLOCKS		0x1000
 #define   HDMI_CLK_AUDIO	BIT(2)	/* hdmi_general_audio_clock_enable */
+#define   HDMI_5V_ENABLE	BIT(3)	/* hdmi_general_5V_enable */
 #define HDMI_STATUS		0x1008	/* hdmi_general_get_status */
 #define   HDMI_STATUS_HPD	BIT(0)
 /* Latched whether masked (+0x1004) or not; write 1 to clear. */
@@ -1017,6 +1020,7 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	dev_info(&pdev->dev, "HDMI audio: 2ch LPCM 48 kHz, link in %s mode\n",
 		 hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI ? "HDMI" : "DVI");
 
+	hdmi_update(h, HDMI_CLOCKS, HDMI_5V_ENABLE, HDMI_5V_ENABLE);
 	hdmi_write(h, HDMI_INT_STATUS, HDMI_INT_HPD);
 	ce5300_hdmi_sink_changed(h, hdmi_read(h, HDMI_STATUS) & HDMI_STATUS_HPD);
 	INIT_DELAYED_WORK(&h->hpd_work, ce5300_hdmi_hpd_work);
