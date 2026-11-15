@@ -62,7 +62,7 @@ drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/sgx545ce/Kconfig"
 drivers/gpu/drm/Makefile|obj-$(CONFIG_SGX545_CE) += sgx545ce/
 
 # --- display: CE5300 VDC + HDMI KMS driver (drivers/gpu/drm/ce5300) ---
-# Its own Kconfig (selects the GEM DMA and KMS helpers). A module that does
-# nothing unless loaded with takeover=1 until it is hardware-tested.
+# Its own Kconfig (selects the GEM DMA and KMS helpers). Built into the real
+# kernel with DRM (real-kernel.fragment); inert unless takeover is set.
 drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/ce5300/Kconfig"
 drivers/gpu/drm/Makefile|obj-$(CONFIG_DRM_CE5300) += ce5300/

@@ -6,6 +6,10 @@
 CONFIG_DRM=y
 CONFIG_SGX545_CE=y
 
+# --- CE5300 KMS driver (drivers/gpu/drm/ce5300): built in with DRM, inert
+# until /sys/module/ce5300_drm/parameters/takeover is set and the VDC is bound ---
+CONFIG_DRM_CE5300=y
+
 # --- framebuffer (simplefb from the board DTB), built in as on the bootstrap ---
 CONFIG_FB=y
 CONFIG_FB_SIMPLE=y

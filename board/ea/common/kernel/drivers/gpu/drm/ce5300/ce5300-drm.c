@@ -80,8 +80,8 @@ static const u32 upp_bases[] = { 0x0000, 0x1000, 0x2000, 0x3000, 0xf000 };
 #define PITCH_ALIGN		64
 
 static bool takeover;
-module_param(takeover, bool, 0444);
-MODULE_PARM_DESC(takeover, "Take the display over from the firmware framebuffer (untested)");
+module_param(takeover, bool, 0644);
+MODULE_PARM_DESC(takeover, "Take the display over from the firmware framebuffer (untested; set, then bind 01:08.0)");
 
 struct ce5300 {
 	struct drm_device	drm;
