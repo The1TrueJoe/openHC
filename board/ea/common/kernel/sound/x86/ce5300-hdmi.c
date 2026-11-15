@@ -39,10 +39,10 @@
  *
  * HOTPLUG
  * -------
- * The connector's +5V (+0x1000 bit 3) goes on first, as the stock driver does:
- * a sink raises HPD from it. HPD is polled (+0x1008 bit 0, plus the latched
- * change bit for a quick replug). On a plug the EDID is read over the
- * transmitter's own DDC master (the SoC's I2C buses don't reach the
+ * The connector's +5V goes on first, as the stock driver does (+0x1000 bit 3
+ * and a PHY bit): a sink raises HPD from it. HPD is polled (+0x1008 bit 0,
+ * plus the latched change bit for a quick replug). On a plug the EDID is read
+ * over the transmitter's own DDC master (the SoC's I2C buses don't reach the
  * connector); it is also an i2c adapter.
  * A DVI sink keeps the link in DVI and refuses audio. An HDMI sink plugged in
  * while audio runs gets the HDMI setup above again, so the stream carries on.
@@ -188,12 +188,16 @@
 #define HDMI_N_48K		6144
 #define HDMI_FIFO_THRESHOLD	0x40
 
-/* ---- The audio PLL, over the IOSF sideband (host bridge 00:00.0) ------- */
+/* ---- Audio PLL and HDMI PHY, over the IOSF sideband (host 00:00.0) ---- */
 #define IOSF_MCR		0xd0
 #define IOSF_MDR		0xd4
 #define IOSF_MCRX		0xd8
 #define IOSF_OP_CR_READ		0x06
+#define IOSF_OP_CR_WRITE	0x07
 #define IOSF_PORT_APLL		0x8b
+#define IOSF_PORT_HDMI_PHY	0x82
+#define   HDMI_PHY_5V		0x0c
+#define     HDMI_PHY_5V_OFF	BIT(17)	/* revision 6 only */
 /* apll_cr[1] and [2] of stock's AUDIO_HAL_PLL_MODE17 (24.576 MHz, internal) */
 #define APLL_MODE17_CR1		0x00090020
 #define APLL_MODE17_CR2		0x00063309
@@ -281,6 +285,37 @@ static u32 iosf_cr_read(struct pci_dev *host, u8 port, u32 off)
 			       (port << 16) | ((off & 0xff) << 8) | 0xf0);
 	pci_read_config_dword(host, IOSF_MDR, &val);
 	return val;
+}
+
+static void iosf_cr_write(struct pci_dev *host, u8 port, u32 off, u32 val)
+{
+	pci_write_config_dword(host, IOSF_MDR, val);
+	pci_write_config_dword(host, IOSF_MCRX, off & ~0xff);
+	pci_write_config_dword(host, IOSF_MCR, (IOSF_OP_CR_WRITE << 24) |
+			       (port << 16) | ((off & 0xff) << 8) | 0xf0);
+}
+
+/*
+ * hdmi_general_5V_enable: +0x1000 bit 3, and on revision 6 (CE5300) also
+ * PHY register 0xc bit 17 clear. A sink raises HPD only from this +5V.
+ */
+static void ce5300_hdmi_5v_on(struct ce5300_hdmi *h)
+{
+	struct pci_dev *host;
+	u32 v;
+
+	hdmi_update(h, HDMI_CLOCKS, HDMI_5V_ENABLE, HDMI_5V_ENABLE);
+	if (h->pdev->revision != 6)
+		return;
+	host = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(0, 0));
+	if (!host)
+		return;
+	v = iosf_cr_read(host, IOSF_PORT_HDMI_PHY, HDMI_PHY_5V);
+	if (v & HDMI_PHY_5V_OFF) {
+		iosf_cr_write(host, IOSF_PORT_HDMI_PHY, HDMI_PHY_5V, v & ~HDMI_PHY_5V_OFF);
+		dev_info(&h->pdev->dev, "HDMI +5V on (PHY 0xc %08x)\n", v);
+	}
+	pci_dev_put(host);
 }
 
 /* Is MCLK the 24.576 MHz the divider assumes? Read-only; CEFDK set it. */
@@ -1020,7 +1055,7 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	dev_info(&pdev->dev, "HDMI audio: 2ch LPCM 48 kHz, link in %s mode\n",
 		 hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI ? "HDMI" : "DVI");
 
-	hdmi_update(h, HDMI_CLOCKS, HDMI_5V_ENABLE, HDMI_5V_ENABLE);
+	ce5300_hdmi_5v_on(h);
 	hdmi_write(h, HDMI_INT_STATUS, HDMI_INT_HPD);
 	ce5300_hdmi_sink_changed(h, hdmi_read(h, HDMI_STATUS) & HDMI_STATUS_HPD);
 	INIT_DELAYED_WORK(&h->hpd_work, ce5300_hdmi_hpd_work);
