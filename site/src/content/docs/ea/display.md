@@ -184,3 +184,53 @@ by their rounded value (74176 → 74175, 148352 → 148350).
 The table also has 25175, 25200, 40000, 59340, 59400, 65000, 79700, 85000,
 108000, 118681, 118800 and 296700 kHz. None of it has been read back on
 hardware yet.
+
+## HDMI TX PLL and PHY (`pd_hdmi.ko` `__program_clocks_ce5300`)
+
+The transmitter's PHY is on IOSF sideband port `0x82`. Its resets are in the
+clock-control unit, BAR 0 of `00:00.2` (`8086:2e52`, `0xcc` bytes), which
+`clock_control.ko` maps:
+
+| Clock-control register | Bit | Name |
+|---|---|---|
+| `+0x04` | 9 | `CLOCK_HDMI_PLL_DIV_RESET` |
+| `+0x04` | 7 | `CLOCK_HDMI_TX_PLL_RESET` |
+| `+0x04` | 1 | `CLOCK_HDMI_TX_RST` |
+| `+0x04` | 0 | `CLOCK_HDMI_I2C_RESET` |
+| `+0x14` | 9, 8, 7, 6, 5 | `CLOCK_VDC_DB/DA/MDVO/XSI_CLK_EN`, `CLOCK_VDC_CLK_EN` |
+| `+0x14` | 0 | `CLOCK_VDC_RST` |
+| `+0x88` | 3, 2 | `CLOCK_DPLL_DIV_RST`, `CLOCK_DPLL_VCO_RST` |
+
+A pixel clock is set like this (`_clock_control_write(id, value)`; 0 asserts a
+reset):
+1. PLL divider reset 0, TX PLL reset 0.
+2. Write the 23 PHY words for the clock (`hdmi_phy_cfg_raw`). Word 2 is
+   written with bit 27 set; after word 22, word 12 (`+0x30`) is masked with
+   `0x1ffefffb | 0xe0000004`, and word 2 is written again with bit 27 clear.
+3. TX PLL reset 1, wait 300 µs; PLL divider reset 1, wait 50 µs.
+4. TX reset 0, wait 1 ms; TX reset 1, wait 1 ms.
+
+The PHY words are chosen by color depth (8/10/12 bpc tables at `.rodata`
+`0x1c0`/`0x260`/`0x300`) and then by pixel clock. At 8 bpc, only the first
+three words (PLL dividers) and words 7–11 (drive) differ between clocks:
+
+| kHz | words 0–2 | words 7–11 |
+|---|---|---|
+| 27000 | `00105800 00000a14 00050005` | `02a05400 e8055030 ×4` |
+| 74250 | `00002000 00050028 00090080` | `02a05400 e8055030 ×4` |
+| 148500 | `00002000 00050028 00050080` | `02a05400 e8055030 ×4` |
+| 297000 | `00101800 0005000f 00010080` | `02004000 c80770e7 ×4` |
+
+The other words, all clocks:
+- words 3–6: `00100000 40214000 80000001 0007f03f`;
+- words 12–22: `ff001ffe ffffffff bc0000ff 36d8fff7 00100000 ffd00000 00100000 1c010000 0 0 00010101`.
+
+A full modeset for the M4 driver is therefore:
+- the display PLL (port `0x8a`) for the dot clock;
+- the TX PLL and PHY (port `0x82`, plus the resets above) for the TMDS clock;
+- pipe A's timing and PIPESRC;
+- the HDMI line timing and GCP position (`+0x3100`/`+0x3104`, see audio);
+- the AVI infoframe.
+
+None of the sideband writes have been tried on hardware.
+
