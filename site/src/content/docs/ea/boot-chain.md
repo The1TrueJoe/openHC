@@ -231,7 +231,7 @@ IRQ transmits fine but never receives. That was once worked around by raising
 `SERIAL_8250_NR_UARTS` to 8; the UARTs now come from the device tree (`8250_of`,
 timer-polled) in the legacy slots at their own addresses, so 4 slots are enough.
 
-**A kexec out of a kernel whose GPU driver has probed breaks the next kernel.** Once `pvrsrvkm` has bound the SGX545
+**A kexec out of a kernel whose GPU driver has probed breaks the next kernel** (measured with the DDK's `pvrsrvkm`). Once it has bound the SGX545
 (01:02.0), the core stays live after the driver lets go: its shutdown hook, and
 even a full unbind, leave it out of reset. The kernel kexec'd next then gets
 reads from the HPET and IOAPIC that return the *previous* read's value, so the
@@ -247,7 +247,7 @@ How much can be saved depends on whether the GPU ever rendered:
   reset (`EUR_CR_SOFT_RESET` = all units) after its driver shuts down gives a
   healthy next kernel. The real kernel does this itself at kexec and reboot
   (`board/ea/common/kernel/drivers/gpu/ce5300-sgx-quiesce.c`). On an older kernel,
-  first run `echo 0000:01:02.0 > /sys/bus/pci/drivers/pvrsrvkm/unbind; devmem 0xdc000080 32 0x3f`.
+  first run `echo 0000:01:02.0 > /sys/bus/pci/devices/0000:01:02.0/driver/unbind; devmem 0xdc000080 32 0x3f`.
 - **GPU used** (the panel web view ran): nothing found so far saves the next
   kernel. Unbind plus soft reset, and even every safe SGX register put back to
   its power-on value (events cleared, MMU back to bypass, clock gating off), still

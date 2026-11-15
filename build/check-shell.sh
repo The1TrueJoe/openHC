@@ -8,6 +8,6 @@ cd "$(dirname "$0")/.."
 bad=0
 while IFS= read -r f; do
   sh -n "$f" || { echo "::error file=$f::shell syntax error"; bad=1; }
-done < <(git ls-files 'board/**/board.env' 'board/**/etc/init.d/*' 'board/**/opt/ohc/bin/*' 'board/**/opt/ohc/libexec/*' \
+done < <(git ls-files 'board/**/board.env' 'board/**/etc/init.d/*' 'board/**/opt/ohc/bin/*' 'board/**/opt/ohc/libexec/*' 'packages/*/S[0-9]*' \
          | while read -r f; do head -c 64 "$f" | grep -q '^#!.*sh' && echo "$f" || case "$f" in (*board.env) echo "$f";; esac; done)
 exit $bad

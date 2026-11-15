@@ -84,8 +84,7 @@ appended *after* the board file.
 
 openHC builds against **Buildroot master, pinned to a commit** (`04b8e19`, from
 2026-10-26), not a release. The pin is `build/buildroot.ref`, read by
-`build/fetch-buildroot.sh` for CI, Docker and native builds alike;
-`sgx-module.yml` and `sgx-wpe.yml` still carry their own copy. The fetch takes
+`build/fetch-buildroot.sh` for CI, Docker and native builds alike. The fetch takes
 a SHA or a tag, so moving to the 2026.11 tag when it ships is a one-line change.
 This moved from 2026.02.3 in openHC #82.
 
@@ -115,9 +114,8 @@ What is still carried:
   - `0005` adds the WPE Platform API and its headless, DRM and Wayland
     platforms as Buildroot options. The HC-800's display needs the DRM one.
   - The old `0001`, which swapped wpewebkit's `wpebackend-fdo` dependency for
-    `libwpe`, is gone. The EA's i386 tree builds with `wpebackend-fdo` present,
-    against the SGX EGL, and still loads the PowerVR backend. That costs about
-    264 KB of unused libraries.
+    `libwpe`, is gone. wpebackend-fdo is built and unused, about 264 KB.
+  - The EAs need the DRM platform too, since they moved to Mesa's sgx driver.
 - **`build/buildroot-patches/0006` and `0007`**, Buildroot's own shairport-sync
   bumps to 5.6.2 and 5.6.3, taken from master until the pin passes them. 5.6.3
   has `dbus_nametag`, which audiod sets on every receiver so each has its own
@@ -132,8 +130,6 @@ The move also changed configuration:
 - Kernel headers went to `CUSTOM_7_1`, matching the 7.1.8 kernel.
 - The EA external toolchain went to GCC 15 with 7.1 headers. GCC 15 defaults
   userspace to C23.
-- `gpu-wpe-i386` uses the bundled 6.18 headers, because 6.19 is no longer
-  bundled.
 - The EA family now gets the shared AirPlay 2 build like the HC-800, instead of
   classic AirPlay 4.3.7.
 

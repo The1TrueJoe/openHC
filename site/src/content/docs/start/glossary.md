@@ -83,8 +83,8 @@ address `0x38` on the CE5300's **fourth** I²C controller, a bus mainline never
 creates.
 
 **SGX545** — the PowerVR GPU inside the CE5310. Series5, which folklore calls a
-dead end. It is not, because the same core shipped in Intel Cedarview and Intel
-published the GPL kernel source for that.
+dead end. It is not: openHC runs it on powervr_sgx, an open kernel driver,
+microkernel and Mesa driver.
 
 ## Project terms
 

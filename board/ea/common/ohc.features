@@ -2,9 +2,9 @@
 # different (Wi-Fi, a switch, the DSP) in its own ohc.features.
 iomcu       # relays/contacts/IR behind the IO microcontroller
 splash      # boot splash on the display
-display     # the CEFDK framebuffer handed to Linux as simplefb (/dev/fb0)
-sgx         # PowerVR SGX545 GPU kernel driver — every EA is the same CE5310/HDMI
-wpe         # the on-screen UI: DDK GLES blobs (fetched at build) + WPE WebKit
+display     # the CEFDK framebuffer: simplefb, simpledrm on the fat kernel (/dev/fb0)
+sgx         # PowerVR SGX545 GPU: powervr_sgx + its open microkernel
+wpe         # the on-screen UI: Mesa sgx + WPE WebKit's DRM platform
 emmc        # persistent ext4 rootfs on the eMMC
 zigbee      # EM357 NCP on a CP2104 USB bridge (/dev/ttyUSB0); node + cp210x
 audio       # ALSA + Spotify Connect + AirPlay userspace

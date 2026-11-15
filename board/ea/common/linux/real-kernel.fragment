@@ -2,17 +2,22 @@
 # limit. Merged last, so each line here wins. Background: docs ea/kernel-config.
 # merge_config scrapes "SYMBOL=" even inside comments: write symbols without "=".
 
-# --- GPU: PowerVR SGX545, built in (a module in features/sgx) ---
+# --- GPU: PowerVR SGX545 (powervr_sgx), built in (a module in features/sgx) ---
+# Its microkernel is linked in too (mk-real-kernel.sh: EXTRA_FIRMWARE): it probes
+# before the rootfs is mounted.
 CONFIG_DRM=y
-CONFIG_SGX545_CE=y
+CONFIG_DRM_POWERVR_SGX=y
 
 # --- CE5300 KMS driver (drivers/gpu/drm/ce5300): built in with DRM, inert
 # until /sys/module/ce5300_drm/parameters/takeover is set and the VDC is bound ---
 CONFIG_DRM_CE5300=y
 
-# --- framebuffer (simplefb from the board DTB), built in as on the bootstrap ---
+# --- display: simpledrm on the CEFDK framebuffer (the DTB's simple-framebuffer) ---
+# A KMS device for the GPU's buffers (kmsro); /dev/fb0 is its fbdev emulation.
 CONFIG_FB=y
-CONFIG_FB_SIMPLE=y
+# CONFIG_FB_SIMPLE is not set
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
 
 # --- regulator core: rear-USB VBUS (gpio44) under port power control (patch 0016) ---
 CONFIG_REGULATOR=y
