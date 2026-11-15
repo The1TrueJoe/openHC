@@ -36,17 +36,27 @@ module (udev loads it from p1). The real kernel builds it in, and the
 microkernel with it (`EXTRA_FIRMWARE`, `build/mk-real-kernel.sh`), because it
 probes before p1 is mounted.
 
-dmesg on a good boot:
+dmesg on a good boot (an EA3, 2026-11-15):
 
 ```
-powervr_sgx 0000:01:02.0: SGX core id 0x01150000 revision 0x0001000e: Intel CE5300 ...
-powervr_sgx 0000:01:02.0: powervr_sgx/sgx545_ukernel.bin: open microkernel ..., features 0x2
-powervr_sgx 0000:01:02.0: microkernel started
+[drm] Initialized simpledrm 1.0.0 for 7fc00000.framebuffer on minor 0
+powervr_sgx 0000:01:02.0: [drm] SGX core id 0x01150000 revision 0x0001000e: Intel CE5300 (SGX545 1.0.14)
+powervr_sgx 0000:01:02.0: [drm] powervr_sgx/sgx545_ukernel.bin: open microkernel ukernel-v0.2.1, interface 1.0, features 0x2
+powervr_sgx 0000:01:02.0: [drm] microkernel started
+[drm] Initialized powervr_sgx 1.0.0 for 0000:01:02.0 on minor 1
 ```
 
-`kmscube` is in the image as a GL check: it draws a spinning cube on the
-display. Stop the web view first, since only one program can drive the
-display.
+So `card0` is simpledrm, and `card1` and `renderD128` are the GPU.
+
+`kmscube` is in the image as a GL check: `kmscube -D /dev/dri/card0` draws a
+spinning cube on the display, at about 100 fps at 720x480. Stop the web view
+first, since only one program can drive the display. Run over ssh, give it a
+stdin that stays open (`sleep 60 | kmscube ...`): it quits on the first byte,
+or the end, of its input.
+
+Every frame shown is copied by simpledrm from the GPU's buffer to the CEFDK
+framebuffer with the CPU: kmscube at full speed costs about a quarter of the CPU
+in that copy, and an idle web view nothing.
 
 A job that hangs the GPU is reset (`job timed out ...; resetting`, then
 `microkernel started again`); the GL context that caused it is reported lost
