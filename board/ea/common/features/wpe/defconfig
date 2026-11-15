@@ -1,13 +1,27 @@
-# wpe: the on-screen UI, proprietary half of 3D. See docs: ea/board-config.
+# wpe: the on-screen web view, the same stack as the HC-800's: Mesa (the sgx
+# gallium driver, powervr_sgx) and WPE WebKit's DRM platform on simpledrm. See
+# docs: ea/graphics.
 
-# DDK EGL + GLES2, fetched at build. Must be the driver's DDK version; it refuses a mismatch.
-BR2_PACKAGE_SGX545_UM=y
+# Mesa: sgx only, with EGL, GLES and GBM. No LLVM.
+BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SGX=y
+BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+BR2_PACKAGE_MESA3D_OPENGL_ES=y
+BR2_PACKAGE_MESA3D_GBM=y
 
-# WPE WebKit (its wpebackend-fdo and Wayland deps are unused).
+# WPE WebKit with the WPE Platform API and its DRM platform (build/buildroot-patches/0005).
+# BR2_PACKAGE_WPEWEBKIT_MULTIMEDIA is not set
 BR2_PACKAGE_WPEWEBKIT=y
+BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM=y
+BR2_PACKAGE_WPEWEBKIT_WPE_PLATFORM_DRM=y
 
-# libwpe backend that reaches the display.
-BR2_PACKAGE_WPEBACKEND_PVR=y
-
-# The surface that puts a page on screen (WebKit has no MiniBrowser).
+# webview: the full-screen view S95ohc-display runs.
 BR2_PACKAGE_WEBVIEW=y
+
+# A GL client to check the GPU with (kmscube on the display).
+BR2_PACKAGE_KMSCUBE=y
+
+# Fonts for pages that do not bring their own, and the CA roots for https://.
+BR2_PACKAGE_FONTCONFIG=y
+BR2_PACKAGE_DEJAVU=y
+BR2_PACKAGE_CA_CERTIFICATES=y

@@ -527,7 +527,7 @@ fn recovery_reimage_p1() -> io::Result<()> {
     Ok(())
 }
 
-/// Present while a driver (pvrsrvkm) is bound to the CE5300's SGX545, 01:02.0.
+/// Present while a driver (powervr_sgx) is bound to the CE5300's SGX545, 01:02.0.
 const SGX_DRIVER_LINK: &str = "/sys/bus/pci/devices/0000:01:02.0/driver";
 
 /// Walk `dir` and find the Linux bzImage in the recovery payload, returning the

@@ -37,6 +37,30 @@ include $(sort $(wildcard $(BR2_EXTERNAL_OPENHC_PATH)/*/firmware/*/*.mk))
 # word wins.
 FFMPEG_CONF_OPTS += --disable-libv4l2
 
+# ── mesa3d: the sgx gallium driver (powervr_sgx) ───────────────────────────
+#
+# powervr_sgx's mesa/ is an overlay on the Mesa release Buildroot already
+# builds (mesa/VERSION; checked below): its patches, then its src/ tree and the
+# uAPI header, as its mesa/build.sh does. Read after package/mesa3d/mesa3d.mk,
+# and MESA3D_CONF_OPTS expands MESA3D_GALLIUM_DRIVERS-y only when configure runs.
+# build/build.sh re-extracts mesa3d when the overlay changes.
+ifeq ($(BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SGX),y)
+MESA3D_SGX_DIR = $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/powervr_sgx
+MESA3D_GALLIUM_DRIVERS-y += sgx
+define MESA3D_SGX_OVERLAY
+	grep -qx 'MESA_VERSION=$(MESA3D_VERSION)' $(MESA3D_SGX_DIR)/mesa/VERSION || \
+		{ echo "mesa3d $(MESA3D_VERSION) is not the release powervr_sgx overlays" >&2; exit 1; }
+	for p in $(MESA3D_SGX_DIR)/mesa/patches/*.patch $(MESA3D_SGX_DIR)/mesa/patches/local/*.patch; do \
+		echo "openHC: mesa3d: $${p##*/mesa/}"; \
+		patch -d $(@D) -p1 --batch --forward < $$p || exit 1; \
+	done
+	(cd $(MESA3D_SGX_DIR)/mesa/src && tar cf - .) | (cd $(@D)/src && tar xf -)
+	cp $(MESA3D_SGX_DIR)/drm/powervr_sgx/include/uapi/drm/powervr_sgx_drm.h $(@D)/include/drm-uapi/
+	rm -rf $(@D)/src/sgx/kmd_stream $(@D)/src/gallium/winsys/sgx/drm/powervr_sgx_kmd_stream.h
+endef
+MESA3D_POST_PATCH_HOOKS += MESA3D_SGX_OVERLAY
+endif
+
 # ── openHC's own kernel drivers: copied in, not patched in ─────────────────
 #
 # board/ea/common/kernel/drivers/ mirrors the kernel's drivers/ subtree, so a file at
@@ -105,13 +129,13 @@ OHC_KERNEL_MIRRORS += $(BR2_EXTERNAL_OPENHC_PATH)/ioxv1/kernel
 endif
 
 # A driver kept in its own repository maps onto ONE kernel directory instead of
-# mirroring a tree: <source dir>:<kernel dir>. sgx545-ce (the submodule at
-# ea/common/sgx545-ce) holds more than the kernel driver -- srvinit, libpvr, the
-# Mesa driver, RE tools -- and only its kernel/ is kernel source. Its Kconfig and
-# Makefile lines are still registered by ea/common/kernel/objs.mk.
+# mirroring a tree: <source dir>:<kernel dir>. powervr_sgx (the submodule at
+# ea/common/powervr_sgx) holds more than the kernel driver (the Mesa driver, the
+# microkernel, tools); only its drm/powervr_sgx is kernel source. Its Kconfig and
+# Makefile lines are registered by ea/common/kernel/objs.mk.
 OHC_KERNEL_DRIVER_REPOS =
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
-OHC_KERNEL_DRIVER_REPOS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/sgx545-ce/kernel:drivers/gpu/drm/sgx545ce
+OHC_KERNEL_DRIVER_REPOS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/powervr_sgx/drm/powervr_sgx:drivers/gpu/drm/powervr_sgx
 endif
 
 define OHC_KERNEL_MIRROR_HOOK

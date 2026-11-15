@@ -59,9 +59,9 @@ The move off i386 was for Home Assistant: orjson and cryptography have never
 published i686 wheels, and HA pins exact versions. It also removed the 32-bit
 lowmem split (about 934 MB of the 1.7 GB had been highmem).
 
-The cost was that the SGX545 userspace is 32-bit Intel/Imagination blobs, so 3D
-has to run as i386 under the 64-bit kernel's compat path. That was an open
-question when the switch was made; it now runs, see [graphics](/ea/graphics/).
+The cost then was that the only SGX545 userspace was 32-bit Intel/Imagination
+blobs, so 3D ran as i386 under the 64-bit kernel's compat path. The open stack
+replaced it: 3D is native 64-bit now, see [graphics](/ea/graphics/).
 
 ### Kernel build
 
@@ -107,11 +107,11 @@ it.
 
 ### C library and optimisation
 
-**glibc, not the fleet's musl default.** The PowerVR DDK userspace
-(`packages/sgx545-um`) is glibc-linked and cannot load on musl. gcompat is in no
-Buildroot release, and a private glibc under `/opt` would mean a loader wrapper
-forever. Size does not argue against it: the image is 512 MB with about 7 MB
-used. What is tight is the bzImage, which the C library does not touch.
+**glibc, not the fleet's musl default.** It was chosen for the PowerVR DDK
+userspace, which was glibc-linked and could not load on musl. That userspace is
+gone, but glibc stays: WebKit and Mesa build and are tested on it, and the
+Minecraft runtime brings glibc programs. Size does not argue against it. What
+is tight is the bzImage, which the C library does not touch.
 
 **`-O2`, not the fleet's `-Os`.** There is room, and glibc 2.42 did not link at
 `-Os` on x86_64 without a backport (BZ 33367, GCC leaving `modf`'s `trunc()` as
@@ -125,13 +125,12 @@ silently: the build succeeds and the engine is absent.
 
 ### Font
 
-`BR2_PACKAGE_DEJAVU` puts a real font in `/usr/share/fonts`. The on-panel WPE
-WebKit (the i386 sysroot in `/opt/sgx-i386-wpe`) ships fontconfig but no font
-files, and its `<dir>/usr/share/fonts</dir>` resolves to this image's
-directory. Without a font every glyph renders invisibly and the dashboard looks
-blank (its light background with no text). DejaVu is fontconfig's canonical
-generic, so the UI's `system-ui -> sans-serif` stack lands on DejaVu Sans. Only
-the display path uses it.
+`BR2_PACKAGE_DEJAVU` puts a real font in `/usr/share/fonts`. Without a font every
+glyph of the on-screen view renders invisibly and the dashboard looks blank (its
+light background with no text). DejaVu is fontconfig's canonical generic, and
+`webview` installs `/etc/fonts/conf.d/99-openhc-ui.conf`, which maps the system
+font names a page asks for first (`system-ui`, `Segoe UI`, `Roboto`, ...) to it.
+Only the display path uses it.
 
 ### Patches and post-image
 
@@ -161,7 +160,7 @@ track `board/ea/common/common_defconfig` and `board/common/common_defconfig`:
 |---|---|
 | `GCC_15` | Buildroot's default gcc for x86_64 (15.3.0) |
 | `HEADERS_7_1` | `board/common` sets `BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_7_1` |
-| `CUSTOM_GLIBC` | the family runs glibc for the DDK blobs |
+| `CUSTOM_GLIBC` | the family runs glibc (see below) |
 | `CXX` | WPE WebKit and ICU |
 | `INET_RPC` off | see below |
 
@@ -189,10 +188,10 @@ Which board gets which feature is in the family, model and variant
 | `audio-dsp` | `adau1451-fw` | The EA3's ADAU1451 parameter file, built from `board/ea/common/firmware/dsp/adau1451/` and loaded by the codec driver from `/lib/firmware/openhc/` |
 | `emmc` | ext4 image, e2fsprogs + resize2fs | 512 MB base image written to p1, grown online to fill the partition by `S03growfs` on the first boot that finds it short. A build that needs more in the image itself (Node, Python, HA) raises the size in its own layer |
 | `restore` | kexec | The `restore` package edits the MFH over `/dev/mtd0` and, for a full restore, kexecs p2's recovery kernel. MTD is already in `common.fragment`. See [recovery](/shared/recovery/#openhcs-own-software-return-to-stock) |
-| `sgx` | `sgx545-srvinit` | The kernel driver (PCI `01:02.0`, `8086:089b`, ported from Intel's Cedarview GPL DDK 1.7) is the `kernel/` of the `board/ea/common/sgx545-ce` submodule, built as `CONFIG_SGX545_CE=m`, giving `/dev/dri/card0`. srvinit is the open GPU bring-up, run once by `S60sgx`. See [graphics](/ea/graphics/#bringing-the-gpu-up-at-boot) |
+| `sgx` | `powervr-sgx-firmware` | The kernel driver (PCI `01:02.0`, `8086:089b`) is `drm/powervr_sgx` of the `board/ea/common/powervr_sgx` submodule, `CONFIG_DRM_POWERVR_SGX` (a module on the bootstrap, built in on the real kernel), giving `/dev/dri/renderD128`. The package is its open microkernel. See [graphics](/ea/graphics/#the-stack) |
 | `switch` | iproute2, bridge-utils | switchd needs iproute2: `bridge vlan` is how 802.1Q filtering is offloaded to the b53, and `brctl` cannot filter VLANs at all. bridge-utils is only kept for habit and scripts |
 | `wifi` | wpa_supplicant (nl80211, CLI, passphrase), iw, the setup portal; from `board/common/features/wifi`: hostapd, dnsmasq, the setup-AP templates, `OHC_WIFI_IFACE=wlan0` | Boards with the ath9k radio. No network is built in: see [Wi-Fi](#wi-fi) |
-| `wpe` | `sgx545-um`, wpewebkit, `wpebackend-pvr`, `webview` | The proprietary half of 3D: DDK 1.7 EGL + GLES2, fetched at build, not vendored. It must be the same DDK version as the driver, which refuses a mismatch on connect. Buildroot also builds wpebackend-fdo and Wayland for wpewebkit; nothing uses them. `wpebackend-pvr` is the libwpe backend that reaches the display; `webview` puts a page on screen (WebKit is built without MiniBrowser). Split from `sgx` so the open driver and the blobs are separable |
+| `wpe` | mesa3d (`sgx`), wpewebkit (WPE Platform DRM), `webview`, kmscube | Mesa's sgx gallium driver from the submodule's `mesa/` overlay, with EGL, GLES2 and GBM; WebKit's DRM display on simpledrm; `webview` puts a page on screen (WebKit is built without MiniBrowser), started by `S95ohc-display`. kmscube is a GL check. The same stack as the HC-800's |
 
 **`BR2_PACKAGE_SHAIRPORT_SYNC_ALSA` does not exist.** shairport-sync always
 builds `--with-alsa`. A line setting it would be discarded by kconfig without a

@@ -603,16 +603,14 @@ view and puts the splash back, no reboot.
 
 ### Can it run WPE WebKit?
 
-Yes, and more easily than the EA family — with one large caveat.
+Yes — with one large caveat.
 
 Mesa 24.0.9's **`i915` gallium driver explicitly claims `0xa001 "Intel(R)
 Pineview"`**, this exact chip. Because Mesa provides real EGL + GBM + dmabuf,
-this board needs **no custom libwpe backend**: the EA's `wpebackend-pvr` exists
-only because the PowerVR DDK 1.7 predates all of that. It runs WebKit's own
-**WPE Platform API** instead: openHC's `webview` on WebKit's **DRM platform**,
-which renders on the GPU into GBM buffers and scans them out on KMS with no
-compositor and no copies. (The EAs stay on the libwpe path to keep their SGX545
-zero-copy; see openHC issue #55.)
+it runs WebKit's own **WPE Platform API**: openHC's `webview` on WebKit's **DRM
+platform**, which renders on the GPU into GBM buffers and scans them out on KMS
+with no compositor and no copies. The EAs run the same stack on Mesa's sgx
+driver ([EA graphics](/ea/graphics/)).
 
 Two prerequisites are config, not code:
 

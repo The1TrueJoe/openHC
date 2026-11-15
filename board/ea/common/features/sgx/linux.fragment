@@ -1,16 +1,17 @@
-# PowerVR SGX545 (sgx545ce; mirrors board/ea/common/sgx545-ce/kernel's fragment).
-# Must merge after common.fragment, which turns DRM off.
+# PowerVR SGX545: powervr_sgx (the powervr_sgx submodule's drm/powervr_sgx).
+# Must merge after common.fragment, which turns DRM off. The fat kernel builds
+# both in (real-kernel.fragment).
 # merge_config scrapes assignments even inside comments: write symbols without "=".
 
-# Userspace reaches the GPU through a DRM node. Modules: DRM core is ~1.25 MiB.
+# Render-only DRM driver (/dev/dri/renderD128). Modules: DRM core is ~1.25 MiB.
 CONFIG_DRM=m
-CONFIG_SGX545_CE=m
+CONFIG_DRM_POWERVR_SGX=m
 
-# Write-combining for the SGX command buffers (uncached without it: much slower).
+# Write-combining for the GPU's buffers (uncached without it: much slower).
 CONFIG_X86_PAT=y
 CONFIG_MTRR=y
 
-# sgxregs reads the SGX BAR through /dev/mem.
+# Register reads with devmem when debugging the GPU.
 CONFIG_DEVMEM=y
 # CONFIG_STRICT_DEVMEM is not set
 
@@ -18,7 +19,6 @@ CONFIG_DEVMEM=y
 # CONFIG_DRM_I915 is not set
 # CONFIG_DRM_VIRTIO_GPU is not set
 # CONFIG_DRM_TTM is not set
-# CONFIG_DRM_GEM_SHMEM_HELPER is not set
 # CONFIG_DRM_BUDDY is not set
 # CONFIG_DRM_PANEL_ORIENTATION_QUIRKS is not set
 # CONFIG_INTEL_GTT is not set
