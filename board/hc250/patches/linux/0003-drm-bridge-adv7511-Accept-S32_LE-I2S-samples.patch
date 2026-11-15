@@ -7,35 +7,37 @@ Commit 7c3127e4814c ("drm: bridge: adv7511: remove s32 format from i2s
 capabilities") dropped S32_LE, which hw_params rejected, as the ADV7511
 takes at most 24 bits per I2S sample.
 
-Some I2S controllers can only send a sample that fills its slot, so with
-32-bit slots S32_LE is the only format they can offer. Accept it as a
-24-bit sample: the ADV7511 takes the top 24 bits of the slot, hdmi-codec
-already reports 24 significant bits, and the IEC958 channel status
-already treats 32-bit samples as 24-bit.
+McBSP puts no padding between words and offers only S16_LE and S32_LE,
+so with 32-bit slots S32_LE is its only format. As hdmi-codec's own
+I2S_FORMATS comment says, a 32-bit format gives 24-bit precision to such
+CPU DAIs. Advertise S32_LE again and program it like S24_LE: in I2S and
+left-justified modes the ADV7511 takes the top 24 bits of the slot, and
+hdmi-codec reports 24 significant bits. Right-justified it would take
+the low 24 bits, so a 32-bit sample is still refused there.
 
 Tested on an OMAP3630 board whose McBSP sends 2 x 32-bit I2S slots to
 an ADV7513: a left-only and a right-only S32_LE tone at 44.1 kHz both
 play at full level.
 ---
- drivers/gpu/drm/bridge/adv7511/adv7511_audio.c | 4 +---
+ drivers/gpu/drm/bridge/adv7511/adv7511_audio.c | 4 +++-
  drivers/gpu/drm/bridge/adv7511/adv7511_drv.c   | 1 +
- 2 files changed, 2 insertions(+), 3 deletions(-)
+ 2 files changed, 4 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c b/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c
-index 87e7e820810a..474834a94f7c 100644
+index 87e7e820810a..8e38b936ef6c 100644
 --- a/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c
 +++ b/drivers/gpu/drm/bridge/adv7511/adv7511_audio.c
-@@ -105,9 +105,7 @@ int adv7511_hdmi_audio_prepare(struct drm_bridge *bridge,
+@@ -105,7 +105,9 @@ int adv7511_hdmi_audio_prepare(struct drm_bridge *bridge,
  		len = ADV7511_I2S_SAMPLE_LEN_20;
  		break;
  	case 32:
 -		if (fmt->bit_fmt != SNDRV_PCM_FORMAT_IEC958_SUBFRAME_LE)
--			return -EINVAL;
--		fallthrough;
-+		/* S32_LE: the top 24 bits of the slot, as for IEC958 */
++		/* Right-justified takes the low 24 bits of a 32-bit slot */
++		if (fmt->fmt == HDMI_RIGHT_J &&
++		    fmt->bit_fmt != SNDRV_PCM_FORMAT_IEC958_SUBFRAME_LE)
+ 			return -EINVAL;
+ 		fallthrough;
  	case 24:
- 		len = ADV7511_I2S_SAMPLE_LEN_24;
- 		break;
 diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
 index d3964adbb106..0cff81a6c086 100644
 --- a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
