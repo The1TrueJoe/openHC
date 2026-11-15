@@ -1,0 +1,181 @@
+From 5ef15d483b5a79be72a697a681645d535cf54662 Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <joseph@telaak.dev>
+Date: Sat, 14 Nov 2026 19:14:16 -0500
+Subject: [PATCH] ASoC: ti: omap-mcbsp: Implement set_tdm_slot
+
+As bit clock and frame provider, McBSP sizes the frame from the SRG
+input, the set_clkdiv() divider and the rate. Only a machine driver can
+call set_clkdiv(), so with simple-audio-card or audio-graph-card the
+divider stays 1 and the bit clock runs at the full SRG input: 96 MHz on
+OMAP3, a 2000-bit frame at 48 kHz.
+
+Implement set_tdm_slot() so these cards can ask for a frame of
+slots x slot_width bit clocks with dai-tdm-slot-num and
+dai-tdm-slot-width. hw_params() then picks the divider for the rate,
+and startup() offers only the rates the SRG input divides to within
+0.1%, the IEC 60958 level II clock tolerance. Without a slot width
+nothing changes.
+
+Tested on an OMAP3630 board whose McBSP4 drives the I2S input of an
+ADV7513 with no MCLK. With 2 x 32-bit slots it plays 44.1 kHz
+(96 MHz / 34 gives 44117.6 Hz); 48 kHz is 0.8% off and not offered.
+---
+ sound/soc/ti/omap-mcbsp-priv.h |  4 ++
+ sound/soc/ti/omap-mcbsp.c      | 98 +++++++++++++++++++++++++++++++++-
+ 2 files changed, 101 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/ti/omap-mcbsp-priv.h b/sound/soc/ti/omap-mcbsp-priv.h
+index da519ea..124ca35 100644
+--- a/sound/soc/ti/omap-mcbsp-priv.h
++++ b/sound/soc/ti/omap-mcbsp-priv.h
+@@ -275,6 +275,10 @@ struct omap_mcbsp {
+ 	unsigned int latency[2];
+ 	int clk_div;
+ 	int wlen;
++	int slots;
++	int slot_width;
++	unsigned int slot_rates[9];
++	struct snd_pcm_hw_constraint_list slot_rate_list;
+ 
+ 	struct pm_qos_request pm_qos_req;
+ };
+diff --git a/sound/soc/ti/omap-mcbsp.c b/sound/soc/ti/omap-mcbsp.c
+index 26af616..ce7b5b4 100644
+--- a/sound/soc/ti/omap-mcbsp.c
++++ b/sound/soc/ti/omap-mcbsp.c
+@@ -759,6 +759,54 @@ static int omap_mcbsp_hwrule_min_buffersize(struct snd_pcm_hw_params *params,
+ 	return snd_interval_refine(buffer_size, &frames);
+ }
+ 
++/*
++ * The SRG divider that makes a frame of slots x slot_width bit clocks run at
++ * @rate, or 0 if none gets within 0.1% (IEC 60958 level II).
++ */
++static unsigned int omap_mcbsp_slot_div(struct omap_mcbsp *mcbsp,
++					unsigned int rate)
++{
++	unsigned int bclk = rate * mcbsp->slots * mcbsp->slot_width;
++	unsigned int div;
++
++	if (!bclk || !mcbsp->in_freq)
++		return 0;
++
++	div = DIV_ROUND_CLOSEST(mcbsp->in_freq, bclk);
++	if (!div || div > 256)
++		return 0;
++	if ((u64)abs_diff(mcbsp->in_freq / div, bclk) * 1000 > bclk)
++		return 0;
++
++	return div;
++}
++
++static int omap_mcbsp_slot_rates(struct snd_pcm_substream *substream,
++				 struct omap_mcbsp *mcbsp)
++{
++	static const unsigned int rates[] = {
++		8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000,
++	};
++	unsigned int i, n = 0;
++
++	for (i = 0; i < ARRAY_SIZE(rates); i++)
++		if (omap_mcbsp_slot_div(mcbsp, rates[i]))
++			mcbsp->slot_rates[n++] = rates[i];
++
++	if (!n) {
++		dev_err(mcbsp->dev, "no rate for %d x %d-bit slots from %u Hz\n",
++			mcbsp->slots, mcbsp->slot_width, mcbsp->in_freq);
++		return -EINVAL;
++	}
++
++	mcbsp->slot_rate_list.count = n;
++	mcbsp->slot_rate_list.list = mcbsp->slot_rates;
++
++	return snd_pcm_hw_constraint_list(substream->runtime, 0,
++					  SNDRV_PCM_HW_PARAM_RATE,
++					  &mcbsp->slot_rate_list);
++}
++
+ static int omap_mcbsp_dai_startup(struct snd_pcm_substream *substream,
+ 				  struct snd_soc_dai *cpu_dai)
+ {
+@@ -801,6 +849,12 @@ static int omap_mcbsp_dai_startup(struct snd_pcm_substream *substream,
+ 					   SNDRV_PCM_HW_PARAM_PERIOD_SIZE, 2);
+ 	}
+ 
++	/* A fixed slot frame from the SRG only reaches some rates */
++	if (!err && mcbsp->slot_width &&
++	    (mcbsp->fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) ==
++	    SND_SOC_DAIFMT_BP_FP)
++		err = omap_mcbsp_slot_rates(substream, mcbsp);
++
+ 	return err;
+ }
+ 
+@@ -1020,7 +1074,23 @@ static int omap_mcbsp_dai_hw_params(struct snd_pcm_substream *substream,
+ 	/* In McBSP master modes, FRAME (i.e. sample rate) is generated
+ 	 * by _counting_ BCLKs. Calculate frame size in BCLKs */
+ 	master = mcbsp->fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK;
+-	if (master == SND_SOC_DAIFMT_BP_FP) {
++	if (master == SND_SOC_DAIFMT_BP_FP && mcbsp->slot_width) {
++		if (wlen > mcbsp->slot_width || channels > mcbsp->slots) {
++			dev_err(mcbsp->dev, "%d x %d-bit does not fit %d x %d-bit slots\n",
++				channels, wlen, mcbsp->slots,
++				mcbsp->slot_width);
++			return -EINVAL;
++		}
++		div = omap_mcbsp_slot_div(mcbsp, params_rate(params));
++		if (!div) {
++			dev_err(mcbsp->dev, "no divider for %u Hz from %u Hz\n",
++				params_rate(params), mcbsp->in_freq);
++			return -EINVAL;
++		}
++		regs->srgr1	&= ~CLKGDV(0xff);
++		regs->srgr1	|= CLKGDV(div - 1);
++		framesize = mcbsp->slots * mcbsp->slot_width;
++	} else if (master == SND_SOC_DAIFMT_BP_FP) {
+ 		div = mcbsp->clk_div ? mcbsp->clk_div : 1;
+ 		framesize = (mcbsp->in_freq / div) / params_rate(params);
+ 
+@@ -1184,6 +1254,31 @@ static int omap_mcbsp_dai_set_clkdiv(struct snd_soc_dai *cpu_dai,
+ 	return 0;
+ }
+ 
++/*
++ * As bit clock provider, a slot width makes the frame slots x slot_width bit
++ * clocks long, with the SRG divider picked per rate instead of set_clkdiv().
++ * McBSP sends the first channels slots in order, so only masks of the low
++ * slots are accepted.
++ */
++static int omap_mcbsp_dai_set_tdm_slot(struct snd_soc_dai *cpu_dai,
++				       unsigned int tx_mask,
++				       unsigned int rx_mask,
++				       int slots, int slot_width)
++{
++	struct omap_mcbsp *mcbsp = snd_soc_dai_get_drvdata(cpu_dai);
++
++	if (slots < 0 || slot_width < 0 || slot_width > 32 ||
++	    (slots && slot_width < 8) || slots > 128)
++		return -EINVAL;
++	if ((tx_mask & (tx_mask + 1)) || (rx_mask & (rx_mask + 1)))
++		return -EINVAL;
++
++	mcbsp->slots = slots;
++	mcbsp->slot_width = slots ? slot_width : 0;
++
++	return 0;
++}
++
+ static int omap_mcbsp_dai_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
+ 					 int clk_id, unsigned int freq,
+ 					 int dir)
+@@ -1281,6 +1376,7 @@ static const struct snd_soc_dai_ops mcbsp_dai_ops = {
+ 	.set_fmt	= omap_mcbsp_dai_set_dai_fmt,
+ 	.set_clkdiv	= omap_mcbsp_dai_set_clkdiv,
+ 	.set_sysclk	= omap_mcbsp_dai_set_dai_sysclk,
++	.set_tdm_slot	= omap_mcbsp_dai_set_tdm_slot,
+ };
+ 
+ static struct snd_soc_dai_driver omap_mcbsp_dai = {
+-- 
+2.50.1 (Apple Git-155)
+
