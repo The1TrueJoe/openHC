@@ -28,7 +28,7 @@ if [ ! -c $dev ]; then
 fi
 
 # 720p forced on: the DPI bus (component, splash) runs with no HDMI monitor.
-echo "console=ttyS0,115200n8 eth=$mac video=HDMI-A-1:1280x720@60e ohc.ramboot=1 $*" > $p/cmdline
+echo "console=ttyS0,115200n8 eth=$mac video=HDMI-A-1:1280x720@60 ohc.ramboot=1 $*" > $p/cmdline
 case "$img" in
     http://*|ftp://*) wget -O - "$img" > $dev ;;
     -) cat > $dev ;;
