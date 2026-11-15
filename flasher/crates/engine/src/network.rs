@@ -84,6 +84,11 @@ const CEFDK_EMMC_DELTA: u64 = 0x800000;
 /// openHC) the installed autoscript is reused. Returns the autoscript read
 /// sizes when they are the slot sizes [`stage2_write_rootfs`] should record.
 pub fn stage1(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -> Result<Option<(u64, u64)>> {
+    if p1_holds_openhc(ssh) {
+        p.emit(Event::warn(
+            "p1 already holds openHC: stage 2 re-images it, and everything on it is lost".into(),
+        ));
+    }
     if has_mtd(ssh) && !script_slot_armed(ssh)? {
         install_ramboot(ssh, rel, p)?;
         return Ok(None);
