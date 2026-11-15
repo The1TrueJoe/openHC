@@ -167,7 +167,7 @@ static const u32 ce5300_formats[] = {
 	DRM_FORMAT_ARGB8888,
 };
 
-static int ce5300_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_state *state)
+static int ce5300_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *ps = drm_atomic_get_new_plane_state(state, plane);
 	struct drm_crtc_state *cs = NULL;
@@ -178,7 +178,7 @@ static int ce5300_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_
 						   DRM_PLANE_NO_SCALING, false, false);
 }
 
-static void ce5300_plane_atomic_update(struct drm_plane *plane, struct drm_atomic_state *state)
+static void ce5300_plane_atomic_update(struct drm_plane *plane, struct drm_atomic_commit *state)
 {
 	struct ce5300 *p = to_ce5300(plane->dev);
 	struct drm_plane_state *ps = drm_atomic_get_new_plane_state(state, plane);
@@ -225,7 +225,7 @@ static enum drm_mode_status ce5300_crtc_mode_valid(struct drm_crtc *crtc,
 	return ce5300_mode_is_current(to_ce5300(crtc->dev), m) ? MODE_OK : MODE_BAD;
 }
 
-static int ce5300_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static int ce5300_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *cs = drm_atomic_get_new_crtc_state(state, crtc);
 
@@ -233,7 +233,7 @@ static int ce5300_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_sta
 }
 
 /* No vblank interrupt yet: complete the event at once. */
-static void ce5300_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static void ce5300_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *cs = drm_atomic_get_new_crtc_state(state, crtc);
 	struct drm_pending_vblank_event *event = cs->event;
@@ -415,7 +415,8 @@ static int ce5300_modeset_init(struct ce5300 *p)
 		return ret;
 
 	drm_mode_config_reset(drm);
-	return drmm_kms_helper_poll_init(drm);
+	drmm_kms_helper_poll_init(drm);
+	return 0;
 }
 
 static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
