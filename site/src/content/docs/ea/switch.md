@@ -341,22 +341,10 @@ defaults.
 
 ### EA1: a PHY, not a switch
 
-The EA1 (v1/v2, not the PoE board) has no switch. The e1000 talks RGMII to a
-**Realtek RTL8211E** at MDIO address 1 (ID `0x001cc915`; Control4's kernel calls
-these boards `NYA` and runs them in `REAL_PHY` mode). The jack LEDs are the
-PHY's own LED pins, at its defaults (extension page `0x2c`):
-
-| LED | `0x1c` link bits | `0x1a` activity | Shows |
-|---|---|---|---|
-| LED0 | none | yes | activity only |
-| LED1 | 10/100/1000 | no | link |
-| LED2 | 10/100/1000 | yes | link + activity |
-
-Both colors flicker, so the jack is wired to LED0 and LED2. Mainline's Realtek
-driver already offloads RTL8211E LEDs to the netdev trigger, but only for a PHY
-that phylib binds and attaches to the netdev. e1000 drives its PHY itself, and
-openHC's `fixed-link` (patch 0003) leaves it untouched. That also means the
-EA1's MAC is forced to 1000/full while the PHY autonegotiates on its own.
+The EA1 (v1/v2, not the PoE board) has no switch: its jack LEDs are the LED
+pins of an RTL8211E behind the e1000, green on LED0 and yellow on LED1. Its
+yellow blinked because of the PHY's EEE LED mode, not because of the LED
+setup. See [the EA1's PHY](/ea/device-tree/#the-ea1s-phy-patch-0022).
 
 ## Hardware test, 2026-10-28
 
