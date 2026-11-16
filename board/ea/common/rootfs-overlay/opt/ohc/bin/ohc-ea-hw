@@ -20,3 +20,19 @@ done
 for z in /sys/class/thermal/thermal_zone*; do
   [ -r "$z/type" ] && echo "ohc-hw: thermal $(cat "$z/type") $(cat "$z/temp") milliC policy=$(cat "$z/policy") mode=$(cat "$z/mode")"
 done
+
+# Board-ID straps (revision = bits 0-3, type = bits 4-6) against the ids this
+# image's DT was built for: the wrong image boots, minus the hardware it lacks.
+DT=/proc/device-tree
+be32() { od -An -v -tu1 "$1" | xargs -n4 | while read a b c d; do echo $(((a << 24) | (b << 16) | (c << 8) | d)); done; }
+if s=$(ohc-hw straps) && [ -r $DT/control4,board-type ]; then
+  t=$(((s >> 4) & 7)) r=$((s & 15))
+  if [ "$t" = "$(be32 $DT/control4,board-type)" ] &&
+     { [ ! -r $DT/control4,board-revisions ] || be32 $DT/control4,board-revisions | grep -qx "$r"; }; then
+    echo "ohc-hw: straps $s (type $t, rev $r) match $(ohc-hw model)"
+  else
+    msg="straps $s (type $t, rev $r) are not $(ohc-hw model): install this board's image"
+    echo "ohc-hw: WARNING $msg"
+    logger -p user.warn -t ohc-hw "$msg"
+  fi
+fi
