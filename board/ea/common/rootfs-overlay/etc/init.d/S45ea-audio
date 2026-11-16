@@ -1,7 +1,7 @@
 #!/bin/sh
 # Wait for the EA's sound cards so audiod, librespot and shairport find them.
 # udev coldplug loads every driver from its modalias; nothing is loaded here.
-#   HDMI       every EA (ce5300-hdmi)
+#   HDMI       every EA (ce5300-hdmi-audio, a child of the ce5300-hdmi bridge)
 #   openhcea   EA-3: CE5300 I2S + ADAU1451 (simple-audio-card)
 #   openhcea5  EA-5: the audio FPGA + two ADAU1451s (snd-soc-ea5-fpga)
 
@@ -15,7 +15,7 @@ wait_card() { # <id> <what>
 }
 
 start() {
-    grep -q "ce5300-hdmi.ko" "/lib/modules/$(uname -r)/modules.dep" 2>/dev/null &&
+    grep -q "ce5300-hdmi-audio.ko" "/lib/modules/$(uname -r)/modules.dep" 2>/dev/null &&
         wait_card HDMI HDMI
     dt=/sys/firmware/devicetree/base/sound
     [ -e $dt ] || return 0

@@ -79,6 +79,30 @@
 				reg = <0x13200 0 0 0 0>;
 			};
 
+			/* Display controller (8086:2e61), ce5300-drm. Pipe A feeds
+			 * the HDMI transmitter. */
+			vdc: display@8,0 {
+				reg = <0x14000 0 0 0 0>;
+
+				port {
+					vdc_out: endpoint {
+						remote-endpoint = <&hdmi_in>;
+					};
+				};
+			};
+
+			/* HDMI transmitter (8086:2e63), ce5300-hdmi: a DRM bridge
+			 * with its own DDC master and audio DMA. */
+			hdmi: hdmi@8,2 {
+				reg = <0x14200 0 0 0 0>;
+
+				port {
+					hdmi_in: endpoint {
+						remote-endpoint = <&vdc_out>;
+					};
+				};
+			};
+
 			/* UART1's PCI face (8086:2e66). Keep disabled: binding it
 			 * kills the legacy 0x2F8 port the IO-MCU is on. */
 			serial@b,0 {

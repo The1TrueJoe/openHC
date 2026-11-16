@@ -11,16 +11,16 @@
  *
  * This first step takes over the mode the firmware set and keeps it. It reads
  * pipe A and the live UPP back, and from then on flips that plane between
- * GEM DMA buffers. Hotplug is polled through the HDMI transmitter's HPD bit,
- * or an EDID that answers (on an EA1 HPD stays low). The EDID comes over
- * the transmitter's DDC master, which ce5300-hdmi registers as an i2c adapter. Mode setting (the display PLL, the pipe and the
- * HDMI PHY) comes later; until then only the running mode is valid.
+ * GEM DMA buffers. Pipe A drives the HDMI transmitter, a DRM bridge
+ * (ce5300-hdmi.c) found through the OF graph; its detect, EDID and hotplug
+ * make the connector. Mode setting (the display PLL, the pipe and the HDMI
+ * PHY) comes later; until then only the running mode is valid.
  *
  * Register access is limited to named registers. Unnamed holes in the VDC BAR
  * are not safe to read.
  */
 #include <linux/aperture.h>
-#include <linux/i2c.h>
+#include <linux/of_graph.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -30,9 +30,10 @@
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
+#include <drm/drm_bridge_connector.h>
 #include <drm/drm_debugfs.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_edid.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fourcc.h>
@@ -72,12 +73,6 @@
 #define   UPP_FMT_ARGB_32	0x4c00	/* GDL_PF_ARGB_32: what CEFDK scans out */
 
 static const u32 upp_bases[] = { 0x0000, 0x1000, 0x2000, 0x3000, 0xf000 };
-
-/* The HDMI transmitter (PCI 8086:2e63): HPD only, read-only. */
-#define HDMI_TX_DEVICE		0x2e63
-#define HDMI_TX_STATUS		0x1008
-#define   HDMI_TX_HPD		BIT(0)
-#define HDMI_DDC_NAME		"ce5300-hdmi DDC"
 
 #define PITCH_ALIGN		64
 
@@ -150,14 +145,13 @@ struct ce5300 {
 	struct drm_device	drm;
 	void __iomem		*mmio;
 	void __iomem		*ccu;		/* clock-control unit, or NULL */
-	void __iomem		*hdmi_status;	/* one register of the TX */
 	u32			upp;		/* the scanout UPP's register base */
 	struct drm_display_mode	mode;		/* what the firmware runs */
 
 	struct drm_plane	plane;
 	struct drm_crtc		crtc;
 	struct drm_encoder	encoder;
-	struct drm_connector	connector;
+	struct drm_bridge	*bridge;	/* the HDMI transmitter */
 };
 
 #define to_ce5300(d) container_of(d, struct ce5300, drm)
@@ -323,92 +317,6 @@ static const struct drm_crtc_funcs ce5300_crtc_funcs = {
 	.atomic_destroy_state	= drm_atomic_helper_crtc_destroy_state,
 };
 
-/* ---- HDMI connector ---------------------------------------------------- */
-
-/* i2c_for_each_dev() holds the core lock: note the number, get it after. */
-static int ce5300_find_ddc(struct device *dev, void *data)
-{
-	struct i2c_adapter *adap = i2c_verify_adapter(dev);
-
-	if (adap && !strcmp(adap->name, HDMI_DDC_NAME)) {
-		*(int *)data = adap->nr;
-		return 1;
-	}
-	return 0;
-}
-
-static struct i2c_adapter *ce5300_get_ddc(void)
-{
-	int nr = -1;
-
-	i2c_for_each_dev(&nr, ce5300_find_ddc);
-	return nr < 0 ? NULL : i2c_get_adapter(nr);
-}
-
-static enum drm_connector_status ce5300_connector_detect(struct drm_connector *c, bool force)
-{
-	struct ce5300 *p = to_ce5300(c->dev);
-
-	struct i2c_adapter *ddc;
-	bool found;
-
-	if (p->hdmi_status && readl(p->hdmi_status) & HDMI_TX_HPD)
-		return connector_status_connected;
-	/* HPD stays low on an EA1: fall back to an EDID that answers. */
-	ddc = ce5300_get_ddc();
-	if (!ddc)
-		return connector_status_unknown;
-	found = drm_probe_ddc(ddc);
-	i2c_put_adapter(ddc);
-	return found ? connector_status_connected : connector_status_disconnected;
-}
-
-static int ce5300_connector_get_modes(struct drm_connector *c)
-{
-	struct ce5300 *p = to_ce5300(c->dev);
-	struct i2c_adapter *ddc = ce5300_get_ddc();
-	const struct drm_edid *edid = NULL;
-	struct drm_display_mode *m;
-	int n = 0;
-
-	if (ddc) {
-		edid = drm_edid_read_ddc(c, ddc);
-		i2c_put_adapter(ddc);
-	}
-	drm_edid_connector_update(c, edid);
-	if (edid)
-		n = drm_edid_connector_add_modes(c);
-	drm_edid_free(edid);
-
-	/* Until there is a modeset, the running mode is the one to offer. */
-	m = drm_mode_duplicate(c->dev, &p->mode);
-	if (m) {
-		drm_mode_probed_add(c, m);
-		n++;
-	}
-	return n;
-}
-
-static enum drm_mode_status ce5300_connector_mode_valid(struct drm_connector *c,
-							const struct drm_display_mode *m)
-{
-	return ce5300_mode_is_current(to_ce5300(c->dev), m) ? MODE_OK : MODE_BAD;
-}
-
-static const struct drm_connector_helper_funcs ce5300_connector_helper_funcs = {
-	.get_modes	= ce5300_connector_get_modes,
-	.mode_valid	= ce5300_connector_mode_valid,
-};
-
-static const struct drm_connector_funcs ce5300_connector_funcs = {
-	.detect			= ce5300_connector_detect,
-	.fill_modes		= drm_helper_probe_single_connector_modes,
-	.destroy		= drm_connector_cleanup,
-	.reset			= drm_atomic_helper_connector_reset,
-	.atomic_duplicate_state	= drm_atomic_helper_connector_duplicate_state,
-	.atomic_destroy_state	= drm_atomic_helper_connector_destroy_state,
-};
-
 /* ---- Device ------------------------------------------------------------ */
 
 static int ce5300_dumb_create(struct drm_file *file, struct drm_device *drm,
@@ -437,15 +345,19 @@ static const struct drm_driver ce5300_driver = {
 	.minor			= 1,
 };
 
-/* The HPD bit of the transmitter, mapped read-only: ce5300-hdmi owns the BAR. */
-static void ce5300_map_hpd(struct ce5300 *p)
+/* Pipe A's output, port 0 of the OF graph: the HDMI transmitter's bridge. */
+static int ce5300_find_bridge(struct ce5300 *p)
 {
-	struct pci_dev *tx = pci_get_device(PCI_VENDOR_ID_INTEL, HDMI_TX_DEVICE, NULL);
+	struct device_node *remote;
 
-	if (!tx)
-		return;
-	p->hdmi_status = devm_ioremap(p->drm.dev, pci_resource_start(tx, 0) + HDMI_TX_STATUS, 4);
-	pci_dev_put(tx);
+	remote = of_graph_get_remote_node(p->drm.dev->of_node, 0, 0);
+	if (!remote)
+		return dev_err_probe(p->drm.dev, -ENODEV, "no output in the device tree\n");
+	p->bridge = of_drm_find_bridge(remote);
+	of_node_put(remote);
+	if (!p->bridge)
+		return dev_err_probe(p->drm.dev, -EPROBE_DEFER, "HDMI bridge not up yet\n");
+	return 0;
 }
 
 /* ---- Clock read-back (debugfs ce5300_clocks), no writes ---------------- */
@@ -522,6 +434,7 @@ static void ce5300_map_ccu(struct ce5300 *p)
 static int ce5300_modeset_init(struct ce5300 *p)
 {
 	struct drm_device *drm = &p->drm;
+	struct drm_connector *connector;
 	int ret;
 
 	ret = drmm_mode_config_init(drm);
@@ -552,13 +465,13 @@ static int ce5300_modeset_init(struct ce5300 *p)
 		return ret;
 	p->encoder.possible_crtcs = drm_crtc_mask(&p->crtc);
 
-	ret = drm_connector_init(drm, &p->connector, &ce5300_connector_funcs,
-				 DRM_MODE_CONNECTOR_HDMIA);
+	ret = drm_bridge_attach(&p->encoder, p->bridge, NULL, DRM_BRIDGE_ATTACH_NO_CONNECTOR);
 	if (ret)
 		return ret;
-	drm_connector_helper_add(&p->connector, &ce5300_connector_helper_funcs);
-	p->connector.polled = DRM_CONNECTOR_POLL_CONNECT | DRM_CONNECTOR_POLL_DISCONNECT;
-	ret = drm_connector_attach_encoder(&p->connector, &p->encoder);
+	connector = drm_bridge_connector_init(drm, &p->encoder);
+	if (IS_ERR(connector))
+		return PTR_ERR(connector);
+	ret = drm_connector_attach_encoder(connector, &p->encoder);
 	if (ret)
 		return ret;
 
@@ -600,7 +513,9 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		drm_err(&p->drm, "no enabled UPP on pipe A\n");
 		return ret;
 	}
-	ce5300_map_hpd(p);
+	ret = ce5300_find_bridge(p);
+	if (ret)
+		return ret;
 	ce5300_map_ccu(p);
 
 	/* The firmware framebuffer lives in RAM, not in a BAR. */
