@@ -417,8 +417,12 @@ gateway, then put back:
 | EEE | MMD 7.60 = 0 (partner advertises 0x0006) | no PHY |
 | Jack LEDs | offloaded, match the HC-250 (seen at the jack) | b53 LEDs are #182 |
 | Other jack / STP | single jack | cable moved to `lan1`: listening, learning, forwarding, 942 Mbit/s |
+| MTU change (reinit) | 1500 → 1496 → 1500: speed kept, stats counting, 949 Mbit/s | 1504 → 1508 → 1504: link held, TX back, 947 Mbit/s |
+| `ip link` down/up | relinks in 6 s, LEDs still offloaded | not run (DSA conduit) |
 
-Not exercised: suspend/resume, PCI error recovery and a TX-timeout reset.
+Rerun after the pre-send review (CI image 531dbdb), with the same results for
+the rows above. Not exercised: suspend/resume, PCI error recovery and a
+TX-timeout reset.
 
 ## The switch
 
