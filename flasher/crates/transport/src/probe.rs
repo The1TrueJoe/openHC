@@ -1,7 +1,8 @@
 //! Turn an SSH connection into a board [`Identity`].
 //!
 //! openHC is checked first (a half-installed unit being re-run is the common
-//! case), then stock Control4's `/proc/c4board`, then SMBIOS.
+//! case), then stock Control4's `/proc/c4board`, then SMBIOS. On openHC the EA
+//! board-ID straps overrule the installed board name, which can be wrong.
 //!
 //! SMBIOS is last because only one board has it — but for that board it is the
 //! ONLY route. The HC-800 is a PC with an AMI BIOS and no `/proc/c4board` at
@@ -37,22 +38,60 @@ fn version_of(ssh: &Ssh) -> Option<String> {
     (!v.is_empty()).then(|| v.to_string())
 }
 
+/// The EA board-ID straps, read on openHC through the line names its device
+/// tree gives GPIO 17-23. All seven must exist: the HC-800 also has
+/// `board_id0..2`, and they mean something else there.
+fn ea_straps(ssh: &Ssh) -> Option<u8> {
+    let out = ssh
+        .run(
+            "v=0; for i in 0 1 2 3 4 5 6; do l=$(gpiofind board_id$i) && b=$(gpioget $l) \
+             || exit 1; v=$((v | b << i)); done; echo $v",
+            false,
+        )
+        .ok()?;
+    out.trim().parse().ok()
+}
+
+/// An openHC identity, checked against the straps when the board has them.
+fn openhc(ssh: &Ssh, mut id: Identity) -> Identity {
+    id.version = version_of(ssh);
+    match ea_straps(ssh) {
+        Some(s) => board::with_straps(id, board::from_ea_straps(s, Running::Openhc)),
+        None => id,
+    }
+}
+
 pub fn identify(ssh: &Ssh) -> Identity {
+    let mut id = identify_board(ssh);
+    // An unknown board: log what a table entry needs. The MAC prefix (OUI) says
+    // whose board it is; the rest of the MAC stays off the log.
+    if id.unknown.is_some() {
+        let mac = ssh.read_file("/sys/class/net/eth0/address").unwrap_or_default();
+        let oui: String = mac.trim().chars().take(8).collect();
+        if oui.len() == 8 {
+            id.raw.push(("MAC prefix".into(), oui));
+        }
+        if let Some(v) = &id.version {
+            id.raw.push(("OS version".into(), v.clone()));
+        }
+    }
+    id
+}
+
+fn identify_board(ssh: &Ssh) -> Identity {
     // openHC: the board its build stamped into /etc/openhc-release.
     if let Some(rel) = ssh.read_file("/etc/openhc-release") {
-        let mut id = board::from_release(&rel);
+        let id = board::from_release(&rel);
         if id.board.is_some() {
-            id.version = version_of(ssh);
-            return id;
+            return openhc(ssh, id);
         }
     }
     // An older openHC: /opt/ohc/board.env
     if let Some(env) = ssh.read_file("/opt/ohc/board.env") {
         let get = |key: &str| env_value(&env, key);
-        let mut id = board::from_board_env(get);
+        let id = board::from_board_env(get);
         if id.board.is_some() || !id.candidates.is_empty() {
-            id.version = version_of(ssh);
-            return id;
+            return openhc(ssh, id);
         }
     }
     // stock: /proc/c4board/{name,type,revision}
@@ -109,7 +148,7 @@ pub fn identify(ssh: &Ssh) -> Identity {
         id.version = version_of(ssh);
         return id;
     }
-    Identity { board: None, candidates: vec![], running: Running::Unknown, version: version_of(ssh), raw: vec![] }
+    Identity { board: None, candidates: vec![], running: Running::Unknown, version: version_of(ssh), raw: vec![], warning: None, unknown: None }
 }
 
 /// Pull `KEY="value"` / `KEY=value` out of a board.env blob.

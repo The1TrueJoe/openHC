@@ -9,4 +9,7 @@
 / {
 	model = "Control4 EA-5 v1";
 	compatible = "control4,ea5-v1", "intel,ce5300";
+	/* What the board-ID straps read here (stock /proc/c4board). */
+	control4,board-type = <3>;
+	control4,board-revisions = <4>;
 };
