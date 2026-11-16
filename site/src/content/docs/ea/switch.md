@@ -307,8 +307,9 @@ being wedged by the fat kernel's probe was the same clobber.
 
 ## Jack LEDs (patch 0021)
 
-openHC gives every board's Ethernet jacks the same meaning: **yellow = link,
-green = activity**, as on the HC-250.
+openHC gives every board's Ethernet jacks the same meaning as on the HC-250:
+**yellow = link**, **green = link and activity** (on with a link, blinking off
+with traffic).
 
 The EA3's jack LEDs belong to the **BCM53125's LED controller**, not to the e1000
 and not to the PHYs. The controller shifts each port's LED states out serially
@@ -335,8 +336,8 @@ defaults. Mainline b53 doesn't either.
 Patch 0021 adds LED support to b53: the `leds` node of a user port in the board
 DT (`ea3.dtsi`) becomes LED class devices
 (`spi92.1:<port>:<led>:<color>:lan`) that the netdev trigger offloads to the
-switch. `S42port-leds` sets yellow LEDs to `link` and green ones to `rx tx` at
-boot. With `ohc.switch=1` off, b53 is not loaded and the LEDs stay at the strap
+switch. `S42port-leds` sets yellow LEDs to `link` and green ones to
+`link rx tx` at boot: LNK/ACT (bit 5) on LED 0 in front of LNK (bit 1) on LED 1. With `ohc.switch=1` off, b53 is not loaded and the LEDs stay at the strap
 defaults.
 
 ### EA1: a PHY, not a switch

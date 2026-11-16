@@ -1,5 +1,6 @@
 #!/bin/sh
-# Ethernet jack LEDs, the same on every board: yellow = link, green = activity.
+# Ethernet jack LEDs, the same on every board (as on the HC-250): yellow = link,
+# green = link and activity (on with link, blinks off with traffic).
 # The kernel registers the jack LEDs from the board DT as netdev-trigger LEDs
 # the hardware runs itself (b53: <switch>:<port>:<led>:<color>:lan).
 # See site docs ea/switch (Jack LEDs).
@@ -27,14 +28,15 @@ set_led() {
         [ -n "$net" ] || { echo "port-leds: ${led##*/}: no netdev"; return; }
         echo "$net" > "$led/device_name"
     }
+    # rx and tx change one at a time: the step between may not offload.
     for m in link link_10 link_100 link_1000 half_duplex full_duplex rx tx; do
-        [ -e "$led/$m" ] && echo 0 > "$led/$m"
+        [ -e "$led/$m" ] && echo 0 2>/dev/null > "$led/$m"
     done
     for m in $modes; do
-        echo 1 > "$led/$m"
+        echo 1 2>/dev/null > "$led/$m"
     done
-    echo "port-leds: ${led##*/} -> $(cat "$led/device_name") $modes" \
-        "($(cat "$led/offloaded" 2>/dev/null || echo ?))"
+    [ "$(cat "$led/offloaded" 2>/dev/null)" = 1 ] || echo "port-leds: ${led##*/}: not offloaded"
+    echo "port-leds: ${led##*/} -> $(cat "$led/device_name") $modes"
 }
 
 start() {
@@ -42,7 +44,7 @@ start() {
     for led in $(ls -d "$LEDS"/*:lan "$LEDS"/*:lan-* 2>/dev/null | sort -r); do
         case ${led##*/} in
             *:yellow:*) set_led "$led" "link" ;;
-            *:green:*) set_led "$led" "rx tx" ;;
+            *:green:*) set_led "$led" "link rx tx" ;;
         esac
     done
 }
