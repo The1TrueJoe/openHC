@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <joseph@telaak.dev>
+Date: Sun, 15 Nov 2026 22:53:04 -0500
+Subject: [PATCH] ASoC: ti: omap-mcbsp: Use all 8 bits of CLKGDV
+
+CLKGDV is bits 7:0 of SRGR1, as its comment says and as set_clkdiv()
+intends with CLKGDV(0xff), but the macro masks the value with 0x7f, so
+a divider above 128 is written modulo 128.
+
+Mask with 0xff. The only set_clkdiv() user, omap3pandora, divides by 8,
+so nothing changes for it; this lets the set_tdm_slot() support that
+follows use dividers up to 256.
+---
+ sound/soc/ti/omap-mcbsp-priv.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sound/soc/ti/omap-mcbsp-priv.h b/sound/soc/ti/omap-mcbsp-priv.h
+index da519ea1f303..324c5d7d431d 100644
+--- a/sound/soc/ti/omap-mcbsp-priv.h
++++ b/sound/soc/ti/omap-mcbsp-priv.h
+@@ -136,7 +136,7 @@ enum {
+ #define XPHASE			BIT(15)
+ 
+ /************************* McBSP SRGR1 bit definitions ************************/
+-#define CLKGDV(value)		((value) & 0x7f)		/* Bits 0:7 */
++#define CLKGDV(value)		((value) & 0xff)		/* Bits 0:7 */
+ #define FWID(value)		(((value) & 0xff) << 8)	/* Bits 8:15 */
+ 
+ /************************* McBSP SRGR2 bit definitions ************************/

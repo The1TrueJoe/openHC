@@ -4,19 +4,19 @@ Date: Sun, 15 Nov 2026 17:32:17 -0500
 Subject: [PATCH] drm/bridge: adv7511: Accept S32_LE I2S samples
 
 Commit 7c3127e4814c ("drm: bridge: adv7511: remove s32 format from i2s
-capabilities") dropped S32_LE, which hw_params rejected, as the ADV7511
-takes at most 24 bits per I2S sample.
+capabilities") dropped S32_LE, which adv7511_hdmi_audio_prepare()
+rejected, as the ADV7511 takes at most 24 bits per I2S sample.
 
-McBSP puts no padding between words and offers only S16_LE and S32_LE,
-so with 32-bit slots S32_LE is its only format. As hdmi-codec's own
-I2S_FORMATS comment says, a 32-bit format gives 24-bit precision to such
-CPU DAIs. Advertise S32_LE again and program it like S24_LE: in I2S and
-left-justified modes the ADV7511 takes the top 24 bits of the slot, and
-hdmi-codec reports 24 significant bits. Right-justified it would take
-the low 24 bits, so a 32-bit sample is still refused there.
+A CPU DAI whose only format wider than 16 bits is S32_LE, and that puts
+no padding between words, then has no format for 32-bit slots. As
+hdmi-codec's I2S_FORMATS comment says, a 32-bit format gives such DAIs
+24-bit precision. Advertise S32_LE again and program it like S24_LE: in
+I2S and left-justified modes the ADV7511 takes the top 24 bits of the
+slot, and hdmi-codec reports 24 significant bits. Right-justified it
+would take the low 24 bits, so a 32-bit sample is still refused there.
 
-Tested on an OMAP3630 board whose McBSP sends 2 x 32-bit I2S slots to
-an ADV7513: a left-only and a right-only S32_LE tone at 44.1 kHz both
+Tested only on an ADV7513 fed 2 x 32-bit I2S slots by an OMAP3630
+McBSP, where a left-only and a right-only S32_LE tone at 44.1 kHz both
 play at full level.
 ---
  drivers/gpu/drm/bridge/adv7511/adv7511_audio.c | 4 +++-
