@@ -283,20 +283,22 @@ gbe: ethernet@c,0 {
 ```
 
 Mainline `e1000` ignores all of this and fails probe with `-EIO` after
-scanning 32 MDIO addresses. Patch `0023` hands the link to phylink instead:
+scanning 32 MDIO addresses. Patch `0022` hands the link to phylink instead:
 
 - **Probe** creates a phylink instance from the node when it has a `fixed-link`
-  or a `phy-handle`, and skips the PHY scan. Only `rgmii*` phy modes are
+  (or, with `0023`, a `phy-handle`), and skips the PHY scan. Only `rgmii*` phy modes are
   accepted. No `pause` in the node means flow control off, which matches the
   switch side (port 5's override, 0x4b, has no pause bits).
 - **Link up** (phylink's `mac_link_up`) forces the MAC: CTRL gets
   `SLU|FRCSPD|FRCDPX` with the speed bits and `FD` written explicitly, not
-  inherited from CEFDK, CTL_AUX bit 0 is cleared (RGMII), and transmit is
-  enabled. A MAC reset puts the same values back.
+  inherited from CEFDK, CTL_AUX bit 0 is cleared (RGMII), the pause
+  thresholds are set, and transmit is enabled. Link down disables transmit.
+  A mutex orders these against MAC resets, which put the same values back.
 - **Link state** and the carrier are phylink's; e1000's own PHY reads,
   writes and resets are refused. `ethtool`, pause settings, `nway_reset` and
   the MII ioctls go to phylink. The register dump leaves the PHY words zero and
-  the offline self-test skips PHY loopback.
+  the offline self-test skips PHY loopback. phylink is started and stopped
+  with the interface, across suspend and in PCI error recovery.
 
 phylink gets the device's OF node as its fwnode explicitly, not
 `dev_fwnode()`. 01:0c.0 has
@@ -363,13 +365,13 @@ address). Control4's kernel runs these boards in `REAL_PHY` mode (`IS_NYA`).
 };
 ```
 
-The same three e1000 patches run it. `0022` registers the MDIO bus (BAR1
+`0023` runs it: with a `phy-handle`, e1000 registers its MDIO bus (BAR1
 `MDIO_CMD` at `+4`, `MDIO_STS` at `+0`) from the `mdio` node, so the Realtek
-driver probes the PHY. `0023` connects it to phylink through the `phy-handle`,
-and the MAC follows the speed and duplex it negotiates. The Realtek driver
-brings the RTL8211E's LEDs as netdev-trigger LEDs. The MAC has no LPI support
-and phylink only manages EEE for MACs that do, so `0024` calls
-`phy_disable_eee()`.
+driver probes the PHY, and phylink connects it when the interface opens. The
+MAC follows the speed and duplex it negotiates. The Realtek driver brings the
+RTL8211E's LEDs as netdev-trigger LEDs. The MAC has no LPI support, and phylink
+only disables EEE in a PHY for MACs with LPI operations, so `0024` gives e1000
+empty ones.
 
 **Jack LEDs.** Green is the PHY's LED0, yellow its LED1; LED2 isn't wired.
 Found on an EA1 by rewriting the LED registers (extension page `0x2c`, `0x1c`

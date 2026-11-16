@@ -24,7 +24,7 @@
 };
 
 /* RGMII straight to switch port 5, no PHY: a phylink fixed link (e1000
- * patch 0023); the DSA conduit */
+ * patch 0022); the DSA conduit */
 &gbe {
 	phy-mode = "rgmii";
 

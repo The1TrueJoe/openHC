@@ -1,24 +1,44 @@
 e1000: disable EEE on a CE4100 PHY under phylink
 
-The MAC has no LPI support and implements no phylink LPI operations, so
-phylink leaves the PHY's default EEE advertisement in place. With EEE
-negotiated, an RTL8211E blinks its link LED about once a second while
-the link idles, so a link LED offloaded to the PHY does not show the
-link state. Disable EEE on the attached PHY.
+The MAC has no LPI support. phylink only disables EEE in a PHY when the
+MAC implements the LPI operations, so the PHY keeps its default EEE
+advertisement. With EEE negotiated, an RTL8211E blinks its link LED about
+once a second while the link idles, and a link LED offloaded to the PHY
+no longer shows the link state.
+
+Implement the LPI operations with no LPI capabilities, so that phylink
+disables EEE in the PHY.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
-index 5ea42bd..fe45713 100644
+index 3f6f678..fa66751 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_main.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
-@@ -1076,6 +1076,9 @@ static int e1000_phylink_init(struct e1000_adapter *adapter)
- 		phylink_destroy(phylink);
- 		return err;
- 	}
-+	/* The MAC has no LPI support */
-+	if (adapter->netdev->phydev)
-+		phy_disable_eee(adapter->netdev->phydev);
+@@ -1053,10 +1053,26 @@ static void e1000_mac_link_up(struct phylink_config *config,
+ 	mutex_unlock(&adapter->phylink_lock);
+ }
  
- 	adapter->phylink = phylink;
- 	hw->phylink = true;
++/* The MAC has no LPI. LPI operations with no LPI capabilities tell
++ * phylink so, and it disables EEE in the PHY.
++ */
++static void e1000_mac_disable_tx_lpi(struct phylink_config *config)
++{
++}
++
++static int e1000_mac_enable_tx_lpi(struct phylink_config *config, u32 timer,
++				   bool tx_clk_stop)
++{
++	/* Never called: no LPI capabilities */
++	return 0;
++}
++
+ static const struct phylink_mac_ops e1000_phylink_mac_ops = {
+ 	.mac_config = e1000_mac_config,
+ 	.mac_link_down = e1000_mac_link_down,
+ 	.mac_link_up = e1000_mac_link_up,
++	.mac_disable_tx_lpi = e1000_mac_disable_tx_lpi,
++	.mac_enable_tx_lpi = e1000_mac_enable_tx_lpi,
+ };
+ 
+ /**

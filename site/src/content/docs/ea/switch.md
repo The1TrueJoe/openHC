@@ -345,7 +345,7 @@ defaults.
 The EA1 (v1/v2, not the PoE board) has no switch: its jack LEDs are the LED
 pins of an RTL8211E behind the e1000, green on LED0 and yellow on LED1. Its
 yellow blinked because of the PHY's EEE LED mode, not because of the LED
-setup. See [the EA1's PHY](/ea/device-tree/#the-ea1s-phy-patch-0022).
+setup. See [the EA1's PHY](/ea/device-tree/#the-ea1s-phy-patches-0022-0024).
 
 ## Hardware test, 2026-10-28
 
