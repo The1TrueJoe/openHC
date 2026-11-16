@@ -379,7 +379,9 @@ link. Yellow still blinked, because the RTL8211E's **EEE LED mode** blinks the
 link LED about once a second while the line idles in low-power mode, and EEE
 was negotiated with the switch. With EEE advertisement off (MMD 7.60 = 0,
 renegotiated), yellow was solid and green flickered with traffic.
-`S42port-leds` sets the same thing through the netdev trigger.
+`S42port-leds` sets yellow to `link` and green to `link rx tx` through the
+netdev trigger, so green is on with a link and blinks off with traffic, as on
+the HC-250.
 
 phylink, phylib and the Realtek driver are built into both kernels
 (`common.fragment`): the bootstrap kernel needs them for its network too.
@@ -401,6 +403,20 @@ gateway, then put back:
 | `0x3000` | `rgmii-txid` | 0 of 6 |
 | `0x3800` | `rgmii-id` | 6 of 6 |
 | straps (`0x8577`) | none | works |
+
+### Tested with phylink (2026-11-16, RAM boots of the CI images)
+
+| | EA1 (RTL8211E, `phy-handle`) | EA3 (`fixed-link`, `ohc.switch=1`) |
+|---|---|---|
+| Probe | `PHY [0000:01:0c.0:01] driver [RTL8211E Gigabit Ethernet]`, `phy/rgmii-id` | `fixed/rgmii`; b53 attaches, `DSA: tree 0 setup` |
+| Link | 1000/full, flow control rx/tx | 1000/full, flow control off |
+| TCP, each way | 941 / 939 Mbit/s (512 MiB), 0 errors | 900 out / 930 in through `lan2`, 0 errors |
+| 100M | 10/100 advertised: renegotiated to 100/full, MAC followed, 95.1 Mbit/s; back to 1G | not applicable |
+| EEE | MMD 7.60 = 0 (partner advertises 0x0006) | no PHY |
+| Jack LEDs | offloaded, match the HC-250 (seen at the jack) | b53 LEDs are #182 |
+| Other jack / STP | single jack | cable moved to `lan1`: listening, learning, forwarding, 942 Mbit/s |
+
+Not exercised: suspend/resume, PCI error recovery and a TX-timeout reset.
 
 ## The switch
 
