@@ -11,10 +11,12 @@ b53 leaves all of this at its strap defaults.
 Register the LEDs under a user port's "leds" node as LED class devices
 the netdev trigger can offload: link, activity, link and activity, full
 duplex, and link or link and activity at given speeds. A request is
-supported only if the port's LED order can show it and one of the two
-words already holds the port's new word or is used by no other port with
-LEDs enabled, so ports without LED nodes keep what they show. Only chips
-flagged as having this controller register LEDs, today the BCM53125.
+supported only if the port's LED order can show it and a word can hold
+the port's new word: one that already does, else one no other port uses,
+else one only ports without LED nodes use, which then show the new
+functions too. A word another port with LED nodes uses is never
+rewritten. Only chips flagged as having this controller register LEDs,
+today the BCM53125.
 
 The mode maps act per port, so one LED cannot be switched on, off or
 made to blink alone: there are no brightness or blink operations,
@@ -47,7 +49,7 @@ index 915008e..e4fc48d 100644
  	tristate "B53 SPI connected switch driver"
  	depends on B53 && SPI
 diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
-index 00725c7..0231ffb 100644
+index 00725c7..c18cb26 100644
 --- a/drivers/net/dsa/b53/b53_common.c
 +++ b/drivers/net/dsa/b53/b53_common.c
 @@ -21,9 +21,11 @@
@@ -62,7 +64,7 @@ index 00725c7..0231ffb 100644
  #include <linux/platform_data/b53.h>
  #include <linux/phy.h>
  #include <linux/phylink.h>
-@@ -664,6 +666,325 @@ static void b53_eee_enable_set(struct dsa_switch *ds, int port, bool enable)
+@@ -664,6 +666,332 @@ static void b53_eee_enable_set(struct dsa_switch *ds, int port, bool enable)
  	b53_write16(dev, B53_EEE_PAGE, B53_EEE_EN_CTRL, reg);
  }
  
@@ -130,16 +132,18 @@ index 00725c7..0231ffb 100644
 +};
 +
 +/* Work out how to show @rules on @led without writing anything: the
-+ * port's word with the new function in its LED's place, and one of the
-+ * two function words that holds it or that no other port with LEDs
-+ * enabled uses. Caller holds led_mutex.
++ * port's word with the new function in its LED's place, and a function
++ * word for it. That is a word that already holds it, else one no other
++ * port uses, else one only ports without LED nodes use: those ports then
++ * show the new functions too. A word another port with LED nodes uses is
++ * never rewritten. Caller holds led_mutex.
 + */
 +static int b53_led_plan(struct b53_led *led, unsigned long rules,
 +			struct b53_led_plan *plan)
 +{
 +	struct b53_device *dev = led->dev;
 +	unsigned int num_leds = dev->ports[led->port].num_leds;
-+	u16 map, en, word[2], others, prev = 0;
++	u16 map, en, word[2], leds, all, prev = 0;
 +	int func, cur, i;
 +
 +	func = b53_led_rules_to_func(rules);
@@ -169,14 +173,19 @@ index 00725c7..0231ffb 100644
 +		prev = bit;
 +	}
 +
-+	others = (en | dev->led_ports) & ~BIT(led->port);
++	leds = dev->led_ports & ~BIT(led->port);
++	all = (en | dev->led_ports) & ~BIT(led->port);
 +	if (word[cur] == plan->word)
 +		plan->set = cur;
 +	else if (word[!cur] == plan->word)
 +		plan->set = !cur;
-+	else if (!(others & (cur ? map : ~map)))
++	else if (!(all & (cur ? map : ~map)))
 +		plan->set = cur;
-+	else if (!(others & (cur ? ~map : map)))
++	else if (!(all & (cur ? ~map : map)))
++		plan->set = !cur;
++	else if (!(leds & (cur ? map : ~map)))
++		plan->set = cur;
++	else if (!(leds & (cur ? ~map : map)))
 +		plan->set = !cur;
 +	else
 +		return -EOPNOTSUPP;
@@ -388,7 +397,7 @@ index 00725c7..0231ffb 100644
  int b53_setup_port(struct dsa_switch *ds, int port)
  {
  	struct b53_device *dev = ds->priv;
-@@ -693,10 +1014,19 @@ int b53_setup_port(struct dsa_switch *ds, int port)
+@@ -693,10 +1021,19 @@ int b53_setup_port(struct dsa_switch *ds, int port)
  		b53_write8(dev, B53_CTRL_PAGE, B53_PD_MODE_CTRL_25, reg);
  	}
  
@@ -408,7 +417,7 @@ index 00725c7..0231ffb 100644
  int b53_enable_port(struct dsa_switch *ds, int port, struct phy_device *phy)
  {
  	struct b53_device *dev = ds->priv;
-@@ -2734,6 +3064,7 @@ static const struct dsa_switch_ops b53_switch_ops = {
+@@ -2734,6 +3071,7 @@ static const struct dsa_switch_ops b53_switch_ops = {
  	.phy_write		= b53_phy_write16,
  	.phylink_get_caps	= b53_phylink_get_caps,
  	.port_setup		= b53_setup_port,
@@ -416,7 +425,7 @@ index 00725c7..0231ffb 100644
  	.port_enable		= b53_enable_port,
  	.port_disable		= b53_disable_port,
  	.support_eee		= b53_support_eee,
-@@ -2796,6 +3127,7 @@ struct b53_chip_data {
+@@ -2796,6 +3134,7 @@ struct b53_chip_data {
  	u8 duplex_reg;
  	u8 jumbo_pm_reg;
  	u8 jumbo_size_reg;
@@ -424,7 +433,7 @@ index 00725c7..0231ffb 100644
  	const struct b53_arl_ops *arl_ops;
  };
  
-@@ -2925,6 +3257,7 @@ static const struct b53_chip_data b53_switch_chips[] = {
+@@ -2925,6 +3264,7 @@ static const struct b53_chip_data b53_switch_chips[] = {
  		.duplex_reg = B53_DUPLEX_STAT_GE,
  		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
  		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
@@ -432,7 +441,7 @@ index 00725c7..0231ffb 100644
  		.arl_ops = &b53_arl_ops_95,
  	},
  	{
-@@ -3138,6 +3471,7 @@ static int b53_switch_init(struct b53_device *dev)
+@@ -3138,6 +3478,7 @@ static int b53_switch_init(struct b53_device *dev)
  			dev->num_arl_bins = chip->arl_bins;
  			dev->num_arl_buckets = chip->arl_buckets;
  			dev->arl_ops = chip->arl_ops;
@@ -440,7 +449,7 @@ index 00725c7..0231ffb 100644
  			break;
  		}
  	}
-@@ -3241,6 +3575,7 @@ struct b53_device *b53_switch_alloc(struct device *base,
+@@ -3241,6 +3582,7 @@ struct b53_device *b53_switch_alloc(struct device *base,
  	mutex_init(&dev->reg_mutex);
  	mutex_init(&dev->stats_mutex);
  	mutex_init(&dev->arl_mutex);

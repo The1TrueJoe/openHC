@@ -338,10 +338,11 @@ controller (the BCM53125 only). The `leds` node of a user port in the board DT
 (`ea3.dtsi`) becomes LED class devices
 (`b53-<tree>.<switch>:<port>:<led>:<color>:lan`, e.g. `b53-0.0:02:0:green:lan`)
 that the netdev trigger offloads to the switch. A request is accepted only if
-the port's LED order can show it and one of the two function words already
-holds the port's new word or is used by no other port with LEDs enabled, so
-ports without LED nodes keep what they showed. There is no brightness or blink
-control of a single LED: the mode maps are per port.
+the port's LED order can show it and a function word can hold the port's new
+word: one that already does, else an unused one, else one only ports without
+LED nodes use (they then show the same functions; on the EA3 those ports are
+unwired). A word another described port uses is never rewritten. There is no
+brightness or blink control of a single LED: the mode maps are per port.
 
 `S42port-leds` sets yellow LEDs to `link` and green ones to `link rx tx` at
 boot: LNK/ACT (bit 5) on LED 0 in front of LNK (bit 1) on LED 1. With
