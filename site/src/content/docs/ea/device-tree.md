@@ -60,7 +60,7 @@ falconfalls.
 | 01:0b.2 | 8086:2e68 | i2c-pxa-pci | `i2c@b,2` | Four adapters, one per BAR |
 | 01:0b.4 | 8086:2e6a | spi-pxa2xx-pci | `ssp` | `CE5X00_SSP` via patch 0009 |
 | 01:0b.6 | 8086:089f | pwm-ce5300 | `pwm` | The CE5300's own; not on falconfalls. Also measured on an EA1. |
-| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | `fixed-link`, patch 0003. The DSA conduit. |
+| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | phylink: `fixed-link` to the switch (the DSA conduit) or the EA1's RTL8211E (patches 0022-0024). |
 | 01:0d.1 | 192e:0101 | ehci-pci | `usb_rear` | TDI host, patch 0014. The rear USB port. |
 | 01:17.0 | 8086:08a0 | spi-ea-ce5xx | `bootflash` | Not on falconfalls; devfn from `lspci` on an EA1. |
 
@@ -265,9 +265,10 @@ labels the Health panel shows.
 
 ## The GbE fixed link
 
-The GbE MAC has no PHY on any EA: nothing answers on its MDIO bus, and the
-MAC talks RGMII straight to a switch port (the BCM53125's port 5 on the EA3). The `gbe` node says so the
-standard way:
+On boards with the BCM53125 (EA3, EA5, EA1 v2 PoE) the GbE MAC has no PHY:
+nothing answers on its MDIO bus, and the MAC talks RGMII straight to the
+switch's port 5. `ea-switch.dtsi` says so the standard way. The EA1 without
+the switch has a real PHY instead ([below](#the-ea1s-phy-patches-0022-0024)).
 
 ```dts
 gbe: ethernet@c,0 {
@@ -282,29 +283,33 @@ gbe: ethernet@c,0 {
 ```
 
 Mainline `e1000` ignores all of this and fails probe with `-EIO` after
-scanning 32 MDIO addresses. Patch `0003` makes it read the node instead:
+scanning 32 MDIO addresses. Patch `0022` hands the link to phylink instead:
 
-- **Probe** takes speed and duplex from `fixed-link` and skips the PHY scan.
-  Only `phy-mode = "rgmii"` is accepted. No `pause` in the node means flow
-  control off, which matches the switch side (port 5's override, 0x4b, has
-  no pause bits).
-- **Link setup** forces the MAC: CTRL gets `SLU|FRCSPD|FRCDPX` with the speed
-  bits and `FD` written explicitly, not inherited from CEFDK, and CTL_AUX bit
-  0 is cleared (RGMII).
-- **Link state** is always up, with no PHY reads.
-- **PHY access** fails: register reads and writes return an error, PHY reset
-  is a no-op, the MII ioctls, `ethtool -s` and the PHY loopback self-test
-  return `EOPNOTSUPP` or are skipped. `ethtool eth0` reports 1000/full on an
-  MII port.
+- **Probe** creates a phylink instance from the node when it has a `fixed-link`
+  (or, with `0023`, a `phy-handle`), and skips the PHY scan. Only `rgmii*` phy modes are
+  accepted. No `pause` in the node means flow control off, which matches the
+  switch side (port 5's override, 0x4b, has no pause bits).
+- **Link up** (phylink's `mac_link_up`) forces the MAC: CTRL gets
+  `SLU|FRCSPD|FRCDPX` with the speed bits and `FD` written explicitly, not
+  inherited from CEFDK, CTL_AUX bit 0 is cleared (RGMII), the pause
+  thresholds are set, and transmit is enabled. Link down disables transmit.
+  A mutex orders these against MAC resets, which put the same values back.
+- **Link state** and the carrier are phylink's; e1000's own PHY reads,
+  writes and resets are refused. `ethtool`, pause settings, `nway_reset` and
+  the MII ioctls go to phylink. The register dump leaves the PHY words zero and
+  the offline self-test skips PHY loopback. phylink is started and stopped
+  with the interface, across suspend and in PCI error recovery.
 
-The node is read through the device's OF node, not its fwnode. 01:0c.0 has
+phylink gets the device's OF node as its fwnode explicitly, not
+`dev_fwnode()`. 01:0c.0 has
 no ACPI companion (the DSDT's GbE `_ADR` is the wildcard `0x000CFFFF`, which
 Linux never matches; no `firmware_node` in sysfs), so today the two are the
 same. If patch 0017 is ever replaced by keeping the bridge's ACPI companion
 as the fwnode, `dev->of_node` still points at this node and e1000 keeps
 working.
 
-It replaced Control4's "internal fake PHY" mode (ported from their GPL drop),
+Before phylink, openHC carried `0003`, which parsed the node by hand, and
+before that Control4's "internal fake PHY" mode (ported from their GPL drop),
 which answered MDIO reads from a canned register table with a made-up
 BCM53125 PHY ID and keyed on the CE5300 host bridge's PCI ID.
 
@@ -315,12 +320,12 @@ running. Writing `0x102` by hand reads back `0x100`, while `0x104` reads back
 `0x104`, so the register takes writes and bit 1 is simply not there. The link
 passed traffic either way. Mainline's RMII path clears the same bit next to
 bit 2 ("J/K bits required for receive"), so on the CE4100 it is probably an
-RMII receive option. The fixed-link patch leaves it alone.
+RMII receive option. The e1000 patches leave it alone.
 
 Don't poke CTL_AUX's upper bits on a live box: bits 8-11 select descriptor
 and packet endianness, and clearing them stopped the MAC until a power cycle.
 
-### Tested on an EA3 (2026-11-09, RAM boot)
+### Tested on an EA3 with `0003` (2026-11-09, RAM boot)
 
 | | Switch off | Switch on (`ohc.switch=1`) |
 |---|---|---|
@@ -338,6 +343,86 @@ line rate, with or without flow control, and none with the switch off: the
 Atom falls behind on DSA-tagged frames, the link itself is clean. `lan1` had
 nothing plugged in, so lan1-to-lan2 forwarding wasn't exercised; the e1000
 side of it is the same conduit.
+
+## The EA1's PHY (patches 0022-0024)
+
+The EA1 v1/v2 has no switch. Its e1000 talks RGMII to a **Realtek RTL8211E**
+at MDIO address 1 (ID `0x001cc915`; it also answers at 0, the broadcast
+address). Control4's kernel runs these boards in `REAL_PHY` mode (`IS_NYA`).
+`ea-gbe-phy.dtsi` describes it:
+
+```dts
+&gbe {
+	phy-mode = "rgmii-id";
+	phy-handle = <&gbe_phy>;
+
+	mdio {
+		gbe_phy: ethernet-phy@1 {
+			reg = <1>;
+			leds { ... };	/* the jack LEDs, see ea/switch */
+		};
+	};
+};
+```
+
+`0023` runs it: with a `phy-handle`, e1000 registers its MDIO bus (BAR1
+`MDIO_CMD` at `+4`, `MDIO_STS` at `+0`) from the `mdio` node, so the Realtek
+driver probes the PHY, and phylink connects it when the interface opens. The
+MAC follows the speed and duplex it negotiates. The Realtek driver brings the
+RTL8211E's LEDs as netdev-trigger LEDs. The MAC has no LPI support, and phylink
+only disables EEE in a PHY for MACs with LPI operations, so `0024` gives e1000
+empty ones.
+
+**Jack LEDs.** Green is the PHY's LED0, yellow its LED1; LED2 isn't wired.
+Found on an EA1 by rewriting the LED registers (extension page `0x2c`, `0x1c`
+link bits and `0x1a` activity bits) and watching the jack. The PHY's defaults
+(`0x1c` = `0x9770`, `0x1a` = `0x00d1`) already make LED0 activity and LED1
+link. Yellow still blinked, because the RTL8211E's **EEE LED mode** blinks the
+link LED about once a second while the line idles in low-power mode, and EEE
+was negotiated with the switch. With EEE advertisement off (MMD 7.60 = 0,
+renegotiated), yellow was solid and green flickered with traffic.
+`S42port-leds` sets yellow to `link` and green to `link rx tx` through the
+netdev trigger, so green is on with a link and blinks off with traffic, as on
+the HC-250.
+
+phylink, phylib and the Realtek driver are built into both kernels
+(`common.fragment`): the bootstrap kernel needs them for its network too.
+
+Before this, the shared `ce5300.dtsi` gave every EA the fixed link, so the
+EA1's MAC was forced to 1000/full while the PHY negotiated on its own.
+
+**The PHY adds both RGMII delays: `phy-mode = "rgmii-id"`.** The RTL8211E's
+delay register (extension page `0xa4`, register `0x1c`) reads `0x8577` with the
+straps in charge (force bit 13 clear), and its delay bits 12/11 read clear even
+though the straps turn the delays on. Measured on an EA1 under the fixed-link
+kernel (2026-11-16), each setting forced by hand for 10 s with a ping to the
+gateway, then put back:
+
+| Bits 13/12/11 | phy-mode the Realtek driver writes it for | Ping |
+|---|---|---|
+| `0x2000` | `rgmii` | 0 of 10 |
+| `0x2800` | `rgmii-rxid` | 0 of 6 |
+| `0x3000` | `rgmii-txid` | 0 of 6 |
+| `0x3800` | `rgmii-id` | 6 of 6 |
+| straps (`0x8577`) | none | works |
+
+### Tested with phylink (2026-11-16, RAM boots of the CI images)
+
+| | EA1 (RTL8211E, `phy-handle`) | EA3 (`fixed-link`, `ohc.switch=1`) |
+|---|---|---|
+| Probe | `PHY [0000:01:0c.0:01] driver [RTL8211E Gigabit Ethernet]`, `phy/rgmii-id` | `fixed/rgmii`; b53 attaches, `DSA: tree 0 setup` |
+| Link | 1000/full, flow control rx/tx | 1000/full, flow control off |
+| TCP, each way | 941 / 939 Mbit/s (512 MiB), 0 errors | 900 out / 930 in through `lan2`, 0 errors |
+| 100M | 10/100 advertised: renegotiated to 100/full, MAC followed, 95.1 Mbit/s; back to 1G | not applicable |
+| EEE | MMD 7.60 = 0 (partner advertises 0x0006) | no PHY |
+| Jack LEDs | offloaded, match the HC-250 (seen at the jack) | b53 LEDs are #182 |
+| Other jack / STP | single jack | cable moved to `lan1`: listening, learning, forwarding, 942 Mbit/s |
+| MTU change (reinit) | 1500 → 1496 → 1500: speed kept, stats counting, 949 Mbit/s | 1504 → 1508 → 1504: link held, TX back, 947 Mbit/s |
+| `ip link` down/up | relinks in 6 s, LEDs still offloaded | not run (DSA conduit) |
+
+Rerun after the pre-send review (CI image 531dbdb), with the same results for
+the rows above. Not exercised: suspend/resume, PCI error recovery and a
+TX-timeout reset.
 
 ## The switch
 

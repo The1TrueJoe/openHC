@@ -24,7 +24,6 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 |---|---|---|
 | 0001 | i2c-pxa CE5300 | 4th controller (the codec's bus); BAR-indexed DT nodes; CE4100 compatible; optional clock |
 | 0010 | 8250 polled TX from the LSR | a polled port is serviced through the IIR, which the CE5300's XScale UARTs never set for THRE; check the LSR in the poll timer, as the backup timer already does (generic, upstream-shaped) |
-| 0003 | e1000 fixed link | the CE4100 GbE has no PHY here; e1000 reads `fixed-link` from the DT instead of failing probe. Upstream candidate (net-next) |
 | 0009 | spi-pxa2xx CE5X00 | the CE5300's SSP shares the CE4100's PCI id but is Quark X1000's SSP (layout and DDS clock) with the CE4100's chip select in SSSR, and its CS drops whenever the TX FIFO runs dry, so multi-transfer messages are merged and a transfer that fits the FIFO is queued with the clock stopped |
 | 0007 | ASoC CE5300 | **not applied** (`.disabled`) — WIP, see below |
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
@@ -32,6 +31,10 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0017 | PCI bridge keeps its ACPI companion | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which used to cost it its ACPI companion and so every bus-1 device its IRQ (the _PRT lives there); a bridge with a DT node now gets its companion too, with the node kept as of_node only, as `device_add_of_node()` does |
 | 0019 | b53 BPDU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode traps BPDUs to the unwired IMP port 8, so STP never sees a loop; mirror them to port 5 (WAN-port select also delivers them but stops lan1↔lan2 forwarding) |
 | 0020 | simple-card `link-name` | name a link's PCM from the DT (`simple-audio-card,link-name` or `link-name` on a dai-link) instead of `<cpu dai>-<codec dai>`, so the EA3's PCMs are `Analog`, `Coax` and `Coax in`; also stops passing the name as a format string |
+| 0021 | b53 LEDs | the BCM53125 drives the jack LEDs from its own LED controller, which mainline b53 leaves at strap defaults; registers the DT `leds` of each user port as netdev-trigger LEDs offloaded to it (upstream candidate, net-next) |
+| 0022 | e1000 CE4100 phylink fixed link | with a `fixed-link` (switch boards) phylink owns the link and the MAC is forced to what it resolves; mainline e1000 otherwise fails probe there (no PHY on the MDIO bus). Replaced 0003, the hand-rolled fixed link |
+| 0023 | e1000 CE4100 PHY via phylink | with a `phy-handle` (the EA1's RTL8211E) the GbE's own MDIO bus is registered from the `mdio` node and phylink connects the PHY (RGMII delays, netdev-trigger LEDs) |
+| 0024 | e1000 CE4100 no EEE | the MAC has no LPI; empty LPI ops make phylink disable EEE, whose LED mode blinks the RTL8211E's link LED at idle. 0022-0024: upstream candidates (iwl-next), no change without the DT properties; E1000 selects PHYLINK |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now
@@ -175,23 +178,24 @@ supply is present (single-port controllers only). The regulator core is only in
 the fat kernel (`linux/real-kernel.fragment`); the bootstrap kernel has none and
 leaves the rear port unpowered.
 
-### 0003 — e1000 fixed link on the CE4100 GbE
+### 0022-0024 — e1000 on the CE4100 GbE through phylink
 
-Modifies `drivers/net/ethernet/intel/e1000/`. Mainline claims `8086:2e6e` as
-`e1000_ce4100`, scans 32 MDIO addresses for a PHY, finds none (the EAs wire
-the MAC over RGMII straight to the switch's port 5) and fails probe with a
-bare `-EIO`, so there is no `eth0` and nothing for DSA to attach to.
+Modify `drivers/net/ethernet/intel/e1000/`. Mainline claims `8086:2e6e` as
+`e1000_ce4100` and drives its PHY itself: it scans 32 MDIO addresses, and on
+the switch boards (the MAC wired over RGMII straight to the BCM53125's port 5)
+it finds none and fails probe with a bare `-EIO`.
 
-The patch makes e1000 honor the standard `phy-mode` + `fixed-link` properties
-on the GbE's DT node (`gbe` in `ce5300.dtsi`): speed and duplex come from the
-node, the PHY scan is skipped, the MAC is forced (CTRL `SLU|FRCSPD|FRCDPX`,
-speed and `FD` written explicitly), link is reported up without PHY reads,
-and every PHY access fails cleanly. Boards without the node are unchanged.
-Written to go to net-next as is; background, test results and the CTL_AUX
-finding are on the [device tree page](/ea/device-tree/#the-gbe-fixed-link).
+`0022` registers the GbE's MDIO bus from an `mdio` DT node. `0023` hands the
+link to phylink when the `gbe` node has a `fixed-link` (switch boards,
+`ea-switch.dtsi`) or a `phy-handle` (EA1, `ea-gbe-phy.dtsi`): the MAC is forced
+to the speed/duplex/pause phylink resolves, and ethtool and the MII ioctls go
+to phylink. `0024` turns EEE off on the PHY. Boards without the properties are
+unchanged. Details and test results are on the
+[device tree page](/ea/device-tree/#the-gbe-fixed-link).
 
-It replaced Control4/Intel's "internal fake PHY" port (canned MDIO register
-table, a made-up BCM53125 PHY ID, a check for host bridge `8086:0c40`).
+They replaced `0003`, which parsed `fixed-link` by hand, and before it
+Control4/Intel's "internal fake PHY" port (canned MDIO register table, a
+made-up BCM53125 PHY ID, a check for host bridge `8086:0c40`).
 
 ### 0007 — ASoC CE5300 AUD_IO (**disabled**)
 

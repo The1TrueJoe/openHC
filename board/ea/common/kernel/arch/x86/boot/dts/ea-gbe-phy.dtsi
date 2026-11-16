@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * RTL8211E PHY on the GbE's own MDIO bus (boards without the switch), driven
+ * by phylink through e1000 (patches 0022-0024). Its LED pins are the jack LEDs.
+ * See site/src/content/docs/ea/switch.md (Jack LEDs).
+ */
+#include <dt-bindings/leds/common.h>
+
+/* Only rgmii-id passes traffic (tested); the straps already do the same */
+&gbe {
+	phy-mode = "rgmii-id";
+	phy-handle = <&gbe_phy>;
+
+	mdio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		gbe_phy: ethernet-phy@1 {
+			reg = <1>;
+
+			/* LED0 green, LED1 yellow; LED2 is not wired (tested) */
+			leds {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				led@0 {
+					reg = <0>;
+					color = <LED_COLOR_ID_GREEN>;
+					function = LED_FUNCTION_LAN;
+				};
+				led@1 {
+					reg = <1>;
+					color = <LED_COLOR_ID_YELLOW>;
+					function = LED_FUNCTION_LAN;
+				};
+			};
+		};
+	};
+};

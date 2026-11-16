@@ -84,6 +84,11 @@ const CEFDK_EMMC_DELTA: u64 = 0x800000;
 /// openHC) the installed autoscript is reused. Returns the autoscript read
 /// sizes when they are the slot sizes [`stage2_write_rootfs`] should record.
 pub fn stage1(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -> Result<Option<(u64, u64)>> {
+    if p1_holds_openhc(ssh) {
+        p.emit(Event::warn(
+            "p1 already holds openHC: stage 2 re-images it, and everything on it is lost".into(),
+        ));
+    }
     if has_mtd(ssh) && !script_slot_armed(ssh)? {
         install_ramboot(ssh, rel, p)?;
         return Ok(None);
@@ -211,6 +216,7 @@ pub fn stage1_ram_installer(
         }
         write_mtd(ssh, &cefdk::build_autoscript(&script).map_err(anyhow::Error::msg)?)?;
     }
+    mark_reinstall(ssh, p)?;
 
     p.emit(Event::step("rebooting into boot-init (the RAM installer)".into()));
     let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
@@ -503,6 +509,44 @@ fn ensure_p1_marker(ssh: &Ssh, p: &Progress) -> Result<()> {
     Ok(())
 }
 
+/// One-shot flag on p1 that makes boot-init skip an installed openHC and come up
+/// on the network for stage 2 (board/ea/common/boot-init/init).
+const REINSTALL_FLAG: &str = ".ohc-reinstall-pending";
+
+/// Does p1 hold an openHC rootfs (the running root, or mountable)? Stage 2 then
+/// re-images it, losing everything on it.
+pub fn p1_holds_openhc(ssh: &Ssh) -> bool {
+    let cmd = if is_root_on_p1(ssh) {
+        "[ -f /etc/openhc-release ] && echo OHC; true".to_string()
+    } else {
+        "mkdir -p /mnt/ohcp1 && mount -o ro /dev/mmcblk0p1 /mnt/ohcp1 2>/dev/null && { \
+         [ -f /mnt/ohcp1/etc/openhc-release ] && echo OHC; umount /mnt/ohcp1; }; true"
+            .to_string()
+    };
+    ssh.run(&cmd, false).map(|o| o.contains("OHC")).unwrap_or(false)
+}
+
+/// Over an installed openHC, boot-init would pivot into the OLD p1 and stage 2
+/// would refuse a mounted root. Flag p1 so the next boot waits for stage 2
+/// instead. Stock p1 has no /etc/openhc-release and needs no flag.
+fn mark_reinstall(ssh: &Ssh, p: &Progress) -> Result<()> {
+    let cmd = if is_root_on_p1(ssh) {
+        format!("[ -f /etc/openhc-release ] && : > /{REINSTALL_FLAG} && sync && echo FLAGGED; true")
+    } else {
+        format!(
+            "mkdir -p /mnt/ohcp1 && mount /dev/mmcblk0p1 /mnt/ohcp1 2>/dev/null && {{ \
+             [ -f /mnt/ohcp1/etc/openhc-release ] && : > /mnt/ohcp1/{REINSTALL_FLAG} && echo FLAGGED; \
+             sync; umount /mnt/ohcp1; }}; true"
+        )
+    };
+    if ssh.run(&cmd, false)?.contains("FLAGGED") {
+        p.emit(Event::detail(format!(
+            "p1 holds openHC: flagged /{REINSTALL_FLAG} so boot-init waits for stage 2"
+        )));
+    }
+    Ok(())
+}
+
 fn dd_to_emmc(ssh: &Ssh, data: &[u8], off: u64) -> Result<()> {
     let (seek, bs) = if off % cefdk::SECTOR == 0 {
         (off / cefdk::SECTOR, cefdk::SECTOR)
@@ -751,14 +795,7 @@ pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
         bail!("{MTD} not present — this system has no SPI-NOR access; boot stock and retry");
     }
 
-    // 1. kernel + initrd -> eMMC USER partition (Linux offsets; 0x400 stock kernel
-    //    is left intact as a clean fallback).
-    p.emit(Event::step(format!("kernel {klen} B -> eMMC {RB_KERNEL_OFF:#x} (user partition)")));
-    dd_to_emmc(ssh, kernel, RB_KERNEL_OFF)?;
-    p.emit(Event::step(format!("initrd {ilen} B -> eMMC {RB_INITRD_OFF:#x}")));
-    dd_to_emmc(ssh, initrd, RB_INITRD_OFF)?;
-
-    // 2. Build the autoscript that reads them with `emmc rd_up` and boots.
+    // 1. Build the autoscript that reads them with `emmc rd_up` and boots.
     let script = cefdk::ramboot_autoscript_rd_up(
         RB_KERNEL_OFF,
         round_up(klen, 0x1000),
@@ -773,7 +810,7 @@ pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
         blob.push(0);
     }
     let content_off = mfh::EA_CONTENT_OFF as u64;
-    // 3. Read the three SPI-NOR blocks we will change and edit them in memory.
+    // 2. Read the three SPI-NOR blocks we will change and edit them in memory.
     let table_blk_off = mfh::TABLE_OFF as u64; // 0x80000
     let content_blk_off = content_off & !0xffff; // 0x90000
     let params_blk_off = cefdk::SCRIPT_ENABLE_OFF & !0xffff; // 0xa0000
@@ -784,18 +821,29 @@ pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     if (blob.len() as u64) > (0xa0f08 - content_off) {
         bail!("autoscript {} B does not fit the free region before cefdk_params", blob.len());
     }
-    // 4. script content into its block
+    // 3. script content into its block
     let cpos = (content_off - content_blk_off) as usize;
     content_blk[cpos..cpos + blob.len()].copy_from_slice(&blob);
-    // 5. append the type-12/script MFH item + recompute the SHA-256 (kernel is the
-    //    prior last item on the EA family).
-    mfh::append_script(&mut table_blk[0..0x200], mfh::EA_CONTENT_OFF, blob.len() as u32, mfh::TYPE_KERNEL)
-        .map_err(anyhow::Error::msg)?;
-    // 6. enable byte (do NOT set it until content+table are written)
+    // 4. the script MFH item + SHA-256: appended on a stock table, rewritten in
+    //    place over an earlier openHC install (kernel is the prior last item on
+    //    the EA family). Fails here, before any write, on a table with no room.
+    mfh::set_script(&mut table_blk[0..0x200], mfh::EA_CONTENT_OFF, blob.len() as u32, mfh::TYPE_KERNEL)
+        .map_err(|e| anyhow!("{e} — nothing written"))?;
+    // 5. enable byte (do NOT set it until content+table are written)
     let epos = (cefdk::SCRIPT_ENABLE_OFF - params_blk_off) as usize;
     params_blk[epos] = 0x00;
 
-    // 7. Write in a safe order: content, then table (activates a valid slot),
+    // 6. kernel + initrd -> eMMC USER partition (Linux offsets; 0x400 stock kernel
+    //    is left intact as a clean fallback). Only now that every check passed:
+    //    new images under the old autoscript's sizes do not boot. Between here
+    //    and the table write in 7 they still disagree; both must change, so that
+    //    window (seconds) cannot be closed, only kept free of anything that fails.
+    p.emit(Event::step(format!("kernel {klen} B -> eMMC {RB_KERNEL_OFF:#x} (user partition)")));
+    dd_to_emmc(ssh, kernel, RB_KERNEL_OFF)?;
+    p.emit(Event::step(format!("initrd {ilen} B -> eMMC {RB_INITRD_OFF:#x}")));
+    dd_to_emmc(ssh, initrd, RB_INITRD_OFF)?;
+
+    // 7. SPI-NOR in a safe order: content, then table (activates a valid slot),
     //    then the enable byte last.
     p.emit(Event::step("SPI-NOR: script content".into()));
     write_mtd_block(ssh, content_blk_off, &content_blk)?;
@@ -803,6 +851,7 @@ pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     write_mtd_block(ssh, table_blk_off, &table_blk)?;
     p.emit(Event::step("SPI-NOR: enable autoscript".into()));
     write_mtd_block(ssh, params_blk_off, &params_blk)?;
+    mark_reinstall(ssh, p)?;
 
     p.emit(Event::resolved("no-serial install complete — rebooting into openHC".into()));
     let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
