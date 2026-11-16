@@ -33,7 +33,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0020 | simple-card `link-name` | name a link's PCM from the DT (`simple-audio-card,link-name` or `link-name` on a dai-link) instead of `<cpu dai>-<codec dai>`, so the EA3's PCMs are `Analog`, `Coax` and `Coax in`; also stops passing the name as a format string |
 | 0022 | e1000 CE4100 MDIO bus | registers the GbE's own MDIO bus from an `mdio` DT node, so the PHYs on it get their phylib drivers |
 | 0023 | e1000 CE4100 phylink | with a `fixed-link` (switch boards) or a `phy-handle` (the EA1's RTL8211E), phylink owns the link and the MAC is forced to what it resolves; without them mainline e1000 fails probe on the switch boards. Replaced 0003, the hand-rolled fixed link |
-| 0024 | e1000 CE4100 no EEE | the MAC has no LPI; with EEE negotiated the RTL8211E blinks its link LED at idle. 0022-0024: upstream candidates (iwl-next), no change without the DT properties |
+| 0024 | e1000 CE4100 no EEE | the MAC has no LPI; with EEE negotiated the RTL8211E blinks its link LED at idle. 0022-0024: upstream candidates (iwl-next), no change without the DT properties; E1000 selects PHYLIB/PHYLINK |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now

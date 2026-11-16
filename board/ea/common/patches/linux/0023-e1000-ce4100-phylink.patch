@@ -12,12 +12,24 @@ autonegotiation restart and the MII ioctls go to phylink, and e1000's
 own PHY accesses are refused. Only rgmii phy modes are accepted, since
 the MAC adds no delays.
 
-Without either property, or without PHYLINK, nothing changes.
+Without either property, nothing changes.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
+diff --git a/drivers/net/ethernet/intel/Kconfig b/drivers/net/ethernet/intel/Kconfig
+index f4c2334..0f3dfad 100644
+--- a/drivers/net/ethernet/intel/Kconfig
++++ b/drivers/net/ethernet/intel/Kconfig
+@@ -46,6 +46,7 @@ config E1000
+ 	tristate "Intel(R) PRO/1000 Gigabit Ethernet support"
+ 	depends on PCI && HAS_IOPORT
+ 	select PHYLIB
++	select PHYLINK
+ 	help
+ 	  This driver supports Intel(R) PRO/1000 gigabit ethernet family of
+ 	  adapters.  For more information on how to identify your adapter, go
 diff --git a/drivers/net/ethernet/intel/e1000/e1000.h b/drivers/net/ethernet/intel/e1000/e1000.h
-index 40182ab..2870f35 100644
+index 40182ab..a1fef53 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000.h
 +++ b/drivers/net/ethernet/intel/e1000/e1000.h
 @@ -43,6 +43,7 @@
@@ -38,28 +50,15 @@ index 40182ab..2870f35 100644
  	struct e1000_hw_stats stats;
  	struct e1000_phy_info phy_info;
  	struct e1000_phy_stats phy_stats;
-@@ -346,6 +350,12 @@ void e1000_free_all_rx_resources(struct e1000_adapter *adapter);
- void e1000_free_all_tx_resources(struct e1000_adapter *adapter);
- void e1000_update_stats(struct e1000_adapter *adapter);
- bool e1000_has_link(struct e1000_adapter *adapter);
-+
-+/* The phylink instance of a CE4100 that the device tree describes, if any */
-+static inline struct phylink *e1000_phylink(struct e1000_adapter *adapter)
-+{
-+	return IS_REACHABLE(CONFIG_PHYLINK) ? adapter->phylink : NULL;
-+}
- void e1000_power_up_phy(struct e1000_adapter *);
- void e1000_set_ethtool_ops(struct net_device *netdev);
- void e1000_check_options(struct e1000_adapter *adapter);
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
-index c15ad95..032be36 100644
+index c15ad95..735108a 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
 @@ -90,6 +90,9 @@ static int e1000_get_link_ksettings(struct net_device *netdev,
  	struct e1000_hw *hw = &adapter->hw;
  	u32 supported, advertising;
  
-+	if (e1000_phylink(adapter))
++	if (adapter->phylink)
 +		return phylink_ethtool_ksettings_get(adapter->phylink, cmd);
 +
  	if (hw->media_type == e1000_media_type_copper) {
@@ -69,7 +68,7 @@ index c15ad95..032be36 100644
  	struct e1000_hw *hw = &adapter->hw;
  	u32 advertising;
  
-+	if (e1000_phylink(adapter))
++	if (adapter->phylink)
 +		return phylink_ethtool_ksettings_set(adapter->phylink, cmd);
 +
  	ethtool_convert_link_mode_to_legacy_u32(&advertising,
@@ -79,7 +78,7 @@ index c15ad95..032be36 100644
  	struct e1000_adapter *adapter = netdev_priv(netdev);
  	struct e1000_hw *hw = &adapter->hw;
  
-+	if (e1000_phylink(adapter)) {
++	if (adapter->phylink) {
 +		phylink_ethtool_get_pauseparam(adapter->phylink, pause);
 +		return;
 +	}
@@ -91,7 +90,7 @@ index c15ad95..032be36 100644
  	struct e1000_hw *hw = &adapter->hw;
  	int retval = 0;
  
-+	if (e1000_phylink(adapter))
++	if (adapter->phylink)
 +		return phylink_ethtool_set_pauseparam(adapter->phylink, pause);
 +
  	adapter->fc_autoneg = pause->autoneg;
@@ -132,7 +131,7 @@ index c15ad95..032be36 100644
  {
  	struct e1000_adapter *adapter = netdev_priv(netdev);
  
-+	if (e1000_phylink(adapter))
++	if (adapter->phylink)
 +		return phylink_ethtool_nway_reset(adapter->phylink);
 +
  	if (netif_running(netdev))
@@ -272,7 +271,7 @@ index 2dfcaad..bbf8758 100644
  	bool tbi_compatibility_on;
  	bool laa_is_present;
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
-index fa3447a..6afd5d3 100644
+index a547235..5ea42bd 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_main.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
 @@ -8,6 +8,7 @@
@@ -306,7 +305,7 @@ index fa3447a..6afd5d3 100644
  
  	netif_queue_set_napi(netdev, 0, NETDEV_QUEUE_TYPE_RX, NULL);
  	netif_queue_set_napi(netdev, 0, NETDEV_QUEUE_TYPE_TX, NULL);
-@@ -970,6 +977,133 @@ static void e1000_mdio_unregister(struct e1000_adapter *adapter)
+@@ -967,6 +974,131 @@ static void e1000_mdio_unregister(struct e1000_adapter *adapter)
  	adapter->mii_bus = NULL;
  }
  
@@ -373,7 +372,7 @@ index fa3447a..6afd5d3 100644
 + *
 + * If the device's OF node has a fixed-link or a phy-handle, let phylink
 + * manage the link and force the MAC to whatever it resolves. Without
-+ * either, or without PHYLINK, the MAC manages its PHY itself as before.
++ * either, the MAC manages its PHY itself as before.
 + *
 + * Return: 0 if phylink is not used or is set up, else an error.
 + */
@@ -386,7 +385,7 @@ index fa3447a..6afd5d3 100644
 +	struct phylink *phylink;
 +	int err;
 +
-+	if (!IS_REACHABLE(CONFIG_PHYLINK) || !np ||
++	if (!np ||
 +	    (!of_phy_is_fixed_link(np) && !of_property_present(np, "phy-handle")))
 +		return 0;
 +
@@ -427,20 +426,18 @@ index fa3447a..6afd5d3 100644
 +
 +static void e1000_phylink_destroy(struct e1000_adapter *adapter)
 +{
-+	struct phylink *phylink = e1000_phylink(adapter);
-+
-+	if (!phylink)
++	if (!adapter->phylink)
 +		return;
 +
-+	phylink_disconnect_phy(phylink);
-+	phylink_destroy(phylink);
++	phylink_disconnect_phy(adapter->phylink);
++	phylink_destroy(adapter->phylink);
 +	adapter->phylink = NULL;
 +}
 +
  /**
   * e1000_probe - Device Initialization Routine
   * @pdev: PCI device information struct
-@@ -1245,12 +1379,14 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1242,12 +1374,14 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  
  	if (hw->mac_type == e1000_ce4100) {
  		err = e1000_mdio_register(adapter);
@@ -456,7 +453,7 @@ index fa3447a..6afd5d3 100644
  		for (i = 0; i < 32; i++) {
  			hw->phy_addr = i;
  			e1000_read_phy_reg(hw, PHY_ID2, &tmp);
-@@ -1294,6 +1430,7 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1291,6 +1425,7 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  	return 0;
  
  err_register:
@@ -464,7 +461,7 @@ index fa3447a..6afd5d3 100644
  err_eeprom:
  	e1000_phy_hw_reset(hw);
  	e1000_mdio_unregister(adapter);
-@@ -1339,6 +1476,8 @@ static void e1000_remove(struct pci_dev *pdev)
+@@ -1336,6 +1471,8 @@ static void e1000_remove(struct pci_dev *pdev)
  
  	unregister_netdev(netdev);
  
@@ -473,27 +470,27 @@ index fa3447a..6afd5d3 100644
  	/* Only kill reset task if adapter is not resetting */
  	if (!test_bit(__E1000_RESETTING, &adapter->flags))
  		cancel_work_sync(&adapter->reset_task);
-@@ -1484,6 +1623,9 @@ int e1000_open(struct net_device *netdev)
+@@ -1481,6 +1618,9 @@ int e1000_open(struct net_device *netdev)
  	/* fire a link status change interrupt to start the watchdog */
  	ew32(ICS, E1000_ICS_LSC);
  
-+	if (e1000_phylink(adapter))
++	if (adapter->phylink)
 +		phylink_start(adapter->phylink);
 +
  	return E1000_SUCCESS;
  
  err_req_irq:
-@@ -1523,6 +1665,9 @@ int e1000_close(struct net_device *netdev)
+@@ -1520,6 +1660,9 @@ int e1000_close(struct net_device *netdev)
  	set_bit(__E1000_DOWN, &adapter->flags);
  	clear_bit(__E1000_RESETTING, &adapter->flags);
  
-+	if (e1000_phylink(adapter))
++	if (adapter->phylink)
 +		phylink_stop(adapter->phylink);
 +
  	e1000_down(adapter);
  	e1000_power_down_phy(adapter);
  	e1000_free_irq(adapter);
-@@ -2467,6 +2612,9 @@ bool e1000_has_link(struct e1000_adapter *adapter)
+@@ -2464,6 +2607,9 @@ bool e1000_has_link(struct e1000_adapter *adapter)
  	struct e1000_hw *hw = &adapter->hw;
  	bool link_active = false;
  
@@ -503,7 +500,7 @@ index fa3447a..6afd5d3 100644
  	/* get_link_status is set on LSC (link status) interrupt or rx
  	 * sequence error interrupt (except on intel ce4100).
  	 * get_link_status will stay false until the
-@@ -2514,7 +2662,7 @@ static void e1000_watchdog(struct work_struct *work)
+@@ -2511,7 +2657,7 @@ static void e1000_watchdog(struct work_struct *work)
  	u32 link, tctl;
  
  	link = e1000_has_link(adapter);
@@ -512,11 +509,11 @@ index fa3447a..6afd5d3 100644
  		goto link_up;
  
  	if (link) {
-@@ -4847,6 +4995,9 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
+@@ -4844,6 +4990,9 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
  	u16 mii_reg;
  	unsigned long flags;
  
-+	if (e1000_phylink(adapter))
++	if (adapter->phylink)
 +		return phylink_mii_ioctl(adapter->phylink, ifr, cmd);
 +
  	if (hw->media_type != e1000_media_type_copper)

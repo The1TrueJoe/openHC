@@ -9,10 +9,10 @@ link state. Disable EEE on the attached PHY.
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
-index 6afd5d3..62e18ee 100644
+index 5ea42bd..fe45713 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_main.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
-@@ -1079,6 +1079,9 @@ static int e1000_phylink_init(struct e1000_adapter *adapter)
+@@ -1076,6 +1076,9 @@ static int e1000_phylink_init(struct e1000_adapter *adapter)
  		phylink_destroy(phylink);
  		return err;
  	}

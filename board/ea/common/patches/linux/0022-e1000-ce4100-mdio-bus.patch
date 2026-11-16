@@ -7,13 +7,423 @@ its driver never probes.
 If the device's OF node has an "mdio" child, register the bus with the
 PHYs it describes. Accesses take the lock e1000's own PHY accesses take.
 The bus is unregistered before the MDIO registers are unmapped. Without
-the node, or without OF_MDIO, nothing changes.
+the node, nothing changes.
 
 A failed PHY scan now returns -EIO itself, as the bus registration
 leaves err cleared.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
+diff --git a/drivers/net/ethernet/intel/Kconfig b/drivers/net/ethernet/intel/Kconfig
+new file mode 100644
+index 0000000..f4c2334
+--- /dev/null
++++ b/drivers/net/ethernet/intel/Kconfig
+@@ -0,0 +1,404 @@
++# SPDX-License-Identifier: GPL-2.0-only
++#
++# Intel network device configuration
++#
++
++config NET_VENDOR_INTEL
++	bool "Intel devices"
++	default y
++	help
++	  If you have a network (Ethernet) card belonging to this class, say Y.
++
++	  Note that the answer to this question doesn't directly affect the
++	  kernel: saying N will just cause the configurator to skip all
++	  the questions about Intel cards. If you say Y, you will be asked for
++	  your specific card in the following questions.
++
++if NET_VENDOR_INTEL
++
++source "drivers/net/ethernet/intel/libeth/Kconfig"
++source "drivers/net/ethernet/intel/libie/Kconfig"
++
++config E100
++	tristate "Intel(R) PRO/100+ support"
++	depends on PCI
++	select MII
++	help
++	  This driver supports Intel(R) PRO/100 family of adapters.
++	  To verify that your adapter is supported, find the board ID number
++	  on the adapter. Look for a label that has a barcode and a number
++	  in the format 123456-001 (six digits hyphen three digits).
++
++	  Use the above information and the Adapter & Driver ID Guide that
++	  can be located at:
++
++	  <http://support.intel.com>
++
++	  to identify the adapter.
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/e100.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called e100.
++
++config E1000
++	tristate "Intel(R) PRO/1000 Gigabit Ethernet support"
++	depends on PCI && HAS_IOPORT
++	select PHYLIB
++	help
++	  This driver supports Intel(R) PRO/1000 gigabit ethernet family of
++	  adapters.  For more information on how to identify your adapter, go
++	  to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/e1000.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called e1000.
++
++config E1000E
++	tristate "Intel(R) PRO/1000 PCI-Express Gigabit Ethernet support"
++	depends on PCI && (!SPARC32 || BROKEN)
++	depends on PTP_1588_CLOCK_OPTIONAL
++	select CRC32
++	help
++	  This driver supports the PCI-Express Intel(R) PRO/1000 gigabit
++	  ethernet family of adapters. For PCI or PCI-X e1000 adapters,
++	  use the regular e1000 driver For more information on how to
++	  identify your adapter, go to the Adapter & Driver ID Guide that
++	  can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/e1000e.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called e1000e.
++
++config E1000E_HWTS
++	bool "Support HW cross-timestamp on PCH devices"
++	default y
++	depends on E1000E && X86
++	help
++	 Say Y to enable hardware supported cross-timestamping on PCH
++	 devices. The cross-timestamp is available through the PTP clock
++	 driver precise cross-timestamp ioctl (PTP_SYS_OFFSET_PRECISE).
++
++config IGB
++	tristate "Intel(R) 82575/82576 PCI-Express Gigabit Ethernet support"
++	depends on PCI
++	depends on PTP_1588_CLOCK_OPTIONAL
++	select I2C
++	select I2C_ALGOBIT
++	help
++	  This driver supports Intel(R) 82575/82576 gigabit ethernet family of
++	  adapters.  For more information on how to identify your adapter, go
++	  to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/igb.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called igb.
++
++config IGB_HWMON
++	bool "Intel(R) PCI-Express Gigabit adapters HWMON support"
++	default y
++	depends on IGB && HWMON && !(IGB=y && HWMON=m)
++	help
++	  Say Y if you want to expose thermal sensor data on Intel devices.
++
++	  Some of our devices contain thermal sensors, both external and internal.
++	  This data is available via the hwmon sysfs interface and exposes
++	  the onboard sensors.
++
++config IGB_DCA
++	bool "Direct Cache Access (DCA) Support"
++	default y
++	depends on IGB && DCA && !(IGB=y && DCA=m)
++	help
++	  Say Y here if you want to use Direct Cache Access (DCA) in the
++	  driver.  DCA is a method for warming the CPU cache before data
++	  is used, with the intent of lessening the impact of cache misses.
++
++config IGBVF
++	tristate "Intel(R) 82576 Virtual Function Ethernet support"
++	depends on PCI
++	help
++	  This driver supports Intel(R) 82576 virtual functions.  For more
++	  information on how to identify your adapter, go to the Adapter &
++	  Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/igbvf.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called igbvf.
++
++config IXGBE
++	tristate "Intel(R) 10GbE PCI Express adapters support"
++	depends on PCI
++	depends on PTP_1588_CLOCK_OPTIONAL
++	select LIBIE_FWLOG if DEBUG_FS
++	select MDIO
++	select NET_DEVLINK
++	select PLDMFW
++	select PHYLIB
++	help
++	  This driver supports Intel(R) 10GbE PCI Express family of
++	  adapters.  For more information on how to identify your adapter, go
++	  to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/ixgbe.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called ixgbe.
++
++config IXGBE_HWMON
++	bool "Intel(R) 10GbE PCI Express adapters HWMON support"
++	default y
++	depends on IXGBE && HWMON && !(IXGBE=y && HWMON=m)
++	help
++	  Say Y if you want to expose the thermal sensor data on some of
++	  our cards, via a hwmon sysfs interface.
++
++config IXGBE_DCA
++	bool "Direct Cache Access (DCA) Support"
++	default y
++	depends on IXGBE && DCA && !(IXGBE=y && DCA=m)
++	help
++	  Say Y here if you want to use Direct Cache Access (DCA) in the
++	  driver.  DCA is a method for warming the CPU cache before data
++	  is used, with the intent of lessening the impact of cache misses.
++
++config IXGBE_DCB
++	bool "Data Center Bridging (DCB) Support"
++	default n
++	depends on IXGBE && DCB
++	help
++	  Say Y here if you want to use Data Center Bridging (DCB) in the
++	  driver.
++
++	  If unsure, say N.
++
++config IXGBE_IPSEC
++	bool "IPSec XFRM cryptography-offload acceleration"
++	depends on IXGBE
++	depends on XFRM_OFFLOAD
++	default y
++	select XFRM_ALGO
++	help
++	  Enable support for IPSec offload in ixgbe.ko
++
++config IXGBEVF
++	tristate "Intel(R) 10GbE PCI Express Virtual Function Ethernet support"
++	depends on PCI_MSI
++	help
++	  This driver supports Intel(R) PCI Express virtual functions for the
++	  Intel(R) ixgbe driver.  For more information on how to identify your
++	  adapter, go to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/ixgbevf.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called ixgbevf.  MSI-X interrupt support is required
++	  for this driver to work correctly.
++
++config IXGBEVF_IPSEC
++	bool "IPSec XFRM cryptography-offload acceleration"
++	depends on IXGBEVF
++	depends on XFRM_OFFLOAD
++	default y
++	select XFRM_ALGO
++	help
++	  Enable support for IPSec offload in ixgbevf.ko
++
++config I40E
++	tristate "Intel(R) Ethernet Controller XL710 Family support"
++	depends on PTP_1588_CLOCK_OPTIONAL
++	depends on PCI
++	select AUXILIARY_BUS
++	select LIBIE
++	select LIBIE_ADMINQ
++	select NET_DEVLINK
++	help
++	  This driver supports Intel(R) Ethernet Controller XL710 Family of
++	  devices.  For more information on how to identify your adapter, go
++	  to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/i40e.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called i40e.
++
++config I40E_DCB
++	bool "Data Center Bridging (DCB) Support"
++	default n
++	depends on I40E && DCB
++	help
++	  Say Y here if you want to use Data Center Bridging (DCB) in the
++	  driver.
++
++	  If unsure, say N.
++
++# this is here to allow seamless migration from I40EVF --> IAVF name
++# so that CONFIG_IAVF symbol will always mirror the state of CONFIG_I40EVF
++config IAVF
++	tristate
++	select LIBIE
++	select LIBIE_ADMINQ
++	select NET_SHAPER
++
++config I40EVF
++	tristate "Intel(R) Ethernet Adaptive Virtual Function support"
++	select IAVF
++	depends on PCI_MSI
++	depends on PTP_1588_CLOCK_OPTIONAL
++	help
++	  This driver supports virtual functions for Intel XL710,
++	  X710, X722, XXV710, and all devices advertising support for
++	  Intel Ethernet Adaptive Virtual Function devices. For more
++	  information on how to identify your adapter, go to the Adapter
++	  & Driver ID Guide that can be located at:
++
++	  <https://support.intel.com>
++
++	  This driver was formerly named i40evf.
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/iavf.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called iavf.  MSI-X interrupt support is required
++	  for this driver to work correctly.
++
++config ICE
++	tristate "Intel(R) Ethernet Connection E800 Series Support"
++	default n
++	depends on PCI_MSI
++	depends on PTP_1588_CLOCK_OPTIONAL
++	depends on GNSS || GNSS = n
++	select AUXILIARY_BUS
++	select DIMLIB
++	select LIBETH_XDP
++	select LIBIE
++	select LIBIE_ADMINQ
++	select LIBIE_FWLOG if DEBUG_FS
++	select NET_DEVLINK
++	select PACKING
++	select PLDMFW
++	select DPLL
++	help
++	  This driver supports Intel(R) Ethernet Connection E800 Series of
++	  devices.  For more information on how to identify your adapter, go
++	  to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/ice.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called ice.
++
++config ICE_HWMON
++	bool "Intel(R) Ethernet Connection E800 Series Support HWMON support"
++	default y
++	depends on ICE && HWMON && !(ICE=y && HWMON=m)
++	help
++	  Say Y if you want to expose thermal sensor data on Intel devices.
++
++	  Some of our devices contain internal thermal sensors.
++	  This data is available via the hwmon sysfs interface and exposes
++	  the onboard sensors.
++
++config ICE_SWITCHDEV
++	bool "Switchdev Support"
++	default y
++	depends on ICE && NET_SWITCHDEV
++	help
++	  Switchdev support provides internal SRIOV packet steering and switching.
++
++	  To enable it on running kernel use devlink tool:
++	  #devlink dev eswitch set pci/0000:XX:XX.X mode switchdev
++
++	  Say Y here if you want to use Switchdev in the driver.
++
++	  If unsure, say N.
++
++config ICE_HWTS
++	bool "Support HW cross-timestamp on platforms with PTM support"
++	default y
++	depends on ICE && X86 && PCIE_PTM
++	help
++	  Say Y to enable hardware supported cross-timestamping on platforms
++	  with PCIe PTM support. The cross-timestamp is available through
++	  the PTP clock driver precise cross-timestamp ioctl
++	  (PTP_SYS_OFFSET_PRECISE).
++
++config FM10K
++	tristate "Intel(R) FM10000 Ethernet Switch Host Interface Support"
++	default n
++	depends on PCI_MSI
++	depends on PTP_1588_CLOCK_OPTIONAL
++	help
++	  This driver supports Intel(R) FM10000 Ethernet Switch Host
++	  Interface.  For more information on how to identify your adapter,
++	  go to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  More specific information on configuring the driver is in
++	  <file:Documentation/networking/device_drivers/ethernet/intel/fm10k.rst>.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called fm10k.  MSI-X interrupt support is required
++
++config IGC
++	tristate "Intel(R) Ethernet Controller I225-LM/I225-V support"
++	default n
++	depends on PCI
++	depends on PTP_1588_CLOCK_OPTIONAL
++	depends on ETHTOOL_NETLINK
++	help
++	  This driver supports Intel(R) Ethernet Controller I225-LM/I225-V
++	  family of adapters.
++
++	  For more information on how to identify your adapter, go
++	  to the Adapter & Driver ID Guide that can be located at:
++
++	  <http://support.intel.com>
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called igc.
++
++config IGC_LEDS
++	def_bool LEDS_TRIGGER_NETDEV
++	depends on IGC && LEDS_CLASS
++	depends on LEDS_CLASS=y || IGC=m
++	help
++	  Optional support for controlling the NIC LED's with the netdev
++	  LED trigger.
++
++source "drivers/net/ethernet/intel/idpf/Kconfig"
++
++source "drivers/net/ethernet/intel/ixd/Kconfig"
++
++endif # NET_VENDOR_INTEL
 diff --git a/drivers/net/ethernet/intel/e1000/e1000.h b/drivers/net/ethernet/intel/e1000/e1000.h
 index ea6ccf4..40182ab 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000.h
@@ -127,7 +537,7 @@ index 95cdd17..2dfcaad 100644
  void e1000_config_collision_dist(struct e1000_hw *hw);
  s32 e1000_check_for_link(struct e1000_hw *hw);
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
-index d7f5c6f..fa3447a 100644
+index d7f5c6f..a547235 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_main.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
 @@ -7,6 +7,7 @@
@@ -138,7 +548,7 @@ index d7f5c6f..fa3447a 100644
  
  char e1000_driver_name[] = "e1000";
  static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
-@@ -901,6 +902,74 @@ static int e1000_init_hw_struct(struct e1000_adapter *adapter,
+@@ -901,6 +902,71 @@ static int e1000_init_hw_struct(struct e1000_adapter *adapter,
  	return 0;
  }
  
@@ -157,8 +567,8 @@ index d7f5c6f..fa3447a 100644
 + * @adapter: board private structure
 + *
 + * If the device has an "mdio" child node, register the MAC's MDIO bus with
-+ * the PHYs it describes, so that their drivers can probe. Without one, or
-+ * without OF_MDIO, nothing is registered. The bus goes before the MAC's
++ * the PHYs it describes, so that their drivers can probe. Without one,
++ * nothing is registered. The bus goes before the MAC's
 + * registers are unmapped, so it is not device-managed.
 + *
 + * Return: 0 on success or if there is nothing to register, else an error.
@@ -169,9 +579,6 @@ index d7f5c6f..fa3447a 100644
 +	struct device_node *np;
 +	struct mii_bus *bus;
 +	int err;
-+
-+	if (!IS_REACHABLE(CONFIG_OF_MDIO))
-+		return 0;
 +
 +	np = of_get_child_by_name(dev->of_node, "mdio");
 +	if (!np)
@@ -202,7 +609,7 @@ index d7f5c6f..fa3447a 100644
 +
 +static void e1000_mdio_unregister(struct e1000_adapter *adapter)
 +{
-+	if (!IS_REACHABLE(CONFIG_OF_MDIO) || !adapter->mii_bus)
++	if (!adapter->mii_bus)
 +		return;
 +
 +	mdiobus_unregister(adapter->mii_bus);
@@ -213,7 +620,7 @@ index d7f5c6f..fa3447a 100644
  /**
   * e1000_probe - Device Initialization Routine
   * @pdev: PCI device information struct
-@@ -1174,6 +1243,12 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1174,6 +1240,12 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  	adapter->wol = adapter->eeprom_wol;
  	device_set_wakeup_enable(&adapter->pdev->dev, adapter->wol);
  
@@ -226,7 +633,7 @@ index d7f5c6f..fa3447a 100644
  	/* Auto detect PHY address */
  	if (hw->mac_type == e1000_ce4100) {
  		for (i = 0; i < 32; i++) {
-@@ -1184,8 +1259,10 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1184,8 +1256,10 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  				break;
  		}
  
@@ -238,7 +645,7 @@ index d7f5c6f..fa3447a 100644
  	}
  
  	/* reset the hardware with the new settings */
-@@ -1219,6 +1296,7 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1219,6 +1293,7 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  err_register:
  err_eeprom:
  	e1000_phy_hw_reset(hw);
@@ -246,7 +653,7 @@ index d7f5c6f..fa3447a 100644
  
  	if (hw->flash_address)
  		iounmap(hw->flash_address);
-@@ -1266,6 +1344,7 @@ static void e1000_remove(struct pci_dev *pdev)
+@@ -1266,6 +1341,7 @@ static void e1000_remove(struct pci_dev *pdev)
  		cancel_work_sync(&adapter->reset_task);
  
  	e1000_phy_hw_reset(hw);
