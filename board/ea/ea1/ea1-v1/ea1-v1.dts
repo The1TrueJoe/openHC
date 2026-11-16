@@ -3,6 +3,7 @@
 /dts-v1/;
 
 #include "ea1.dtsi"
+#include "ea-gbe-phy.dtsi"
 #include "ea-wifi.dtsi"
 #include "ea-gpio-names.dtsi"
 
