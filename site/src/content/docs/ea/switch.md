@@ -165,6 +165,13 @@ A WAN port sends all its traffic to the CPU only, so that route breaks the
 bridge between the jacks. Patch 0019 takes the mirror route instead. It costs the
 switch's only mirror, so `tc` mirroring on the ports is refused.
 
+The rest of what the switch sends to the CPU goes to port 8 too: multicast
+snooping copies, and all traffic of a port outside the bridge. Since v2 (the
+version sent upstream after review), 0019 also mirrors whatever leaves port 8
+to port 5. Port 8 gets Rx/Tx enabled, its link forced up and the disabled STP
+state, so only frames for the CPU leave it. The egress mirror alone misses the
+BPDUs of a bridged port, so both mirrors run.
+
 The fix doesn't help on the bench network. The EA3 sends a BPDU out `lan2`
 every 2 s, and none of them reaches the HC-800 on the same unmanaged switch, nor
 the other way round. A switch that drops BPDUs hides any loop through it from
