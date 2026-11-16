@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config DRM_CE5300
 	tristate "Intel Atom CE5300 display controller (VDC + HDMI)"
-	depends on DRM && PCI && X86
+	depends on DRM && PCI && X86 && IOSF_MBI
 	select APERTURE_HELPERS
 	select DRM_CLIENT_SELECTION
 	select DRM_GEM_DMA_HELPER

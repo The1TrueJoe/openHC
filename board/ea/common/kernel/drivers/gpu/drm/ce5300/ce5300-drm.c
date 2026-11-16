@@ -25,9 +25,12 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 
+#include <asm/iosf_mbi.h>
+
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_debugfs.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_fb_dma_helper.h>
@@ -78,6 +81,67 @@ static const u32 upp_bases[] = { 0x0000, 0x1000, 0x2000, 0x3000, 0xf000 };
 
 #define PITCH_ALIGN		64
 
+/*
+ * Clocks. The dot clock is the display PLL, IOSF sideband port 0x8a,
+ * registers 0-7 per clock (register 0 bits 23-24 are not the table's) and
+ * 0x11; writing 1 to register 0 latches. The TMDS clock is the HDMI PHY on
+ * port 0x82, 23 registers, whose resets are in the clock-control unit (PCI
+ * 8086:2e52, BAR 0). Tables at 8 bits per color.
+ */
+#define DPLL_PORT		0x8a
+#define   DPLL_NREGS		8
+#define   DPLL_R0_KEEP		GENMASK(24, 23)
+#define   DPLL_REG_X11		0x11
+#define HDMI_PHY_PORT		0x82
+#define   HDMI_PHY_NREGS	23
+
+#define CCU_DEVICE		0x2e52
+#define CCU_HDMI		0x04	/* PLL divider, TX PLL, TX, DDC resets */
+#define CCU_VDC			0x14	/* VDC clock enables and reset */
+#define CCU_DPLL		0x88	/* display PLL divider and VCO resets */
+
+struct ce5300_clock {
+	int khz;
+	u32 dpll[DPLL_NREGS];
+	u32 phy_pll[3];		/* PHY registers 0-2 */
+	u32 phy_drive[2];	/* register 7, then 8-11 */
+};
+
+static const struct ce5300_clock ce5300_clocks[] = {
+	{ 27000,
+	  { 0x01802116, 0x0005002c, 0x045811a0, 0x4045800c,
+	    0x04045800, 0x00404100, 0x02040440, 0x01424001 },
+	  { 0x00105800, 0x00000a14, 0x00050005 }, { 0x02a05400, 0xe8055030 } },
+	{ 74250,
+	  { 0x01802116, 0x0005002c, 0x044011a0, 0x80440008,
+	    0x04045800, 0x00404100, 0x02040440, 0x01424001 },
+	  { 0x00002000, 0x00050028, 0x00090080 }, { 0x02a05400, 0xe8055030 } },
+	{ 148500,
+	  { 0x01802116, 0x0005002c, 0x04401da4, 0x40440004,
+	    0x04045800, 0x00404100, 0x02040440, 0x01424001 },
+	  { 0x00002000, 0x00050028, 0x00050080 }, { 0x02a05400, 0xe8055030 } },
+};
+
+/* PHY registers 3-6 and 12-22, the same for every clock. */
+static const u32 ce5300_phy_3_6[] = { 0x00100000, 0x40214000, 0x80000001, 0x0007f03f };
+static const u32 ce5300_phy_12_22[] = {
+	0xff001ffe, 0xffffffff, 0xbc0000ff, 0x36d8fff7, 0x00100000, 0xffd00000,
+	0x00100000, 0x1c010000, 0x00000000, 0x00000000, 0x00010101,
+};
+
+static u32 ce5300_phy_word(const struct ce5300_clock *c, unsigned int i)
+{
+	if (i < 3)
+		return c->phy_pll[i];
+	if (i < 7)
+		return ce5300_phy_3_6[i - 3];
+	if (i == 7)
+		return c->phy_drive[0];
+	if (i < 12)
+		return c->phy_drive[1];
+	return ce5300_phy_12_22[i - 12];
+}
+
 static bool takeover;
 module_param(takeover, bool, 0644);
 MODULE_PARM_DESC(takeover, "Take the display over from the firmware framebuffer (untested; set, then bind 01:08.0)");
@@ -85,6 +149,7 @@ MODULE_PARM_DESC(takeover, "Take the display over from the firmware framebuffer 
 struct ce5300 {
 	struct drm_device	drm;
 	void __iomem		*mmio;
+	void __iomem		*ccu;		/* clock-control unit, or NULL */
 	void __iomem		*hdmi_status;	/* one register of the TX */
 	u32			upp;		/* the scanout UPP's register base */
 	struct drm_display_mode	mode;		/* what the firmware runs */
@@ -376,6 +441,77 @@ static void ce5300_map_hpd(struct ce5300 *p)
 	pci_dev_put(tx);
 }
 
+/* ---- Clock read-back (debugfs ce5300_clocks), no writes ---------------- */
+
+static int ce5300_sb_read(u8 port, u32 reg, u32 *val)
+{
+	return iosf_mbi_read(port, MBI_CR_READ, reg, val);
+}
+
+static int ce5300_clocks_show(struct seq_file *m, void *unused)
+{
+	struct drm_debugfs_entry *entry = m->private;
+	struct ce5300 *p = to_ce5300(entry->dev);
+	u32 dpll[DPLL_NREGS], phy[HDMI_PHY_NREGS], x11;
+	unsigned int i, j;
+	int ret = 0;
+
+	if (!iosf_mbi_available()) {
+		seq_puts(m, "no IOSF mailbox\n");
+		return 0;
+	}
+	for (i = 0; i < DPLL_NREGS && !ret; i++)
+		ret = ce5300_sb_read(DPLL_PORT, i, &dpll[i]);
+	if (!ret)
+		ret = ce5300_sb_read(DPLL_PORT, DPLL_REG_X11, &x11);
+	for (i = 0; i < HDMI_PHY_NREGS && !ret; i++)
+		ret = ce5300_sb_read(HDMI_PHY_PORT, i, &phy[i]);
+	if (ret)
+		return ret;
+
+	seq_puts(m, "dpll");
+	for (i = 0; i < DPLL_NREGS; i++)
+		seq_printf(m, " %08x", dpll[i]);
+	seq_printf(m, " r11 %08x\nphy", x11);
+	for (i = 0; i < HDMI_PHY_NREGS; i++)
+		seq_printf(m, " %08x", phy[i]);
+	seq_putc(m, '\n');
+	if (p->ccu)
+		seq_printf(m, "ccu hdmi %08x vdc %08x dpll %08x\n", readl(p->ccu + CCU_HDMI),
+			   readl(p->ccu + CCU_VDC), readl(p->ccu + CCU_DPLL));
+
+	for (j = 0; j < ARRAY_SIZE(ce5300_clocks); j++) {
+		const struct ce5300_clock *c = &ce5300_clocks[j];
+
+		seq_printf(m, "%6d kHz: dpll differs in", c->khz);
+		for (i = 0; i < DPLL_NREGS; i++) {
+			u32 keep = i ? 0 : DPLL_R0_KEEP;
+
+			if ((dpll[i] ^ c->dpll[i]) & ~keep)
+				seq_printf(m, " r%u", i);
+		}
+		seq_puts(m, "; phy differs in");
+		for (i = 0; i < HDMI_PHY_NREGS; i++)
+			if (phy[i] != ce5300_phy_word(c, i))
+				seq_printf(m, " r%u", i);
+		seq_putc(m, '\n');
+	}
+	return 0;
+}
+
+/* The clock-control unit, read-only here: one register per block. */
+static void ce5300_map_ccu(struct ce5300 *p)
+{
+	struct pci_dev *ccu = pci_get_device(PCI_VENDOR_ID_INTEL, CCU_DEVICE, NULL);
+
+	if (!ccu)
+		return;
+	if (pci_resource_len(ccu, 0) > CCU_DPLL)
+		p->ccu = devm_ioremap(p->drm.dev, pci_resource_start(ccu, 0),
+				      pci_resource_len(ccu, 0));
+	pci_dev_put(ccu);
+}
+
 static int ce5300_modeset_init(struct ce5300 *p)
 {
 	struct drm_device *drm = &p->drm;
@@ -458,6 +594,7 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 	}
 	ce5300_map_hpd(p);
+	ce5300_map_ccu(p);
 
 	/* The firmware framebuffer lives in RAM, not in a BAR. */
 	surf = vdc_read(p, p->upp + VDC_UPP_SURF);
@@ -472,6 +609,7 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 	pci_set_drvdata(pdev, &p->drm);
 
+	drm_debugfs_add_file(&p->drm, "ce5300_clocks", ce5300_clocks_show, NULL);
 	ret = drm_dev_register(&p->drm, 0);
 	if (ret)
 		return ret;

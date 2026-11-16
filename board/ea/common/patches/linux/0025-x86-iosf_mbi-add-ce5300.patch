@@ -1,0 +1,27 @@
+x86/platform/iosf_mbi: Add Intel Atom CE5300 PCI ID
+
+The Atom CE5300 host bridge (8086:0c40) has the IOSF mailbox at the usual
+config offsets (MCR 0xd0, MDR 0xd4, MCRX 0xd8). Its display PLL and HDMI
+PHY sit on the sideband, so a display driver needs the mailbox. There is
+no P-Unit semaphore.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+--- a/arch/x86/platform/intel/iosf_mbi.c
++++ b/arch/x86/platform/intel/iosf_mbi.c
+@@ -23,6 +23,7 @@
+ 
+ #define PCI_DEVICE_ID_INTEL_BAYTRAIL		0x0F00
+ #define PCI_DEVICE_ID_INTEL_BRASWELL		0x2280
++#define PCI_DEVICE_ID_INTEL_CE5300		0x0C40
+ #define PCI_DEVICE_ID_INTEL_QUARK_X1000		0x0958
+ #define PCI_DEVICE_ID_INTEL_TANGIER		0x1170
+ 
+@@ -518,6 +519,7 @@
+ static const struct pci_device_id iosf_mbi_pci_ids[] = {
+ 	{ PCI_DEVICE_DATA(INTEL, BAYTRAIL, PUNIT_SEMAPHORE_BYT) },
+ 	{ PCI_DEVICE_DATA(INTEL, BRASWELL, PUNIT_SEMAPHORE_CHT) },
++	{ PCI_DEVICE_DATA(INTEL, CE5300, 0) },
+ 	{ PCI_DEVICE_DATA(INTEL, QUARK_X1000, 0) },
+ 	{ PCI_DEVICE_DATA(INTEL, TANGIER, 0) },
+ 	{ 0, },
