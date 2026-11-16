@@ -57,6 +57,12 @@ sound/x86/Makefile|obj-m += ce5300-hdmi.o
 drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/powervr_sgx/Kconfig"
 drivers/gpu/drm/Makefile|obj-$(CONFIG_DRM_POWERVR_SGX) += powervr_sgx/
 
+# --- display: CE5300 VDC + HDMI KMS driver (drivers/gpu/drm/ce5300) ---
+# Its own Kconfig (selects the GEM DMA and KMS helpers). Built into the real
+# kernel with DRM (real-kernel.fragment); inert unless takeover is set.
+drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/ce5300/Kconfig"
+drivers/gpu/drm/Makefile|obj-$(CONFIG_DRM_CE5300) += ce5300/
+
 # --- fan: iio-fan (the iio-fan submodule), a fan whose speed is an IIO channel ---
 # Copied to drivers/hwmon/iio-fan by OHC_KERNEL_DRIVER_REPOS; its own Kconfig
 # symbol gates it (ea3-v2's linux.fragment).
