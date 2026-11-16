@@ -66,6 +66,7 @@
  * Samples are MSB-aligned in their 32-bit FIFO word (S32_LE; bits 7:0 are not
  * sent). Heard: the same tone LSB-aligned is ~60 dB down, inaudible.
  */
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/hrtimer.h>
@@ -107,6 +108,7 @@
 #define   HDMI_5V_ENABLE	BIT(3)	/* hdmi_general_5V_enable */
 #define HDMI_STATUS		0x1008	/* hdmi_general_get_status */
 #define   HDMI_STATUS_HPD	BIT(0)
+#define HDMI_INT_MASK		0x1004
 /* Latched whether masked (+0x1004) or not; write 1 to clear. */
 #define HDMI_INT_STATUS		0x100c
 #define   HDMI_INT_HPD		BIT(0)	/* HPD changed */
@@ -971,6 +973,29 @@ static void ce5300_hdmi_quiesce(void *data)
 		ce5300_hdmi_link_down(h);
 }
 
+/* Named registers only, for bring-up: debugfs ce5300-hdmi/regs. */
+static int ce5300_hdmi_regs_show(struct seq_file *m, void *unused)
+{
+	struct ce5300_hdmi *h = m->private;
+	struct pci_dev *host = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(0, 0));
+
+	seq_printf(m, "clocks %08x\nint_mask %08x\nstatus %08x\nint_status %08x\nopmode %08x\n",
+		   hdmi_read(h, HDMI_CLOCKS), hdmi_read(h, HDMI_INT_MASK),
+		   hdmi_read(h, HDMI_STATUS), hdmi_read(h, HDMI_INT_STATUS),
+		   hdmi_read(h, HDMI_OPMODE));
+	if (host) {
+		seq_printf(m, "phy12 %08x\n", iosf_cr_read(host, IOSF_PORT_HDMI_PHY, HDMI_PHY_5V));
+		pci_dev_put(host);
+	}
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(ce5300_hdmi_regs);
+
+static void ce5300_hdmi_debugfs_remove(void *data)
+{
+	debugfs_remove_recursive(data);
+}
+
 static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct snd_card *card;
@@ -1056,6 +1081,14 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 		 hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI ? "HDMI" : "DVI");
 
 	ce5300_hdmi_5v_on(h);
+	{
+		struct dentry *d = debugfs_create_dir("ce5300-hdmi", NULL);
+
+		debugfs_create_file("regs", 0400, d, h, &ce5300_hdmi_regs_fops);
+		ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_debugfs_remove, d);
+		if (ret)
+			return ret;
+	}
 	hdmi_write(h, HDMI_INT_STATUS, HDMI_INT_HPD);
 	ce5300_hdmi_sink_changed(h, hdmi_read(h, HDMI_STATUS) & HDMI_STATUS_HPD);
 	INIT_DELAYED_WORK(&h->hpd_work, ce5300_hdmi_hpd_work);
