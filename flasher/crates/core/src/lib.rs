@@ -47,7 +47,7 @@ mod tests {
 
     fn ident(name: &str, running: Running) -> Identity {
         let b = board::by_name(name).expect("board in the table");
-        Identity { board: Some(b), candidates: vec![b], running, version: None, raw: vec![], warning: None }
+        Identity { board: Some(b), candidates: vec![b], running, version: None, raw: vec![], warning: None, unknown: None }
     }
 
     #[test]
@@ -462,6 +462,37 @@ mod tests {
         assert!(id.warning.is_some());
         let names: Vec<_> = id.candidates.iter().map(|b| b.name).collect();
         assert_eq!(names, ["ea3-v1", "ea3-v2"]);
+    }
+
+    #[test]
+    fn unknown_straps_are_reported_with_a_prefilled_issue() {
+        // Known ids: nothing to report.
+        assert!(board::from_ea_straps(0x26, Running::Openhc).unknown.is_none());
+        assert!(board::from_c4board(None, Some(1), Some(5)).unknown.is_none());
+
+        // An unread EA3 revision: reported with the raw byte and the decode.
+        let id = board::from_ea_straps(0x2a, Running::Openhc);
+        let u = id.unknown.expect("type 2 rev 10 is not in the table");
+        assert_eq!((u.straps, u.btype, u.rev), (Some(0x2a), 2, 10));
+        assert_eq!(u.describe(), "board type 2, revision 10 (straps 0x2a)");
+
+        // It survives the check against the installed image.
+        let rel = board::from_release("board=ea3-v2\n");
+        assert_eq!(board::with_straps(rel, id).unknown, Some(u));
+
+        // A one-board type still reports an unread revision (stock CA-1 rev 5).
+        let id = board::from_c4board(None, Some(0), Some(5));
+        assert_eq!(id.board.unwrap().name, "ca1");
+        assert_eq!(id.unknown.map(|u| (u.straps, u.btype, u.rev)), Some((None, 0, 5)));
+
+        // The link: board facts only, encoded, nothing else.
+        let url = board::unknown_board_issue_url(&u, Some("C4-EA3"), "1.2.3");
+        assert!(url.starts_with("https://github.com/The1TrueJoe/openHC/issues/new?title=Unknown%20board"));
+        for want in ["0x2a", "%7C%20Type%20%7C%202%20%7C", "%7C%20Revision%20%7C%2010%20%7C", "C4-EA3", "1.2.3"] {
+            assert!(url.contains(want), "{want} missing from {url}");
+        }
+        assert!(!url.contains(' ') && !url.contains('\n'));
+        assert!(board::unknown_board_issue_url(&u, None, "x").contains("%28unknown%29"));
     }
 
     #[test]

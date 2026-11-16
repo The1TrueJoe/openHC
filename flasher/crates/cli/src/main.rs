@@ -232,7 +232,23 @@ fn identify(rest: &[String]) -> bool {
         println!("    running version {v}");
     }
     for (k, v) in &id.raw { println!("    {k}: {}", v.trim()); }
+    report_unknown(&id);
     id.board.is_some()
+}
+
+/// This flasher's version: CI bakes in `OHC_VERSION`, a local build says so.
+const VERSION: &str = match option_env!("OHC_VERSION") {
+    Some(v) => v,
+    None => concat!(env!("CARGO_PKG_VERSION"), "-local"),
+};
+
+/// A board the table doesn't know: say so, and offer a prefilled issue.
+fn report_unknown(id: &ohc_flash_core::Identity) {
+    let Some(u) = &id.unknown else { return };
+    let model = id.raw.iter().find(|(k, _)| k == "name").map(|(_, v)| v.trim());
+    println!("  unknown board: {} is not in the flasher's table yet.", u.describe());
+    println!("  To get it added, open this prefilled GitHub issue (nothing is sent unless you submit it):");
+    println!("    {}", board::unknown_board_issue_url(u, model, VERSION));
 }
 
 fn plan(rest: &[String]) -> bool {
@@ -241,7 +257,7 @@ fn plan(rest: &[String]) -> bool {
     };
     let Some(b) = board::by_name(name) else { eprintln!("unknown board '{name}'"); return false };
     let id = ohc_flash_core::Identity { board: Some(b), candidates: vec![b], running: board::Running::Stock,
-            version: None, raw: vec![], warning: None };
+            version: None, raw: vec![], warning: None, unknown: None };
     println!("  board:  {} ({})", b.name, b.desc);
 
     // Named method: show just that one. Otherwise show the preferred method and
@@ -674,6 +690,7 @@ fn install(rest: &[String]) -> bool {
     let Some((host, ssh)) = connect(rest) else { return false };
     let forced = rest.windows(2).find(|w| w[0] == "--board").map(|w| w[1].clone());
     let mut id = tp::identify(&ssh);
+    report_unknown(&id);
     let board = if let Some(name) = forced {
         match board::by_name(&name) {
             Some(b) => {

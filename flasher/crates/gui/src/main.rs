@@ -911,6 +911,28 @@ impl App {
             }
         }
 
+        // A board the table doesn't know: offer a prefilled issue, never send one.
+        if let Some(u) = &conn.id.unknown {
+            let model = sh
+                .found
+                .iter()
+                .find(|f| f.ip == conn.host)
+                .and_then(|f| f.sddp_model.clone())
+                .or_else(|| conn.id.raw.iter().find(|(k, _)| k == "name").map(|(_, v)| v.trim().to_string()));
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(format!(
+                    "Unknown board: {}. The flasher's table doesn't have it yet.",
+                    u.describe()
+                ))
+                .color(WARN),
+            );
+            ui.hyperlink_to(
+                "Report it on GitHub (opens a prefilled issue; nothing is sent until you submit it)",
+                board::unknown_board_issue_url(u, model.as_deref(), VERSION),
+            );
+        }
+
         // An uncertain identification is the one thing that must never be
         // papered over: the wrong image on the wrong board costs a recovery.
         if !conn.id.certain() && self.forced.is_none() {
@@ -966,6 +988,7 @@ impl App {
             version: None,
             raw: conn.id.raw.clone(),
             warning: None,
+            unknown: None,
         };
         let (chosen, rejected) = method::choose(&id, None);
 
@@ -1349,6 +1372,9 @@ impl App {
             for (k, v) in &id.raw {
                 g.push(Lvl::Detail, format!("{k} = {}", v.trim()));
             }
+            if let Some(u) = &id.unknown {
+                g.push(Lvl::Warn, format!("unknown board: {} is not in the flasher's table yet", u.describe()));
+            }
             g.conn = Some(Conn { host, ssh, id, installed_version });
         });
     }
@@ -1631,6 +1657,7 @@ fn method_for(b: &'static ohc_flash_core::board::Board) -> Option<Method> {
             version: None,
         raw: vec![],
         warning: None,
+        unknown: None,
     };
     method::choose(&id, None).0
 }
@@ -1740,6 +1767,7 @@ fn gate(
             version: None,
                 raw: vec![],
                 warning: None,
+                unknown: None,
             };
             match method::choose(&probe, None).0 {
                 Some(Method::Network | Method::Kexec | Method::Grub | Method::Nand | Method::Sd) => None,
@@ -1788,7 +1816,7 @@ mod tests {
     fn id_for(name: &str) -> Identity {
         let b = board::by_name(name).unwrap();
         Identity { board: Some(b), candidates: vec![b], running: Running::Stock,
-            version: None, raw: vec![], warning: None }
+            version: None, raw: vec![], warning: None, unknown: None }
     }
 
     /// The gate is the last thing between a user and a wrong write, so it gets
@@ -1878,7 +1906,7 @@ mod tests {
                 host: "10.0.0.9".into(),
                 ssh: tp::Ssh::new("10.0.0.9", "root", None),
                 id: Identity { board: Some(b), candidates: vec![b], running: Running::Openhc,
-            version: None, raw: vec![], warning: None },
+            version: None, raw: vec![], warning: None, unknown: None },
                 installed_version: Some("old-dev".into()),
             });
             g.latest = Some(

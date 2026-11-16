@@ -62,6 +62,23 @@ fn openhc(ssh: &Ssh, mut id: Identity) -> Identity {
 }
 
 pub fn identify(ssh: &Ssh) -> Identity {
+    let mut id = identify_board(ssh);
+    // An unknown board: log what a table entry needs. The MAC prefix (OUI) says
+    // whose board it is; the rest of the MAC stays off the log.
+    if id.unknown.is_some() {
+        let mac = ssh.read_file("/sys/class/net/eth0/address").unwrap_or_default();
+        let oui: String = mac.trim().chars().take(8).collect();
+        if oui.len() == 8 {
+            id.raw.push(("MAC prefix".into(), oui));
+        }
+        if let Some(v) = &id.version {
+            id.raw.push(("OS version".into(), v.clone()));
+        }
+    }
+    id
+}
+
+fn identify_board(ssh: &Ssh) -> Identity {
     // openHC: the board its build stamped into /etc/openhc-release.
     if let Some(rel) = ssh.read_file("/etc/openhc-release") {
         let id = board::from_release(&rel);
@@ -131,7 +148,7 @@ pub fn identify(ssh: &Ssh) -> Identity {
         id.version = version_of(ssh);
         return id;
     }
-    Identity { board: None, candidates: vec![], running: Running::Unknown, version: version_of(ssh), raw: vec![], warning: None }
+    Identity { board: None, candidates: vec![], running: Running::Unknown, version: version_of(ssh), raw: vec![], warning: None, unknown: None }
 }
 
 /// Pull `KEY="value"` / `KEY=value` out of a board.env blob.
