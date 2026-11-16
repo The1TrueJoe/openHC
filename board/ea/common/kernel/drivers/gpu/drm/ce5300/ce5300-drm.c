@@ -12,7 +12,7 @@
  * This first step takes over the mode the firmware set and keeps it. It reads
  * pipe A and the live UPP back, and from then on flips that plane between
  * GEM DMA buffers. Hotplug is polled through the HDMI transmitter's HPD bit,
- * or an EDID that answers where HPD isn't wired (an EA1). The EDID comes over
+ * or an EDID that answers (on an EA1 HPD stays low). The EDID comes over
  * the transmitter's DDC master, which ce5300-hdmi registers as an i2c adapter. Mode setting (the display PLL, the pipe and the
  * HDMI PHY) comes later; until then only the running mode is valid.
  *
