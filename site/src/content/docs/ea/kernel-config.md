@@ -367,9 +367,13 @@ the real kernel ([graphics](/ea/graphics/#the-stack)).
 The [audio page](/ea/audio/) covers the hardware.
 
 - **audio-hdmi** is in `ea/common/ohc.features`, since every EA has HDMI. The
-  driver, `sound/x86/ce5300-hdmi.c`, is copied in through `objs.mk` with no
-  Kconfig symbol: it builds whenever `SND` is set, because `sound/Makefile`
-  descends into `sound/x86` under `SND`. udev loads it off PCI `8086:2e63`.
+  driver, `sound/x86/ce5300-hdmi-audio.c`, is copied in through `objs.mk` with
+  no Kconfig symbol: it builds whenever `SND` is set, because `sound/Makefile`
+  descends into `sound/x86` under `SND`. udev loads it off the
+  `ce5300-hdmi-audio` platform device that the transmitter's bridge driver
+  (`drivers/gpu/drm/ce5300/ce5300-hdmi.c`, built into the real kernel)
+  creates. It takes no symbols from the bridge, so the bootstrap build's
+  module loads into the real kernel.
   `SND_PCM` has no prompt and nothing else selects it on a board without ASoC;
   the loopback card (`SND_ALOOP`) does, and is useful in its own right as a
   capture of what is playing.
