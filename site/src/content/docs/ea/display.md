@@ -37,7 +37,7 @@ BAR 0, 64 KiB. Audio (the transmitter's own DMA, infoframes, GCP) is on the
 |---|---|---|
 | `+0x1000` | clocks: bit 0 TMDS, 1 pixel, 2 audio, 3 the 5 V supply to the connector, 5 HDCP | read: `0x2f` under CEFDK |
 | `+0x1004` | interrupt mask | read: 0 |
-| `+0x1008` | status: bit 0 **HPD**, bit 1 RX sense (`hdmi_general_get_status`) | read |
+| `+0x1008` | status: bit 0 **HPD**, bit 1 RX sense (`hdmi_general_get_status`) | read: on an EA-1 bit 0 stayed 0 with a monitor in; bit 1 went to 1 once the link ran in HDMI mode and stayed 1 after unplugging |
 | `+0x100c` | interrupt status, latched whether masked or not, write 1 to clear | W1C seen |
 | `+0x3000` | bit 0 HDMI mode (clear = DVI), bit 7 unit enable | read |
 
@@ -119,15 +119,17 @@ three plane types, each at a block base (`vdc_get_plane`):
 | IAP, indexed/alpha plane | `0x106`–`0x108` | `0x10000` + `0xf000`, `0`, `0x1000` | 8-bit indexed, A1/A4/A8 only |
 | cursor | `0x109` | `0x40000` | |
 
-So CEFDK's `a8r8g8b8` console has to be on a UPP. Per UPP, from
+CEFDK's `a8r8g8b8` console is on the UPP at `0x31000`: `ce5300-drm` read its
+control as `0x08ff4c01` (enabled, pipe A, ARGB 32), its surface as
+`0x7fc00000` and its pitch as 2944 on an EA-3. Per UPP, from
 `__init_upp_reg_table` and `vdc_plane_buffers_set`:
 
 | Offset | Meaning |
 |---|---|
 | `+0x168` | control: bit 0 enable, bit 3 pipe B, bits 14:10 pixel format |
-| `+0x064` | pitch: Y `<< 16` \| UV |
-| `+0x100`, `+0x104`, `+0x108`, `+0x10c` | surface addresses (Y, then chroma) |
-| `+0x118` | size, `h << 16 \| w` |
+| `+0x100`, `+0x104`, `+0x108`, `+0x10c` | surface addresses (Y, then chroma). `+0x100` read `0x7fc00000` |
+| `+0x118` | pitch in bytes (read 2944) |
+| `+0x064` | read 0 on the console plane (YUV pitches?) |
 | `+0x164`, `+0x16c`, `+0x178`, `+0x00c` | further control and attribute bits |
 | `+0x12c`–`+0x150` | keys and alpha |
 | `+0x200`–`+0x23c` | the scaler |
@@ -182,3 +184,55 @@ by their rounded value (74176 → 74175, 148352 → 148350).
 The table also has 25175, 25200, 40000, 59340, 59400, 65000, 79700, 85000,
 108000, 118681, 118800 and 296700 kHz. None of it has been read back on
 hardware yet.
+
+## HDMI TX PLL and PHY (`pd_hdmi.ko` `__program_clocks_ce5300`)
+
+The transmitter's PHY is on IOSF sideband port `0x82`. Its resets are in the
+clock-control unit, BAR 0 of `00:00.2` (`8086:2e52`, `0xcc` bytes), which
+`clock_control.ko` maps:
+
+| Clock-control register | Bit | Name |
+|---|---|---|
+| `+0x04` | 9 | `CLOCK_HDMI_PLL_DIV_RESET` |
+| `+0x04` | 7 | `CLOCK_HDMI_TX_PLL_RESET` |
+| `+0x04` | 1 | `CLOCK_HDMI_TX_RST` |
+| `+0x04` | 0 | `CLOCK_HDMI_I2C_RESET` |
+| `+0x14` | 9, 8, 7, 6, 5 | `CLOCK_VDC_DB/DA/MDVO/XSI_CLK_EN`, `CLOCK_VDC_CLK_EN` |
+| `+0x14` | 0 | `CLOCK_VDC_RST` |
+| `+0x88` | 3, 2 | `CLOCK_DPLL_DIV_RST`, `CLOCK_DPLL_VCO_RST` |
+
+A pixel clock is set like this (`_clock_control_write(id, value)`; 0 asserts a
+reset):
+1. PLL divider reset 0, TX PLL reset 0.
+2. Write the 23 PHY words for the clock (`hdmi_phy_cfg_raw`). Word 2 is
+   written with bit 27 set; after word 22, word 12 is masked with
+   `0x1ffefffb | 0xe0000004`, and word 2 is written again with bit 27 clear.
+   Word *k* is PHY register *k* on port `0x82`: `hdmi_phy_enable` addresses
+   registers 8–12 by index.
+3. TX PLL reset 1, wait 300 µs; PLL divider reset 1, wait 50 µs.
+4. TX reset 0, wait 1 ms; TX reset 1, wait 1 ms.
+
+The PHY words are chosen by color depth (8/10/12 bpc tables at `.rodata`
+`0x1c0`/`0x260`/`0x300`) and then by pixel clock. At 8 bpc, only the first
+three words (PLL dividers) and words 7–11 (drive) differ between clocks:
+
+| kHz | words 0–2 | words 7–11 |
+|---|---|---|
+| 27000 | `00105800 00000a14 00050005` | `02a05400 e8055030 ×4` |
+| 74250 | `00002000 00050028 00090080` | `02a05400 e8055030 ×4` |
+| 148500 | `00002000 00050028 00050080` | `02a05400 e8055030 ×4` |
+| 297000 | `00101800 0005000f 00010080` | `02004000 c80770e7 ×4` |
+
+The other words, all clocks:
+- words 3–6: `00100000 40214000 80000001 0007f03f`;
+- words 12–22: `ff001ffe ffffffff bc0000ff 36d8fff7 00100000 ffd00000 00100000 1c010000 0 0 00010101`.
+
+A full modeset for the M4 driver is therefore:
+- the display PLL (port `0x8a`) for the dot clock;
+- the TX PLL and PHY (port `0x82`, plus the resets above) for the TMDS clock;
+- pipe A's timing and PIPESRC;
+- the HDMI line timing and GCP position (`+0x3100`/`+0x3104`, see audio);
+- the AVI infoframe.
+
+None of the sideband writes have been tried on hardware.
+
