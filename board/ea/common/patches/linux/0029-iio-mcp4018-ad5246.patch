@@ -17,7 +17,7 @@ consumer such as dpot-dac needs. The AD5272 is likewise in both drivers.
  2 files changed, 30 insertions(+), 9 deletions(-)
 
 diff --git a/drivers/iio/potentiometer/Kconfig b/drivers/iio/potentiometer/Kconfig
-index e6a9a3c67845..da8893ef6f1a 100644
+index e6a9a3c67845..7945c75f06da 100644
 --- a/drivers/iio/potentiometer/Kconfig
 +++ b/drivers/iio/potentiometer/Kconfig
 @@ -70,12 +70,12 @@ config MAX5487
@@ -25,7 +25,7 @@ index e6a9a3c67845..da8893ef6f1a 100644
  
  config MCP4018
 -	tristate "Microchip MCP4017/18/19 Digital Potentiometer driver"
-+	tristate "Microchip MCP4017/18/19 and ADI AD5246 Digital Potentiometer driver"
++	tristate "Microchip MCP4017/18/19 and Analog Devices AD5246 Digital Potentiometer driver"
  	depends on I2C
  	help
  	  Say yes here to build support for the Microchip
