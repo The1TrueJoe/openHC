@@ -1,22 +1,24 @@
-e1000: disable EEE on a CE4100 PHY attached through phylib
+e1000: disable EEE on a CE4100 PHY under phylink
 
-The MAC has no LPI support, but phylib keeps the PHY's default EEE
-advertisement. With EEE negotiated, an RTL8211E blinks its link LED
-about once a second while the link idles, so a link LED offloaded to
-the PHY does not show the link state. Tell phylib the MAC has no EEE.
+The MAC has no LPI support and implements no phylink LPI operations, so
+phylink leaves the PHY's default EEE advertisement in place. With EEE
+negotiated, an RTL8211E blinks its link LED about once a second while
+the link idles, so a link LED offloaded to the PHY does not show the
+link state. Disable EEE on the attached PHY.
 
 Author: Joseph Telaak <joseph@telaak.dev>
 ---
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
-index 00e8813..f3b21c2 100644
+index 6afd5d3..62e18ee 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_main.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
-@@ -1088,6 +1088,8 @@ static int e1000_connect_phy(struct e1000_adapter *adapter)
- 		err = -ENODEV;
- 		goto out;
+@@ -1079,6 +1079,9 @@ static int e1000_phylink_init(struct e1000_adapter *adapter)
+ 		phylink_destroy(phylink);
+ 		return err;
  	}
 +	/* The MAC has no LPI support */
-+	phy_disable_eee(phydev);
++	if (adapter->netdev->phydev)
++		phy_disable_eee(adapter->netdev->phydev);
  
- 	hw->fixed_link = true;
- 	hw->fixed_link_speed = SPEED_1000;
+ 	adapter->phylink = phylink;
+ 	hw->phylink = true;

@@ -56,6 +56,10 @@ CONFIG_CRYPTO=y
 
 # --- wired NIC: on-board Intel GbE (e1000) ---
 CONFIG_E1000=y
+# Its link: phylink, fixed to the switch or to the EA1's RTL8211E (patches 0022-0024)
+CONFIG_PHYLINK=y
+CONFIG_PHYLIB=y
+CONFIG_REALTEK_PHY=y
 
 # --- size trim ---
 # Modules on: new functionality goes in as a module, not built in (size budget).

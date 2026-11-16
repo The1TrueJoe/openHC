@@ -15,11 +15,6 @@ CONFIG_FB=y
 CONFIG_DRM_SIMPLEDRM=y
 CONFIG_DRM_FBDEV_EMULATION=y
 
-# --- phylib: the EA1's RTL8211E behind e1000 (patches 0022-0024) and its jack LEDs ---
-# The bootstrap kernel has no phylib; e1000 drives the PHY itself there.
-CONFIG_PHYLIB=y
-CONFIG_REALTEK_PHY=y
-
 # --- regulator core: rear-USB VBUS (gpio44) under port power control (patch 0016) ---
 CONFIG_REGULATOR=y
 CONFIG_REGULATOR_FIXED_VOLTAGE=y

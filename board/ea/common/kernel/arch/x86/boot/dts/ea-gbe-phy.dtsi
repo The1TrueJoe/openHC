@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * RTL8211E PHY on the GbE's own MDIO bus (boards without the switch), driven
- * by phylib through e1000 (patches 0022-0024). Its LED pins are the jack LEDs.
+ * by phylink through e1000 (patches 0022-0024). Its LED pins are the jack LEDs.
  * See site/src/content/docs/ea/switch.md (Jack LEDs).
  */
 #include <dt-bindings/leds/common.h>

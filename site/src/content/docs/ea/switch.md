@@ -22,10 +22,10 @@ into switch port 5 (stock calls this "internal fake phy" mode), and the
 **BCM53125 managed switch sits behind it on SPI, not MDIO**. The two external
 RJ45s are switch ports; the CPU is another switch port.
 
-This is why openHC carries an `e1000` patch that reads the GbE's `fixed-link`
-node ([device tree](/ea/device-tree/#the-gbe-fixed-link)), and it's applied
-always, not as part of the `switch` feature, because it's what gives `eth0` a
-link on the primary jack at all.
+This is why openHC's e1000 patches give the GbE a phylink fixed link from its
+`fixed-link` node ([device tree](/ea/device-tree/#the-gbe-fixed-link)), and
+they're applied always, not as part of the `switch` feature, because that's
+what gives `eth0` a link on the primary jack at all.
 
 ## The switch is fully inspectable from a running stock unit
 
@@ -175,7 +175,7 @@ interface and the primary jack works as before.
 
 The feature is switched off by default, partly to keep an image under the
 [copy window](/ea/boot-chain/#the-copy-window). It isn't needed to reach
-the network: the always-applied e1000 fixed-link patch gives `eth0` on the primary jack
+the network: the always-applied e1000 fixed link gives `eth0` on the primary jack
 on its own.
 
 ## The CE5300 SSP is Quark's SSP (patch 0009)
