@@ -1,10 +1,12 @@
-iio: ABI: Move out_resistance_raw_available to sysfs-bus-iio
+iio: ABI: Move out_resistance_raw_available to
 
 The available raw values of a resistance output were documented only
 for the mcp4531, without the channel index. ds1803, mcp4531, tpl0102
 and x9250 all report them, and indexed channels name the attribute
 out_resistanceY_raw_available. Document both forms with the other
 generic resistance attributes and drop the driver-specific file.
+
+Signed-off-by: Joseph Telaak <joseph@telaak.dev>
 ---
  Documentation/ABI/testing/sysfs-bus-iio                  | 9 +++++++++
  .../ABI/testing/sysfs-bus-iio-potentiometer-mcp4531      | 8 --------

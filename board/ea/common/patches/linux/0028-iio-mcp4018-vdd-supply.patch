@@ -3,6 +3,8 @@ iio: potentiometer: mcp4018: Turn on the vdd supply
 Get and enable the vdd supply at probe, so a board that switches the
 potentiometer's supply gets it powered before the wiper is used. On
 boards that describe no supply, this gets the dummy regulator.
+
+Signed-off-by: Joseph Telaak <joseph@telaak.dev>
 ---
  drivers/iio/potentiometer/mcp4018.c | 6 ++++++
  1 file changed, 6 insertions(+)

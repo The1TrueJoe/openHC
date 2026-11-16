@@ -1,9 +1,11 @@
-iio: potentiometer: mcp4018: Report the available wiper positions
+iio: potentiometer: mcp4018: Report the available wiper
 
 Implement read_avail for the raw value, as ds1803, mcp4531, tpl0102 and
 x9250 already do. User space then sees out_resistance0_raw_available,
 and an in-kernel consumer can learn the wiper range with
 iio_read_max_channel_raw() instead of hardcoding it.
+
+Signed-off-by: Joseph Telaak <joseph@telaak.dev>
 ---
  drivers/iio/potentiometer/mcp4018.c | 20 ++++++++++++++++++++
  1 file changed, 20 insertions(+)
