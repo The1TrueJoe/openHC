@@ -78,11 +78,6 @@ index 26af616c33f5..0a9db17369bf 100644
 +	return div;
 +}
 +
-+/*
-+ * With TDM slots the frame is slots x slot_width bit clocks. McBSP sends its
-+ * words back to back, so a sample must fill its slot, channels go to the
-+ * first slots, and I2S/left-justified (one word per phase) need two slots.
-+ */
 +static unsigned int omap_mcbsp_slot_rate_list(struct omap_mcbsp *mcbsp,
 +					      unsigned int *list)
 +{
@@ -106,6 +101,11 @@ index 26af616c33f5..0a9db17369bf 100644
 +				 list, 0);
 +}
 +
++/*
++ * With TDM slots the frame is slots x slot_width bit clocks. McBSP sends its
++ * words back to back, so a sample must fill its slot, channels go to the
++ * first slots, and I2S/left-justified (one word per phase) need two slots.
++ */
 +static int omap_mcbsp_slot_constraints(struct snd_pcm_substream *substream,
 +				       struct omap_mcbsp *mcbsp)
 +{
