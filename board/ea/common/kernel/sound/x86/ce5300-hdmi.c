@@ -110,6 +110,7 @@
 #define HDMI_STATUS		0x1008	/* hdmi_general_get_status */
 #define   HDMI_STATUS_HPD	BIT(0)
 #define HDMI_INT_MASK		0x1004
+#define   HDMI_INT_MASK_STOCK	0x1ae0bf	/* __hdmi_hw_init's value */
 /* Latched whether masked (+0x1004) or not; write 1 to clear. */
 #define HDMI_INT_STATUS		0x100c
 #define   HDMI_INT_HPD		BIT(0)	/* HPD changed */
@@ -1096,6 +1097,8 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 		 hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI ? "HDMI" : "DVI");
 
 	ce5300_hdmi_5v_on(h);
+	/* As stock does before trusting HPD. IRQ 34 is never requested here. */
+	hdmi_write(h, HDMI_INT_MASK, HDMI_INT_MASK_STOCK);
 	{
 		struct dentry *d = debugfs_create_dir("ce5300-hdmi", NULL);
 
