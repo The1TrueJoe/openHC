@@ -52,7 +52,7 @@ index 915008e..e4fc48d 100644
  	tristate "B53 SPI connected switch driver"
  	depends on B53 && SPI
 diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
-index 00725c7..024f253 100644
+index 00725c7..55355f2 100644
 --- a/drivers/net/dsa/b53/b53_common.c
 +++ b/drivers/net/dsa/b53/b53_common.c
 @@ -21,9 +21,11 @@
@@ -448,14 +448,14 @@ index 00725c7..024f253 100644
  	const struct b53_arl_ops *arl_ops;
  };
  
-@@ -2925,6 +3276,7 @@ static const struct b53_chip_data b53_switch_chips[] = {
- 		.duplex_reg = B53_DUPLEX_STAT_GE,
- 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
- 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
-+		.leds = true,
- 		.arl_ops = &b53_arl_ops_95,
- 	},
+@@ -2916,6 +3267,7 @@ static const struct b53_chip_data b53_switch_chips[] = {
  	{
+ 		.chip_id = BCM53125_DEVICE_ID,
+ 		.dev_name = "BCM53125",
++		.leds = true,
+ 		.vlans = 4096,
+ 		.enabled_ports = 0x1ff,
+ 		.arl_bins = 4,
 @@ -3138,6 +3490,7 @@ static int b53_switch_init(struct b53_device *dev)
  			dev->num_arl_bins = chip->arl_bins;
  			dev->num_arl_buckets = chip->arl_buckets;
