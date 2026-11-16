@@ -20,12 +20,18 @@ takeover:
 | Unit is running | Identified from |
 |---|---|
 | stock Control4 | `/proc/c4board` |
-| openHC | `/opt/ohc/board.env` |
+| openHC | `/etc/openhc-release` (older images: `/opt/ohc/board.env`), overruled on an EA by its [board-ID straps](/ea/#the-identity-straps) |
 | nothing — sitting at the CEFDK shell | the banner's `Type N, Rev M` |
 
 The known-board table carries type and revision pairs **measured against real
 units**. Where a variant has never been read off hardware, its ids are explicitly
 absent, and detection then reports an **honest ambiguity rather than guessing**.
+
+When a unit's type and revision (from `/proc/c4board`, the CEFDK banner or the EA
+straps) match no board in the table, the CLI and the app say so and log the raw
+ids, the OS version and the MAC prefix. They also show a link to a prefilled
+GitHub issue with the straps, type, revision, model and flasher version, so the
+board can be added. Nothing is sent unless you open the link and submit it.
 
 An ambiguity costs a question. A wrong guess flashes the wrong image at someone's
 board.
