@@ -965,6 +965,7 @@ impl App {
             running: conn.id.running,
             version: None,
             raw: conn.id.raw.clone(),
+            warning: None,
         };
         let (chosen, rejected) = method::choose(&id, None);
 
@@ -1629,6 +1630,7 @@ fn method_for(b: &'static ohc_flash_core::board::Board) -> Option<Method> {
         running: ohc_flash_core::board::Running::Stock,
             version: None,
         raw: vec![],
+        warning: None,
     };
     method::choose(&id, None).0
 }
@@ -1737,6 +1739,7 @@ fn gate(
                 running: id.running,
             version: None,
                 raw: vec![],
+                warning: None,
             };
             match method::choose(&probe, None).0 {
                 Some(Method::Network | Method::Kexec | Method::Grub | Method::Nand | Method::Sd) => None,
@@ -1785,7 +1788,7 @@ mod tests {
     fn id_for(name: &str) -> Identity {
         let b = board::by_name(name).unwrap();
         Identity { board: Some(b), candidates: vec![b], running: Running::Stock,
-            version: None, raw: vec![] }
+            version: None, raw: vec![], warning: None }
     }
 
     /// The gate is the last thing between a user and a wrong write, so it gets
@@ -1875,7 +1878,7 @@ mod tests {
                 host: "10.0.0.9".into(),
                 ssh: tp::Ssh::new("10.0.0.9", "root", None),
                 id: Identity { board: Some(b), candidates: vec![b], running: Running::Openhc,
-            version: None, raw: vec![] },
+            version: None, raw: vec![], warning: None },
                 installed_version: Some("old-dev".into()),
             });
             g.latest = Some(

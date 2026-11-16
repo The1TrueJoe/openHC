@@ -20,7 +20,7 @@ takeover:
 | Unit is running | Identified from |
 |---|---|
 | stock Control4 | `/proc/c4board` |
-| openHC | `/opt/ohc/board.env` |
+| openHC | `/etc/openhc-release` (older images: `/opt/ohc/board.env`), overruled on an EA by its [board-ID straps](/ea/#the-identity-straps) |
 | nothing — sitting at the CEFDK shell | the banner's `Type N, Rev M` |
 
 The known-board table carries type and revision pairs **measured against real

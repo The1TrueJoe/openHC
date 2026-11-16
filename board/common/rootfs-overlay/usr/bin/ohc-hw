@@ -3,6 +3,7 @@
 #
 #   ohc-hw model       device-tree model         Control4 EA-3 v1
 #   ohc-hw board       openHC board name         ea3-v1 (control4,ea3-v1)
+#   ohc-hw straps      board-ID straps           0x26 (board_id0 = bit 0)
 #   ohc-hw dsa-ports   DSA user ports            lan1 lan2
 #   ohc-hw lan-ifaces  interfaces that are up, minus loopback, DSA ports and
 #                      conduits and bridge ports; wired before wireless
@@ -20,6 +21,16 @@ board)
     b=$(dt_str compatible | sed -n 's/^control4,//p' | head -1)
     [ -n "$b" ] || b=$(sed -n 's/^board=//p' /etc/openhc-release 2>/dev/null)
     echo "${b:-unknown}"
+    ;;
+straps)
+    v=0 i=0
+    while l=$(gpiofind "board_id$i" 2>/dev/null); do
+        b=$(gpioget $l) || exit 1
+        v=$((v | b << i))
+        i=$((i + 1))
+    done
+    [ $i -gt 0 ] || exit 1
+    printf '0x%02x\n' $v
     ;;
 dsa-ports)
     for d in "$NET"/*; do
@@ -45,7 +56,7 @@ lan-ifaces)
     done
     ;;
 *)
-    echo "usage: ohc-hw {model|board|dsa-ports|lan-ifaces}" >&2
+    echo "usage: ohc-hw {model|board|straps|dsa-ports|lan-ifaces}" >&2
     exit 1
     ;;
 esac

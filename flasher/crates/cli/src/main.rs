@@ -241,7 +241,7 @@ fn plan(rest: &[String]) -> bool {
     };
     let Some(b) = board::by_name(name) else { eprintln!("unknown board '{name}'"); return false };
     let id = ohc_flash_core::Identity { board: Some(b), candidates: vec![b], running: board::Running::Stock,
-            version: None, raw: vec![] };
+            version: None, raw: vec![], warning: None };
     println!("  board:  {} ({})", b.name, b.desc);
 
     // Named method: show just that one. Otherwise show the preferred method and
@@ -678,11 +678,12 @@ fn install(rest: &[String]) -> bool {
         match board::by_name(&name) {
             Some(b) => {
                 println!("  target: {} ({}) [forced]", b.name, b.desc);
-                // A forced board is also the identity the method selection uses.
-                // EA3 v1/v2 are indistinguishable over SSH, so identify() leaves
-                // id.board None; without this, method::choose rejects every
-                // method as "board not identified" even though the operator just
-                // named one — which is exactly the install that cannot proceed.
+                if id.certain() && id.board.is_some_and(|d| d.name != b.name) {
+                    println!("  WARNING: this unit identifies as {}", id.describe());
+                }
+                // A forced board is also the identity the method selection uses:
+                // an unread revision leaves id.board None, and method::choose
+                // would reject every method as "board not identified".
                 id.board = Some(b);
                 b
             }

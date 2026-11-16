@@ -47,7 +47,7 @@ mod tests {
 
     fn ident(name: &str, running: Running) -> Identity {
         let b = board::by_name(name).expect("board in the table");
-        Identity { board: Some(b), candidates: vec![b], running, version: None, raw: vec![] }
+        Identity { board: Some(b), candidates: vec![b], running, version: None, raw: vec![], warning: None }
     }
 
     #[test]
@@ -422,6 +422,46 @@ mod tests {
         let id = board::from_c4board(None, Some(2), Some(99));
         assert!(!id.certain());
         assert!(id.candidates.len() > 1); // ea3-v1 and ea3-v2 both type 2
+    }
+
+    #[test]
+    fn ea_straps_identify_the_board() {
+        // Read off units: a v1 (AR9462 Wi-Fi) 0x26, the rev-9 v2 0x29.
+        let id = board::from_ea_straps(0x26, Running::Openhc);
+        assert_eq!(id.board.unwrap().name, "ea3-v1");
+        assert!(id.certain());
+        assert_eq!(board::from_ea_straps(0x29, Running::Openhc).board.unwrap().name, "ea3-v2");
+        assert_eq!(board::from_ea_straps(0x15, Running::Openhc).board.unwrap().name, "ea1-v1");
+    }
+
+    #[test]
+    fn straps_overrule_the_installed_image() {
+        let rel = |b: &str| board::from_release(&format!("board={b}\n"));
+        let straps = |s| board::from_ea_straps(s, Running::Openhc);
+
+        // The v2 image on a v1: the straps win, with a warning.
+        let id = board::with_straps(rel("ea3-v2"), straps(0x26));
+        assert_eq!(id.board.unwrap().name, "ea3-v1");
+        assert!(id.certain());
+        assert!(id.warning.is_some());
+        assert!(id.describe().contains("WARNING"));
+
+        // The right image: no warning.
+        let id = board::with_straps(rel("ea3-v2"), straps(0x29));
+        assert_eq!(id.board.unwrap().name, "ea3-v2");
+        assert!(id.warning.is_none());
+
+        // An unread revision of the right type keeps the installed board.
+        let id = board::with_straps(rel("ea3-v2"), straps(0x2a));
+        assert_eq!(id.board.unwrap().name, "ea3-v2");
+        assert!(id.warning.is_none());
+
+        // An image for another model altogether: no board, the straps' candidates.
+        let id = board::with_straps(rel("ea1-v1"), straps(0x2a));
+        assert!(id.board.is_none());
+        assert!(id.warning.is_some());
+        let names: Vec<_> = id.candidates.iter().map(|b| b.name).collect();
+        assert_eq!(names, ["ea3-v1", "ea3-v2"]);
     }
 
     #[test]
