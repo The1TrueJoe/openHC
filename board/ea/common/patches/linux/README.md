@@ -32,6 +32,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0017 | PCI bridge keeps its ACPI companion | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which used to cost it its ACPI companion and so every bus-1 device its IRQ (the _PRT lives there); a bridge with a DT node now gets its companion too, with the node kept as of_node only, as `device_add_of_node()` does |
 | 0019 | b53 BPDU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode traps BPDUs to the unwired IMP port 8, so STP never sees a loop; mirror them to port 5 (WAN-port select also delivers them but stops lan1↔lan2 forwarding) |
 | 0020 | simple-card `link-name` | name a link's PCM from the DT (`simple-audio-card,link-name` or `link-name` on a dai-link) instead of `<cpu dai>-<codec dai>`, so the EA3's PCMs are `Analog`, `Coax` and `Coax in`; also stops passing the name as a format string |
+| 0025–0029 | mcp4018: AD5246 + `read_avail` + vdd; its binding; generic `out_resistanceY_raw_available` ABI | the EA-3 v2's fan speed is an AD5246, which needs an IIO channel for iio-fan (the `iio-fan` submodule). Upstream-ready series for iio.git, not sent yet |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now

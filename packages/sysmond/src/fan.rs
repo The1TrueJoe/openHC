@@ -6,10 +6,10 @@
 //! daemon and writes to another for no reason a user could see.
 //!
 //! The KERNEL runs the fan. The board's device tree makes it a pwm-fan (hwmon
-//! `pwmfan`, thermal cooling device `pwm-fan`), or on the EA-3 v2 an on/off
-//! gpio-fan (`gpio_fan`, `gpio-fan`), in a thermal zone whose trips are the fan
-//! curve, and the zone's step_wise governor moves it. So there is no daemon to
-//! talk to, only the kernel's own files:
+//! `pwmfan`, thermal cooling device `pwm-fan`), or on the EA-3 v2 an iio-fan
+//! (`iiofan`, `iio-fan`), in a thermal zone whose trips are the fan curve, and
+//! the zone's step_wise governor moves it. So there is no daemon to talk to,
+//! only the kernel's own files:
 //!
 //! * manual = the zone's `policy` switched to `user_space` (the governor stops
 //!   moving the fan), then the fan's hwmon `pwm1` written;
@@ -44,7 +44,7 @@ fn entries(dir: &str) -> Vec<PathBuf> {
 
 /// The kernel objects that make up the fan, found by their driver-given names.
 struct Fan {
-    /// hwmon dir of the fan: `pwm1` is 0-255 (a gpio-fan rounds it to a speed).
+    /// hwmon dir of the fan: `pwm1` is 0-255.
     hwmon: PathBuf,
     /// Its thermal cooling device: `cur_state`/`max_state` index cooling-levels.
     cdev: Option<PathBuf>,
@@ -58,7 +58,7 @@ impl Fan {
     /// control.
     fn find() -> Option<Fan> {
         // (hwmon name, cooling device type) per fan driver
-        const DRIVERS: [(&str, &str); 2] = [("pwmfan", "pwm-fan"), ("gpio_fan", "gpio-fan")];
+        const DRIVERS: [(&str, &str); 2] = [("pwmfan", "pwm-fan"), ("iiofan", "iio-fan")];
         let (hwmon, ctype) = entries(HWMON).into_iter().find_map(|d| {
             let name = rd(&d.join("name"))?;
             DRIVERS.iter().find(|(h, _)| *h == name).map(|(_, c)| (d, *c))

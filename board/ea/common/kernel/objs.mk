@@ -56,3 +56,9 @@ sound/x86/Makefile|obj-m += ce5300-hdmi.o
 # its own Kconfig symbol gates it (features/sgx/linux.fragment).
 drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/powervr_sgx/Kconfig"
 drivers/gpu/drm/Makefile|obj-$(CONFIG_DRM_POWERVR_SGX) += powervr_sgx/
+
+# --- fan: iio-fan (the iio-fan submodule), a fan whose speed is an IIO channel ---
+# Copied to drivers/hwmon/iio-fan by OHC_KERNEL_DRIVER_REPOS; its own Kconfig
+# symbol gates it (ea3-v2's linux.fragment).
+drivers/hwmon/Kconfig|source "drivers/hwmon/iio-fan/Kconfig"
+drivers/hwmon/Makefile|obj-$(CONFIG_SENSORS_IIO_FAN) += iio-fan/

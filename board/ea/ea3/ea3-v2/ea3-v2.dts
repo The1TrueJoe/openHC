@@ -16,11 +16,8 @@
 /*
  * The fan is not on the PWM: ldo_enable (GPIO 43) switches its regulator and
  * an AD5246 sets its speed (stock c4faultd's AD5246 path). See docs ea/fan.
+ * Same node label as ea.dtsi's pwm-fan, so its cooling maps carry over.
  */
-&{/thermal-zones/heatsink-thermal} {
-	/delete-node/ cooling-maps;
-};
-
 /delete-node/ &fan;
 
 &gpio {
@@ -28,36 +25,38 @@
 };
 
 &i2c0 {
-	/* Fan speed: 7-bit wiper, power-on 0x40; higher is faster. */
+	/* Variant not read off the part: only IIO's scale depends on it. */
 	fan_speed: potentiometer@2e {
-		compatible = "adi,ad5246";
+		compatible = "adi,ad5246-010";
 		reg = <0x2e>;
+		vdd-supply = <&fan_pot_vdd>;
+		#io-channel-cells = <0>;
 	};
 };
 
 / {
-	fan: gpio-fan {
-		compatible = "gpio-fan";
-		label = "Fan";
+	/* The pot's always-on board rail; its voltage isn't measured. */
+	fan_pot_vdd: regulator-fan-pot-vdd {
+		compatible = "regulator-fixed";
+		regulator-name = "fan_pot_vdd";
+		regulator-always-on;
+	};
+
+	fan_ldo: regulator-fan {
+		compatible = "regulator-fixed";
+		regulator-name = "fan";
 		gpios = <&gpio 43 GPIO_ACTIVE_HIGH>;
-		/* No tachometer: 0 = off, 1 = on. */
-		gpio-fan,speed-map = <0 0>, <1 1>;
+		enable-active-high;
+		regulator-boot-on;
+	};
+
+	fan: fan {
+		compatible = "io-channel-fan";
+		label = "Fan";
+		io-channels = <&fan_speed>;
+		fan-supply = <&fan_ldo>;
+		/* off, then 30% to 100% in tens; tune the floor by ear */
+		cooling-levels = <0 77 102 128 153 179 204 230 255>;
 		#cooling-cells = <2>;
 	};
-
-	thermal-zones {
-		heatsink-thermal {
-			cooling-maps {
-				map-on {
-					trip = <&fan_on>;
-					cooling-device = <&fan 1 1>;
-				};
-			};
-		};
-	};
-};
-
-/* On/off only, so a wider band than the stepped curve's 1 C. */
-&fan_on {
-	hysteresis = <5000>;
 };

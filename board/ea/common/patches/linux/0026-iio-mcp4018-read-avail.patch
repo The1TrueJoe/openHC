@@ -1,0 +1,54 @@
+iio: potentiometer: mcp4018: Report the available wiper positions
+
+Implement read_avail for the raw value, as ds1803, mcp4531, tpl0102 and
+x9250 already do. User space then sees out_resistance0_raw_available,
+and an in-kernel consumer can learn the wiper range with
+iio_read_max_channel_raw() instead of hardcoding it.
+---
+ drivers/iio/potentiometer/mcp4018.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/drivers/iio/potentiometer/mcp4018.c b/drivers/iio/potentiometer/mcp4018.c
+index b10b4b920dc0..53471bd24640 100644
+--- a/drivers/iio/potentiometer/mcp4018.c
++++ b/drivers/iio/potentiometer/mcp4018.c
+@@ -49,9 +49,12 @@ static const struct iio_chan_spec mcp4018_channel = {
+ 	.output = 1,
+ 	.channel = 0,
+ 	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
++	.info_mask_separate_available = BIT(IIO_CHAN_INFO_RAW),
+ 	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
+ };
+ 
++static const int mcp4018_wiper_avail[] = { 0, 1, MCP4018_WIPER_MAX };
++
+ static int mcp4018_read_raw(struct iio_dev *indio_dev,
+ 			    struct iio_chan_spec const *chan,
+ 			    int *val, int *val2, long mask)
+@@ -93,9 +96,26 @@ static int mcp4018_write_raw(struct iio_dev *indio_dev,
+ 	return i2c_smbus_write_byte(data->client, val);
+ }
+ 
++static int mcp4018_read_avail(struct iio_dev *indio_dev,
++			      struct iio_chan_spec const *chan,
++			      const int **vals, int *type, int *length,
++			      long mask)
++{
++	switch (mask) {
++	case IIO_CHAN_INFO_RAW:
++		*vals = mcp4018_wiper_avail;
++		*type = IIO_VAL_INT;
++		*length = ARRAY_SIZE(mcp4018_wiper_avail);
++		return IIO_AVAIL_RANGE;
++	default:
++		return -EINVAL;
++	}
++}
++
+ static const struct iio_info mcp4018_info = {
+ 	.read_raw = mcp4018_read_raw,
+ 	.write_raw = mcp4018_write_raw,
++	.read_avail = mcp4018_read_avail,
+ };
+ 
+ #define MCP4018_ID_TABLE(_name, cfg) {				\

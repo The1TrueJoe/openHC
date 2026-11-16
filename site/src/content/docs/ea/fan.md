@@ -48,15 +48,34 @@ AD5246 (which also switches `ldo_enable`), PWM channel 2, then an LTC1695, and
 uses the first one present. Stock's `c4_gpio_config` drives `ldo_enable` high on
 every board, and nothing else in stock touches it.
 
-So `ea3-v2.dts` replaces the pwm-fan with a mainline **`gpio-fan`** on GPIO 43
-(off or on) and drops the `ldo_enable` hog. A single cooling map turns it on at
-the 50 °C trip, and it goes off below 45 °C: on/off needs a wider band than the
-stepped curve's 1 °C. The AD5246 is bound to mainline `ad525x_dpot`, so its
-wiper is `rdac0` under `/sys/bus/i2c/devices/0-002e/`. Nothing writes it, so the
-fan runs at the power-on speed.
+So `ea3-v2.dts` replaces the pwm-fan with an **`io-channel-fan`** (the
+iio-fan driver) under the same `fan` label, so `ea.dtsi`'s curve and cooling
+maps apply unchanged:
 
-sysmond finds a `gpio_fan` like a pwm-fan. Manual control is on or off, any
-non-zero percent is on, and the Health panel shows no RPM for it.
+- **Speed:** the AD5246, through the `mcp4018` IIO driver. A cooling level from
+  0 to 255 is scaled onto the wiper's 0–127.
+- **Power:** a `regulator-fixed` on GPIO 43 is the fan's `fan-supply`, so level 0
+  turns the fan off. The `ldo_enable` hog is gone on the v2.
+- **The floor:** the lowest level is the pwm-fan's 30% (wiper 38) for now. The
+  real floor is the quietest wiper that still starts the fan from standstill,
+  which needs to be found by ear.
+
+The regulator core is only in the real kernel, so the bootstrap kernel drives
+the speed but not the supply: GPIO 43 stays as CEFDK left it until `S00kexec`
+hands over.
+
+The AD5246's resistance variant (5, 10, 50 or 100 kΩ) can't be read over I2C,
+since the part has no ID register, and this one hasn't been read off the
+package. The tree says `adi,ad5246-010`. Only IIO's scale depends on it; the fan
+uses raw wiper values.
+
+The fan driver is its own repository, [iio-fan](https://github.com/The1TrueJoe/iio-fan),
+a submodule at `board/ea/common/iio-fan` that the build copies into the kernel
+tree. The AD5246 support in `mcp4018` is written for upstream (IIO); until it
+lands, openHC carries it as patches 0025–0029.
+
+sysmond finds the `iiofan` hwmon and `iio-fan` cooling device the same way as a
+pwm-fan, and manual control works the same.
 
 The EA-3 v1 has no AD5246. Its fan is assumed to be on PWM channel 2 like the
 EA-1's, which isn't confirmed by ear yet.

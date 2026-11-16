@@ -1,0 +1,40 @@
+iio: potentiometer: mcp4018: Turn on the vdd supply
+
+Get and enable the vdd supply at probe, so a board that switches the
+potentiometer's supply gets it powered before the wiper is used. On
+boards that describe no supply, this gets the dummy regulator.
+---
+ drivers/iio/potentiometer/mcp4018.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/iio/potentiometer/mcp4018.c b/drivers/iio/potentiometer/mcp4018.c
+index 53471bd24640..0d80bdfdf243 100644
+--- a/drivers/iio/potentiometer/mcp4018.c
++++ b/drivers/iio/potentiometer/mcp4018.c
+@@ -17,6 +17,7 @@
+ #include <linux/iio/iio.h>
+ #include <linux/module.h>
+ #include <linux/property.h>
++#include <linux/regulator/consumer.h>
+ 
+ #define MCP4018_WIPER_MAX 127
+ 
+@@ -167,6 +168,7 @@ static int mcp4018_probe(struct i2c_client *client)
+ 	struct device *dev = &client->dev;
+ 	struct mcp4018_data *data;
+ 	struct iio_dev *indio_dev;
++	int ret;
+ 
+ 	if (!i2c_check_functionality(client->adapter,
+ 				     I2C_FUNC_SMBUS_BYTE)) {
+@@ -174,6 +176,10 @@ static int mcp4018_probe(struct i2c_client *client)
+ 		return -EOPNOTSUPP;
+ 	}
+ 
++	ret = devm_regulator_get_enable(dev, "vdd");
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to enable vdd supply\n");
++
+ 	indio_dev = devm_iio_device_alloc(dev, sizeof(*data));
+ 	if (!indio_dev)
+ 		return -ENOMEM;
