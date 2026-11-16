@@ -1,0 +1,413 @@
+net: dsa: b53: add LED support for BCM531x5
+
+BCM531x5 switches drive the port LEDs from one controller. Each port
+shifts out the functions set in one of two 16-bit function words that
+all ports share, highest bit first, so LED n of a port shows the n-th
+highest function set in its word. A per-port map picks the word, and
+two mode maps put a port's LEDs off, on, blinking or under control of
+the functions. b53 leaves all of this at its strap defaults.
+
+Register the LEDs described under a user port's "leds" node as LED
+class devices the netdev trigger can offload: link, activity, link and
+activity, full duplex, and link or link and activity at given speeds.
+A request is refused when the order of the port's LEDs cannot express
+it, or when both words hold something else for other ports with LEDs.
+The mode maps work per port, not per LED, so the LEDs have no
+brightness control of their own. Ports without LED nodes are left as
+they are.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+diff --git a/drivers/net/dsa/b53/Kconfig b/drivers/net/dsa/b53/Kconfig
+index 915008e..3ce892e 100644
+--- a/drivers/net/dsa/b53/Kconfig
++++ b/drivers/net/dsa/b53/Kconfig
+@@ -12,6 +12,18 @@ menuconfig B53
+ 	  BCM5325E, BCM5365, BCM539x, BCM53115 and BCM53125 as well as BCM63XX
+ 	  integrated switches.
+ 
++config B53_LEDS
++	bool "LED support for BCM531x5 switches"
++	depends on B53
++	depends on LEDS_CLASS=y || LEDS_CLASS=B53
++	select LEDS_TRIGGER_NETDEV
++	help
++	  Register the port LEDs described in the device tree as LED class
++	  devices that the netdev trigger can offload to the switch. The
++	  switch shows link, speed, duplex and activity per LED; the order
++	  of a port's LEDs follows the order of its function bits, and all
++	  ports share two function words.
++
+ config B53_SPI_DRIVER
+ 	tristate "B53 SPI connected switch driver"
+ 	depends on B53 && SPI
+diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
+index 00725c7..6ae8e30 100644
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -21,9 +21,11 @@
+ #include <linux/export.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/kernel.h>
++#include <linux/leds.h>
+ #include <linux/math.h>
+ #include <linux/minmax.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/platform_data/b53.h>
+ #include <linux/phy.h>
+ #include <linux/phylink.h>
+@@ -664,6 +666,273 @@ static void b53_eee_enable_set(struct dsa_switch *ds, int port, bool enable)
+ 	b53_write16(dev, B53_EEE_PAGE, B53_EEE_EN_CTRL, reg);
+ }
+ 
++#if IS_ENABLED(CONFIG_B53_LEDS)
++#define B53_LEDS_PER_PORT	4
++#define B53_LED_MODE_AUTO	3
++
++struct b53_led {
++	struct led_classdev cdev;
++	struct b53_device *dev;
++	int port;
++	u8 index;
++};
++
++#define B53_LED_RXTX	(BIT(TRIGGER_NETDEV_RX) | BIT(TRIGGER_NETDEV_TX))
++
++/* What each LED function shows, in netdev trigger terms */
++static const struct {
++	u16 func;
++	unsigned long rules;
++} b53_led_funcs[] = {
++	{ B53_LED_LNK, BIT(TRIGGER_NETDEV_LINK) },
++	{ B53_LED_DPX, BIT(TRIGGER_NETDEV_FULL_DUPLEX) },
++	{ B53_LED_ACT, B53_LED_RXTX },
++	{ B53_LED_LNK_ACT, BIT(TRIGGER_NETDEV_LINK) | B53_LED_RXTX },
++	{ B53_LED_SPD10M, BIT(TRIGGER_NETDEV_LINK_10) },
++	{ B53_LED_SPD100M, BIT(TRIGGER_NETDEV_LINK_100) },
++	{ B53_LED_SPD1G, BIT(TRIGGER_NETDEV_LINK_1000) },
++	{ B53_LED_10M_ACT, BIT(TRIGGER_NETDEV_LINK_10) | B53_LED_RXTX },
++	{ B53_LED_100M_ACT, BIT(TRIGGER_NETDEV_LINK_100) | B53_LED_RXTX },
++	{ B53_LED_10_100M_ACT, BIT(TRIGGER_NETDEV_LINK_10) |
++			       BIT(TRIGGER_NETDEV_LINK_100) | B53_LED_RXTX },
++	{ B53_LED_1G_ACT, BIT(TRIGGER_NETDEV_LINK_1000) | B53_LED_RXTX },
++};
++
++static int b53_led_rules_to_func(unsigned long rules)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(b53_led_funcs); i++)
++		if (b53_led_funcs[i].rules == rules)
++			return b53_led_funcs[i].func;
++
++	return -EOPNOTSUPP;
++}
++
++/* A port shifts out the functions set in its word, highest bit first:
++ * LED n of the port shows the n-th highest set bit.
++ */
++static u16 b53_led_nth_func(u16 word, unsigned int n)
++{
++	while (word) {
++		u16 bit = BIT(__fls(word));
++
++		if (!n--)
++			return bit;
++		word &= ~bit;
++	}
++
++	return 0;
++}
++
++static int b53_led_hw_control_is_supported(struct led_classdev *ldev,
++					   unsigned long rules)
++{
++	int func = b53_led_rules_to_func(rules);
++
++	return func < 0 ? func : 0;
++}
++
++static int b53_led_hw_control_set(struct led_classdev *ldev,
++				  unsigned long rules)
++{
++	struct b53_led *led = container_of(ldev, struct b53_led, cdev);
++	struct b53_device *dev = led->dev;
++	unsigned int num_leds = dev->ports[led->port].num_leds;
++	u16 map, en, mode[2], word[2], want = 0, prev = 0, others;
++	int func, set, i, ret = 0;
++
++	func = b53_led_rules_to_func(rules);
++	if (func < 0)
++		return func;
++
++	mutex_lock(&dev->led_mutex);
++
++	b53_read16(dev, B53_CTRL_PAGE, B53_LED_FUNC_MAP, &map);
++	b53_read16(dev, B53_CTRL_PAGE, B53_LED_FUNC_CTL(0), &word[0]);
++	b53_read16(dev, B53_CTRL_PAGE, B53_LED_FUNC_CTL(1), &word[1]);
++	set = !!(map & BIT(led->port));
++
++	/* This port's word with the new function in place; the order of
++	 * the LEDs fixes the order of the bits.
++	 */
++	for (i = 0; i < num_leds; i++) {
++		u16 bit = i == led->index ? func :
++				b53_led_nth_func(word[set], i);
++
++		if (!bit) {
++			if (i < led->index)
++				goto unsupported;
++			break;
++		}
++		if (prev && bit >= prev)
++			goto unsupported;
++		want |= bit;
++		prev = bit;
++	}
++
++	/* The two words are shared by all ports: reuse one that matches,
++	 * else rewrite one no other port with LEDs selects.
++	 */
++	others = dev->led_ports & ~BIT(led->port);
++	if (word[set] != want) {
++		if (word[!set] == want) {
++			set = !set;
++		} else if (others & (set ? map : ~map)) {
++			set = !set;
++			if (others & (set ? map : ~map))
++				goto unsupported;
++		}
++	}
++	if (word[set] != want)
++		b53_write16(dev, B53_CTRL_PAGE, B53_LED_FUNC_CTL(set), want);
++
++	if (set)
++		map |= BIT(led->port);
++	else
++		map &= ~BIT(led->port);
++	b53_write16(dev, B53_CTRL_PAGE, B53_LED_FUNC_MAP, map);
++
++	/* The mode is per port, not per LED: auto lets the function drive */
++	for (i = 0; i < 2; i++) {
++		b53_read16(dev, B53_CTRL_PAGE, B53_LED_MODE_MAP(i), &mode[i]);
++		b53_write16(dev, B53_CTRL_PAGE, B53_LED_MODE_MAP(i),
++			    mode[i] | BIT(led->port));
++	}
++	b53_read16(dev, B53_CTRL_PAGE, B53_LED_EN_MAP, &en);
++	b53_write16(dev, B53_CTRL_PAGE, B53_LED_EN_MAP, en | BIT(led->port));
++	goto out;
++
++unsupported:
++	ret = -EOPNOTSUPP;
++out:
++	mutex_unlock(&dev->led_mutex);
++	return ret;
++}
++
++static int b53_led_hw_control_get(struct led_classdev *ldev,
++				  unsigned long *rules)
++{
++	struct b53_led *led = container_of(ldev, struct b53_led, cdev);
++	struct b53_device *dev = led->dev;
++	u16 map, mode0, mode1, word;
++	int i, func, ret = -EOPNOTSUPP;
++
++	mutex_lock(&dev->led_mutex);
++	b53_read16(dev, B53_CTRL_PAGE, B53_LED_MODE_MAP(0), &mode0);
++	b53_read16(dev, B53_CTRL_PAGE, B53_LED_MODE_MAP(1), &mode1);
++	b53_read16(dev, B53_CTRL_PAGE, B53_LED_FUNC_MAP, &map);
++	b53_read16(dev, B53_CTRL_PAGE,
++		   B53_LED_FUNC_CTL(!!(map & BIT(led->port))), &word);
++	mutex_unlock(&dev->led_mutex);
++
++	if (!(mode0 & mode1 & BIT(led->port)))
++		return -EINVAL;
++
++	func = b53_led_nth_func(word, led->index);
++	for (i = 0; i < ARRAY_SIZE(b53_led_funcs); i++) {
++		if (b53_led_funcs[i].func == func) {
++			*rules |= b53_led_funcs[i].rules;
++			ret = 0;
++			break;
++		}
++	}
++
++	return ret;
++}
++
++static struct device *b53_led_hw_control_get_device(struct led_classdev *ldev)
++{
++	struct b53_led *led = container_of(ldev, struct b53_led, cdev);
++	struct dsa_port *dp = dsa_to_port(led->dev->ds, led->port);
++
++	return dp && dp->user ? &dp->user->dev : NULL;
++}
++
++static int b53_port_setup_leds(struct b53_device *dev, int port)
++{
++	struct dsa_port *dp = dsa_to_port(dev->ds, port);
++	struct led_init_data init_data = { };
++	struct device_node *leds;
++	unsigned int num_leds = 0;
++	u32 reg;
++	int ret = 0;
++
++	if (!is531x5(dev) || !dp->dn)
++		return 0;
++
++	leds = of_get_child_by_name(dp->dn, "leds");
++	if (!leds)
++		return 0;
++
++	for_each_available_child_of_node_scoped(leds, np) {
++		if (of_property_read_u32(np, "reg", &reg) ||
++		    reg >= B53_LEDS_PER_PORT) {
++			dev_err(dev->dev, "port %d: invalid LED %pOF\n", port, np);
++			ret = -EINVAL;
++			goto out;
++		}
++		num_leds = max(num_leds, reg + 1);
++	}
++	dev->ports[port].num_leds = num_leds;
++
++	init_data.default_label = ":port";
++	init_data.devname_mandatory = true;
++
++	for_each_available_child_of_node_scoped(leds, np) {
++		struct b53_led *led;
++
++		led = devm_kzalloc(dev->dev, sizeof(*led), GFP_KERNEL);
++		if (!led) {
++			ret = -ENOMEM;
++			break;
++		}
++
++		of_property_read_u32(np, "reg", &reg);
++		init_data.devicename = kasprintf(GFP_KERNEL, "%s:%02d:%02u",
++						 dev_name(dev->dev), port, reg);
++		if (!init_data.devicename) {
++			ret = -ENOMEM;
++			break;
++		}
++		led->dev = dev;
++		led->port = port;
++		led->index = reg;
++		led->cdev.max_brightness = 1;
++		led->cdev.hw_control_trigger = "netdev";
++		led->cdev.hw_control_is_supported =
++					b53_led_hw_control_is_supported;
++		led->cdev.hw_control_set = b53_led_hw_control_set;
++		led->cdev.hw_control_get = b53_led_hw_control_get;
++		led->cdev.hw_control_get_device = b53_led_hw_control_get_device;
++		init_data.fwnode = of_fwnode_handle(np);
++
++		ret = devm_led_classdev_register_ext(dev->dev, &led->cdev,
++						     &init_data);
++		kfree(init_data.devicename);
++		if (ret) {
++			dev_err(dev->dev, "port %d: failed to register %pOF\n",
++				port, np);
++			break;
++		}
++	}
++
++	if (!ret) {
++		mutex_lock(&dev->led_mutex);
++		dev->led_ports |= BIT(port);
++		mutex_unlock(&dev->led_mutex);
++	}
++out:
++	of_node_put(leds);
++	return ret;
++}
++#else
++static int b53_port_setup_leds(struct b53_device *dev, int port)
++{
++	return 0;
++}
++#endif
++
+ int b53_setup_port(struct dsa_switch *ds, int port)
+ {
+ 	struct b53_device *dev = ds->priv;
+@@ -693,6 +962,9 @@ int b53_setup_port(struct dsa_switch *ds, int port)
+ 		b53_write8(dev, B53_CTRL_PAGE, B53_PD_MODE_CTRL_25, reg);
+ 	}
+ 
++	if (dsa_is_user_port(ds, port))
++		return b53_port_setup_leds(dev, port);
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL(b53_setup_port);
+@@ -3241,6 +3513,7 @@ struct b53_device *b53_switch_alloc(struct device *base,
+ 	mutex_init(&dev->reg_mutex);
+ 	mutex_init(&dev->stats_mutex);
+ 	mutex_init(&dev->arl_mutex);
++	mutex_init(&dev->led_mutex);
+ 
+ 	return dev;
+ }
+diff --git a/drivers/net/dsa/b53/b53_priv.h b/drivers/net/dsa/b53/b53_priv.h
+index 34115a5..91ff5e0 100644
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -122,6 +122,7 @@ struct b53_port {
+ 	u16		vlan_ctl_mask;
+ 	u16		pvid;
+ 	struct ethtool_keee eee;
++	u8		num_leds;
+ };
+ 
+ struct b53_vlan {
+@@ -138,6 +139,8 @@ struct b53_device {
+ 	struct mutex reg_mutex;
+ 	struct mutex stats_mutex;
+ 	struct mutex arl_mutex;
++	/* LED function words and maps, shared by all ports */
++	struct mutex led_mutex;
+ 	const struct b53_io_ops *ops;
+ 	const struct b53_arl_ops *arl_ops;
+ 
+@@ -156,6 +159,8 @@ struct b53_device {
+ 
+ 	/* used ports mask */
+ 	u16 enabled_ports;
++	/* ports with LEDs registered */
++	u16 led_ports;
+ 	unsigned int imp_port;
+ 
+ 	/* connect specific data */
+diff --git a/drivers/net/dsa/b53/b53_regs.h b/drivers/net/dsa/b53/b53_regs.h
+index 54a278d..3b63a92 100644
+--- a/drivers/net/dsa/b53/b53_regs.h
++++ b/drivers/net/dsa/b53/b53_regs.h
+@@ -109,6 +109,27 @@
+ /* Bit 0 also powers down the switch. */
+ #define  PD_MODE_POWER_DOWN_PORT(i)	BIT(i)
+ 
++/* LED controller of BCM531x5 (16 bit, one bit per port in the maps) */
++#define B53_LED_FUNC_CTL(i)		(0x10 + 2 * (i))
++#define   B53_LED_PHYLED4		BIT(0)
++#define   B53_LED_LNK			BIT(1)
++#define   B53_LED_DPX			BIT(2)
++#define   B53_LED_ACT			BIT(3)
++#define   B53_LED_COL			BIT(4)
++#define   B53_LED_LNK_ACT		BIT(5)
++#define   B53_LED_DPX_COL		BIT(6)
++#define   B53_LED_SPD10M		BIT(7)
++#define   B53_LED_SPD100M		BIT(8)
++#define   B53_LED_SPD1G			BIT(9)
++#define   B53_LED_10M_ACT		BIT(10)
++#define   B53_LED_100M_ACT		BIT(11)
++#define   B53_LED_10_100M_ACT		BIT(12)
++#define   B53_LED_1G_ACT		BIT(13)
++#define   B53_LED_PHYLED3		BIT(15)
++#define B53_LED_FUNC_MAP		0x14
++#define B53_LED_EN_MAP			0x16
++#define B53_LED_MODE_MAP(i)		(0x18 + 2 * (i))
++
+ /* IP Multicast control (8 bit) */
+ #define B53_IP_MULTICAST_CTRL		0x21
+ #define  B53_IP_MC			BIT(0)

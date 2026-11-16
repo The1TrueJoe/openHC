@@ -1,0 +1,56 @@
+#!/bin/sh
+# Ethernet jack LEDs, the same on every board (as on the HC-250): yellow = link,
+# green = link and activity (on with link, blinks off with traffic).
+# The kernel registers the jack LEDs from the board DT as netdev-trigger LEDs
+# the hardware runs itself (b53: <switch>:<port>:<led>:<color>:lan).
+# See site docs ea/switch (Jack LEDs).
+
+LEDS=/sys/class/leds
+
+# netdev for a DSA user port's LED, from phys_port_name pN + the switch device
+dsa_netdev() {
+    led=${1##*/}
+    for net in /sys/class/net/*; do
+        pp=$(cat "$net/phys_port_name" 2>/dev/null) || continue
+        sw=$(basename "$(readlink "$net/device")")
+        case $led in
+            "$sw:$(printf %02d "${pp#p}"):"*) echo "${net##*/}"; return ;;
+        esac
+    done
+}
+
+set_led() {
+    led=$1 modes=$2
+    echo netdev > "$led/trigger" || return
+    # The trigger fills device_name when the LED is already offloaded.
+    [ -n "$(cat "$led/device_name")" ] || {
+        net=$(dsa_netdev "$led")
+        [ -n "$net" ] || { echo "port-leds: ${led##*/}: no netdev"; return; }
+        echo "$net" > "$led/device_name"
+    }
+    # rx and tx change one at a time: the step between may not offload.
+    for m in link link_10 link_100 link_1000 half_duplex full_duplex rx tx; do
+        [ -e "$led/$m" ] && echo 0 2>/dev/null > "$led/$m"
+    done
+    for m in $modes; do
+        echo 1 2>/dev/null > "$led/$m"
+    done
+    [ "$(cat "$led/offloaded" 2>/dev/null)" = 1 ] || echo "port-leds: ${led##*/}: not offloaded"
+    echo "port-leds: ${led##*/} -> $(cat "$led/device_name") $modes"
+}
+
+start() {
+    # A port's LEDs show its functions in a fixed order: set the last LED first.
+    for led in $(ls -d "$LEDS"/*:lan "$LEDS"/*:lan-* 2>/dev/null | sort -r); do
+        case ${led##*/} in
+            *:yellow:*) set_led "$led" "link" ;;
+            *:green:*) set_led "$led" "link rx tx" ;;
+        esac
+    done
+}
+
+case "$1" in
+    start|restart) start ;;
+    stop) ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
