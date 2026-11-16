@@ -154,7 +154,8 @@ fn sensors_in(hwmon: &Path, thermal: &Path, dt_zones: &Path) -> Sensors {
                 out.temps.push(Reading { slug: slugify(&label), label, chip: c.name.clone(), value: v / 1000 });
             }
         }
-        let fans = c.channels("fan", "_input");
+        // gpio-fan's fan1_input is its speed map, not a tachometer.
+        let fans = if c.name == "gpio_fan" { vec![] } else { c.channels("fan", "_input") };
         for &i in &fans {
             if let Some(v) = num(&c.path.join(format!("fan{i}_input"))) {
                 let label = c.label("fan", i, fans.len() == 1);
@@ -309,6 +310,22 @@ mod tests {
         assert_eq!(temps, [("heatsink", "Heatsink", "lm75", 42)]);
         let pwm: Vec<_> = s.pwm.iter().map(|r| (r.slug.as_str(), r.label.as_str(), r.chip.as_str(), r.value)).collect();
         assert_eq!(pwm, [("fan", "Fan", "pwmfan", 77)]);
+    }
+
+    /// The EA-3 v2's on/off gpio-fan: its pwm is listed, its speed-map "RPM" is not.
+    #[test]
+    fn gpio_fan_has_no_rpm() {
+        let root = std::env::temp_dir().join(format!("sysmond-gpiofan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        put(&root, "hwmon/hwmon0/name", b"gpio_fan\n");
+        put(&root, "hwmon/hwmon0/pwm1", b"255\n");
+        put(&root, "hwmon/hwmon0/fan1_input", b"1\n");
+
+        let s = sensors_in(&root.join("hwmon"), &root.join("thermal"), &root.join("dt"));
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(s.fans.is_empty());
+        assert_eq!(s.pwm.iter().map(|r| r.value).collect::<Vec<_>>(), [255]);
     }
 
     /// No device tree (the HC-800's coretemp, an ACPI zone's own hwmon): the

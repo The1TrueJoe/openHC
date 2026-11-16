@@ -9,3 +9,52 @@
 	model = "Control4 EA-3 v2";
 	compatible = "control4,ea3-v2", "intel,ce5300";
 };
+
+/*
+ * The fan is not on the PWM: ldo_enable (GPIO 43) switches its regulator and
+ * an AD5246 sets its speed (stock c4faultd's AD5246 path). See docs ea/fan.
+ */
+&{/thermal-zones/heatsink-thermal} {
+	/delete-node/ cooling-maps;
+};
+
+/delete-node/ &fan;
+
+&gpio {
+	/delete-node/ ldo-enable-hog;
+};
+
+&i2c0 {
+	/* Fan speed: 7-bit wiper, power-on 0x40; higher is faster. */
+	fan_speed: potentiometer@2e {
+		compatible = "adi,ad5246";
+		reg = <0x2e>;
+	};
+};
+
+/ {
+	fan: gpio-fan {
+		compatible = "gpio-fan";
+		label = "Fan";
+		gpios = <&gpio 43 GPIO_ACTIVE_HIGH>;
+		/* No tachometer: 0 = off, 1 = on. */
+		gpio-fan,speed-map = <0 0>, <1 1>;
+		#cooling-cells = <2>;
+	};
+
+	thermal-zones {
+		heatsink-thermal {
+			cooling-maps {
+				map-on {
+					trip = <&fan_on>;
+					cooling-device = <&fan 1 1>;
+				};
+			};
+		};
+	};
+};
+
+/* On/off only, so a wider band than the stepped curve's 1 C. */
+&fan_on {
+	hysteresis = <5000>;
+};

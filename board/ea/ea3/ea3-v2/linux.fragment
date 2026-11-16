@@ -1,0 +1,4 @@
+# Fan: gpio-fan on ldo_enable, AD5246 speed pot (ea3-v2.dts)
+CONFIG_SENSORS_GPIO_FAN=y
+CONFIG_AD525X_DPOT=y
+CONFIG_AD525X_DPOT_I2C=y

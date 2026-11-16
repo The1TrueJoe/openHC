@@ -1,6 +1,6 @@
 ---
 title: Fan and thermal
-description: How the kernel runs the EA fan from the device tree — the 100 kHz PWM, the 30% floor, the trip curve, manual control and the 95 °C poweroff.
+description: How the kernel runs the EA fan from the device tree — the 100 kHz PWM, the EA-3 v2's switched fan, the 30% floor, the trip curve, manual control and the 95 °C poweroff.
 sidebar:
   order: 12
 ---
@@ -31,6 +31,35 @@ is off, then 30% to 100% in tens. 77/255 is the lowest level that is not off,
 and it is quiet (confirmed by ear, 2026-10-27). From a standstill, 25% already
 started clean at 100 kHz, so the fan needs no start kick. If a different fan ever
 does, that is pwm-fan's `fan-stop-to-start-percent`/`-us`.
+
+## EA-3 v2: a switched fan with a speed pot
+
+The EA-3 v2's fan isn't on the PWM. Its supply comes from a regulator switched
+by `ldo_enable` (GPIO 43), and an AD5246 digital potentiometer at 0x2e on I2C
+bus 0 sets its speed: a 7-bit wiper, power-on 0x40, higher is faster. Heard on
+a v2 (straps 0x29), 2026-11-16:
+
+- pwm-fan at 0%, 30% and 100% sounded the same.
+- `ldo_enable` low stopped the fan, and high started it again.
+- Wiper 0x00 was quieter and 0x7f louder.
+
+This is stock `c4faultd`'s AD5246 path. On an EA it tries hwmon `pwm1`/`pwm2`, the
+AD5246 (which also switches `ldo_enable`), PWM channel 2, then an LTC1695, and
+uses the first one present. Stock's `c4_gpio_config` drives `ldo_enable` high on
+every board, and nothing else in stock touches it.
+
+So `ea3-v2.dts` replaces the pwm-fan with a mainline **`gpio-fan`** on GPIO 43
+(off or on) and drops the `ldo_enable` hog. A single cooling map turns it on at
+the 50 °C trip, and it goes off below 45 °C: on/off needs a wider band than the
+stepped curve's 1 °C. The AD5246 is bound to mainline `ad525x_dpot`, so its
+wiper is `rdac0` under `/sys/bus/i2c/devices/0-002e/`. Nothing writes it, so the
+fan runs at the power-on speed.
+
+sysmond finds a `gpio_fan` like a pwm-fan. Manual control is on or off, any
+non-zero percent is on, and the Health panel shows no RPM for it.
+
+The EA-3 v1 has no AD5246. Its fan is assumed to be on PWM channel 2 like the
+EA-1's, which isn't confirmed by ear yet.
 
 ## The curve
 
