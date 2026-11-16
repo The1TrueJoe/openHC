@@ -98,8 +98,7 @@ pub fn append_script(
     wr32(tbl, new_item + 0x18, TYPE_SCRIPT);
     // Bump the count and recompute the integrity hash.
     wr32(tbl, COUNT_OFF, (count + 1) as u32);
-    let digest = Sha256::digest(&tbl[0..HASH_OFF]);
-    tbl[HASH_OFF..HASH_OFF + 32].copy_from_slice(&digest);
+    rehash(tbl);
     Ok(count)
 }
 
@@ -122,23 +121,10 @@ pub fn remove_script(tbl: &mut [u8]) -> Result<usize, String> {
     if count < 2 {
         return Err("MFH table has no appended item to remove".into());
     }
-    let script = HDR_LEN + (count - 1) * ITEM_LEN;
-    // Guard: only ever remove OUR script entry, never a stock item. Ours is a
-    // valid, type-0 item pointing into the EA user-content window (0x90000..
-    // 0xa0000, where append_script places it) and is small — the stock kernel
-    // item also reads type 0 as the terminator, but lives far outside that window
-    // and is megabytes long.
-    let sflags = rd32(tbl, script + 0x00);
-    let soff = rd32(tbl, script + 0x04);
-    let ssize = rd32(tbl, script + 0x08);
-    let stype = rd32(tbl, script + 0x18);
-    if sflags != FLAG_VALID
-        || stype != TYPE_SCRIPT
-        || !(0x9_0000..0xa_0000).contains(&soff)
-        || ssize >= 0x1000
-    {
+    if openhc_script_index(tbl) != Some(count - 1) {
         return Err("last MFH item is not an openHC script entry — refusing".into());
     }
+    let script = HDR_LEN + (count - 1) * ITEM_LEN;
     for b in &mut tbl[script..script + ITEM_LEN] {
         *b = 0;
     }
@@ -146,9 +132,65 @@ pub fn remove_script(tbl: &mut [u8]) -> Result<usize, String> {
     let last = HDR_LEN + (count - 2) * ITEM_LEN;
     wr32(tbl, last + 0x18, 0);
     wr32(tbl, COUNT_OFF, (count - 1) as u32);
+    rehash(tbl);
+    Ok(count - 1)
+}
+
+/// Where [`append_script`] may point openHC's script: the EA user-content window,
+/// and small. [`remove_script`] only strips an item that matches this.
+fn is_openhc_content(off: u32, len: u32) -> bool {
+    (0x9_0000..0xa_0000).contains(&off) && len < 0x1000
+}
+
+/// Index of openHC's script item: the LAST item, valid, type 0, pointing into the
+/// EA user-content window. The stock kernel item also reads type 0 as the
+/// terminator, but it lives far outside that window and is megabytes long.
+fn openhc_script_index(tbl: &[u8]) -> Option<usize> {
+    if tbl.len() < 0x200 {
+        return None;
+    }
+    let count = rd32(tbl, COUNT_OFF) as usize;
+    if count < 2 || HDR_LEN + count * ITEM_LEN > HASH_OFF {
+        return None;
+    }
+    let o = HDR_LEN + (count - 1) * ITEM_LEN;
+    (rd32(tbl, o) == FLAG_VALID
+        && rd32(tbl, o + 0x18) == TYPE_SCRIPT
+        && is_openhc_content(rd32(tbl, o + 4), rd32(tbl, o + 8)))
+    .then_some(count - 1)
+}
+
+/// Point openHC's script item at `content_off`/`content_len`. A box that already
+/// has it (an earlier openHC install) gets that item rewritten in place; any other
+/// box gets one appended. Never two openHC items, so [`remove_script`] still
+/// returns the table to stock. Returns the item index.
+pub fn set_script(
+    tbl: &mut [u8],
+    content_off: u32,
+    content_len: u32,
+    prev_last_type: u32,
+) -> Result<usize, String> {
+    if tbl.len() < 0x200 {
+        return Err("table region must be at least 0x200 bytes".into());
+    }
+    if !is_openhc_content(content_off, content_len) {
+        return Err(format!(
+            "script {content_len:#x} B at {content_off:#x} is outside the EA user-content window"
+        ));
+    }
+    let Some(i) = openhc_script_index(tbl) else {
+        return append_script(tbl, content_off, content_len, prev_last_type);
+    };
+    let o = HDR_LEN + i * ITEM_LEN;
+    wr32(tbl, o + 4, content_off);
+    wr32(tbl, o + 8, content_len);
+    rehash(tbl);
+    Ok(i)
+}
+
+fn rehash(tbl: &mut [u8]) {
     let digest = Sha256::digest(&tbl[0..HASH_OFF]);
     tbl[HASH_OFF..HASH_OFF + 32].copy_from_slice(&digest);
-    Ok(count - 1)
 }
 
 #[cfg(test)]
@@ -233,5 +275,50 @@ mod tests {
         // left untouched — never strip a legitimate stock item.
         let mut t = clean();
         assert!(remove_script(&mut t).is_err());
+    }
+
+    #[test]
+    fn set_script_on_a_stock_table_is_append() {
+        let mut a = clean();
+        let mut b = clean();
+        append_script(&mut a, EA_CONTENT_OFF, 0xfa, TYPE_KERNEL).unwrap();
+        assert_eq!(set_script(&mut b, EA_CONTENT_OFF, 0xfa, TYPE_KERNEL).unwrap(), 12);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn reinstall_rewrites_the_openhc_item_in_place() {
+        let mut t = clean();
+        set_script(&mut t, EA_CONTENT_OFF, 0xfa, TYPE_KERNEL).unwrap();
+        // Install again with a longer script: same item, new size, no second item.
+        assert_eq!(set_script(&mut t, EA_CONTENT_OFF, 0x104, TYPE_KERNEL).unwrap(), 12);
+        assert_eq!(rd32(&t, COUNT_OFF), 13);
+        assert_eq!(rd32(&t, HDR_LEN + 12 * ITEM_LEN + 0x08), 0x104);
+        assert_eq!(&Sha256::digest(&t[0..HASH_OFF])[..], &t[HASH_OFF..HASH_OFF + 32]);
+        remove_script(&mut t).unwrap();
+        assert_eq!(t, clean(), "return-to-stock still gives the clean table back");
+    }
+
+    #[test]
+    fn reinstall_works_when_the_table_is_full() {
+        // The EA1 of 2026-11-15: 13 stock items + openHC's at index 13, so there
+        // is no room for a 15th and append_script fails.
+        let mut stock13 = clean();
+        append_script(&mut stock13, 0x0040_0000, 0x0050_0000, TYPE_KERNEL).unwrap();
+        let mut t = stock13.clone();
+        assert_eq!(set_script(&mut t, EA_CONTENT_OFF, 0xfa, 0x15).unwrap(), 13);
+        assert!(append_script(&mut t.clone(), EA_CONTENT_OFF, 0xfa, 0x15).is_err());
+        assert_eq!(set_script(&mut t, EA_CONTENT_OFF, 0x110, 0x15).unwrap(), 13);
+        assert_eq!(rd32(&t, COUNT_OFF), 14);
+        remove_script(&mut t).unwrap();
+        assert_eq!(t, stock13);
+    }
+
+    #[test]
+    fn set_script_refuses_what_remove_script_could_not_find() {
+        let mut t = clean();
+        assert!(set_script(&mut t, EA_CONTENT_OFF, 0x1000, TYPE_KERNEL).is_err());
+        assert!(set_script(&mut t, 0x80_0000, 0x100, TYPE_KERNEL).is_err());
+        assert_eq!(t, clean());
     }
 }

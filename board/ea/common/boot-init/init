@@ -93,7 +93,22 @@ net_serve() {
     while :; do /bin/sleep 3600; done
 }
 
-if ! valid_p1; then
+P1_OK=
+valid_p1 && P1_OK=1
+
+# ONE-SHOT REINSTALL. ohc-flash stage 1 on a box already running openHC leaves
+# this flag on p1; come up on the network for stage 2 instead of pivoting into the
+# old rootfs. p1 is left alone, so a reboot without stage 2 boots it as before.
+if [ -n "$P1_OK" ] && [ -f "$NEW/.ohc-reinstall-pending" ]; then
+    /bin/rm -f "$NEW/.ohc-reinstall-pending"
+    /bin/sync
+    /bin/umount "$NEW"
+    echo "openHC: reinstall requested — waiting for the flasher instead of booting p1"
+    net_serve
+    exec /bin/sh
+fi
+
+if [ -z "$P1_OK" ]; then
     echo "openHC: no rootfs on $ROOT — installing from the eMMC-staged image..."
     # Raw stream: eMMC gap -> gunzip -> p1. dd/gunzip work on tiny buffers, so
     # the 512 MB rootfs is never held in RAM.

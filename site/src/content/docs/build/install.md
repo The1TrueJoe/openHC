@@ -70,6 +70,22 @@ written**:
 The fuse is blown on every EA measured so far (the ea3-v2 and an ea1-v1 rev 5),
 so the autoscript is required — see [secure boot](/ea/secure-boot/).
 
+The same command re-installs over a box that already runs openHC. It is not an
+in-place upgrade: **stage 2 re-images p1**, so everything on it (`/opt`, `/root`,
+`/etc` config, ssh keys) is lost unless you back it up first. The CLI warns and
+asks before stage 1 when it finds openHC on p1.
+
+- **The MFH item is reused.** openHC's existing MFH item is rewritten in place
+  rather than a second one appended. The table has no room for a second item on
+  an ea1-v1.
+- **Nothing is written until the checks pass.** Every check, the MFH edit
+  included, runs before the first eMMC write, so a refusal leaves the box as it
+  was.
+- **The old p1 is held back for stage 2.** Stage 1 leaves a one-shot
+  `/.ohc-reinstall-pending` on p1. On the next boot, boot-init comes up on the
+  network for stage 2 instead of pivoting into the old rootfs. If stage 2 never
+  runs, the following reboot boots the old p1 as before.
+
 :::caution[Install to the raw gap with CEFDK's `emmc wr`, not Linux `dd`]
 Linux `/dev/mmcblk0` and CEFDK's `emmc` command don't agree on the raw gap's byte
 offset. The container at `0x400` coincidentally matches; `0x800000` doesn't.
