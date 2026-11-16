@@ -305,6 +305,59 @@ came from the SSTO clobber in point 2: the register was being zeroed by the
 driver, not missing. The pre-kexec register dump that seemed to show a live SSP
 being wedged by the fat kernel's probe was the same clobber.
 
+## Jack LEDs (patch 0021)
+
+openHC gives every board's Ethernet jacks the same meaning: **yellow = link,
+green = activity**, as on the HC-250.
+
+The EA3's jack LEDs belong to the **BCM53125's LED controller**, not to the e1000
+and not to the PHYs. The controller shifts each port's LED states out serially
+(`LEDCLK`/`LEDDATA`) to the jack LEDs. With port 5 in use for the CPU, a port
+has two LEDs. The registers are on page `0x00`:
+
+| Reg | Name | What it does |
+|---|---|---|
+| `0x10`, `0x12` | LED function 0 / 1 | 16-bit word of functions: `1` LNK, `2` DPX, `3` ACT, `5` LNK/ACT, `7`–`9` SPD10M/100M/1G, `10`–`13` per-speed link+activity |
+| `0x14` | function map | per port: use word 0 or word 1 |
+| `0x16` | enable map | per port LED enable |
+| `0x18`, `0x1a` | mode map 0 / 1 | per port: off, on, blink, auto (both bits set) |
+
+A port shows the functions set in its word **highest bit first**: LED 0 is the
+highest set bit, LED 1 the next. So the order of a port's LEDs fixes which
+pairs of functions are possible: activity (bit 3) can only sit in front of
+link (bit 1). The mode is per port, so a single LED cannot be switched on or
+off by itself.
+
+Stock firmware never programs any of this: nothing in Control4's kernel, init
+scripts or LED daemons touches these registers, so stock runs on the strap
+defaults. Mainline b53 doesn't either.
+
+Patch 0021 adds LED support to b53: the `leds` node of a user port in the board
+DT (`ea3.dtsi`) becomes LED class devices
+(`spi92.1:<port>:<led>:<color>:lan`) that the netdev trigger offloads to the
+switch. `S42port-leds` sets yellow LEDs to `link` and green ones to `rx tx` at
+boot. With `ohc.switch=1` off, b53 is not loaded and the LEDs stay at the strap
+defaults.
+
+### EA1: a PHY, not a switch
+
+The EA1 (v1/v2, not the PoE board) has no switch. The e1000 talks RGMII to a
+**Realtek RTL8211E** at MDIO address 1 (ID `0x001cc915`; Control4's kernel calls
+these boards `NYA` and runs them in `REAL_PHY` mode). The jack LEDs are the
+PHY's own LED pins, at its defaults (extension page `0x2c`):
+
+| LED | `0x1c` link bits | `0x1a` activity | Shows |
+|---|---|---|---|
+| LED0 | none | yes | activity only |
+| LED1 | 10/100/1000 | no | link |
+| LED2 | 10/100/1000 | yes | link + activity |
+
+Both colors flicker, so the jack is wired to LED0 and LED2. Mainline's Realtek
+driver already offloads RTL8211E LEDs to the netdev trigger, but only for a PHY
+that phylib binds and attaches to the netdev. e1000 drives its PHY itself, and
+openHC's `fixed-link` (patch 0003) leaves it untouched. That also means the
+EA1's MAC is forced to 1000/full while the PHY autonegotiates on its own.
+
 ## Hardware test, 2026-10-28
 
 The EA3 at 10.0.0.113 ran a one-shot kexec boot of the CI kernel from this patch
