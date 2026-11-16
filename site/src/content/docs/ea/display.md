@@ -37,7 +37,7 @@ BAR 0, 64 KiB. Audio (the transmitter's own DMA, infoframes, GCP) is on the
 |---|---|---|
 | `+0x1000` | clocks: bit 0 TMDS, 1 pixel, 2 audio, 3 the 5 V supply to the connector, 5 HDCP | read: `0x2f` under CEFDK |
 | `+0x1004` | interrupt mask | read: 0 |
-| `+0x1008` | status: bit 0 **HPD**, bit 1 RX sense (`hdmi_general_get_status`) | read |
+| `+0x1008` | status: bit 0 **HPD**, bit 1 RX sense (`hdmi_general_get_status`) | read: on an EA-1 bit 0 stayed 0 with a monitor in; bit 1 went to 1 once the link ran in HDMI mode and stayed 1 after unplugging |
 | `+0x100c` | interrupt status, latched whether masked or not, write 1 to clear | W1C seen |
 | `+0x3000` | bit 0 HDMI mode (clear = DVI), bit 7 unit enable | read |
 
@@ -205,8 +205,10 @@ A pixel clock is set like this (`_clock_control_write(id, value)`; 0 asserts a
 reset):
 1. PLL divider reset 0, TX PLL reset 0.
 2. Write the 23 PHY words for the clock (`hdmi_phy_cfg_raw`). Word 2 is
-   written with bit 27 set; after word 22, word 12 (`+0x30`) is masked with
+   written with bit 27 set; after word 22, word 12 is masked with
    `0x1ffefffb | 0xe0000004`, and word 2 is written again with bit 27 clear.
+   Word *k* is PHY register *k* on port `0x82`: `hdmi_phy_enable` addresses
+   registers 8–12 by index.
 3. TX PLL reset 1, wait 300 µs; PLL divider reset 1, wait 50 µs.
 4. TX reset 0, wait 1 ms; TX reset 1, wait 1 ms.
 

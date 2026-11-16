@@ -12,8 +12,8 @@
  * This first step takes over the mode the firmware set and keeps it. It reads
  * pipe A and the live UPP back, and from then on flips that plane between
  * GEM DMA buffers. Hotplug is polled through the HDMI transmitter's HPD bit,
- * and the EDID comes over the transmitter's DDC master, which ce5300-hdmi
- * registers as an i2c adapter. Mode setting (the display PLL, the pipe and the
+ * or an EDID that answers where HPD isn't wired (an EA1). The EDID comes over
+ * the transmitter's DDC master, which ce5300-hdmi registers as an i2c adapter. Mode setting (the display PLL, the pipe and the
  * HDMI PHY) comes later; until then only the running mode is valid.
  *
  * Register access is limited to named registers. Unnamed holes in the VDC BAR
@@ -276,10 +276,18 @@ static enum drm_connector_status ce5300_connector_detect(struct drm_connector *c
 {
 	struct ce5300 *p = to_ce5300(c->dev);
 
-	if (!p->hdmi_status)
+	struct i2c_adapter *ddc = NULL;
+	bool found;
+
+	if (p->hdmi_status && readl(p->hdmi_status) & HDMI_TX_HPD)
+		return connector_status_connected;
+	/* HPD stays low on an EA1: fall back to an EDID that answers. */
+	i2c_for_each_dev(&ddc, ce5300_find_ddc);
+	if (!ddc)
 		return connector_status_unknown;
-	return readl(p->hdmi_status) & HDMI_TX_HPD ? connector_status_connected :
-						      connector_status_disconnected;
+	found = drm_probe_ddc(ddc);
+	i2c_put_adapter(ddc);
+	return found ? connector_status_connected : connector_status_disconnected;
 }
 
 static int ce5300_connector_get_modes(struct drm_connector *c)
