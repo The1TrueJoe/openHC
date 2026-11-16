@@ -7,7 +7,8 @@ device tree and PHY LEDs for the netdev trigger, are out of reach.
 
 If the device's OF node has a phy-handle, register the MDIO bus from its
 "mdio" child, attach the PHY with phylib, and force the MAC to the speed
-and duplex phylib reports, as for a fixed link. ethtool link settings,
+and duplex phylib reports, as for a fixed link. The MAC has no LPI
+support, so EEE is disabled on the PHY. ethtool link settings,
 autonegotiation restart and the MII ioctls go to phylib. Without a
 phy-handle, or without OF_MDIO, the PHY scan runs as before.
 
@@ -117,7 +118,7 @@ index a8f799a..f94eaf8 100644
  	u16 fixed_link_speed;
  	bool tbi_compatibility_en;
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
-index 677a665..75bec52 100644
+index 677a665..2d322f4 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_main.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
 @@ -8,7 +8,9 @@
@@ -130,7 +131,7 @@ index 677a665..75bec52 100644
  #include <linux/phy.h>
  
  char e1000_driver_name[] = "e1000";
-@@ -964,6 +966,148 @@ out:
+@@ -964,6 +966,150 @@ out:
  	return err;
  }
  
@@ -262,6 +263,8 @@ index 677a665..75bec52 100644
 +		err = -ENODEV;
 +		goto out;
 +	}
++	/* The MAC has no LPI support */
++	phy_disable_eee(phydev);
 +
 +	hw->fixed_link = true;
 +	hw->fixed_link_speed = SPEED_1000;
@@ -279,7 +282,7 @@ index 677a665..75bec52 100644
  /**
   * e1000_probe - Device Initialization Routine
   * @pdev: PCI device information struct
-@@ -1239,6 +1383,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1239,6 +1385,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  
  	if (hw->mac_type == e1000_ce4100) {
  		err = e1000_get_fixed_link(adapter);
@@ -288,7 +291,7 @@ index 677a665..75bec52 100644
  		if (err)
  			goto err_eeprom;
  	}
-@@ -1288,6 +1434,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1288,6 +1436,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
  	return 0;
  
  err_register:
@@ -297,7 +300,7 @@ index 677a665..75bec52 100644
  err_eeprom:
  	e1000_phy_hw_reset(hw);
  
-@@ -1332,6 +1480,9 @@ static void e1000_remove(struct pci_dev *pdev)
+@@ -1332,6 +1482,9 @@ static void e1000_remove(struct pci_dev *pdev)
  
  	unregister_netdev(netdev);
  
@@ -307,7 +310,7 @@ index 677a665..75bec52 100644
  	/* Only kill reset task if adapter is not resetting */
  	if (!test_bit(__E1000_RESETTING, &adapter->flags))
  		cancel_work_sync(&adapter->reset_task);
-@@ -1476,6 +1627,9 @@ int e1000_open(struct net_device *netdev)
+@@ -1476,6 +1629,9 @@ int e1000_open(struct net_device *netdev)
  	/* fire a link status change interrupt to start the watchdog */
  	ew32(ICS, E1000_ICS_LSC);
  
@@ -317,7 +320,7 @@ index 677a665..75bec52 100644
  	return E1000_SUCCESS;
  
  err_req_irq:
-@@ -1515,6 +1669,9 @@ int e1000_close(struct net_device *netdev)
+@@ -1515,6 +1671,9 @@ int e1000_close(struct net_device *netdev)
  	set_bit(__E1000_DOWN, &adapter->flags);
  	clear_bit(__E1000_RESETTING, &adapter->flags);
  
@@ -327,7 +330,7 @@ index 677a665..75bec52 100644
  	e1000_down(adapter);
  	e1000_power_down_phy(adapter);
  	e1000_free_irq(adapter);
-@@ -2457,8 +2614,12 @@ static void e1000_82547_tx_fifo_stall_task(struct work_struct *work)
+@@ -2457,8 +2616,12 @@ static void e1000_82547_tx_fifo_stall_task(struct work_struct *work)
  bool e1000_has_link(struct e1000_adapter *adapter)
  {
  	struct e1000_hw *hw = &adapter->hw;
@@ -340,7 +343,7 @@ index 677a665..75bec52 100644
  	/* get_link_status is set on LSC (link status) interrupt or rx
  	 * sequence error interrupt (except on intel ce4100).
  	 * get_link_status will stay false until the
-@@ -4839,6 +5000,9 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
+@@ -4839,6 +5002,9 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
  	u16 mii_reg;
  	unsigned long flags;
  

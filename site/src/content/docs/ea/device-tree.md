@@ -365,7 +365,18 @@ Patch `0022` makes e1000 hand it to phylib: with a `phy-handle`, e1000
 registers the MDIO bus (BAR1 `MDIO_CMD` at `+4`, `MDIO_STS` at `+0`) from the
 `mdio` node, attaches the PHY, and forces the MAC to whatever speed and duplex
 phylib reports, as for a fixed link. ethtool and the MII ioctls go to phylib.
-The Realtek driver brings the RTL8211E's LEDs as netdev-trigger LEDs.
+The Realtek driver brings the RTL8211E's LEDs as netdev-trigger LEDs. The MAC
+has no LPI support, so e1000 calls `phy_disable_eee()`.
+
+**Jack LEDs.** Green is the PHY's LED0, yellow its LED1; LED2 isn't wired.
+Found on an EA1 by rewriting the LED registers (extension page `0x2c`, `0x1c`
+link bits and `0x1a` activity bits) and watching the jack. The PHY's defaults
+(`0x1c` = `0x9770`, `0x1a` = `0x00d1`) already make LED0 activity and LED1
+link. Yellow still blinked, because the RTL8211E's **EEE LED mode** blinks the
+link LED about once a second while the line idles in low-power mode, and EEE
+was negotiated with the switch. With EEE advertisement off (MMD 7.60 = 0,
+renegotiated), yellow was solid and green flickered with traffic.
+`S42port-leds` sets the same thing through the netdev trigger.
 
 phylib is only in the real kernel (`real-kernel.fragment`). The bootstrap
 kernel ignores the `phy-handle` and e1000 scans and drives the PHY itself,

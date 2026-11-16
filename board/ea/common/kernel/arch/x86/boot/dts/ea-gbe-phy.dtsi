@@ -18,6 +18,7 @@
 		gbe_phy: ethernet-phy@1 {
 			reg = <1>;
 
+			/* LED0 green, LED1 yellow; LED2 is not wired (tested) */
 			leds {
 				#address-cells = <1>;
 				#size-cells = <0>;
@@ -27,8 +28,8 @@
 					color = <LED_COLOR_ID_GREEN>;
 					function = LED_FUNCTION_LAN;
 				};
-				led@2 {
-					reg = <2>;
+				led@1 {
+					reg = <1>;
 					color = <LED_COLOR_ID_YELLOW>;
 					function = LED_FUNCTION_LAN;
 				};
