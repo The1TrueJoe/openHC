@@ -1,4 +1,4 @@
-iio: ABI: Move out_resistance_raw_available to
+iio: ABI: Move out_resistance_raw_available to sysfs-bus-iio
 
 The available raw values of a resistance output were documented only
 for the mcp4531, without the channel index. ds1803, mcp4531, tpl0102

@@ -1,4 +1,4 @@
-dt-bindings: iio: potentiometer: Add Analog Devices
+dt-bindings: iio: potentiometer: Add Analog Devices AD5246
 
 The AD5246 is a 128-position digital rheostat on I2C, in 5, 10, 50 and
 100 kOhm versions. The compatible names the resistance in kOhm, as for

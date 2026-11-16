@@ -1,4 +1,4 @@
-iio: potentiometer: mcp4018: Report the available wiper
+iio: potentiometer: mcp4018: Report the available wiper positions
 
 Implement read_avail for the raw value, as ds1803, mcp4531, tpl0102 and
 x9250 already do. User space then sees out_resistance0_raw_available,
