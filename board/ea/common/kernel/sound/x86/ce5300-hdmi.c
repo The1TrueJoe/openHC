@@ -40,11 +40,9 @@
  * HOTPLUG
  * -------
  * The connector's +5V goes on first, as the stock driver does (+0x1000 bit 3
- * and a PHY bit): a sink raises HPD from it. The plug state is polled
- * (+0x1008, plus the latched change bits for a quick replug): HPD in bit 0
- * and, from revision 6 (CE5300), receiver sense in bit 1, as in the stock
- * interrupt handler. On an EA1 bit 0 stayed low with a monitor in; bit 1
- * followed it. On a plug the EDID is read
+ * and a PHY bit): a sink raises HPD from it. The plug state is polled: HPD
+ * (+0x1008 bit 0, plus its latched change bit), or else an EDID that answers
+ * at 0x50, since on an EA1 HPD stayed low with a monitor in. The EDID is read
  * over the transmitter's own DDC master (the SoC's I2C buses don't reach the
  * connector); it is also an i2c adapter.
  * A DVI sink keeps the link in DVI and refuses audio. An HDMI sink plugged in
@@ -111,12 +109,10 @@
 #define   HDMI_5V_ENABLE	BIT(3)	/* hdmi_general_5V_enable */
 #define HDMI_STATUS		0x1008	/* hdmi_general_get_status */
 #define   HDMI_STATUS_HPD	BIT(0)
-#define   HDMI_STATUS_RXSENSE	BIT(1)	/* revision > 5 */
 #define HDMI_INT_MASK		0x1004
 /* Latched whether masked (+0x1004) or not; write 1 to clear. */
 #define HDMI_INT_STATUS		0x100c
 #define   HDMI_INT_HPD		BIT(0)	/* HPD changed */
-#define   HDMI_INT_RXSENSE	BIT(1)	/* receiver sense changed */
 #define   HDMI_INT_DDC_DONE	BIT(2)
 #define   HDMI_INT_DDC_FULL	BIT(3)	/* 64 bytes in the buffer */
 #define   HDMI_INT_DDC_ERROR	BIT(4)	/* NAK, arbitration */
@@ -139,6 +135,7 @@
 #define   HDMI_DDC_CMD_GO	BIT(0)
 #define HDMI_DDC_ADDR_W		0x1254
 #define HDMI_DDC_ADDR_R		0x1258
+#define HDMI_EDID_ADDR		0x50	/* the sink's EDID, 7-bit */
 #define HDMI_DDC_MAX_LEN	256
 
 #define HDMI_OPMODE		0x3000
@@ -254,7 +251,6 @@ struct ce5300_hdmi {
 	struct delayed_work	hpd_work;
 	bool			hpd_pending;	/* changed; handle on the next poll */
 	bool			connected;
-	u32			plug_bits;	/* HDMI_STATUS bits that mean a sink */
 	bool			dvi_sink;	/* EDID read, no HDMI VSDB: no audio */
 	struct snd_kcontrol	*jack;
 };
@@ -573,7 +569,7 @@ static int ce5300_hdmi_read_sink(struct ce5300_hdmi *h, struct hdmi_sink *s)
 	for (tries = 0; tries < HDMI_EDID_TRIES; tries++) {
 		if (tries)
 			msleep(100);
-		ret = ce5300_hdmi_ddc_read(h, 0x50, 0, edid, 128);
+		ret = ce5300_hdmi_ddc_read(h, HDMI_EDID_ADDR, 0, edid, 128);
 		if (ret)
 			continue;
 		ret = -EBADMSG;
@@ -581,7 +577,7 @@ static int ce5300_hdmi_read_sink(struct ce5300_hdmi *h, struct hdmi_sink *s)
 			continue;
 		if (!edid[126])
 			break;
-		ret = ce5300_hdmi_ddc_read(h, 0x50, 128, edid + 128, 128);
+		ret = ce5300_hdmi_ddc_read(h, HDMI_EDID_ADDR, 128, edid + 128, 128);
 		if (!ret && !edid_block_ok(edid + 128))
 			ret = -EBADMSG;
 		if (!ret)
@@ -686,11 +682,24 @@ static void ce5300_hdmi_sink_changed(struct ce5300_hdmi *h, bool connected)
 }
 
 /* HPD has no interrupt we can count on here, so poll it (one read). */
+/* A sink: HPD, or an EDID that answers (HPD isn't wired on every board). */
+static bool ce5300_hdmi_plugged(struct ce5300_hdmi *h)
+{
+	u8 off = 0, buf;
+	struct i2c_msg msgs[] = {
+		{ .addr = HDMI_EDID_ADDR, .len = 1, .buf = &off },
+		{ .addr = HDMI_EDID_ADDR, .flags = I2C_M_RD, .len = 1, .buf = &buf },
+	};
+
+	return hdmi_read(h, HDMI_STATUS) & HDMI_STATUS_HPD ||
+	       i2c_transfer(&h->ddc, msgs, ARRAY_SIZE(msgs)) == ARRAY_SIZE(msgs);
+}
+
 static void ce5300_hdmi_hpd_work(struct work_struct *work)
 {
 	struct ce5300_hdmi *h = container_of(work, struct ce5300_hdmi, hpd_work.work);
-	bool hpd = hdmi_read(h, HDMI_STATUS) & h->plug_bits;
-	u32 st = hdmi_read(h, HDMI_INT_STATUS) & h->plug_bits;
+	bool hpd = ce5300_hdmi_plugged(h);
+	u32 st = hdmi_read(h, HDMI_INT_STATUS) & HDMI_INT_HPD;
 
 	if (st)
 		hdmi_write(h, HDMI_INT_STATUS, st);
@@ -1095,10 +1104,8 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 		if (ret)
 			return ret;
 	}
-	/* Status and interrupt bits match: HPD bit 0, receiver sense bit 1. */
-	h->plug_bits = HDMI_STATUS_HPD | (pdev->revision > 5 ? HDMI_STATUS_RXSENSE : 0);
-	hdmi_write(h, HDMI_INT_STATUS, h->plug_bits);
-	ce5300_hdmi_sink_changed(h, hdmi_read(h, HDMI_STATUS) & h->plug_bits);
+	hdmi_write(h, HDMI_INT_STATUS, HDMI_INT_HPD);
+	ce5300_hdmi_sink_changed(h, ce5300_hdmi_plugged(h));
 	INIT_DELAYED_WORK(&h->hpd_work, ce5300_hdmi_hpd_work);
 	ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_hpd_stop, h);
 	if (ret)
