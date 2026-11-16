@@ -55,7 +55,7 @@ index ea6ccf4..0c1986e 100644
  	struct e1000_phy_info phy_info;
  	struct e1000_phy_stats phy_stats;
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
-index c15ad95..4215ef8 100644
+index c15ad95..c049eae 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
 @@ -90,6 +90,9 @@ static int e1000_get_link_ksettings(struct net_device *netdev,
@@ -133,7 +133,21 @@ index c15ad95..4215ef8 100644
  	*data = e1000_setup_desc_rings(adapter);
  	if (*data)
  		goto out;
-@@ -1803,6 +1829,9 @@ static int e1000_nway_reset(struct net_device *netdev)
+@@ -1471,6 +1497,13 @@ out:
+ static int e1000_link_test(struct e1000_adapter *adapter, u64 *data)
+ {
+ 	struct e1000_hw *hw = &adapter->hw;
++
++	/* Under phylink the MAC's link is forced; ask phylink */
++	if (adapter->phylink) {
++		*data = !adapter->phylink_up;
++		return *data;
++	}
++
+ 	*data = 0;
+ 	if (hw->media_type == e1000_media_type_internal_serdes) {
+ 		int i = 0;
+@@ -1803,6 +1836,9 @@ static int e1000_nway_reset(struct net_device *netdev)
  {
  	struct e1000_adapter *adapter = netdev_priv(netdev);
  
@@ -144,7 +158,7 @@ index c15ad95..4215ef8 100644
  		e1000_reinit_locked(adapter);
  	return 0;
 diff --git a/drivers/net/ethernet/intel/e1000/e1000_hw.c b/drivers/net/ethernet/intel/e1000/e1000_hw.c
-index 0e5de52..fddcb14 100644
+index 0e5de52..58e2d23 100644
 --- a/drivers/net/ethernet/intel/e1000/e1000_hw.c
 +++ b/drivers/net/ethernet/intel/e1000/e1000_hw.c
 @@ -747,8 +747,12 @@ s32 e1000_setup_link(struct e1000_hw *hw)
@@ -188,7 +202,7 @@ index 0e5de52..fddcb14 100644
  }
  
  /**
-@@ -1407,6 +1421,48 @@ static s32 e1000_copper_link_postconfig(struct e1000_hw *hw)
+@@ -1407,6 +1421,50 @@ static s32 e1000_copper_link_postconfig(struct e1000_hw *hw)
  	return E1000_SUCCESS;
  }
  
@@ -198,6 +212,8 @@ index 0e5de52..fddcb14 100644
 + *
 + * phylink owns the link, so set speed, duplex and link up in the MAC from
 + * what it last reported rather than from autonegotiation.
++ *
++ * Return: E1000_SUCCESS, or the error from setting flow control.
 + */
 +s32 e1000_setup_forced_link(struct e1000_hw *hw)
 +{
@@ -237,7 +253,7 @@ index 0e5de52..fddcb14 100644
  /**
   * e1000_setup_copper_link - phy/speed/duplex setting
   * @hw: Struct containing variables accessed by shared code
-@@ -2375,6 +2431,12 @@ s32 e1000_check_for_link(struct e1000_hw *hw)
+@@ -2375,6 +2433,12 @@ s32 e1000_check_for_link(struct e1000_hw *hw)
  	s32 ret_val;
  	u16 phy_data;
  
@@ -250,7 +266,7 @@ index 0e5de52..fddcb14 100644
  	er32(CTRL);
  	status = er32(STATUS);
  
-@@ -2787,6 +2849,9 @@ s32 e1000_read_phy_reg(struct e1000_hw *hw, u32 reg_addr, u16 *phy_data)
+@@ -2787,6 +2851,9 @@ s32 e1000_read_phy_reg(struct e1000_hw *hw, u32 reg_addr, u16 *phy_data)
  	u32 ret_val;
  	unsigned long flags;
  
@@ -260,7 +276,7 @@ index 0e5de52..fddcb14 100644
  	spin_lock_irqsave(&e1000_phy_lock, flags);
  
  	if ((hw->phy_type == e1000_phy_igp) &&
-@@ -2924,6 +2989,9 @@ s32 e1000_write_phy_reg(struct e1000_hw *hw, u32 reg_addr, u16 phy_data)
+@@ -2924,6 +2991,9 @@ s32 e1000_write_phy_reg(struct e1000_hw *hw, u32 reg_addr, u16 phy_data)
  	u32 ret_val;
  	unsigned long flags;
  
@@ -270,7 +286,7 @@ index 0e5de52..fddcb14 100644
  	spin_lock_irqsave(&e1000_phy_lock, flags);
  
  	if ((hw->phy_type == e1000_phy_igp) &&
-@@ -3041,6 +3109,9 @@ s32 e1000_phy_hw_reset(struct e1000_hw *hw)
+@@ -3041,6 +3111,9 @@ s32 e1000_phy_hw_reset(struct e1000_hw *hw)
  	u32 ctrl, ctrl_ext;
  	u32 led_ctrl;
  
