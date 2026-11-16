@@ -60,7 +60,7 @@ falconfalls.
 | 01:0b.2 | 8086:2e68 | i2c-pxa-pci | `i2c@b,2` | Four adapters, one per BAR |
 | 01:0b.4 | 8086:2e6a | spi-pxa2xx-pci | `ssp` | `CE5X00_SSP` via patch 0009 |
 | 01:0b.6 | 8086:089f | pwm-ce5300 | `pwm` | The CE5300's own; not on falconfalls. Also measured on an EA1. |
-| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | `fixed-link` to the switch (patch 0003, the DSA conduit) or the EA1's RTL8211E through phylib (patch 0022). |
+| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | `fixed-link` to the switch (patch 0003, the DSA conduit) or the EA1's RTL8211E through phylib (patches 0022-0024). |
 | 01:0d.1 | 192e:0101 | ehci-pci | `usb_rear` | TDI host, patch 0014. The rear USB port. |
 | 01:17.0 | 8086:08a0 | spi-ea-ce5xx | `bootflash` | Not on falconfalls; devfn from `lspci` on an EA1. |
 
@@ -268,7 +268,7 @@ labels the Health panel shows.
 On boards with the BCM53125 (EA3, EA5, EA1 v2 PoE) the GbE MAC has no PHY:
 nothing answers on its MDIO bus, and the MAC talks RGMII straight to the
 switch's port 5. `ea-switch.dtsi` says so the standard way. The EA1 without
-the switch has a real PHY instead ([below](#the-ea1s-phy-patch-0022)).
+the switch has a real PHY instead ([below](#the-ea1s-phy-patches-0022-0024)).
 
 ```dts
 gbe: ethernet@c,0 {
@@ -340,7 +340,7 @@ Atom falls behind on DSA-tagged frames, the link itself is clean. `lan1` had
 nothing plugged in, so lan1-to-lan2 forwarding wasn't exercised; the e1000
 side of it is the same conduit.
 
-## The EA1's PHY (patch 0022)
+## The EA1's PHY (patches 0022-0024)
 
 The EA1 v1/v2 has no switch. Its e1000 talks RGMII to a **Realtek RTL8211E**
 at MDIO address 1 (ID `0x001cc915`; it also answers at 0, the broadcast
@@ -361,10 +361,11 @@ address). Control4's kernel runs these boards in `REAL_PHY` mode (`IS_NYA`).
 };
 ```
 
-Patch `0022` makes e1000 hand it to phylib: with a `phy-handle`, e1000
-registers the MDIO bus (BAR1 `MDIO_CMD` at `+4`, `MDIO_STS` at `+0`) from the
-`mdio` node, attaches the PHY, and forces the MAC to whatever speed and duplex
-phylib reports, as for a fixed link. ethtool and the MII ioctls go to phylib.
+Three small e1000 patches hand it to phylib. `0022` registers the MDIO bus
+(BAR1 `MDIO_CMD` at `+4`, `MDIO_STS` at `+0`) from the `mdio` node. `0023`
+attaches the PHY a `phy-handle` points to and forces the MAC to whatever speed
+and duplex phylib reports, as for a fixed link; ethtool and the MII ioctls go
+to phylib. `0024` disables EEE (below).
 The Realtek driver brings the RTL8211E's LEDs as netdev-trigger LEDs. The MAC
 has no LPI support, so e1000 calls `phy_disable_eee()`.
 

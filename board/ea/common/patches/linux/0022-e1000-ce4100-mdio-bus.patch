@@ -1,0 +1,237 @@
+e1000: register the CE4100 MDIO bus from the device tree
+
+The CE4100 GbE has its own MDIO controller, which e1000 uses only for
+its built-in PHY handling. A PHY on that bus is invisible to phylib, so
+its driver never probes.
+
+If the device's OF node has an "mdio" child, register the bus with the
+PHYs it describes. Accesses take the lock e1000's own PHY accesses take.
+The bus is unregistered before the MDIO registers are unmapped. Without
+the node, or without OF_MDIO, nothing changes.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+diff --git a/drivers/net/ethernet/intel/e1000/e1000.h b/drivers/net/ethernet/intel/e1000/e1000.h
+index ea6ccf4..40182ab 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000.h
++++ b/drivers/net/ethernet/intel/e1000/e1000.h
+@@ -42,6 +42,7 @@
+ #include <linux/mii.h>
+ #include <linux/ethtool.h>
+ #include <linux/if_vlan.h>
++#include <linux/phy.h>
+ 
+ #define BAR_0		0
+ #define BAR_1		1
+@@ -272,6 +273,7 @@ struct e1000_adapter {
+ 
+ 	/* structs defined in e1000_hw.h */
+ 	struct e1000_hw hw;
++	struct mii_bus *mii_bus;
+ 	struct e1000_hw_stats stats;
+ 	struct e1000_phy_info phy_info;
+ 	struct e1000_phy_stats phy_stats;
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_hw.c b/drivers/net/ethernet/intel/e1000/e1000_hw.c
+index dbf0233..e23edd1 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_hw.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_hw.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <linux/bitfield.h>
++#include <linux/iopoll.h>
+ #include "e1000.h"
+ 
+ static s32 e1000_check_downshift(struct e1000_hw *hw);
+@@ -2827,6 +2828,66 @@ static u16 e1000_shift_in_mdi_bits(struct e1000_hw *hw)
+ 	return data;
+ }
+ 
++static int e1000_ce4100_mdio_cmd(struct e1000_hw *hw, u32 cmd)
++{
++	u32 val;
++
++	writel(cmd | INTEL_CE_GBE_MDIC_GO, E1000_MDIO_CMD);
++
++	return readl_poll_timeout_atomic(E1000_MDIO_CMD, val,
++					 !(val & INTEL_CE_GBE_MDIC_GO), 50, 3200);
++}
++
++/**
++ * e1000_ce4100_mdio_read - read a register of any PHY on the CE4100 MDIO bus
++ * @hw: Struct containing variables accessed by shared code
++ * @addr: PHY address
++ * @reg: register number
++ *
++ * Return: the register value, or a negative error code.
++ */
++int e1000_ce4100_mdio_read(struct e1000_hw *hw, int addr, int reg)
++{
++	unsigned long flags;
++	int ret;
++	u32 sts;
++
++	spin_lock_irqsave(&e1000_phy_lock, flags);
++	ret = e1000_ce4100_mdio_cmd(hw, (reg << E1000_MDIC_REG_SHIFT) |
++				    (addr << E1000_MDIC_PHY_SHIFT) |
++				    INTEL_CE_GBE_MDIC_OP_READ);
++	if (!ret) {
++		sts = readl(E1000_MDIO_STS);
++		ret = sts & INTEL_CE_GBE_MDIC_READ_ERROR ? -EIO : sts & 0xffff;
++	}
++	spin_unlock_irqrestore(&e1000_phy_lock, flags);
++
++	return ret;
++}
++
++/**
++ * e1000_ce4100_mdio_write - write a register of any PHY on the CE4100 MDIO bus
++ * @hw: Struct containing variables accessed by shared code
++ * @addr: PHY address
++ * @reg: register number
++ * @val: value to write
++ *
++ * Return: 0, or a negative error code.
++ */
++int e1000_ce4100_mdio_write(struct e1000_hw *hw, int addr, int reg, u16 val)
++{
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&e1000_phy_lock, flags);
++	ret = e1000_ce4100_mdio_cmd(hw, val | (reg << E1000_MDIC_REG_SHIFT) |
++				    (addr << E1000_MDIC_PHY_SHIFT) |
++				    INTEL_CE_GBE_MDIC_OP_WRITE);
++	spin_unlock_irqrestore(&e1000_phy_lock, flags);
++
++	return ret;
++}
++
+ /**
+  * e1000_read_phy_reg - read a phy register
+  * @hw: Struct containing variables accessed by shared code
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_hw.h b/drivers/net/ethernet/intel/e1000/e1000_hw.h
+index a8f799a..6f336b9 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_hw.h
++++ b/drivers/net/ethernet/intel/e1000/e1000_hw.h
+@@ -271,6 +271,8 @@ void e1000_set_media_type(struct e1000_hw *hw);
+ 
+ /* Link Configuration */
+ s32 e1000_setup_link(struct e1000_hw *hw);
++int e1000_ce4100_mdio_read(struct e1000_hw *hw, int addr, int reg);
++int e1000_ce4100_mdio_write(struct e1000_hw *hw, int addr, int reg, u16 val);
+ s32 e1000_phy_setup_autoneg(struct e1000_hw *hw);
+ void e1000_config_collision_dist(struct e1000_hw *hw);
+ s32 e1000_check_for_link(struct e1000_hw *hw);
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
+index 677a665..0e7f40e 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_main.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
+@@ -8,6 +8,7 @@
+ #include <linux/bitops.h>
+ #include <linux/if_vlan.h>
+ #include <linux/of.h>
++#include <linux/of_mdio.h>
+ #include <linux/of_net.h>
+ #include <linux/phy.h>
+ 
+@@ -964,6 +965,74 @@ out:
+ 	return err;
+ }
+ 
++static int e1000_mdio_read(struct mii_bus *bus, int addr, int reg)
++{
++	return e1000_ce4100_mdio_read(bus->priv, addr, reg);
++}
++
++static int e1000_mdio_write(struct mii_bus *bus, int addr, int reg, u16 val)
++{
++	return e1000_ce4100_mdio_write(bus->priv, addr, reg, val);
++}
++
++/**
++ * e1000_mdio_register - register the CE4100 MDIO bus from the device tree
++ * @adapter: board private structure
++ *
++ * If the device has an "mdio" child node, register the MAC's MDIO bus with
++ * the PHYs it describes, so that their drivers can probe. Without one, or
++ * without OF_MDIO, nothing is registered. The bus goes before the MAC's
++ * registers are unmapped, so it is not device-managed.
++ *
++ * Return: 0 on success or if there is nothing to register, else an error.
++ */
++static int e1000_mdio_register(struct e1000_adapter *adapter)
++{
++	struct device *dev = &adapter->pdev->dev;
++	struct device_node *np;
++	struct mii_bus *bus;
++	int err;
++
++	if (!IS_REACHABLE(CONFIG_OF_MDIO))
++		return 0;
++
++	np = of_get_child_by_name(dev->of_node, "mdio");
++	if (!np)
++		return 0;
++
++	bus = mdiobus_alloc();
++	if (!bus) {
++		err = -ENOMEM;
++		goto out;
++	}
++
++	bus->name = "e1000 CE4100 MDIO";
++	snprintf(bus->id, MII_BUS_ID_SIZE, "%s", pci_name(adapter->pdev));
++	bus->priv = &adapter->hw;
++	bus->parent = dev;
++	bus->read = e1000_mdio_read;
++	bus->write = e1000_mdio_write;
++
++	err = of_mdiobus_register(bus, np);
++	if (err)
++		mdiobus_free(bus);
++	else
++		adapter->mii_bus = bus;
++out:
++	of_node_put(np);
++	return err;
++}
++
++static void e1000_mdio_unregister(struct e1000_adapter *adapter)
++{
++	if (!IS_REACHABLE(CONFIG_OF_MDIO) || !adapter->mii_bus)
++		return;
++
++	mdiobus_unregister(adapter->mii_bus);
++	mdiobus_free(adapter->mii_bus);
++	adapter->mii_bus = NULL;
++}
++
+ /**
+  * e1000_probe - Device Initialization Routine
+  * @pdev: PCI device information struct
+@@ -1239,6 +1308,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 
+ 	if (hw->mac_type == e1000_ce4100) {
+ 		err = e1000_get_fixed_link(adapter);
++		if (!err)
++			err = e1000_mdio_register(adapter);
+ 		if (err)
+ 			goto err_eeprom;
+ 	}
+@@ -1290,6 +1361,7 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ err_register:
+ err_eeprom:
+ 	e1000_phy_hw_reset(hw);
++	e1000_mdio_unregister(adapter);
+ 
+ 	if (hw->flash_address)
+ 		iounmap(hw->flash_address);
+@@ -1337,6 +1409,7 @@ static void e1000_remove(struct pci_dev *pdev)
+ 		cancel_work_sync(&adapter->reset_task);
+ 
+ 	e1000_phy_hw_reset(hw);
++	e1000_mdio_unregister(adapter);
+ 
+ 	kfree(adapter->tx_ring);
+ 	kfree(adapter->rx_ring);
