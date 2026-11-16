@@ -1,0 +1,352 @@
+e1000: drive an external PHY through phylib on CE4100
+
+The CE4100 GbE MAC talks RGMII to its PHY, and e1000 drives that PHY
+itself: it scans the MDIO bus, resets the PHY and polls it. Features
+phylib and the PHY drivers provide, such as RGMII delays from the
+device tree and PHY LEDs for the netdev trigger, are out of reach.
+
+If the device's OF node has a phy-handle, register the MDIO bus from its
+"mdio" child, attach the PHY with phylib, and force the MAC to the speed
+and duplex phylib reports, as for a fixed link. ethtool link settings,
+autonegotiation restart and the MII ioctls go to phylib. Without a
+phy-handle, or without OF_MDIO, the PHY scan runs as before.
+
+Author: Joseph Telaak <joseph@telaak.dev>
+---
+diff --git a/drivers/net/ethernet/intel/e1000/e1000.h b/drivers/net/ethernet/intel/e1000/e1000.h
+index ea6ccf4..292cd41 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000.h
++++ b/drivers/net/ethernet/intel/e1000/e1000.h
+@@ -42,6 +42,7 @@
+ #include <linux/mii.h>
+ #include <linux/ethtool.h>
+ #include <linux/if_vlan.h>
++#include <linux/phy.h>
+ 
+ #define BAR_0		0
+ #define BAR_1		1
+@@ -53,6 +54,12 @@ struct e1000_adapter;
+ 
+ #include "e1000_hw.h"
+ 
++/* The PHY phylib drives through the CE4100 MDIO bus, if any */
++static inline struct phy_device *e1000_phydev(struct net_device *netdev)
++{
++	return IS_REACHABLE(CONFIG_OF_MDIO) ? netdev->phydev : NULL;
++}
++
+ #define E1000_MAX_INTR			10
+ 
+ /*
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+index 009ba6f..9dad235 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_ethtool.c
+@@ -133,6 +133,11 @@ static int e1000_get_link_ksettings(struct net_device *netdev,
+ 	struct e1000_hw *hw = &adapter->hw;
+ 	u32 supported, advertising;
+ 
++	if (e1000_phydev(netdev)) {
++		phy_ethtool_ksettings_get(netdev->phydev, cmd);
++		return 0;
++	}
++
+ 	if (hw->fixed_link)
+ 		return e1000_get_fixed_link_ksettings(netdev, cmd);
+ 
+@@ -214,6 +219,9 @@ static int e1000_set_link_ksettings(struct net_device *netdev,
+ 	struct e1000_hw *hw = &adapter->hw;
+ 	u32 advertising;
+ 
++	if (e1000_phydev(netdev))
++		return phy_ethtool_ksettings_set(netdev->phydev, cmd);
++
+ 	/* Speed and duplex of a fixed link come from firmware */
+ 	if (hw->fixed_link) {
+ 		u8 duplex = hw->fixed_link_full_duplex ? DUPLEX_FULL :
+@@ -1875,6 +1883,9 @@ static int e1000_nway_reset(struct net_device *netdev)
+ {
+ 	struct e1000_adapter *adapter = netdev_priv(netdev);
+ 
++	if (e1000_phydev(netdev))
++		return phy_restart_aneg(netdev->phydev);
++
+ 	if (netif_running(netdev))
+ 		e1000_reinit_locked(adapter);
+ 	return 0;
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_hw.c b/drivers/net/ethernet/intel/e1000/e1000_hw.c
+index dbf0233..6fac7fc 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_hw.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_hw.c
+@@ -33,7 +33,6 @@ static void e1000_write_reg_io(struct e1000_hw *hw, u32 offset, u32 value);
+ static s32 e1000_set_phy_type(struct e1000_hw *hw);
+ static void e1000_phy_init_script(struct e1000_hw *hw);
+ static s32 e1000_setup_copper_link(struct e1000_hw *hw);
+-static s32 e1000_setup_fixed_link(struct e1000_hw *hw);
+ static s32 e1000_setup_fiber_serdes_link(struct e1000_hw *hw);
+ static s32 e1000_adjust_serdes_amplitude(struct e1000_hw *hw);
+ static s32 e1000_phy_force_speed_duplex(struct e1000_hw *hw);
+@@ -1420,7 +1419,7 @@ static s32 e1000_copper_link_postconfig(struct e1000_hw *hw)
+  * between, so there is nothing to negotiate. Force speed, duplex and link up
+  * in the MAC rather than relying on what firmware left in CTRL.
+  */
+-static s32 e1000_setup_fixed_link(struct e1000_hw *hw)
++s32 e1000_setup_fixed_link(struct e1000_hw *hw)
+ {
+ 	u32 ctrl, ctrl_aux;
+ 
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_hw.h b/drivers/net/ethernet/intel/e1000/e1000_hw.h
+index a8f799a..f94eaf8 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_hw.h
++++ b/drivers/net/ethernet/intel/e1000/e1000_hw.h
+@@ -271,6 +271,7 @@ void e1000_set_media_type(struct e1000_hw *hw);
+ 
+ /* Link Configuration */
+ s32 e1000_setup_link(struct e1000_hw *hw);
++s32 e1000_setup_fixed_link(struct e1000_hw *hw);
+ s32 e1000_phy_setup_autoneg(struct e1000_hw *hw);
+ void e1000_config_collision_dist(struct e1000_hw *hw);
+ s32 e1000_check_for_link(struct e1000_hw *hw);
+@@ -1388,7 +1389,7 @@ struct e1000_hw {
+ 	e1000_dsp_config dsp_config_state;
+ 	bool get_link_status;
+ 	bool serdes_has_link;
+-	bool fixed_link;
++	bool fixed_link;		/* MAC forced, no PHY of its own */
+ 	bool fixed_link_full_duplex;
+ 	u16 fixed_link_speed;
+ 	bool tbi_compatibility_en;
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
+index 677a665..75bec52 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_main.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
+@@ -8,7 +8,9 @@
+ #include <linux/bitops.h>
+ #include <linux/if_vlan.h>
+ #include <linux/of.h>
++#include <linux/of_mdio.h>
+ #include <linux/of_net.h>
++#include <linux/iopoll.h>
+ #include <linux/phy.h>
+ 
+ char e1000_driver_name[] = "e1000";
+@@ -964,6 +966,148 @@ out:
+ 	return err;
+ }
+ 
++static int e1000_ce4100_mdio_wait(struct e1000_hw *hw)
++{
++	u32 cmd;
++
++	return readl_poll_timeout(E1000_MDIO_CMD, cmd,
++				  !(cmd & INTEL_CE_GBE_MDIC_GO), 50, 3200);
++}
++
++static int e1000_ce4100_mdio_read(struct mii_bus *bus, int addr, int reg)
++{
++	struct e1000_hw *hw = bus->priv;
++	int err;
++	u32 sts;
++
++	writel((reg << E1000_MDIC_REG_SHIFT) | (addr << E1000_MDIC_PHY_SHIFT) |
++	       INTEL_CE_GBE_MDIC_OP_READ | INTEL_CE_GBE_MDIC_GO,
++	       E1000_MDIO_CMD);
++	err = e1000_ce4100_mdio_wait(hw);
++	if (err)
++		return err;
++
++	sts = readl(E1000_MDIO_STS);
++	if (sts & INTEL_CE_GBE_MDIC_READ_ERROR)
++		return -EIO;
++
++	return sts & 0xffff;
++}
++
++static int e1000_ce4100_mdio_write(struct mii_bus *bus, int addr, int reg,
++				   u16 val)
++{
++	struct e1000_hw *hw = bus->priv;
++
++	writel(val | (reg << E1000_MDIC_REG_SHIFT) |
++	       (addr << E1000_MDIC_PHY_SHIFT) |
++	       INTEL_CE_GBE_MDIC_OP_WRITE | INTEL_CE_GBE_MDIC_GO,
++	       E1000_MDIO_CMD);
++
++	return e1000_ce4100_mdio_wait(hw);
++}
++
++static void e1000_adjust_link(struct net_device *netdev)
++{
++	struct e1000_adapter *adapter = netdev_priv(netdev);
++	struct phy_device *phydev = netdev->phydev;
++	struct e1000_hw *hw = &adapter->hw;
++	bool full_duplex = phydev->duplex == DUPLEX_FULL;
++
++	if (phydev->link && (phydev->speed != hw->fixed_link_speed ||
++			     full_duplex != hw->fixed_link_full_duplex)) {
++		hw->fixed_link_speed = phydev->speed;
++		hw->fixed_link_full_duplex = full_duplex;
++		e1000_setup_fixed_link(hw);
++	}
++
++	phy_print_status(phydev);
++}
++
++/**
++ * e1000_get_phy - attach the PHY a phy-handle points to
++ * @adapter: board private structure
++ *
++ * Some boards wire the MAC to an RGMII PHY on its MDIO bus. If the device
++ * has a phy-handle, register the MDIO bus from the "mdio" child node and
++ * let phylib drive the PHY. The MAC is forced to the speed and duplex
++ * phylib reports, as for a fixed link. Without OF_MDIO the phy-handle is
++ * ignored.
++ *
++ * Return: 0 if there is no phy-handle or the PHY is attached, else an error.
++ */
++static int e1000_get_phy(struct e1000_adapter *adapter)
++{
++	struct device_node *np = adapter->pdev->dev.of_node;
++	struct device *dev = &adapter->pdev->dev;
++	struct e1000_hw *hw = &adapter->hw;
++	struct device_node *mdio, *phy_np;
++	phy_interface_t interface;
++	struct phy_device *phydev;
++	struct mii_bus *bus;
++	int err = -EINVAL;
++
++	phy_np = of_parse_phandle(np, "phy-handle", 0);
++	if (!phy_np)
++		return 0;
++
++	/* Without phylib, the PHY scan finds and drives the PHY as before */
++	if (!IS_REACHABLE(CONFIG_OF_MDIO)) {
++		err = 0;
++		goto out;
++	}
++
++	if (of_get_phy_mode(np, &interface) ||
++	    !phy_interface_mode_is_rgmii(interface)) {
++		e_dev_err("phy-handle needs an rgmii phy-mode\n");
++		goto out;
++	}
++
++	mdio = of_get_child_by_name(np, "mdio");
++	if (!mdio) {
++		e_dev_err("phy-handle needs an mdio node\n");
++		goto out;
++	}
++
++	bus = devm_mdiobus_alloc(dev);
++	if (!bus) {
++		of_node_put(mdio);
++		err = -ENOMEM;
++		goto out;
++	}
++
++	bus->name = "e1000 CE4100 MDIO";
++	snprintf(bus->id, MII_BUS_ID_SIZE, "%s", pci_name(adapter->pdev));
++	bus->priv = hw;
++	bus->parent = dev;
++	bus->read = e1000_ce4100_mdio_read;
++	bus->write = e1000_ce4100_mdio_write;
++
++	err = devm_of_mdiobus_register(dev, bus, mdio);
++	of_node_put(mdio);
++	if (err)
++		goto out;
++
++	phydev = of_phy_connect(adapter->netdev, phy_np, e1000_adjust_link, 0,
++				interface);
++	if (!phydev) {
++		err = -ENODEV;
++		goto out;
++	}
++
++	hw->fixed_link = true;
++	hw->fixed_link_speed = SPEED_1000;
++	hw->fixed_link_full_duplex = true;
++	hw->autoneg = 0;
++	adapter->fc_autoneg = 0;
++	hw->fc = E1000_FC_NONE;
++	hw->original_fc = hw->fc;
++	err = 0;
++out:
++	of_node_put(phy_np);
++	return err;
++}
++
+ /**
+  * e1000_probe - Device Initialization Routine
+  * @pdev: PCI device information struct
+@@ -1239,6 +1383,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 
+ 	if (hw->mac_type == e1000_ce4100) {
+ 		err = e1000_get_fixed_link(adapter);
++		if (!err && !hw->fixed_link)
++			err = e1000_get_phy(adapter);
+ 		if (err)
+ 			goto err_eeprom;
+ 	}
+@@ -1288,6 +1434,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	return 0;
+ 
+ err_register:
++	if (e1000_phydev(netdev))
++		phy_disconnect(netdev->phydev);
+ err_eeprom:
+ 	e1000_phy_hw_reset(hw);
+ 
+@@ -1332,6 +1480,9 @@ static void e1000_remove(struct pci_dev *pdev)
+ 
+ 	unregister_netdev(netdev);
+ 
++	if (e1000_phydev(netdev))
++		phy_disconnect(netdev->phydev);
++
+ 	/* Only kill reset task if adapter is not resetting */
+ 	if (!test_bit(__E1000_RESETTING, &adapter->flags))
+ 		cancel_work_sync(&adapter->reset_task);
+@@ -1476,6 +1627,9 @@ int e1000_open(struct net_device *netdev)
+ 	/* fire a link status change interrupt to start the watchdog */
+ 	ew32(ICS, E1000_ICS_LSC);
+ 
++	if (e1000_phydev(netdev))
++		phy_start(netdev->phydev);
++
+ 	return E1000_SUCCESS;
+ 
+ err_req_irq:
+@@ -1515,6 +1669,9 @@ int e1000_close(struct net_device *netdev)
+ 	set_bit(__E1000_DOWN, &adapter->flags);
+ 	clear_bit(__E1000_RESETTING, &adapter->flags);
+ 
++	if (e1000_phydev(netdev))
++		phy_stop(netdev->phydev);
++
+ 	e1000_down(adapter);
+ 	e1000_power_down_phy(adapter);
+ 	e1000_free_irq(adapter);
+@@ -2457,8 +2614,12 @@ static void e1000_82547_tx_fifo_stall_task(struct work_struct *work)
+ bool e1000_has_link(struct e1000_adapter *adapter)
+ {
+ 	struct e1000_hw *hw = &adapter->hw;
++	struct phy_device *phydev = e1000_phydev(adapter->netdev);
+ 	bool link_active = false;
+ 
++	if (phydev)
++		return phydev->link;
++
+ 	/* get_link_status is set on LSC (link status) interrupt or rx
+ 	 * sequence error interrupt (except on intel ce4100).
+ 	 * get_link_status will stay false until the
+@@ -4839,6 +5000,9 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
+ 	u16 mii_reg;
+ 	unsigned long flags;
+ 
++	if (e1000_phydev(netdev))
++		return phy_mii_ioctl(netdev->phydev, ifr, cmd);
++
+ 	if (hw->media_type != e1000_media_type_copper || hw->fixed_link)
+ 		return -EOPNOTSUPP;
+ 

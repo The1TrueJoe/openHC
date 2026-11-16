@@ -60,7 +60,7 @@ falconfalls.
 | 01:0b.2 | 8086:2e68 | i2c-pxa-pci | `i2c@b,2` | Four adapters, one per BAR |
 | 01:0b.4 | 8086:2e6a | spi-pxa2xx-pci | `ssp` | `CE5X00_SSP` via patch 0009 |
 | 01:0b.6 | 8086:089f | pwm-ce5300 | `pwm` | The CE5300's own; not on falconfalls. Also measured on an EA1. |
-| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | `fixed-link`, patch 0003. The DSA conduit. |
+| 01:0c.0 | 8086:2e6e | e1000 | `gbe` | `fixed-link` to the switch (patch 0003, the DSA conduit) or the EA1's RTL8211E through phylib (patch 0022). |
 | 01:0d.1 | 192e:0101 | ehci-pci | `usb_rear` | TDI host, patch 0014. The rear USB port. |
 | 01:17.0 | 8086:08a0 | spi-ea-ce5xx | `bootflash` | Not on falconfalls; devfn from `lspci` on an EA1. |
 
@@ -265,9 +265,10 @@ labels the Health panel shows.
 
 ## The GbE fixed link
 
-The GbE MAC has no PHY on any EA: nothing answers on its MDIO bus, and the
-MAC talks RGMII straight to a switch port (the BCM53125's port 5 on the EA3). The `gbe` node says so the
-standard way:
+On boards with the BCM53125 (EA3, EA5, EA1 v2 PoE) the GbE MAC has no PHY:
+nothing answers on its MDIO bus, and the MAC talks RGMII straight to the
+switch's port 5. `ea-switch.dtsi` says so the standard way. The EA1 without
+the switch has a real PHY instead ([below](#the-ea1s-phy-patch-0022)).
 
 ```dts
 gbe: ethernet@c,0 {
@@ -338,6 +339,45 @@ line rate, with or without flow control, and none with the switch off: the
 Atom falls behind on DSA-tagged frames, the link itself is clean. `lan1` had
 nothing plugged in, so lan1-to-lan2 forwarding wasn't exercised; the e1000
 side of it is the same conduit.
+
+## The EA1's PHY (patch 0022)
+
+The EA1 v1/v2 has no switch. Its e1000 talks RGMII to a **Realtek RTL8211E**
+at MDIO address 1 (ID `0x001cc915`; it also answers at 0, the broadcast
+address). Control4's kernel runs these boards in `REAL_PHY` mode (`IS_NYA`).
+`ea-gbe-phy.dtsi` describes it:
+
+```dts
+&gbe {
+	phy-mode = "rgmii";
+	phy-handle = <&gbe_phy>;
+
+	mdio {
+		gbe_phy: ethernet-phy@1 {
+			reg = <1>;
+			leds { ... };	/* the jack LEDs, see ea/switch */
+		};
+	};
+};
+```
+
+Patch `0022` makes e1000 hand it to phylib: with a `phy-handle`, e1000
+registers the MDIO bus (BAR1 `MDIO_CMD` at `+4`, `MDIO_STS` at `+0`) from the
+`mdio` node, attaches the PHY, and forces the MAC to whatever speed and duplex
+phylib reports, as for a fixed link. ethtool and the MII ioctls go to phylib.
+The Realtek driver brings the RTL8211E's LEDs as netdev-trigger LEDs.
+
+phylib is only in the real kernel (`real-kernel.fragment`). The bootstrap
+kernel ignores the `phy-handle` and e1000 scans and drives the PHY itself,
+as mainline always did (the RTL8211E's ID masks to the RTL8211B e1000 knows).
+
+Before this, the shared `ce5300.dtsi` gave every EA the fixed link, so the
+EA1's MAC was forced to 1000/full while the PHY negotiated on its own.
+
+`phy-mode = "rgmii"` matches the PHY's delay register as the straps leave it
+(extension page `0xa4`, register `0x1c` = `0x8577`: the force bit 13 clear and
+the TX/RX delay bits 12/11 clear). The Realtek driver sets bit 13 and keeps
+both delays off.
 
 ## The switch
 

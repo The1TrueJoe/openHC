@@ -23,6 +23,16 @@
 	};
 };
 
+/* RGMII straight to switch port 5, no PHY (patch 0003); the DSA conduit */
+&gbe {
+	phy-mode = "rgmii";
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
+};
+
 &ssp {
 	switch@1 {
 		compatible = "brcm,bcm53125";
