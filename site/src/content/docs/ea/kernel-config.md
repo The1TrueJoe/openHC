@@ -249,11 +249,12 @@ USB-serial side (`cp210x`) for the Zigbee NCP is in the shared `zigbee` feature.
 ## Wired network
 
 The on-board Intel GbE (`e1000`) is what CEFDK netboots from. On the EA1 it is a
-second path beside Wi-Fi; on boards without a radio it is the only one. The MAC
-has no PHY on the MDIO bus, so the PHY autodetect found nothing and
-`e1000_probe()` returned `-EIO`; patch `0003` makes e1000 read the GbE's
-`fixed-link` node instead (see the
-[device tree page](/ea/device-tree/#the-gbe-fixed-link)). The [switch page](/ea/switch/)
+second path beside Wi-Fi; on boards without a radio it is the only one. On the
+switch boards the MAC has no PHY on the MDIO bus, so the PHY autodetect found
+nothing and `e1000_probe()` returned `-EIO`; patches `0022`-`0024` hand the link
+to phylink, from the GbE's `fixed-link` node or the EA1's `phy-handle` (see the
+[device tree page](/ea/device-tree/#the-gbe-fixed-link)). That puts phylink and
+phylib in both kernels. The [switch page](/ea/switch/)
 has the details, and why the second jack needs DSA.
 
 ## SoC drivers
