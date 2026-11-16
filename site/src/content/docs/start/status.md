@@ -67,8 +67,8 @@ them was invisible while CI only ever built one board. The row below says
   binds again, and that was run twice on an HC-800 with IR and relays working
   afterwards each time.
 - **GLES2 on the PowerVR SGX545**, which the prevailing wisdom said was
-  impossible. Shaders compile, a triangle rasterises, and it was confirmed on a
-  panel.
+  impossible, now on a fully open stack (powervr_sgx: kernel driver, microkernel
+  and Mesa driver) that runs the on-screen web view.
 - **The DM355 SoC resurrection**, four files pulled back from pre-6.2 mainline
   history and forward-ported until a 7.1.8 kernel boots on ARMv5 silicon that
   upstream deleted.

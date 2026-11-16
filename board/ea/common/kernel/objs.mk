@@ -51,12 +51,8 @@ sound/soc/Makefile|obj-$(CONFIG_SND_SOC) += control4/
 # CONFIG_SND is set). Every EA has HDMI; features/audio-hdmi turns ALSA on.
 sound/x86/Makefile|obj-m += ce5300-hdmi.o
 
-# --- GPU: PowerVR SGX545 (the sgx545-ce submodule's kernel/, mirrored in) ---
-# Unlike the drivers above (openHC's own single .c files, obj-y), this is a large
-# vendored DDK with its own Kbuild + Kconfig, so it is gated by a REAL symbol and
-# built as a MODULE (=m, set in features/sgx/linux.fragment) to keep ~1.25 MiB of
-# DRM core out of the bzImage. The hook copies ea/common/sgx545-ce/kernel's
-# Kbuild/Kconfig + src/ tree to drivers/gpu/drm/sgx545ce (OHC_KERNEL_DRIVER_REPOS
-# in external.mk) and wires both lines below.
-drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/sgx545ce/Kconfig"
-drivers/gpu/drm/Makefile|obj-$(CONFIG_SGX545_CE) += sgx545ce/
+# --- GPU: PowerVR SGX545 (the powervr_sgx submodule's drm/powervr_sgx) ---
+# Copied to drivers/gpu/drm/powervr_sgx by OHC_KERNEL_DRIVER_REPOS (external.mk);
+# its own Kconfig symbol gates it (features/sgx/linux.fragment).
+drivers/gpu/drm/Kconfig|source "drivers/gpu/drm/powervr_sgx/Kconfig"
+drivers/gpu/drm/Makefile|obj-$(CONFIG_DRM_POWERVR_SGX) += powervr_sgx/

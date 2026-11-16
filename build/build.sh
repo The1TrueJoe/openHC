@@ -570,7 +570,7 @@ if [ -n "$_pkg_was" ]; then
 fi
 
 # Buildroot's OWN packages that a board patches through its
-# BR2_GLOBAL_PATCH_DIR (e.g. board/ea/common/gpu-wpe-i386/patches/wpewebkit): patches are applied only
+# BR2_GLOBAL_PATCH_DIR (e.g. board/common/patches/<pkg>): patches are applied only
 # at extract time, so a cached build tree keeps building the unpatched source.
 # Re-extract a patched package when one of its patches is not in the build
 # dir's .applied_patches_list (Buildroot records each one it applies), or when
@@ -604,6 +604,22 @@ for _root in $_gpd; do
     done
 done
 
+# Buildroot packages board/external.mk overlays from a submodule in a
+# post-patch hook (mesa3d: powervr_sgx's mesa/): applied at extract time only, so
+# re-extract when the overlay changed since this tree last saw it.
+for _spec in "mesa3d|BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SGX|$REPO/board/ea/common/powervr_sgx/mesa $REPO/board/ea/common/powervr_sgx/drm/powervr_sgx/include/uapi"; do
+    IFS='|' read -r _pkg _sym _dirs <<<"$_spec"
+    grep -q "^$_sym=y\$" "$OUT/.config" 2>/dev/null || continue
+    # shellcheck disable=SC2086
+    _sum=$( (find $_dirs -type f -print | LC_ALL=C sort | xargs cat; grep -F -A30 "ifeq (\$($_sym),y)" "$REPO/board/external.mk" || true) | cksum | cut -d' ' -f1)
+    _sumf="$OUT/build/.ohc-overlay-$_pkg.sum"
+    if [ -n "$(ls -d "$OUT"/build/"$_pkg"-[0-9]* 2>/dev/null)" ] && [ "$(cat "$_sumf" 2>/dev/null)" != "$_sum" ]; then
+        echo ">> $_pkg: openHC's overlay changed — re-extracting"
+        "${M[@]}" "$_pkg-dirclean"
+    fi
+    mkdir -p "$OUT/build" && printf '%s\n' "$_sum" > "$_sumf"
+done
+
 # Force a rebuild of every package THIS REPO maintains, before the main build.
 #
 # Buildroot stamps each step and will not redo it, which is right for upstream
@@ -619,7 +635,7 @@ done
 #     OVERRIDE_SRCDIR set, configure depends on it only order-only, so the copy
 #     refreshes and nothing rebuilds.
 #
-#   * a downloaded package whose .mk we wrote (e.g. sgx545-um) never re-runs its
+#   * a downloaded package whose .mk we wrote (e.g. powervr-sgx-firmware) never re-runs its
 #     install commands, so a change to what it installs -- a patched header, a
 #     new symlink -- never reaches staging. cairo then fails against the stale
 #     header with an error naming neither package.

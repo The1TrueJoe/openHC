@@ -5,8 +5,8 @@
 # board/ea/common/linux/common.fragment for why EA boot is two kernels.
 #
 # This is a SECOND, out-of-tree compile of the SAME kernel source Buildroot
-# already extracted, patched and mirrored openHC's drivers + the sgx545ce
-# submodule into. It reuses that source and Buildroot's own cross toolchain, so
+# already extracted, patched and mirrored openHC's drivers + powervr_sgx
+# into. It reuses that source and Buildroot's own cross toolchain, so
 # it cannot drift from the bootstrap kernel's source or compiler; only the
 # .config differs (bootstrap config + real-kernel.fragment, olddefconfig'd).
 #
@@ -75,11 +75,11 @@ MAKE=(make -C "$SRC" ARCH=x86_64 CROSS_COMPILE="$HOSTBIN/$TUPLE-" \
 # IN-TREE build. Buildroot builds the kernel in-tree, so $SRC is "dirty"; the
 # kernel then REFUSES an out-of-tree `O=` build ("outputmakefile Error 1"). We
 # cannot O= our way out, so we mrproper and rebuild the fat kernel in the same
-# tree. SAFE in sgx-module.yml: the bootstrap bzImage + pvrsrvkm.ko are already
-# harvested to out/ BEFORE this runs, and the trim step re-extracts linux next
-# build anyway. mrproper clears .config + build artifacts but NOT the mirrored
-# openHC driver sources / Makefile edits / the sgx545ce submodule (those are
-# source, not generated), so the fat build still sees them.
+# tree. SAFE: post-image runs it last, after the bootstrap bzImage and the
+# modules are installed, and build.sh re-extracts linux next build anyway.
+# mrproper clears .config + build artifacts but NOT the mirrored openHC driver
+# sources / Makefile edits (those are source, not generated), so the fat build
+# still sees them.
 SLOTCFG=$(mktemp)
 cp "$SRC/.config" "$SLOTCFG"
 echo "mk-real-kernel: mrproper (clean in-tree build for the fat config) ..."
@@ -93,6 +93,18 @@ else
 	cat "$FRAG" >> "$SRC/.config"
 fi
 "${MAKE[@]}" olddefconfig
+
+# powervr_sgx is built in and probes before the rootfs is mounted, so its
+# microkernel is linked into the kernel (EXTRA_FIRMWARE), from the target tree
+# the powervr-sgx-firmware package installed it into.
+FW=powervr_sgx/sgx545_ukernel.bin
+FWDIR="$OUT/target/lib/firmware"
+if grep -q '^CONFIG_DRM_POWERVR_SGX=y' "$SRC/.config"; then
+	[ -f "$FWDIR/$FW" ] || { echo "mk-real-kernel: no $FWDIR/$FW (powervr-sgx-firmware)" >&2; exit 1; }
+	"$SRC/scripts/config" --file "$SRC/.config" \
+		--set-str EXTRA_FIRMWARE "$FW" --set-str EXTRA_FIRMWARE_DIR "$FWDIR"
+	"${MAKE[@]}" olddefconfig
+fi
 
 # Turn module signing OFF (no signing key, no signed-module enforcement — secure
 # boot is off on this hardware). This one DOES stick. The trusted keyring and
@@ -123,13 +135,13 @@ echo "==========================================================================
 rm -f "$SLOTCFG"
 
 # Sanity: the whole point is these must be built IN (=y), not modules.
-for sym in CONFIG_DRM CONFIG_SGX545_CE; do
+for sym in CONFIG_DRM CONFIG_DRM_POWERVR_SGX CONFIG_DRM_SIMPLEDRM; do
 	if ! grep -q "^$sym=y" "$SRC/.config"; then
 		echo "mk-real-kernel: WARNING $sym is not =y in the real kernel (.config says: $(grep "$sym" "$SRC/.config" || echo unset))" >&2
 	fi
 done
 
-echo "mk-real-kernel: building fat bzImage (DRM/SGX built in) ..."
+echo "mk-real-kernel: building fat bzImage (DRM/powervr_sgx built in) ..."
 "${MAKE[@]}" bzImage
 
 BZ="$SRC/arch/x86/boot/bzImage"

@@ -134,12 +134,13 @@ pub const BOARDS: &[Board] = &[
         family: Family::Ea,
         desc: "EA3 v1 (Wi-Fi, switch, PoE)",
         c4_type: Some(2),
-        c4_revs: &[],
+        c4_revs: &[6],
         secure_boot: true,
         has_switch: true,
         has_wifi: true,
         dmi: None,
-        notes: "",
+        notes: "revision 6 read off the board-ID straps (0x26) of a unit with the AR9462 \
+                Wi-Fi card. Fuse not read; assumed blown like the v2.",
         netboot: None,
     },
     Board {
@@ -303,11 +304,71 @@ pub struct Identity {
     pub version: Option<String>,
     /// Raw evidence, for display.
     pub raw: Vec<(String, String)>,
+    /// Evidence that disagrees, e.g. straps for one board and an image for another.
+    pub warning: Option<String>,
+    /// Ids read off the unit that no board in the table records.
+    pub unknown: Option<UnknownIds>,
+}
+
+/// A board type and revision the table doesn't have yet: worth a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownIds {
+    /// The raw EA strap byte, when the ids came from the straps.
+    pub straps: Option<u8>,
+    pub btype: u8,
+    pub rev: u8,
+}
+
+impl UnknownIds {
+    pub fn describe(&self) -> String {
+        match self.straps {
+            Some(s) => format!("board type {}, revision {} (straps {s:#04x})", self.btype, self.rev),
+            None => format!("board type {}, revision {}", self.btype, self.rev),
+        }
+    }
+}
+
+/// Where a user reports a board the table doesn't know.
+pub const NEW_ISSUE_URL: &str = "https://github.com/The1TrueJoe/openHC/issues/new";
+
+/// A prefilled new-issue link for an unknown board. Board facts only: the ids,
+/// the model the unit reports, and the flasher's version. Nothing is sent; the
+/// user opens the link and decides.
+pub fn unknown_board_issue_url(u: &UnknownIds, model: Option<&str>, flasher: &str) -> String {
+    let model: String = model
+        .unwrap_or("unknown")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(40)
+        .collect();
+    let straps = u.straps.map_or("not read".into(), |s| format!("{s:#04x}"));
+    let title = format!("Unknown board: type {}, revision {} ({model})", u.btype, u.rev);
+    let body = format!(
+        "The flasher found a board it doesn't know.\n\n\
+         | | |\n|---|---|\n\
+         | Straps | {straps} |\n\
+         | Type | {} |\n\
+         | Revision | {} |\n\
+         | Model | {model} |\n\
+         | Flasher | {flasher} |\n\n\
+         Which board is it (label on the underside, Wi-Fi or not, switch or not)?\n",
+        u.btype, u.rev
+    );
+    format!("{NEW_ISSUE_URL}?title={}&body={}", url_encode(&title), url_encode(&body))
+}
+
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 impl Identity {
     fn none(running: Running) -> Self {
-        Identity { board: None, candidates: vec![], running, version: None, raw: vec![] }
+        Identity { board: None, candidates: vec![], running, version: None, raw: vec![], warning: None, unknown: None }
     }
 
     /// True only when exactly one board matches — the precondition for an
@@ -317,6 +378,14 @@ impl Identity {
     }
 
     pub fn describe(&self) -> String {
+        let what = self.what();
+        match &self.warning {
+            Some(w) => format!("{what} — WARNING: {w}"),
+            None => what,
+        }
+    }
+
+    fn what(&self) -> String {
         match (&self.board, self.certain()) {
             (Some(b), true) => format!("{} ({}) running {:?}", b.name, b.desc, self.running),
             _ if !self.candidates.is_empty() => {
@@ -345,7 +414,7 @@ pub fn from_c4board(name: Option<&str>, btype: Option<u8>, rev: Option<u8>) -> I
     // rarely matches a board name directly; fall through to type+revision.
     if let Some(n) = name {
         if let Some(b) = by_name(n) {
-            return Identity { board: Some(b), candidates: vec![b], running: Running::Stock, version: None, raw };
+            return Identity { board: Some(b), candidates: vec![b], running: Running::Stock, version: None, raw, warning: None, unknown: None };
         }
     }
     let pool = btype.map(by_type).unwrap_or_default();
@@ -361,8 +430,12 @@ pub fn from_c4board(name: Option<&str>, btype: Option<u8>, rev: Option<u8>) -> I
     } else {
         None
     };
+    let unknown = match (btype, rev) {
+        (Some(t), Some(r)) if exact.is_empty() => Some(UnknownIds { straps: None, btype: t, rev: r }),
+        _ => None,
+    };
     let candidates = if exact.len() == 1 { exact } else { pool };
-    Identity { board, candidates, running: Running::Stock, version: None, raw }
+    Identity { board, candidates, running: Running::Stock, version: None, raw, warning: None, unknown }
 }
 
 /// Identify from a running openHC's `/etc/openhc-release`, whose `board=` its
@@ -373,7 +446,7 @@ pub fn from_release(release: &str) -> Identity {
     };
     let raw = vec![("board".into(), name.trim().to_string())];
     match by_name(name) {
-        Some(b) => Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw },
+        Some(b) => Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw, warning: None, unknown: None },
         None => Identity { raw, ..Identity::none(Running::Openhc) },
     }
 }
@@ -385,7 +458,7 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
     if let Some(name) = get("OHC_BOARD") {
         raw.push(("OHC_BOARD".into(), name.clone()));
         if let Some(b) = by_name(&name) {
-            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw };
+            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw, warning: None, unknown: None };
         }
     }
     if let Some(model) = get("OHC_MODEL") {
@@ -396,7 +469,7 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
         // Without this a running openHC on an HC-800 came back unidentified,
         // and the flasher refused to touch the one board it is safest on.
         if let Some(b) = by_name(&model) {
-            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw };
+            return Identity { board: Some(b), candidates: vec![b], running: Running::Openhc, version: None, raw, warning: None, unknown: None };
         }
         // EA overlays carry only 1/3/5, i.e. the family and not the variant.
         let prefix = format!("ea{}", model.trim());
@@ -405,7 +478,7 @@ pub fn from_board_env(get: impl Fn(&str) -> Option<String>) -> Identity {
             .filter(|b| b.family == Family::Ea && b.name.starts_with(&prefix))
             .collect();
         let board = if pool.len() == 1 { Some(pool[0]) } else { None };
-        return Identity { board, candidates: pool, running: Running::Openhc, version: None, raw };
+        return Identity { board, candidates: pool, running: Running::Openhc, version: None, raw, warning: None, unknown: None };
     }
     Identity::none(Running::Openhc)
 }
@@ -423,6 +496,8 @@ pub fn from_uboot_platform(platform: Option<&str>, running: Running) -> Identity
                 running,
                 version: None,
                 raw: vec![("platform".into(), "iox".into())],
+                warning: None,
+                unknown: None,
             }
         }
         _ => Identity::none(running),
@@ -454,8 +529,8 @@ pub fn from_dmi(vendor: Option<&str>, product: Option<&str>, running: Running) -
         _ => false,
     });
     match hit {
-        Some(b) => Identity { board: Some(b), candidates: vec![b], running, version: None, raw },
-        None => Identity { board: None, candidates: vec![], running, version: None, raw },
+        Some(b) => Identity { board: Some(b), candidates: vec![b], running, version: None, raw, warning: None, unknown: None },
+        None => Identity { board: None, candidates: vec![], running, version: None, raw, warning: None, unknown: None },
     }
 }
 
@@ -470,7 +545,7 @@ pub fn from_cpuinfo(cpuinfo: &str, running: Running) -> Identity {
     match hw.map(str::to_ascii_uppercase).as_deref() {
         Some("HC250") => {
             let b = by_name("hc250");
-            Identity { board: b, candidates: b.into_iter().collect(), running, version: None, raw }
+            Identity { board: b, candidates: b.into_iter().collect(), running, version: None, raw, warning: None, unknown: None }
         }
         _ => Identity { raw, ..Identity::none(running) },
     }
@@ -498,3 +573,48 @@ pub fn from_cefdk_banner(text: &str) -> Identity {
         _ => Identity::none(Running::Cefdk),
     }
 }
+
+/// Identify from the EA board-ID straps (GPIO 17-23, `board_id0..6`): the same
+/// bits stock's kernel turns into `/proc/c4board`, revision = bits 0-3, type =
+/// bits 4-6. They are wired on the board, so they hold whatever OS is installed.
+pub fn from_ea_straps(straps: u8, running: Running) -> Identity {
+    let (t, r) = ((straps >> 4) & 7, straps & 15);
+    let mut id = from_c4board(None, Some(t), Some(r));
+    id.running = running;
+    id.raw = vec![("board_id straps".into(), format!("{straps:#04x} (type {t}, revision {r})"))];
+    if let Some(u) = &mut id.unknown {
+        u.straps = Some(straps);
+    }
+    id
+}
+
+/// Check what an openHC install says it is against the straps. The straps win:
+/// an image can be installed on the wrong board, the straps cannot move.
+pub fn with_straps(installed: Identity, straps: Identity) -> Identity {
+    let mut raw = installed.raw.clone();
+    raw.extend(straps.raw.iter().cloned());
+    let name = |b: Option<&Board>| b.map_or("an unknown board", |b| b.name);
+    if straps.certain() {
+        let warning = match (installed.board, straps.board) {
+            (Some(i), Some(s)) if i.name != s.name => Some(format!(
+                "the board straps say {}, but the openHC installed is for {}",
+                s.name, i.name
+            )),
+            _ => installed.warning.clone(),
+        };
+        return Identity { raw, warning, version: installed.version, ..straps };
+    }
+    if straps.candidates.is_empty() || installed.board.is_some_and(|i| straps.candidates.contains(&i)) {
+        return Identity { raw, unknown: straps.unknown, ..installed };
+    }
+    Identity {
+        warning: Some(format!(
+            "the board straps do not match {}, the board the installed openHC is for",
+            name(installed.board)
+        )),
+        raw,
+        version: installed.version,
+        ..straps
+    }
+}
+

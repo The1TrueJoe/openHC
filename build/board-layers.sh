@@ -9,8 +9,6 @@
 # A standalone board (hc800, ca1, ioxv1) is board/common + board/<board>.
 FAMILY_DIR=""; MODEL_DIR=""
 case "$BOARD" in
-  # Standalone i386 WPE/SGX tree, not a bootable board (no family base).
-  gpu-wpe-i386) BOARD_DIR="$REPO/board/ea/common/gpu-wpe-i386" ;;
   ea*)
     FAMILY_DIR="$REPO/board/ea/common"
     BOARD_DIR=$(ls -d "$REPO"/board/ea/*/"$BOARD" 2>/dev/null | head -1)

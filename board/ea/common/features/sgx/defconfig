@@ -1,3 +1,3 @@
-# sgx: PowerVR SGX545 kernel driver (from the sgx545-ce submodule, linux.fragment).
-# srvinit is the open GPU bring-up S60sgx runs. The DDK blobs are the `wpe` feature.
-BR2_PACKAGE_SGX545_SRVINIT=y
+# sgx: the PowerVR SGX545 under powervr_sgx (the powervr_sgx submodule). The kernel
+# driver is linux.fragment; this is the open microkernel it loads at probe.
+BR2_PACKAGE_POWERVR_SGX_FIRMWARE=y

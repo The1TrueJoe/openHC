@@ -24,7 +24,7 @@ and why the variants are composed rather than copied.
 | **ea3-v2** | — | BCM53125 | yes | **blown** | **proven** — persistent self-boot from eMMC |
 | ea1-v2 | ath9k | — | — | ? | builds; boot differences unconfirmed |
 | ea1-v2-poe | — | BCM53125 | yes | ? | builds, never booted |
-| ea3-v1 | ath9k | BCM53125 | yes | ? | builds; image never booted (a v1 board has run the ea3-v2 image) |
+| ea3-v1 | ath9k | BCM53125 | yes | ? | builds; a v1 board ran the ea3-v2 image until 2026-11 |
 | ea5-v1 | ath9k | BCM53125 | ? | ? | builds, never booted |
 | ea5-v2 | — | BCM53125 | ? | ? | builds, never booted |
 
@@ -45,9 +45,24 @@ board_id0..3  ->  revision   1,0,0,1 = 9   ( = /proc/c4board/revision )
 board_id4..6  ->  type       0,1,0   = 2   ( = /proc/c4board/type     )
 ```
 
-**Type 1 is an EA1, type 2 is an EA3**, with the low nibble carrying the PCB
-revision. A board profile can be selected from these pins on the host without
-parsing `/proc/c4board` at all.
+**Type 1 is an EA1, type 2 is an EA3, type 3 is an EA5**, with the low nibble
+carrying the PCB revision. The straps are wired on the board, so they read the
+same whatever OS is installed:
+
+| Straps | Type | Revision | Board | Read off |
+|---|---|---|---|---|
+| `0x15` | 1 | 5 | ea1-v1 | `/proc/c4board` on stock |
+| `0x26` | 2 | 6 | ea3-v1 | the straps, on a unit with the AR9462 Wi-Fi card |
+| `0x29` | 2 | 9 | ea3-v2 | `/proc/c4board` and the straps, same unit |
+| `0x34` | 3 | 4 | ea5-v1 | `/proc/c4board` on stock |
+
+ea1-v2, ea1-v2-poe and ea5-v2 haven't been read yet.
+
+On openHC, `ohc-hw straps` reads them. Each measured board's `.dts` carries its
+ids as `control4,board-type` and `control4,board-revisions`, and `ohc-ea-hw`
+checks the straps against them at boot. A mismatch means the image is for another
+board, and it is logged as a warning. The flasher reads the straps too, and trusts
+them over the board name the installed image carries.
 
 ## Two differences that actually shape the build
 
@@ -110,6 +125,7 @@ the gap is silent rather than loud:
 - [Audio](/ea/audio/) and the
   [CE5300 register map](/ea/audio-regmap/).
 - [Graphics](/ea/graphics/), the SGX545, which works.
+- [Display registers](/ea/display/), the VDC, HDMI transmitter and display PLL, mapped for a KMS driver.
 - [HDMI CEC](/ea/hdmi-cec/), and why it isn't where anyone would look.
 - [Fan and thermal](/ea/fan/) — the kernel runs the fan from the device tree;
   the 100 kHz PWM, the curve, manual control and the 95 °C poweroff.

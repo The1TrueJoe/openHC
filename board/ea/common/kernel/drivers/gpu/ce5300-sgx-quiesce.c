@@ -3,8 +3,8 @@
  * ce5300-sgx-quiesce.c — hold the CE5300's SGX545 in soft reset before this
  * kernel hands the machine to another one (kexec) or to the firmware.
  *
- * Once the PVR driver (pvrsrvkm, the sgx545ce submodule) has probed the GPU at
- * 01:02.0, the SGX stays live after the driver lets go: its own shutdown hook
+ * Once a GPU driver has probed the GPU at 01:02.0 (measured with the DDK's
+ * pvrsrvkm), the SGX stays live after the driver lets go: its own shutdown hook
  * powers the core down through the microkernel, and even a full unbind leaves
  * it out of reset. A kernel kexec'd after that comes up broken, every time
  * (measured on an EA1, 2026-10-26):

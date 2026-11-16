@@ -18,6 +18,7 @@ software defaults only.
 |---|---|---|
 | Model | DT `model` (`/proc/device-tree/model`): `Control4 EA-3 v1`, `Control4 HC-800` | iod, webd (`/api/board`), audiod (default endpoint names), `ohc-mdns`, the banners |
 | Board name | the first `control4,<board>` DT `compatible`; the build's `/etc/openhc-release` `board=` | `ohc-hw board`, the flasher |
+| Board-ID straps | the `board_id0..N` GPIO lines; on an EA, checked against the DT's `control4,board-type` and `control4,board-revisions` at boot ([table](/ea/#the-identity-straps)) | `ohc-hw straps`, `ohc-ea-hw`, the flasher |
 | Managed-switch ports | the DSA user ports the kernel created (`DEVTYPE=dsa`), named by their DT `label` | switchd, `S39ea-switch`, `S40net`, `S87ohcswitch` |
 | mDNS interface | every interface that is up, minus loopback, DSA ports and conduits and bridge ports; wired first | `ohc-mdns` |
 | IO backend | a serdev device whose `modalias` has `control4,io-mcu` (DT or ACPI `PRP0001`) means `mcu`; else `relay1..`/`contact1..` lines or `openHC IR out N` lirc devices mean `gpio`; else none | iod |
@@ -35,7 +36,7 @@ gives `EA-1`. An output's id (`analog1`, `coax`, `hdmi`) is its label in lower
 case, without spaces or anything in parentheses; saved endpoints refer to it.
 Outputs are listed by label with HDMI last.
 
-`ohc-hw` (`/usr/bin/ohc-hw model|board|dsa-ports|lan-ifaces`) gives init
+`ohc-hw` (`/usr/bin/ohc-hw model|board|straps|dsa-ports|lan-ifaces`) gives init
 scripts the same answers.
 
 ## The board's udev rules
