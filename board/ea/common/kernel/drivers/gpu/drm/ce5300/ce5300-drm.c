@@ -325,29 +325,37 @@ static const struct drm_crtc_funcs ce5300_crtc_funcs = {
 
 /* ---- HDMI connector ---------------------------------------------------- */
 
+/* i2c_for_each_dev() holds the core lock: note the number, get it after. */
 static int ce5300_find_ddc(struct device *dev, void *data)
 {
 	struct i2c_adapter *adap = i2c_verify_adapter(dev);
-	struct i2c_adapter **found = data;
 
 	if (adap && !strcmp(adap->name, HDMI_DDC_NAME)) {
-		*found = i2c_get_adapter(adap->nr);
+		*(int *)data = adap->nr;
 		return 1;
 	}
 	return 0;
+}
+
+static struct i2c_adapter *ce5300_get_ddc(void)
+{
+	int nr = -1;
+
+	i2c_for_each_dev(&nr, ce5300_find_ddc);
+	return nr < 0 ? NULL : i2c_get_adapter(nr);
 }
 
 static enum drm_connector_status ce5300_connector_detect(struct drm_connector *c, bool force)
 {
 	struct ce5300 *p = to_ce5300(c->dev);
 
-	struct i2c_adapter *ddc = NULL;
+	struct i2c_adapter *ddc;
 	bool found;
 
 	if (p->hdmi_status && readl(p->hdmi_status) & HDMI_TX_HPD)
 		return connector_status_connected;
 	/* HPD stays low on an EA1: fall back to an EDID that answers. */
-	i2c_for_each_dev(&ddc, ce5300_find_ddc);
+	ddc = ce5300_get_ddc();
 	if (!ddc)
 		return connector_status_unknown;
 	found = drm_probe_ddc(ddc);
@@ -358,12 +366,11 @@ static enum drm_connector_status ce5300_connector_detect(struct drm_connector *c
 static int ce5300_connector_get_modes(struct drm_connector *c)
 {
 	struct ce5300 *p = to_ce5300(c->dev);
-	struct i2c_adapter *ddc = NULL;
+	struct i2c_adapter *ddc = ce5300_get_ddc();
 	const struct drm_edid *edid = NULL;
 	struct drm_display_mode *m;
 	int n = 0;
 
-	i2c_for_each_dev(&ddc, ce5300_find_ddc);
 	if (ddc) {
 		edid = drm_edid_read_ddc(c, ddc);
 		i2c_put_adapter(ddc);
