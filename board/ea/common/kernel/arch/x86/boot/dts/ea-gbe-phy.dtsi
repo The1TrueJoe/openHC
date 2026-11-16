@@ -6,8 +6,9 @@
  */
 #include <dt-bindings/leds/common.h>
 
+/* Only rgmii-id passes traffic (tested); the straps already do the same */
 &gbe {
-	phy-mode = "rgmii";
+	phy-mode = "rgmii-id";
 	phy-handle = <&gbe_phy>;
 
 	mdio {

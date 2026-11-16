@@ -349,7 +349,7 @@ address). Control4's kernel runs these boards in `REAL_PHY` mode (`IS_NYA`).
 
 ```dts
 &gbe {
-	phy-mode = "rgmii";
+	phy-mode = "rgmii-id";
 	phy-handle = <&gbe_phy>;
 
 	mdio {
@@ -374,10 +374,20 @@ as mainline always did (the RTL8211E's ID masks to the RTL8211B e1000 knows).
 Before this, the shared `ce5300.dtsi` gave every EA the fixed link, so the
 EA1's MAC was forced to 1000/full while the PHY negotiated on its own.
 
-`phy-mode = "rgmii"` matches the PHY's delay register as the straps leave it
-(extension page `0xa4`, register `0x1c` = `0x8577`: the force bit 13 clear and
-the TX/RX delay bits 12/11 clear). The Realtek driver sets bit 13 and keeps
-both delays off.
+**The PHY adds both RGMII delays: `phy-mode = "rgmii-id"`.** The RTL8211E's
+delay register (extension page `0xa4`, register `0x1c`) reads `0x8577` with the
+straps in charge (force bit 13 clear), and its delay bits 12/11 read clear even
+though the straps turn the delays on. Measured on an EA1 under the fixed-link
+kernel (2026-11-16), each setting forced by hand for 10 s with a ping to the
+gateway, then put back:
+
+| Bits 13/12/11 | phy-mode the Realtek driver writes it for | Ping |
+|---|---|---|
+| `0x2000` | `rgmii` | 0 of 10 |
+| `0x2800` | `rgmii-rxid` | 0 of 6 |
+| `0x3000` | `rgmii-txid` | 0 of 6 |
+| `0x3800` | `rgmii-id` | 6 of 6 |
+| straps (`0x8577`) | none | works |
 
 ## The switch
 
