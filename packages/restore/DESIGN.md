@@ -110,41 +110,43 @@ instant p1 is only a mount — exactly the context the durable system lacks.
 
 Flow (`restore stock`):
 
-1. **On durable** (`p1_is_root()` true): can't touch p1. Drop a one-shot flag
-   `/.ohc-stock-pending` on p1, leave the autoscript enabled, and reboot.
-2. **boot-init**, pre-pivot, sees the flag: remove it (so a failed finalize can't
-   loop), unmount p1, wait for `/dev/mtd0` (SPI-NOR probes async — MTD is built
-   into the same kernel, so the node *does* appear here), then run
-   `restore reimage-finalize`:
-   - mount p2 ro; **empty p1's existing ext4 in place** and
-     `unxz -c recfs.tar.xz | tar -x` onto it. Reusing the ext4 keeps its
-     type/LABEL/UUID and needs no `mke2fs` — so no e2fsprogs in the initramfs, only
-     busybox `tar`/`unxz`.
-   - *only after* a good extract, `revert` (clear the `0xa0f1c` enable byte — the
-     one and only SPI-NOR write, byte-exact and unit-tested). The lingering,
-     disabled CEFDK script item is left alone (deleting it is the brick risk).
+1. **On durable** (`p1_is_root()` true): can't touch p1. Put Control4's Zigbee
+   firmware back on the radio, drop a one-shot flag `/.ohc-restore-stock` on p1,
+   leave the autoscript enabled, and reboot.
+2. **S00kexec**, the first boot script, on the bootstrap kernel (GPU never used):
+   the flag is there, so it kexecs the real kernel (`/boot/bzImage`) with p1's own
+   `/boot/boot-init.cpio.gz` as its initramfs. This makes the restore independent
+   of the boot-init in the eMMC gap, which may predate it. The flag name is new for
+   the same reason: a gap boot-init that knew the older `.ohc-stock-pending`
+   carries a `restore` without the kernel step, and ignores this one.
+3. **boot-init**, pre-pivot, sees the flag: remove it (so a failed finalize can't
+   loop), unmount p1, wait for `/dev/mtd0`, then run `restore reimage-finalize`.
+   It checks p2 has `recfs.tar.xz` and `recovery_kernel.deb`, then, in order:
+   - **stock kernel**: the container from `recovery_kernel.deb`, checked against
+     the package's `md5sums`, written at eMMC byte `0x400` with its size
+     big-endian at `0x200`, read back and checked. openHC boots from the gap, so
+     a failure leaves openHC as it was.
+   - **`revert`** (clear the `0xa0f1c` enable byte). A failure leaves openHC.
+   - **p1**: empty its ext4 in place and `unxz -c recfs.tar.xz | tar -x` onto it,
+     then Control4's IO firmware from it. A failure leaves Control4's kernel on a
+     partial p1, which the factory button reimages.
    - `reboot -f`.
-3. **Cold boot** → CEFDK (autoscript off) → stock kernel item → stock p1.
+4. **Cold boot** → CEFDK (autoscript off) → Control4's kernel → stock p1.
 
-When `restore stock` is run somewhere p1 is already free (a flasher ramboot,
-whose separate full-rootfs initramfs leaves p1 unmounted), step 1's detour is
-skipped and the finalize runs immediately.
-
-**Fail-safe:** if the extract fails, the flag is already gone and the autoscript is
-still enabled, so the next boot re-runs boot-init, finds no valid p1, and either
-reinstalls openHC from the eMMC-staged image or comes up on the network — the box
-heals rather than stranding. p2 is never written in any path.
+When `restore stock` is run somewhere p1 is already free (a ramboot), the detour
+is skipped and the finalize runs immediately. p2 is never written in any path.
 
 ## Code
 
 - `restore stock` — `cmd_stock`: `p1_is_root()` → `stage_stock_flag()` (durable)
   or `cmd_reimage_finalize()` (p1 free).
-- `restore reimage-finalize` — `cmd_reimage_finalize` = `reimage_p1_direct()` +
-  `revert`. Called by boot-init; refuses if p1 is root.
+- `restore reimage-finalize` — `cmd_reimage_finalize` = `kernel::install_stock_kernel`
+  + `revert` + `reimage_p1_direct()`. Called by boot-init; refuses if p1 is root.
 - `restore recovery-kexec` — the old recovery-kernel kexec, kept for boards
   where kexec can place segments (EA1); not used on the EA3.
 - boot-init hook: `board/ea/common/boot-init/init` (flag check + `/dev/mtd0` wait +
-  finalize, before `switch_root`).
+  finalize, before `switch_root`); the hand-off into it: `S00kexec`; boot-init on
+  p1: `board/ea/common/post-image.sh`.
 - initramfs bundling: `build/mk-boot-init.sh` copies the static `restore` and
   symlinks the `tar`/`unxz`/`rm`/`reboot` applets; `board/common/busybox-openhc.fragment`
   pins those applets on.

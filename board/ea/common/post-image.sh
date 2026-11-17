@@ -150,6 +150,24 @@ if [ -x "$EXT/../build/mk-real-kernel.sh" ] && [ -f "$IMAGES/rootfs.ext2" ]; the
 				write $IMAGES/.ohc-kexec.enable /boot/ohc-kexec.enable
 				EOF
 			rm -f "$IMAGES/.ohc-kexec.enable"
+			# boot-init on p1 too: `restore stock` kexecs the real kernel with it as
+			# the RAM disk (S00kexec), so a return to stock never depends on the
+			# boot-init in the eMMC gap.
+			BI="$IMAGES/boot-init.cpio.gz"
+			if [ -f "$BI" ]; then
+				"$DEBUGFS" -w "$IMAGES/rootfs.ext2" >/dev/null 2>&1 <<-EOF || true
+					rm /boot/boot-init.cpio.gz
+					write $BI /boot/boot-init.cpio.gz
+					EOF
+				bisz=$(wc -c < "$BI" | tr -d " ")
+				bigot=$("$DEBUGFS" -R "stat /boot/boot-init.cpio.gz" "$IMAGES/rootfs.ext2" 2>/dev/null \
+				        | sed -n 's/.*[Ss]ize: *\([0-9][0-9]*\).*/\1/p' | head -1)
+				if [ "$bigot" = "$bisz" ]; then
+					echo "post-image: boot-init -> rootfs.ext2:/boot/boot-init.cpio.gz ($bisz B)"
+				else
+					echo "post-image: WARNING boot-init inject unverified; return to stock needs the eMMC boot-init" >&2
+				fi
+			fi
 			# Verify: stat /boot/bzImage and check its size matches the fat kernel.
 			realsz=$(wc -c < "$REALK")
 			got=$("$DEBUGFS" -R "stat /boot/bzImage" "$IMAGES/rootfs.ext2" 2>/dev/null \

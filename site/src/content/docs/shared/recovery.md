@@ -88,11 +88,13 @@ controller driver drives the CE5300's dedicated boot-flash block (PCI
 `8086:08a0`, a 16 MB S25FL127S), confirmed on an EA1 where `/proc/mtd` shows a
 16 MB `mtd0`. See [the boot chain](/ea/boot-chain/).
 
-**openHC's install makes exactly one boot change.** It appends a single `script`
+**openHC's install makes one boot change.** It appends a single `script`
 item to the CEFDK Master Flash Header (MFH) item-table in SPI-NOR — the table at
 offset `0x80000`, SHA-256 protected — redirecting CEFDK to openHC's autoscript.
-The stock kernel item, the stock kernel, and p2's entire factory payload are left
-untouched. So "return to stock" is just removing that one item. The tool is
+p2's factory payload is left untouched. Some installs also put openHC's kernel
+in the eMMC's stock kernel slot (byte `0x400`), which CEFDK's own boot reads once
+the autoscript is off; on a fuse-blown board its verifying boot then refuses
+that kernel. So the return to stock also puts Control4's kernel back. The tool is
 `restore` (the `restore` feature; this is its EA backend, the HC-800's is
 [below](#hc-800)); its MFH edit is
 the byte-for-byte inverse of the installer's append, unit-tested to reproduce the
@@ -103,7 +105,7 @@ known-stock SHA against the real 16 MB backup. Its subcommands:
 | `status` | parse and print the MFH table | no |
 | `revert` | remove openHC's item (stock boot); reversible with `install` while p1 is still openHC | yes — erase + write + read-back verify |
 | `install` | re-append openHC's item (undo `revert`) | yes |
-| `stock [--no-reboot]` | stage a one-shot flag on p1 and reboot; boot-init reimages p1 from p2 before it pivots, then `revert`s the MFH — the full return to Control4 | yes (from boot-init) |
+| `stock [--no-reboot]` | the full return to Control4, with no button: stage a one-shot flag on p1 and reboot; from RAM, boot-init puts Control4's kernel back in its slot, `revert`s the MFH and reimages p1 from p2 | yes (from boot-init) |
 | `recovery-kexec` | kexec p2's recovery kernel to reimage p1 (legacy). Refuses while the GPU driver is bound: a kexec out of a kernel whose GPU driver has run leaves the next kernel without working DMA ([boot chain](/ea/boot-chain/)) | no |
 | `restore-mfh <backup.bin> [--compensate]` | rewrite the MFH block from a full-flash backup (repair a corrupted MFH) | yes |
 | `erasetest` | erase the MFH block and report how much read back `0xff` (diagnostic) | erase only |
@@ -135,6 +137,44 @@ fuse-blown EA1, so the native button alone won't undo openHC's one change. The
 software path is the dependable way back there. On the EA3 the button's GPIO line
 and polarity are not yet hardware-confirmed (the `board.env` notes this); the
 fail-safe keeps a wrong polarity inert until they are.
+:::
+
+:::note[`ohc-flash restore`: one command, any openHC image]
+`ohc-flash restore HOST` works on an EA whatever openHC it runs. It puts the
+radio firmware back, then stages, on p1:
+- a current boot-init, read out of the board's bundle on the latest release with
+  HTTP range requests (a few MB, not the ~1 GB bundle), or from `--images`;
+- the real kernel, if the image has none at `/boot/bzImage`;
+- a one-shot `S00arestore` that hands off to them at the start of the next boot,
+  as `S00kexec` does below.
+
+It refuses a boot-init that predates this restore. After the reboot, a gap
+boot-init that knows the flag restores in place, before p1 is mounted; any other
+lets p1 boot far enough for `S00arestore`. The flasher then waits for the box's
+MAC to answer SDDP as a Control4 controller (openHC never does) and reports when
+stock is up, or tells you to use the button if it isn't within 20 minutes.
+:::
+
+:::note[How `stock` runs, and what a failure leaves]
+`restore stock` first puts Control4's Zigbee firmware back on the radio, drops
+`/.ohc-restore-stock` on p1 and reboots. Early in the next boot, `S00kexec` (on
+the bootstrap kernel, before anything touches the GPU) kexecs the real kernel
+with p1's own `/boot/boot-init.cpio.gz` as its RAM disk, so the return never
+depends on the boot-init in the eMMC gap, however old. boot-init consumes the
+flag before it pivots, while p1 is free, and runs `restore reimage-finalize`:
+
+1. **Stock kernel.** `recovery_kernel.deb` from p2 is unpacked and its kernel
+   container checked against the package's own `md5sums`. It is written at byte
+   `0x400` with its size, big-endian, at byte `0x200` (what Control4's package
+   does), then read back and checked. openHC boots from the gap, so a failure
+   here leaves openHC as it was.
+2. **Autoscript off** (`revert`). A failure leaves openHC as it was.
+3. **p1** is emptied and unpacked from p2's `recfs.tar.xz`, then Control4's IO
+   microcontroller firmware goes back from it. A failure here leaves Control4's
+   kernel on a partial p1: the factory button reimages p1 and boots stock.
+
+Everything it needs from p2 is checked before step 1. The box then reboots into
+stock Control4.
 :::
 
 :::note[Proven, and not-yet-proven]

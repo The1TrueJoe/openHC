@@ -7,6 +7,8 @@ description = "openHC return-to-stock, run on the box: the EA's MFH revert + p1 
 
 [dependencies]
 libc = "0.2"
+# Verifies the stock kernel against its package's md5sums.
+md-5 = "0.10"
 # The EA's MFH edit and the HC-800's menu.lst rewrite are the flasher's own
 # (flasher/crates/core: pure logic, unit-tested there), so the install, the
 # on-box restore and `ohc-flash restore` are one implementation.

@@ -219,9 +219,10 @@ access in any state, as measured: `0x0`, `0x8`, `0x80`, `0x12c`, `0x130` and
 
 **The product never kexecs out of the real kernel** (#90).
 
-- `restore stock` stages its one-shot flag and **reboots through CEFDK**
-  into boot-init. Boot-init reimages p1 from the bootstrap kernel, which never
-  touched the GPU.
+- `restore stock` stages its one-shot flag and **reboots**. Early in the next
+  boot, `S00kexec` on the bootstrap kernel, which never touched the GPU, hands
+  off to the real kernel with p1's boot-init as its RAM disk, and boot-init
+  restores from there.
 - `restore recovery-kexec` **refuses** while a driver is bound to
   `0000:01:02.0`.
 - The flasher's `kexec` command is a developer tool, and the same limit applies

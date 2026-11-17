@@ -28,8 +28,17 @@ case " $(cat /proc/cmdline 2>/dev/null) " in
 esac
 
 KERNEL=/boot/bzImage
-[ -f /boot/ohc-kexec.enable ] || exit 0
-[ -f "$KERNEL" ]              || exit 0
+# A staged return to stock (`restore stock`) runs from RAM: the real kernel with
+# p1's boot-init as its initramfs, which restores before it would pivot to p1.
+RESTORE_FLAG=/.ohc-restore-stock
+RESTORE_INITRD=/boot/boot-init.cpio.gz
+INITRD=
+if [ -f "$RESTORE_FLAG" ] && [ -f "$RESTORE_INITRD" ] && [ -f "$KERNEL" ]; then
+	INITRD=$RESTORE_INITRD
+else
+	[ -f /boot/ohc-kexec.enable ] || exit 0
+	[ -f "$KERNEL" ]              || exit 0
+fi
 command -v kexec >/dev/null 2>&1 || { echo "S00kexec: no kexec tool" >&2; exit 0; }
 
 # Boot the staged kernel directly on p1 (no initramfs -- it has mmc+ext4
@@ -65,6 +74,17 @@ for a in $(cat /proc/cmdline 2>/dev/null); do
 done
 CMDLINE="console=uart8250,io,0x3f8 pci=realloc,nocrs,routeirq intel_iommu=off root=/dev/mmcblk0p1 rootwait rw ohc_kexec=1 ${OHC_KEXEC_CMDLINE_EXTRA:-}${OHC_ARGS}"
 
+if [ -n "$INITRD" ]; then
+	echo "S00kexec: return to stock staged; handing off to $KERNEL with $INITRD"
+	if kexec -l "$KERNEL" --initrd="$INITRD" --command-line="$CMDLINE"; then
+		sync
+		kexec -e
+	fi
+	# Not retried every boot: `restore stock` stages it again.
+	rm -f "$RESTORE_FLAG"; sync
+	echo "S00kexec: return-to-stock hand-off failed; booting openHC" >&2
+	exit 0
+fi
 echo "S00kexec: handing off to the staged kernel ($KERNEL)"
 if kexec -l "$KERNEL" --command-line="$CMDLINE"; then
 	sync

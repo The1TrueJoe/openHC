@@ -16,6 +16,7 @@ pub mod netboot;
 pub mod network;
 pub mod radio;
 pub mod updates;
+pub mod zipfetch;
 pub mod release;
 
 pub use event::{Event, Progress};
