@@ -18,6 +18,10 @@
 //!      cannot be done in place: `stock` drops a one-shot flag and reboots, and
 //!      boot-init reimages p1 before it pivots, while p1 is free.
 //!
+//! An install may also have replaced the stock kernel in its eMMC slot, which
+//! CEFDK's own boot reads once the autoscript is off, so the finalize first puts
+//! Control4's kernel back there from p2 (kernel.rs).
+//!
 //! The MFH is SHA-256 protected and a bad write bricks past the button (recovery
 //! needs an external programmer), so every write here is read-modify-ERASE-write
 //! then READ-BACK-VERIFIED, and the table edit is the byte-for-byte inverse of
@@ -34,9 +38,10 @@
 //!   revert        remove openHC's MFH item (stock boot). Writes mtd0. REVERSIBLE
 //!                 with `install` as long as p1 still holds openHC.
 //!   install       re-append openHC's MFH item (undo `revert`). Writes mtd0.
-//!   stock         stage the one-shot flag and reboot; boot-init reimages p1 from
-//!                 p2 and reverts the MFH. The complete, one-way return to stock.
-//!                 `--no-reboot` stages without rebooting.
+//!   stock         stage the one-shot flag and reboot; from RAM, boot-init puts
+//!                 Control4's kernel back in its slot, reverts the MFH and reimages
+//!                 p1 from p2. The complete, one-way return to stock, with no
+//!                 button. `--no-reboot` stages without rebooting.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -45,6 +50,7 @@ use ohc_flash_core::{cefdk, mfh};
 mod hc250;
 mod hc800;
 mod iomcu;
+mod kernel;
 mod radio;
 
 const MTD: &str = "/dev/mtd0";
@@ -327,18 +333,18 @@ fn cmd_stock(reboot: bool) -> io::Result<()> {
     //     `cmd_reimage_finalize`.
     //
     //   * p1 IS root (a normal durable openHC boot) — we can neither reformat p1 nor
-    //     kexec the recovery kernel. The EA3 fat kernel's RAM-reclaim memmap starves
-    //     kexec's segment placement ("locate_hole failed"), and on every EA a kexec
-    //     out of a kernel whose GPU driver has run leaves the next kernel with dead
-    //     DMA and timers (see `recovery_reimage_p1`). Instead drop a one-shot flag on
-    //     p1 and reboot through CEFDK with the autoscript still enabled; boot-init
-    //     finds the flag before it pivots — where p1 is free — and runs the finalize
-    //     there.
+    //     kexec from here: a kexec out of a running EA kernel freezes the next one.
+    //     Instead drop a one-shot flag on p1 and reboot. Early in the next boot,
+    //     S00kexec sees the flag and kexecs the real kernel with p1's own
+    //     boot-init (/boot/boot-init.cpio.gz) as its RAM disk; that boot-init
+    //     finds the flag before it pivots, where p1 is free, and runs the
+    //     finalize. A boot-init in the eMMC gap new enough to know the flag does
+    //     the same one step earlier.
     if p1_is_root() {
         stage_stock_flag()?;
         println!(
-            "stock: staged a one-shot restore on p1. On reboot boot-init will reimage p1 to \
-             Control4 and clear the autoscript, then boot stock."
+            "stock: staged a one-shot restore on p1. On reboot openHC restores Control4's \
+             kernel, clears the autoscript and reimages p1 from RAM, then boots stock."
         );
         if reboot {
             println!("stock: rebooting");
@@ -356,20 +362,40 @@ fn cmd_stock(reboot: bool) -> io::Result<()> {
 /// `restore reimage-finalize` after it sees the one-shot flag; `cmd_stock` calls
 /// it directly when it is already running with p1 free.
 fn cmd_reimage_finalize() -> io::Result<()> {
-    // Refuse BEFORE touching p1 if we could not finish: the reimage succeeds without
-    // the MFH, but the following revert needs /dev/mtd0, and reimaging p1 then
-    // failing to clear the autoscript would leave the box with openHC destroyed, the
-    // autoscript still enabled, and no staged image to reinstall from — stranded in
-    // boot-init. Checking here means a transient missing mtd0 costs nothing: p1 is
-    // left intact and the restore can simply be retried.
+    // Refuse BEFORE touching anything if we could not finish: clearing the
+    // autoscript needs /dev/mtd0.
     if !std::path::Path::new(MTD).exists() {
         return Err(io::Error::other(format!(
-            "{MTD} absent — refusing to reimage p1 because the autoscript (revert) could not be cleared afterwards"
+            "{MTD} absent — refusing to restore, the autoscript could not be cleared"
         )));
     }
+    // Ordered so every failure leaves a bootable or button-recoverable box:
+    //   1. stock kernel into its slot (verified). openHC boots from the gap, so a
+    //      failure here leaves openHC as it was.
+    //   2. autoscript off. A failure leaves openHC as it was.
+    //   3. p1 from p2. A failure leaves the stock kernel on a partial p1: the
+    //      factory button reimages p1 and boots stock.
+    let p2 = mount_p2()?;
+    for f in ["recfs.tar.xz", "recovery_kernel.deb"] {
+        if !p2.join(f).exists() {
+            return Err(io::Error::other(format!("p2 has no {f} — nothing changed")));
+        }
+    }
+    kernel::install_stock_kernel(&p2)?;
+    cmd_revert()?;
     reimage_p1_direct()?; // p1 -> factory rootfs (asserts p1 is not root)
-    cmd_revert()?; // clear the MFH autoscript enable byte so CEFDK boots stock
     Ok(())
+}
+
+/// Mount p2 (Control4's recovery partition) read-only and return where.
+fn mount_p2() -> io::Result<std::path::PathBuf> {
+    let p2 = std::path::PathBuf::from("/mnt/ohc-recovery");
+    std::fs::create_dir_all(&p2)?;
+    let dir = p2.to_string_lossy().to_string();
+    if !p2.join("recfs.tar.xz").exists() {
+        run("mount", &["-o", "ro", "/dev/mmcblk0p2", &dir])?;
+    }
+    Ok(p2)
 }
 
 /// Drop the one-shot flag boot-init looks for before it pivots to p1. On durable,
@@ -382,8 +408,10 @@ fn stage_stock_flag() -> io::Result<()> {
     Ok(())
 }
 
-/// Path of the boot-init one-shot restore flag, relative to the p1 root.
-const STOCK_FLAG: &str = "/.ohc-stock-pending";
+/// Path of the boot-init one-shot restore flag, relative to the p1 root. Not the
+/// older `.ohc-stock-pending`: a gap boot-init that knows that name carries a
+/// `restore` without the kernel step, so it must leave this flag to S00kexec.
+const STOCK_FLAG: &str = "/.ohc-restore-stock";
 
 /// True when /dev/mmcblk0p1 is the filesystem mounted at `/`. We compare the st_dev
 /// of `/` (the device number of the mounted root fs) against the rdev of the p1

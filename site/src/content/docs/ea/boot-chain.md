@@ -256,11 +256,12 @@ How much can be saved depends on whether the GPU ever rendered:
 A warm reboot does not clear the used state: CEFDK's reset leaves the SGX as it
 was, so after a GPU-used boot only a power-cycle gets back to "never used". That
 is harmless on the normal boot path. The bootstrap never binds the GPU, so its
-S00kexec handoff to the real kernel works after a warm reboot too, and boot-init
-(where `restore stock` does its reimage) kexecs nothing.
+S00kexec handoff to the real kernel works after a warm reboot too. That is also
+the handoff `restore stock` uses: S00kexec boots the real kernel with p1's
+boot-init as its RAM disk, and boot-init kexecs nothing.
 
 So nothing in the product kexecs out of the real kernel. `restore stock`
-reboots through CEFDK into boot-init, and `restore recovery-kexec` refuses
+reboots and restores from that early handoff, and `restore recovery-kexec` refuses
 while the GPU driver is bound. To RAM-test an image on an installed box, set
 `OHC_DISPLAY_ENABLE=0`, **power-cycle** (a `reboot` is not enough), then unbind +
 reset as above and kexec.
