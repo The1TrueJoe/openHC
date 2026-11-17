@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config DRM_CE5300
 	tristate "Intel Atom CE5300 display controller (VDC + HDMI)"
-	depends on DRM && PCI && X86 && OF && I2C && IOSF_MBI
+	depends on DRM && PCI && X86 && OF && I2C
 	select APERTURE_HELPERS
 	select DRM_BRIDGE
 	select DRM_BRIDGE_CONNECTOR
@@ -9,6 +9,7 @@ config DRM_CE5300
 	select DRM_DISPLAY_HELPER
 	select DRM_GEM_DMA_HELPER
 	select DRM_KMS_HELPER
+	select IOSF_MBI
 	help
 	  KMS driver for the display controller of the Intel Atom CE5300
 	  media SoC (PCI 8086:2e61) and its HDMI transmitter (PCI 8086:2e63),
