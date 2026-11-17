@@ -55,8 +55,8 @@
 		label = "Fan";
 		io-channels = <&fan_speed>;
 		fan-supply = <&fan_ldo>;
-		/* off, then 30% to 100% in tens; tune the floor by ear */
-		cooling-levels = <0 77 102 128 153 179 204 230 255>;
+		/* off, then 20% (lowest that starts from a stop) to 100% in even steps */
+		cooling-levels = <0 51 80 109 138 168 197 226 255>;
 		#cooling-cells = <2>;
 	};
 };

@@ -56,9 +56,9 @@ maps apply unchanged:
   0 to 255 is scaled onto the wiper's 0–127.
 - **Power:** a `regulator-fixed` on GPIO 43 is the fan's `fan-supply`, so level 0
   turns the fan off. The `ldo_enable` hog is gone on the v2.
-- **The floor:** the lowest level is the pwm-fan's 30% (wiper 38) for now. The
-  real floor is the quietest wiper that still starts the fan from standstill,
-  which needs to be found by ear.
+- **The floor:** 20% (wiper 25), then even steps to 100%. From a stop, 30%
+  (wiper 38) and 20% (wiper 25) start the fan; 10% (wiper 13) and wiper 0 do
+  not. Heard on ea3b, 2026-11-16.
 
 The regulator core is only in the real kernel, so the bootstrap kernel drives
 the speed but not the supply: GPIO 43 stays as CEFDK left it until `S00kexec`
