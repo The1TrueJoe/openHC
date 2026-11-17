@@ -1,3 +1,6 @@
 [submodule "powervr_sgx"]
 	path = board/ea/common/powervr_sgx
 	url = https://github.com/The1TrueJoe/powervr_sgx.git
+[submodule "board/ea/common/iio-fan"]
+	path = board/ea/common/iio-fan
+	url = https://github.com/The1TrueJoe/iio-fan.git

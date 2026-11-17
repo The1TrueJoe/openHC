@@ -6,9 +6,10 @@
 //! daemon and writes to another for no reason a user could see.
 //!
 //! The KERNEL runs the fan. The board's device tree makes it a pwm-fan (hwmon
-//! `pwmfan`, thermal cooling device `pwm-fan`) in a thermal zone whose trips are
-//! the fan curve, and the zone's step_wise governor moves it. So there is no
-//! daemon to talk to, only the kernel's own files:
+//! `pwmfan`, thermal cooling device `pwm-fan`), or on the EA-3 v2 an iio-fan
+//! (`iiofan`, `iio-fan`), in a thermal zone whose trips are the fan curve, and
+//! the zone's step_wise governor moves it. So there is no daemon to talk to,
+//! only the kernel's own files:
 //!
 //! * manual = the zone's `policy` switched to `user_space` (the governor stops
 //!   moving the fan), then the fan's hwmon `pwm1` written;
@@ -43,7 +44,7 @@ fn entries(dir: &str) -> Vec<PathBuf> {
 
 /// The kernel objects that make up the fan, found by their driver-given names.
 struct Fan {
-    /// hwmon dir of the pwm-fan: `pwm1` is 0-255.
+    /// hwmon dir of the fan: `pwm1` is 0-255.
     hwmon: PathBuf,
     /// Its thermal cooling device: `cur_state`/`max_state` index cooling-levels.
     cdev: Option<PathBuf>,
@@ -52,16 +53,19 @@ struct Fan {
 }
 
 impl Fan {
-    /// Present only on boards whose device tree describes a pwm-fan (the EA
+    /// Present only on boards whose device tree describes a fan (the EA
     /// family); absent elsewhere, which is how the UI learns not to offer the
     /// control.
     fn find() -> Option<Fan> {
-        let hwmon = entries(HWMON)
-            .into_iter()
-            .find(|d| rd(&d.join("name")).as_deref() == Some("pwmfan"))?;
+        // (hwmon name, cooling device type) per fan driver
+        const DRIVERS: [(&str, &str); 2] = [("pwmfan", "pwm-fan"), ("iiofan", "iio-fan")];
+        let (hwmon, ctype) = entries(HWMON).into_iter().find_map(|d| {
+            let name = rd(&d.join("name"))?;
+            DRIVERS.iter().find(|(h, _)| *h == name).map(|(_, c)| (d, *c))
+        })?;
         let cdev = entries(THERMAL).into_iter().find(|d| {
             d.file_name().is_some_and(|n| n.to_string_lossy().starts_with("cooling_device"))
-                && rd(&d.join("type")).as_deref() == Some("pwm-fan")
+                && rd(&d.join("type")).as_deref() == Some(ctype)
         });
         // A zone links each bound cooling device as cdevN -> ../cooling_deviceM.
         let zone = cdev.as_ref().and_then(|c| {
@@ -142,7 +146,7 @@ fn pct_of(pwm: i64) -> i64 {
     (pwm * 100 + 127) / 255
 }
 
-/// `{ available, mode, pct }`. On a board with no pwm-fan this is just
+/// `{ available, mode, pct }`. On a board with no fan this is just
 /// `{ available: false }` and the panel renders nothing.
 pub fn status() -> Value {
     let Some(f) = Fan::find() else {
