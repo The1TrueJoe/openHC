@@ -1,38 +1,28 @@
 From: Joseph Telaak <joseph@telaak.dev>
 Subject: [PATCH] net: dsa: b53: mirror CPU-bound frames to port 5 when port 8 is unused
 
-A dual-IMP switch can reach the host through its IMP port (8) or through
-port 5. With port 5 as the CPU port, b53_brcm_hdr_setup() puts the switch
-in dual-IMP mode, in which frames the switch sends to the CPU from the
-user ports still go to port 8: BPDUs, the IGMP/MLD copies that
-b53_enable_mcast_snooping() enables, and most traffic of standalone
-ports. On boards that leave port 8 unconnected these are lost, so STP
-never sees its peers, a loop between two user ports takes the host off
-the network, and standalone ports receive almost nothing.
+With port 5 as the CPU port, b53_brcm_hdr_setup() puts the switch in
+dual-IMP mode, in which frames for the CPU from the user ports still go
+to port 8: BPDUs, the IGMP/MLD copies b53_enable_mcast_snooping()
+enables, and most traffic of standalone ports. On boards that leave
+port 8 unconnected these are lost, so STP never sees its peers and a
+loop between two user ports takes the host off the network.
 
-Mirror them to port 5. Frames to the bridge group address are mirrored
-as they enter a user port, as the egress mirror does not see the BPDUs
-of a bridged port. Other frames are mirrored as they leave port 8, which
-needs Rx/Tx enabled and its link forced up for that, and is put in the
-disabled STP state so that only frames for the CPU leave it.
-b53_disable_port() then leaves port 8 alone. The switch has one mirror,
-so tc mirroring is refused on these boards. Frames to
-01:80:c2:00:00:02, 03 and 0d still do not reach the CPU from a bridged
-port.
+Mirror them to port 5: frames to the bridge group address as they enter
+a user port, everything else as it leaves port 8, which is enabled with
+its link forced up and in the disabled STP state so that only frames for
+the CPU leave it. The switch has one mirror, so tc mirroring is refused.
+Frames to 01:80:c2:00:00:02, 03 and 0d still do not reach the CPU from a
+bridged port.
 
-This was observed on a BCM53125 board in real use, when both user ports
-were cabled into the same LAN. Tested on that board with a host sending
-one of each test frame about once a second into a user port. With the
-port bridged, BPDUs, LLDP frames, broadcasts and unicasts to the host
-reached the CPU once each, and the switch counters showed broadcasts
-forwarded between the two user ports both ways. With the port
-standalone, every frame type but EAPOL to 01:80:c2:00:00:03 reached the
-CPU once, IGMP reports and Slow Protocols frames included. In an earlier
-run with the same register settings and the IGMP copies enabled by hand,
-a bridged port's IGMP reports reached the CPU once each as well. No
+Observed on a BCM53125 board in real use, with both user ports cabled
+into the same LAN. Tested there with a host sending test frames into a
+user port: bridged, BPDUs reached the CPU and forwarding kept working;
+standalone, all but EAPOL to 01:80:c2:00:00:03 did, once each. No
 selftests were run.
 
 Fixes: 8fab459e69ab ("net: dsa: b53: Enable Broadcom tags for 531x5/539x families")
+
 ---
 diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
 index 0880310c9ce3..d0de38545c7c 100644
