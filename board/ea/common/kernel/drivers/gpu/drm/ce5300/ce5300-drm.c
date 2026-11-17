@@ -20,6 +20,7 @@
  * are not safe to read.
  */
 #include <linux/aperture.h>
+#include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/io.h>
 #include <linux/module.h>
