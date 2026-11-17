@@ -20,11 +20,16 @@
  * are not safe to read.
  */
 #include <linux/aperture.h>
+#include <linux/debugfs.h>
+#include <linux/delay.h>
+#include <linux/fs.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/string.h>
+#include <linux/uaccess.h>
 
 #include <asm/iosf_mbi.h>
 
@@ -43,6 +48,7 @@
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_managed.h>
+#include <drm/drm_modeset_lock.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -59,6 +65,7 @@
 #define VDC_VTOTAL_A		0x6000c
 #define VDC_VBLANK_A		0x60010
 #define VDC_VSYNC_A		0x60014
+#define VDC_PIPEASRC		0x6001c	/* (hactive - 1) << 16 | (vactive - 1) */
 #define VDC_PIPEACONF		0x70008
 #define   VDC_PIPECONF_ENABLE	BIT(31)
 
@@ -78,64 +85,95 @@ static const u32 upp_bases[] = { 0x0000, 0x1000, 0x2000, 0x3000, 0xf000 };
 #define PITCH_ALIGN		64
 
 /*
- * Clocks. The dot clock is the display PLL, IOSF sideband port 0x8a,
- * registers 0-7 per clock (register 0 bits 23-24 are not the table's) and
- * 0x11; writing 1 to register 0 latches. The TMDS clock is the HDMI PHY on
- * port 0x82, 23 registers, whose resets are in the clock-control unit (PCI
- * 8086:2e52, BAR 0). Tables at 8 bits per color.
+ * Clocks, as CEFDK sets them at every boot (its gen5 splash_screen_gen5.c):
+ * the dot clock is the display PLL, IOSF sideband port 0x8a, registers 0-7
+ * and 0x11; the TMDS clock is the HDMI transmitter's PLL and PHY, port 0x82,
+ * 23 registers. On both, writing 1 to register 0 latches the others (it
+ * still reads back the table value). Their resets and the VDC clock gates are
+ * in the clock-control unit (PCI 8086:2e52, BAR 0). PHY tables at 8 bpc.
  */
 #define DPLL_PORT		0x8a
 #define   DPLL_NREGS		8
-#define   DPLL_R0_KEEP		GENMASK(24, 23)
+#define   DPLL_LATCH		0	/* write 1 */
+#define   DPLL_R1_RESET_HOLD	BIT(26)	/* Reset_in_b low while programming */
+#define   DPLL_R1_DISABLE	0x06000000
 #define   DPLL_REG_X11		0x11
+#define   DPLL_X11		0x80
 #define HDMI_PHY_PORT		0x82
 #define   HDMI_PHY_NREGS	23
+#define   HDMI_PHY_LATCH	0	/* write 1 */
+#define   HDMI_PHY_POWER	12
+#define     HDMI_PHY_GPD	BIT(16)			/* global power down */
+#define     HDMI_PHY_APD	(BIT(2) | GENMASK(31, 29))	/* analog power down */
 
 #define CCU_DEVICE		0x2e52
-#define CCU_HDMI		0x04	/* PLL divider, TX PLL, TX, DDC resets */
-#define CCU_VDC			0x14	/* VDC clock enables and reset */
-#define CCU_DPLL		0x88	/* display PLL divider and VCO resets */
+#define CCU_HDMI		0x04
+#define   CCU_HDMI_PLL_DIV_RST	BIT(9)	/* 0 = held in reset */
+#define   CCU_HDMI_TX_PLL_RST	BIT(7)
+#define CCU_VDC			0x14
+#define   CCU_VDC_CLKS		0x380	/* the gates CEFDK drops around a clock change */
+#define CCU_DPLL		0x88
 
 struct ce5300_clock {
 	int khz;
 	u32 dpll[DPLL_NREGS];
 	u32 phy_pll[3];		/* PHY registers 0-2 */
-	u32 phy_drive[2];	/* register 7, then 8-11 */
+	u32 phy_drive;		/* PHY registers 8-11 */
 };
 
 static const struct ce5300_clock ce5300_clocks[] = {
 	{ 27000,
 	  { 0x01802116, 0x0005002c, 0x045811a0, 0x4045800c,
 	    0x04045800, 0x00404100, 0x02040440, 0x01424001 },
-	  { 0x00105800, 0x00000a14, 0x00050005 }, { 0x02a05400, 0xe8055030 } },
+	  { 0x00105800, 0x00000a14, 0x00050005 }, 0xe8055053 },
+	{ 74176,	/* 74.175 MHz: 720p and 1080i at 59.94 Hz */
+	  { 0x01802116, 0x0005002c, 0x040411a0, 0x40404004,
+	    0x04045800, 0x00004140, 0x92000404, 0x01424139 },
+	  { 0x00002000, 0x00050028, 0x00090080 }, 0xe8055053 },
 	{ 74250,
 	  { 0x01802116, 0x0005002c, 0x044011a0, 0x80440008,
 	    0x04045800, 0x00404100, 0x02040440, 0x01424001 },
-	  { 0x00002000, 0x00050028, 0x00090080 }, { 0x02a05400, 0xe8055030 } },
-	{ 148500,
-	  { 0x01802116, 0x0005002c, 0x04401da4, 0x40440004,
-	    0x04045800, 0x00404100, 0x02040440, 0x01424001 },
-	  { 0x00002000, 0x00050028, 0x00050080 }, { 0x02a05400, 0xe8055030 } },
+	  { 0x00002000, 0x00050028, 0x00090080 }, 0xe80550f3 },
+	{ 148352,	/* 148.35 MHz: 1080p at 59.94 Hz */
+	  { 0x01802116, 0x0005002c, 0x040411a0, 0x40440000,
+	    0x04045800, 0x000041c0, 0x12000404, 0x01424139 },
+	  { 0x00002000, 0x00050028, 0x00050080 }, 0xe80550f3 },
 };
 
-/* PHY registers 3-6 and 12-22, the same for every clock. */
-static const u32 ce5300_phy_3_6[] = { 0x00100000, 0x40214000, 0x80000001, 0x0007f03f };
+/* PHY registers 3-7 and 12-22, the same for every clock. */
+static const u32 ce5300_phy_3_7[] = { 0x00100000, 0x40214000, 0x80000001, 0x0007f03f, 0x02004000 };
 static const u32 ce5300_phy_12_22[] = {
-	0xff001ffe, 0xffffffff, 0xbc0000ff, 0x36d8fff7, 0x00100000, 0xffd00000,
-	0x00100000, 0x1c010000, 0x00000000, 0x00000000, 0x00010101,
+	0x1f010002, 0x00000000, 0x80000000, 0x36d8fff7, 0x00100000, 0xffd00000,
+	0x00100000, 0x1c010000, 0x00000000, 0x00000000, 0x00000000,
 };
 
 static u32 ce5300_phy_word(const struct ce5300_clock *c, unsigned int i)
 {
 	if (i < 3)
 		return c->phy_pll[i];
-	if (i < 7)
-		return ce5300_phy_3_6[i - 3];
-	if (i == 7)
-		return c->phy_drive[0];
+	if (i < 8)
+		return ce5300_phy_3_7[i - 3];
 	if (i < 12)
-		return c->phy_drive[1];
+		return c->phy_drive;
 	return ce5300_phy_12_22[i - 12];
+}
+
+/* Register 12 as it reads once the PHY is powered up. */
+static u32 ce5300_phy_word_on(const struct ce5300_clock *c, unsigned int i)
+{
+	u32 v = ce5300_phy_word(c, i);
+
+	return i == HDMI_PHY_POWER ? v & ~(HDMI_PHY_GPD | HDMI_PHY_APD) : v;
+}
+
+static const struct ce5300_clock *ce5300_clock_find(int khz)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(ce5300_clocks); i++)
+		if (abs(ce5300_clocks[i].khz - khz) <= ce5300_clocks[i].khz / 1000)
+			return &ce5300_clocks[i];
+	return NULL;
 }
 
 static bool takeover;
@@ -361,63 +399,273 @@ static int ce5300_find_bridge(struct ce5300 *p)
 	return 0;
 }
 
-/* ---- Clock read-back (debugfs ce5300_clocks), no writes ---------------- */
+/* ---- Clocks: read-back, and CEFDK's programming sequence ------------- */
+
+struct ce5300_clk_state {
+	u32 dpll[DPLL_NREGS];
+	u32 x11;
+	u32 phy[HDMI_PHY_NREGS];
+	u32 ccu_hdmi, ccu_vdc;
+};
 
 static int ce5300_sb_read(u8 port, u32 reg, u32 *val)
 {
 	return iosf_mbi_read(port, MBI_CR_READ, reg, val);
 }
 
+static int ce5300_sb_write(u8 port, u32 reg, u32 val)
+{
+	return iosf_mbi_write(port, MBI_CR_WRITE, reg, val);
+}
+
+static int ce5300_clk_read(struct ce5300 *p, struct ce5300_clk_state *st)
+{
+	unsigned int i;
+	int ret = 0;
+
+	for (i = 0; i < DPLL_NREGS && !ret; i++)
+		ret = ce5300_sb_read(DPLL_PORT, i, &st->dpll[i]);
+	if (!ret)
+		ret = ce5300_sb_read(DPLL_PORT, DPLL_REG_X11, &st->x11);
+	for (i = 0; i < HDMI_PHY_NREGS && !ret; i++)
+		ret = ce5300_sb_read(HDMI_PHY_PORT, i, &st->phy[i]);
+	st->ccu_hdmi = readl(p->ccu + CCU_HDMI);
+	st->ccu_vdc = readl(p->ccu + CCU_VDC);
+	return ret;
+}
+
+static void ce5300_clk_log(struct ce5300 *p, const char *what, const struct ce5300_clk_state *st)
+{
+	char buf[HDMI_PHY_NREGS * 9 + 1];
+	unsigned int i, n = 0;
+
+	for (i = 0; i < DPLL_NREGS; i++)
+		n += scnprintf(buf + n, sizeof(buf) - n, " %08x", st->dpll[i]);
+	drm_info(&p->drm, "%s: dpll%s r11 %08x ccu hdmi %08x vdc %08x\n", what, buf,
+		 st->x11, st->ccu_hdmi, st->ccu_vdc);
+	for (i = 0, n = 0; i < HDMI_PHY_NREGS; i++)
+		n += scnprintf(buf + n, sizeof(buf) - n, " %08x", st->phy[i]);
+	drm_info(&p->drm, "%s: phy%s\n", what, buf);
+}
+
+/* Does the hardware run @c, as CEFDK leaves it (PHY powered up)? */
+static bool ce5300_clk_matches(struct ce5300 *p, const struct ce5300_clock *c,
+			       const struct ce5300_clk_state *st)
+{
+	bool ok = st->x11 == DPLL_X11;
+	unsigned int i;
+
+	for (i = 0; i < DPLL_NREGS; i++)
+		if (st->dpll[i] != c->dpll[i]) {
+			drm_info(&p->drm, "dpll r%u %08x, %d kHz has %08x\n", i,
+				 st->dpll[i], c->khz, c->dpll[i]);
+			ok = false;
+		}
+	for (i = 0; i < HDMI_PHY_NREGS; i++)
+		if (st->phy[i] != ce5300_phy_word_on(c, i)) {
+			drm_info(&p->drm, "phy r%u %08x, %d kHz has %08x\n", i,
+				 st->phy[i], c->khz, ce5300_phy_word_on(c, i));
+			ok = false;
+		}
+	return ok;
+}
+
+/*
+ * CEFDK's vdcClken: gate the VDC clocks, program the display PLL
+ * (Clock_Config), then the HDMI transmitter's PLL and PHY
+ * (program_clocks_bvl), ungate, and power the PHY up (phy_enable). The pipe
+ * must be off. CEFDK then resets the whole HDMI unit, which would also reset
+ * what ce5300-hdmi and its audio set up; that is left out until the bridge
+ * can set it up again.
+ */
+static int ce5300_clk_write(struct ce5300 *p, const u32 *dpll, u32 x11, const u32 *phy)
+{
+	unsigned int i;
+	int ret = 0;
+	u32 v;
+
+	writel(readl(p->ccu + CCU_VDC) & ~CCU_VDC_CLKS, p->ccu + CCU_VDC);
+
+	ret |= ce5300_sb_write(DPLL_PORT, 1, DPLL_R1_DISABLE);
+	ret |= ce5300_sb_write(DPLL_PORT, DPLL_LATCH, 1);
+	for (i = 0; i < DPLL_NREGS; i++)
+		ret |= ce5300_sb_write(DPLL_PORT, i, i == 1 ? dpll[i] | DPLL_R1_RESET_HOLD : dpll[i]);
+	ret |= ce5300_sb_write(DPLL_PORT, DPLL_LATCH, 1);
+	udelay(300);
+	for (i = 0; i < DPLL_NREGS; i++)
+		ret |= ce5300_sb_write(DPLL_PORT, i, i == 1 ? dpll[i] & ~DPLL_R1_RESET_HOLD : dpll[i]);
+	ret |= ce5300_sb_write(DPLL_PORT, DPLL_REG_X11, x11);
+	ret |= ce5300_sb_write(DPLL_PORT, DPLL_LATCH, 1);
+
+	v = readl(p->ccu + CCU_HDMI) & ~CCU_HDMI_PLL_DIV_RST;
+	writel(v, p->ccu + CCU_HDMI);
+	v &= ~CCU_HDMI_TX_PLL_RST;
+	writel(v, p->ccu + CCU_HDMI);
+	for (i = 0; i < HDMI_PHY_NREGS; i++)
+		ret |= ce5300_sb_write(HDMI_PHY_PORT, i, phy[i]);
+	ret |= ce5300_sb_write(HDMI_PHY_PORT, HDMI_PHY_POWER,
+			       (phy[HDMI_PHY_POWER] & ~HDMI_PHY_GPD) | HDMI_PHY_APD);
+	ret |= ce5300_sb_write(HDMI_PHY_PORT, HDMI_PHY_LATCH, 1);
+	v |= CCU_HDMI_TX_PLL_RST;
+	writel(v, p->ccu + CCU_HDMI);
+	udelay(300);
+	v |= CCU_HDMI_PLL_DIV_RST;
+	writel(v, p->ccu + CCU_HDMI);
+	udelay(50);
+
+	writel(readl(p->ccu + CCU_VDC) | CCU_VDC_CLKS, p->ccu + CCU_VDC);
+
+	ret |= ce5300_sb_read(HDMI_PHY_PORT, HDMI_PHY_POWER, &v);
+	ret |= ce5300_sb_write(HDMI_PHY_PORT, HDMI_PHY_POWER,
+			       v & ~(HDMI_PHY_GPD | HDMI_PHY_APD));
+	return ret ? -EIO : 0;
+}
+
 static int ce5300_clocks_show(struct seq_file *m, void *unused)
 {
 	struct drm_debugfs_entry *entry = m->private;
 	struct ce5300 *p = to_ce5300(entry->dev);
-	u32 dpll[DPLL_NREGS], phy[HDMI_PHY_NREGS], x11;
+	struct ce5300_clk_state st;
 	unsigned int i, j;
-	int ret = 0;
+	int ret;
 
-	if (!iosf_mbi_available()) {
-		seq_puts(m, "no IOSF mailbox\n");
+	if (!iosf_mbi_available() || !p->ccu) {
+		seq_puts(m, "no IOSF mailbox or clock-control unit\n");
 		return 0;
 	}
-	for (i = 0; i < DPLL_NREGS && !ret; i++)
-		ret = ce5300_sb_read(DPLL_PORT, i, &dpll[i]);
-	if (!ret)
-		ret = ce5300_sb_read(DPLL_PORT, DPLL_REG_X11, &x11);
-	for (i = 0; i < HDMI_PHY_NREGS && !ret; i++)
-		ret = ce5300_sb_read(HDMI_PHY_PORT, i, &phy[i]);
+	ret = ce5300_clk_read(p, &st);
 	if (ret)
 		return ret;
 
 	seq_puts(m, "dpll");
 	for (i = 0; i < DPLL_NREGS; i++)
-		seq_printf(m, " %08x", dpll[i]);
-	seq_printf(m, " r11 %08x\nphy", x11);
+		seq_printf(m, " %08x", st.dpll[i]);
+	seq_printf(m, " r11 %08x\nphy", st.x11);
 	for (i = 0; i < HDMI_PHY_NREGS; i++)
-		seq_printf(m, " %08x", phy[i]);
-	seq_putc(m, '\n');
-	if (p->ccu)
-		seq_printf(m, "ccu hdmi %08x vdc %08x dpll %08x\n", readl(p->ccu + CCU_HDMI),
-			   readl(p->ccu + CCU_VDC), readl(p->ccu + CCU_DPLL));
+		seq_printf(m, " %08x", st.phy[i]);
+	seq_printf(m, "\nccu hdmi %08x vdc %08x dpll %08x\n", st.ccu_hdmi, st.ccu_vdc,
+		   readl(p->ccu + CCU_DPLL));
 
 	for (j = 0; j < ARRAY_SIZE(ce5300_clocks); j++) {
 		const struct ce5300_clock *c = &ce5300_clocks[j];
 
 		seq_printf(m, "%6d kHz: dpll differs in", c->khz);
-		for (i = 0; i < DPLL_NREGS; i++) {
-			u32 keep = i ? 0 : DPLL_R0_KEEP;
-
-			if ((dpll[i] ^ c->dpll[i]) & ~keep)
+		for (i = 0; i < DPLL_NREGS; i++)
+			if (st.dpll[i] != c->dpll[i])
 				seq_printf(m, " r%u", i);
-		}
 		seq_puts(m, "; phy differs in");
 		for (i = 0; i < HDMI_PHY_NREGS; i++)
-			if (phy[i] != ce5300_phy_word(c, i))
+			if (st.phy[i] != ce5300_phy_word_on(c, i))
 				seq_printf(m, " r%u", i);
 		seq_putc(m, '\n');
 	}
 	return 0;
 }
+
+/* ---- Bring-up: the running mode programmed again, unchanged ----------- */
+
+/* Pipe A timing words, then PIPESRC. */
+static const u32 ce5300_pipe_regs[] = {
+	VDC_HTOTAL_A, VDC_HBLANK_A, VDC_HSYNC_A, VDC_VTOTAL_A, VDC_VBLANK_A, VDC_VSYNC_A,
+	VDC_PIPEASRC,
+};
+
+/*
+ * Pipe off, the clocks and the timings programmed again with what the
+ * hardware already runs, pipe on: the first sideband writes, with nothing
+ * meant to change. Every register written is read and logged first; it
+ * refuses unless the live clocks are exactly @mode's table, and if a
+ * read-back afterwards differs, it programs what it read first back in.
+ */
+static int ce5300_noop_modeset(struct ce5300 *p)
+{
+	const struct ce5300_clock *c = ce5300_clock_find(p->mode.clock);
+	struct ce5300_clk_state before, after;
+	u32 pipe[ARRAY_SIZE(ce5300_pipe_regs)], phy_before[HDMI_PHY_NREGS];
+	u32 pipeconf, upp_ctrl;
+	unsigned int i;
+	bool ok;
+	int ret;
+
+	if (!c || !p->ccu || !iosf_mbi_available())
+		return -ENODEV;
+	ret = ce5300_clk_read(p, &before);
+	if (ret)
+		return ret;
+	ce5300_clk_log(p, "no-op: before", &before);
+	if (!ce5300_clk_matches(p, c, &before)) {
+		drm_err(&p->drm, "no-op: the live clocks aren't the %d kHz table; nothing written\n",
+			c->khz);
+		return -EINVAL;
+	}
+	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
+		pipe[i] = vdc_read(p, ce5300_pipe_regs[i]);
+	pipeconf = vdc_read(p, VDC_PIPEACONF);
+	upp_ctrl = vdc_read(p, p->upp + VDC_UPP_CTRL);
+	drm_info(&p->drm, "no-op: pipe %08x %08x %08x %08x %08x %08x src %08x conf %08x upp %08x\n",
+		 pipe[0], pipe[1], pipe[2], pipe[3], pipe[4], pipe[5], pipe[6], pipeconf, upp_ctrl);
+	for (i = 0; i < HDMI_PHY_NREGS; i++)
+		phy_before[i] = ce5300_phy_word(c, i);
+
+	drm_modeset_lock_all(&p->drm);
+	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl & ~UPP_CTRL_ENABLE);
+	vdc_write(p, VDC_PIPEACONF, pipeconf & ~VDC_PIPECONF_ENABLE);
+	msleep(50);	/* two frames at 480p */
+	ret = ce5300_clk_write(p, c->dpll, DPLL_X11, phy_before);
+	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
+		vdc_write(p, ce5300_pipe_regs[i], pipe[i]);
+	vdc_write(p, VDC_PIPEACONF, pipeconf);
+	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl);
+	drm_modeset_unlock_all(&p->drm);
+
+	ok = !ret && !ce5300_clk_read(p, &after);
+	if (ok) {
+		ce5300_clk_log(p, "no-op: after", &after);
+		ok = ce5300_clk_matches(p, c, &after);
+	}
+	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
+		ok &= vdc_read(p, ce5300_pipe_regs[i]) == pipe[i];
+	if (ok) {
+		drm_info(&p->drm, "no-op: %d kHz programmed again, read-back matches\n", c->khz);
+		return 0;
+	}
+
+	drm_err(&p->drm, "no-op: read-back differs (write %d); putting the first read back\n", ret);
+	drm_modeset_lock_all(&p->drm);
+	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl & ~UPP_CTRL_ENABLE);
+	vdc_write(p, VDC_PIPEACONF, pipeconf & ~VDC_PIPECONF_ENABLE);
+	msleep(50);
+	ce5300_clk_write(p, before.dpll, before.x11, before.phy);
+	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
+		vdc_write(p, ce5300_pipe_regs[i], pipe[i]);
+	vdc_write(p, VDC_PIPEACONF, pipeconf);
+	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl);
+	drm_modeset_unlock_all(&p->drm);
+	if (!ce5300_clk_read(p, &after))
+		ce5300_clk_log(p, "no-op: restored", &after);
+	return -EIO;
+}
+
+static ssize_t ce5300_modeset_write(struct file *f, const char __user *ubuf,
+				    size_t len, loff_t *ppos)
+{
+	struct ce5300 *p = f->private_data;
+	char cmd[8] = { };
+	int ret;
+
+	if (len >= sizeof(cmd) || copy_from_user(cmd, ubuf, len))
+		return -EINVAL;
+	if (!sysfs_streq(cmd, "noop"))
+		return -EINVAL;
+	ret = ce5300_noop_modeset(p);
+	return ret ? ret : len;
+}
+
+static const struct file_operations ce5300_modeset_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.write	= ce5300_modeset_write,
+};
 
 /* The clock-control unit, read-only here: one register per block. */
 static void ce5300_map_ccu(struct ce5300 *p)
@@ -537,6 +785,7 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		return ret;
 	drm_client_setup(&p->drm, NULL);
+	debugfs_create_file("ce5300_modeset", 0200, p->drm.debugfs_root, p, &ce5300_modeset_fops);
 	drm_info(&p->drm, "taking over %s from the firmware\n", p->mode.name);
 	return 0;
 }
