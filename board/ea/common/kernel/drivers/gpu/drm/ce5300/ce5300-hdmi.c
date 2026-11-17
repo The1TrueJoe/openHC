@@ -31,6 +31,7 @@
 
 #include <asm/iosf_mbi.h>
 
+#include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_edid.h>
 
@@ -405,8 +406,11 @@ static const struct drm_edid *ce5300_hdmi_edid(struct drm_bridge *bridge,
 }
 
 static const struct drm_bridge_funcs ce5300_hdmi_bridge_funcs = {
-	.detect		= ce5300_hdmi_detect,
-	.edid_read	= ce5300_hdmi_edid,
+	.atomic_create_state	= drm_atomic_helper_bridge_create_state,
+	.atomic_duplicate_state	= drm_atomic_helper_bridge_duplicate_state,
+	.atomic_destroy_state	= drm_atomic_helper_bridge_destroy_state,
+	.detect			= ce5300_hdmi_detect,
+	.edid_read		= ce5300_hdmi_edid,
 };
 
 /* ---- Audio child --------------------------------------------------------- */
