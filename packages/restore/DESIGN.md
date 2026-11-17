@@ -122,14 +122,14 @@ Flow (`restore stock`):
 3. **boot-init**, pre-pivot, sees the flag: remove it (so a failed finalize can't
    loop), unmount p1, wait for `/dev/mtd0`, then run `restore reimage-finalize`.
    It checks p2 has `recfs.tar.xz` and `recovery_kernel.deb`, then, in order:
-   - **stock kernel**: the container from `recovery_kernel.deb`, checked against
-     the package's `md5sums`, written at eMMC byte `0x400` with its size
-     big-endian at `0x200`, read back and checked. openHC boots from the gap, so
-     a failure leaves openHC as it was.
    - **`revert`** (clear the `0xa0f1c` enable byte). A failure leaves openHC.
+     First, because the autoscript may load openHC's kernel from the stock slot.
+   - **stock kernel**: the container from `recovery_kernel.deb` (checked against
+     the package's `md5sums` before the revert), written at eMMC byte `0x400`
+     with its size big-endian at `0x200`, read back and checked.
    - **p1**: empty its ext4 in place and `unxz -c recfs.tar.xz | tar -x` onto it,
-     then Control4's IO firmware from it. A failure leaves Control4's kernel on a
-     partial p1, which the factory button reimages.
+     then Control4's IO firmware from it. From the revert on, a failure needs the
+     factory button, which then gives a clean stock box.
    - `reboot -f`.
 4. **Cold boot** → CEFDK (autoscript off) → Control4's kernel → stock p1.
 

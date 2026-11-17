@@ -163,15 +163,19 @@ with p1's own `/boot/boot-init.cpio.gz` as its RAM disk, so the return never
 depends on the boot-init in the eMMC gap, however old. boot-init consumes the
 flag before it pivots, while p1 is free, and runs `restore reimage-finalize`:
 
-1. **Stock kernel.** `recovery_kernel.deb` from p2 is unpacked and its kernel
-   container checked against the package's own `md5sums`. It is written at byte
-   `0x400` with its size, big-endian, at byte `0x200` (what Control4's package
-   does), then read back and checked. openHC boots from the gap, so a failure
-   here leaves openHC as it was.
-2. **Autoscript off** (`revert`). A failure leaves openHC as it was.
+1. **Autoscript off** (`revert`). A failure leaves openHC as it was.
+2. **Stock kernel.** `recovery_kernel.deb` from p2 is unpacked and its kernel
+   container checked against the package's own `md5sums` (before step 1). It is
+   written at byte `0x400` with its size, big-endian, at byte `0x200` (what
+   Control4's package does), then read back and checked.
 3. **p1** is emptied and unpacked from p2's `recfs.tar.xz`, then Control4's IO
-   microcontroller firmware goes back from it. A failure here leaves Control4's
-   kernel on a partial p1: the factory button reimages p1 and boots stock.
+   microcontroller firmware goes back from it.
+
+The autoscript goes off first because on some installs it loads openHC's kernel
+from that same stock slot. After step 1, a failure needs the factory button, and
+with the autoscript off the button gives a clean stock box. With the autoscript
+still on, the button's stock boots through openHC's `bootlinux` line and gets
+only ~190 MB of RAM (measured on an EA-3 v2, 2026-11-17).
 
 Everything it needs from p2 is checked before step 1. The box then reboots into
 stock Control4.

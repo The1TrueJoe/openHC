@@ -369,20 +369,23 @@ fn cmd_reimage_finalize() -> io::Result<()> {
             "{MTD} absent — refusing to restore, the autoscript could not be cleared"
         )));
     }
-    // Ordered so every failure leaves a bootable or button-recoverable box:
-    //   1. stock kernel into its slot (verified). openHC boots from the gap, so a
-    //      failure here leaves openHC as it was.
-    //   2. autoscript off. A failure leaves openHC as it was.
-    //   3. p1 from p2. A failure leaves the stock kernel on a partial p1: the
-    //      factory button reimages p1 and boots stock.
+    // Ordered so every failure leaves a bootable or button-recoverable box. The
+    // autoscript may load openHC's kernel from the stock slot itself, so it goes
+    // off before that slot changes:
+    //   1. autoscript off. A failure leaves openHC as it was.
+    //   2. stock kernel into its slot (verified). From here on a failure needs
+    //      the factory button, which reimages kernel and p1; with the autoscript
+    //      off, that gives a clean stock box.
+    //   3. p1 from p2.
     let p2 = mount_p2()?;
     for f in ["recfs.tar.xz", "recovery_kernel.deb"] {
         if !p2.join(f).exists() {
             return Err(io::Error::other(format!("p2 has no {f} — nothing changed")));
         }
     }
-    kernel::install_stock_kernel(&p2)?;
+    kernel::stock_container(&p2)?; // the stock kernel checks out before anything is written
     cmd_revert()?;
+    kernel::install_stock_kernel(&p2)?;
     reimage_p1_direct()?; // p1 -> factory rootfs (asserts p1 is not root)
     Ok(())
 }
