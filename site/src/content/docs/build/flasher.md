@@ -72,6 +72,7 @@ ohc-flash <command>
   install [HOST] --images <dir|zip> [--dry-run] [--yes]
   rootfs  [HOST] --images <dir|zip> [--yes]
   wrap <bzImage> <out> [--header FILE]
+  restore [HOST] [--images <dir|zip>] [--yes]   back to stock; on an EA with no button
 ```
 
 Any command taking `[HOST]` also accepts `--password` for a controller whose root

@@ -139,6 +139,22 @@ and polarity are not yet hardware-confirmed (the `board.env` notes this); the
 fail-safe keeps a wrong polarity inert until they are.
 :::
 
+:::note[`ohc-flash restore`: one command, any openHC image]
+`ohc-flash restore HOST` works on an EA whatever openHC it runs. It puts the
+radio firmware back, then stages, on p1:
+- a current boot-init, read out of the board's bundle on the latest release with
+  HTTP range requests (a few MB, not the ~1 GB bundle), or from `--images`;
+- the real kernel, if the image has none at `/boot/bzImage`;
+- a one-shot `S00arestore` that hands off to them at the start of the next boot,
+  as `S00kexec` does below.
+
+It refuses a boot-init that predates this restore. After the reboot, a gap
+boot-init that knows the flag restores in place, before p1 is mounted; any other
+lets p1 boot far enough for `S00arestore`. The flasher then waits for the box's
+MAC to answer SDDP as a Control4 controller (openHC never does) and reports when
+stock is up, or tells you to use the button if it isn't within 20 minutes.
+:::
+
 :::note[How `stock` runs, and what a failure leaves]
 `restore stock` first puts Control4's Zigbee firmware back on the radio, drops
 `/.ohc-restore-stock` on p1 and reboots. Early in the next boot, `S00kexec` (on

@@ -669,7 +669,7 @@ fn restore(rest: &[String]) -> bool {
     let (what, f): (&str, fn(&tp::ssh::Ssh, &Progress) -> anyhow::Result<()>) = match id.board.map(|b| b.family) {
         Some(Family::Iox) => ("restore U-Boot's factory boot and erase the openHC slot", iox::restore),
         Some(Family::Hc) => ("boot Control4's factory-restore system and let it wipe openHC", hc800::restore),
-        Some(Family::Ea) => ("remove openHC's autoscript and let Control4's recovery re-image the box", ea::restore),
+        Some(Family::Ea) => ("put Control4's kernel and firmware back, clear openHC's autoscript and reimage p1 from the recovery partition", ea::restore),
         Some(Family::Ca) => ("delete openHC's boot files and run Control4's factoryrestore once", ca1::restore),
         Some(Family::Omap) => ("put Control4's IO firmware back and run its factory restore once", hc250::restore),
         None => { eprintln!("  refusing to restore an unidentified board"); return false }
@@ -677,7 +677,13 @@ fn restore(rest: &[String]) -> bool {
     if !rest.iter().any(|a| a == "--yes") && !confirm(what) {
         return false;
     }
-    if let Err(e) = f(&ssh, &Progress::stdout()) {
+    // An EA can take its restore boot-init from a local release instead of GitHub.
+    let images = rest.windows(2).find(|w| w[0] == "--images").map(|w| PathBuf::from(&w[1]));
+    let r = match (id.board.map(|b| b.family), images) {
+        (Some(Family::Ea), Some(dir)) => ea::restore_with(&ssh, Some(&dir), &Progress::stdout()),
+        _ => f(&ssh, &Progress::stdout()),
+    };
+    if let Err(e) = r {
         eprintln!("  {e:#}");
         return false;
     }
