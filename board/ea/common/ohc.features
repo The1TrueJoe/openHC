@@ -12,3 +12,5 @@ audio-hdmi  # HDMI audio out (ce5300-hdmi), every EA; the EA3 adds its DSP (audi
 restore     # software return-to-stock: restore edits the MFH over mtd0
 storage     # USB drives mounted and shared over SMB (storaged)
 usb-input   # USB keyboards, mice and game controllers (hubs too) for the on-screen UI
+gstreamer   # network audio runtime (GStreamer: RTP, FLAC, ALSA) for an extension
+            # to play into the outputs; Control4 Digital Media (openhc-control4)
