@@ -22,7 +22,7 @@ use eframe::egui::{self, Color32, RichText};
 use ohc_flash_core::board::Running;
 use ohc_flash_core::board::Family;
 use ohc_flash_core::{board, image, method, Board, Identity, Method};
-use ohc_flash_engine::{hc250, hc800, iox, network, updates, Event, GhRelease, Progress, Release};
+use ohc_flash_engine::{control4, hc250, hc800, iox, network, updates, Event, GhRelease, Progress, Release};
 use ohc_flash_transport as tp;
 
 /// This flasher's own version, baked in by CI (`OHC_VERSION`) so it can tell
@@ -143,6 +143,8 @@ enum Phase {
     Writing,
     Restarting,
     Finishing,
+    /// openHC is in; now the Control4 extension (openhc-control4).
+    Control4,
     Done,
     Failed,
 }
@@ -270,6 +272,10 @@ struct Shared {
     /// A release image just downloaded, waiting for the UI thread to open it
     /// (set off-thread, consumed in `render`, same pattern as a dropped file).
     downloaded_image: Option<PathBuf>,
+    /// Where the Control4 driver was saved, once the extension is installed.
+    control4_driver: Option<PathBuf>,
+    /// Why the Control4 step did not finish, when openHC itself did.
+    control4_error: Option<String>,
 }
 
 impl Shared {
@@ -361,6 +367,9 @@ struct App {
     forced: Option<&'static Board>,
     details: bool,
     self_install: bool,
+    /// After installing openHC, make it a Control4 controller again
+    /// (openhc-control4). On by default where the board supports it.
+    control4: bool,
     /// Has the first automatic scan been kicked off?
     ///
     /// Opening the app onto a "Scan the network" button and nothing else makes
@@ -381,6 +390,7 @@ impl Default for App {
             forced: None,
             details: false,
             self_install: false,
+            control4: true,
             auto_scanned: false,
         }
     }
@@ -1197,6 +1207,17 @@ impl App {
                         ui.monospace(&self.images);
                         ui.end_row();
                     });
+                if control4::supports(b) {
+                    ui.add_space(10.0);
+                    ui.checkbox(&mut self.control4, RichText::new("Make it a Control4 controller again").strong());
+                    ui.label(
+                        RichText::new(
+                            "Adds the on-screen navigator and puts its relays, contacts, IR and serial \
+                             back into your Control4 project. You get the Composer driver at the end.",
+                        )
+                        .weak(),
+                    );
+                }
                 ui.add_space(12.0);
                 ui.label(
                     "This takes a few minutes and the controller restarts on its own. \
@@ -1220,9 +1241,47 @@ impl App {
                     self.start_install(sh, shared, false);
                 }
             }
+            Some(Phase::Done) if sh.control4_driver.is_some() => {
+                let driver = sh.control4_driver.clone().unwrap_or_default();
+                ui.heading(RichText::new("Done").color(OK));
+                ui.add_space(8.0);
+                ui.label("openHC is installed and it is a Control4 controller again. In Composer Pro:");
+                ui.add_space(6.0);
+                for (n, step) in [
+                    format!("Driver → Add Driver… and pick {} (saved to {}).", control4::DRIVER, driver.display()),
+                    "Add the openHC box from the discovered devices. It brings its own address.".into(),
+                    "Bind HDMI to the TV's input, and the relays, contacts, IR and serial it has.".into(),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    ui.label(format!("{}. {step}", n + 1));
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "The room's C4 button then opens the navigator on that TV. The driver's \
+                         Documentation tab shows the box's own dashboard.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Show the driver").clicked() {
+                        reveal(driver.parent().unwrap_or(&driver));
+                    }
+                    if ui.add_enabled(sh.busy.is_none(), egui::Button::new("Install another")).clicked() {
+                        self.reset(sh);
+                    }
+                });
+            }
             Some(Phase::Done) => {
                 ui.heading(RichText::new("Done").color(OK));
                 ui.add_space(8.0);
+                if let Some(e) = &sh.control4_error {
+                    ui.label(RichText::new(format!("openHC is in, but the Control4 setup did not finish: {e}")).color(WARN));
+                    ui.add_space(6.0);
+                }
                 ui.label(
                     "openHC is installed and the controller is restarting. Give it about a \
                      minute to come up.",
@@ -1296,6 +1355,7 @@ impl App {
                         }),
                     ),
                     Phase::Finishing => ("Writing the system files", None),
+                    Phase::Control4 => ("Setting it up for Control4", None),
                     _ => unreachable!(),
                 };
                 ui.label(RichText::new(label).strong());
@@ -1460,8 +1520,13 @@ impl App {
         let secure = b.secure_boot;
         let self_install = self.self_install;
         let Some(m) = method_for(b) else { return };
+        let c4 = self.control4 && control4::supports(b) && !finish_only;
+        // The MAC finds the box again after its reboot, on whatever lease it gets.
+        let mac = sh.found.iter().find(|u| u.ip == host).and_then(|u| u.mac.clone());
 
         sh.error = None;
+        sh.control4_driver = None;
+        sh.control4_error = None;
         sh.phase = Some(if finish_only { Phase::Restarting } else { Phase::Writing });
         if !finish_only {
             sh.stage1_done = false;
@@ -1470,6 +1535,18 @@ impl App {
         spawn(sh, shared, "Installing…", move |s| {
             let p = sink(s);
             let out = run_install(s, &p, &ssh, &host, &rel, m, secure, self_install, finish_only);
+            if out.is_ok() && c4 {
+                s.lock().unwrap().phase = Some(Phase::Control4);
+                let r = run_control4(&p, &host, mac.as_deref());
+                let mut g = s.lock().unwrap();
+                match r {
+                    Ok(driver) => g.control4_driver = Some(driver),
+                    Err(e) => {
+                        g.push(Lvl::Warn, e.clone());
+                        g.control4_error = Some(e);
+                    }
+                }
+            }
             let mut g = s.lock().unwrap();
             g.wait = None;
             match out {
@@ -1740,6 +1817,32 @@ fn run_install(
     network::stage2_write_rootfs(&ssh2, rel, sizes, p).map_err(|e| format!("{e:#}"))
 }
 
+/// After openHC is in: download openhc-control4, find the box again once it
+/// has rebooted (by MAC, if its lease changed), install it. Returns where the
+/// Composer driver was saved.
+fn run_control4(p: &Progress, host: &str, mac: Option<&str>) -> Result<PathBuf, String> {
+    let b = control4::fetch(&control4::driver_dir(), p).map_err(|e| format!("{e:#}"))?;
+    let (_, ssh) = control4::find_again(host, mac, REBOOT_WAIT, p).ok_or_else(|| {
+        "openHC did not come back on the network in time. Once it is up, run \
+         `ohc-flash control4 <address>`."
+            .to_string()
+    })?;
+    control4::install(&ssh, &b, p).map_err(|e| format!("{e:#}"))?;
+    Ok(b.driver)
+}
+
+/// Open a folder in the platform's file manager.
+fn reveal(dir: &Path) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(dir).spawn();
+}
+
 // ------------------------------------------------------------------- helpers
 
 /// Why the wizard cannot move on from `step`. Pure, so the rules that stop an
@@ -1890,10 +1993,19 @@ mod tests {
         // each so a change to one is caught even with no hardware attached.
         app.step = Step::Install;
         app.forced = Some(board::by_name("ea3-v2").unwrap());
-        for phase in [Phase::Writing, Phase::Restarting, Phase::Finishing, Phase::Done, Phase::Failed] {
+        for phase in [Phase::Writing, Phase::Restarting, Phase::Finishing, Phase::Control4, Phase::Done, Phase::Failed] {
             app.shared.lock().unwrap().phase = Some(phase);
             pass(&mut app);
         }
+        // Done after the Control4 step: the Composer steps, then the failed-extension note.
+        app.shared.lock().unwrap().control4_driver = Some(PathBuf::from("/tmp/openhc.c4z"));
+        pass(&mut app);
+        {
+            let mut g = app.shared.lock().unwrap();
+            g.control4_driver = None;
+            g.control4_error = Some("no release".into());
+        }
+        pass(&mut app);
 
         // Now the update paths: a connected box plus a fetched release, so the
         // version rows, the "download latest" button and the self-update banner

@@ -73,7 +73,12 @@ pub fn this_os() -> &'static str {
 
 /// The latest published (non-prerelease, non-draft) release.
 pub fn latest_release() -> Result<GhRelease> {
-    release_at(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
+    latest_release_from(REPO)
+}
+
+/// The latest published release of another repository (an extension's).
+pub fn latest_release_from(repo: &str) -> Result<GhRelease> {
+    release_at(&format!("https://api.github.com/repos/{repo}/releases/latest"))
 }
 
 /// The rolling `dev` pre-release, which main's builds update.
@@ -96,7 +101,7 @@ fn release_at(url: &str) -> Result<GhRelease> {
     if !out.status.success() {
         // 404 here usually just means no release has been published yet.
         bail!(
-            "no published release found for {REPO} (curl exit {})",
+            "no published release found at {url} (curl exit {})",
             out.status.code().unwrap_or(-1)
         );
     }
