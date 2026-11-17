@@ -1,0 +1,118 @@
+From: Joseph Telaak <joseph@telaak.dev>
+Subject: [PATCH] net: dsa: b53: mirror CPU-bound frames to port 5 when port 8 is unused
+
+With port 5 as the CPU port, b53_brcm_hdr_setup() puts the switch in
+dual-IMP mode, in which frames for the CPU from the user ports still go
+to port 8: BPDUs, the IGMP/MLD copies b53_enable_mcast_snooping()
+enables, and most traffic of standalone ports. On boards that leave
+port 8 unconnected these are lost, so STP never sees its peers and a
+loop between two user ports takes the host off the network.
+
+Mirror them to port 5: frames to the bridge group address as they enter
+a user port, everything else as it leaves port 8, which is enabled with
+its link forced up and in the disabled STP state so that only frames for
+the CPU leave it. The switch has one mirror, so tc mirroring is refused.
+Frames to 01:80:c2:00:00:02, 03 and 0d still do not reach the CPU from a
+bridged port.
+
+Observed on a BCM53125 board in real use, with both user ports cabled
+into the same LAN. Tested there with a host sending test frames into a
+user port: bridged, BPDUs reached the CPU and forwarding kept working;
+standalone, all but EAPOL to 01:80:c2:00:00:03 did, once each. No
+selftests were run.
+
+Fixes: 8fab459e69ab ("net: dsa: b53: Enable Broadcom tags for 531x5/539x families")
+
+---
+diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
+index 0880310c9ce3..d0de38545c7c 100644
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -745,6 +745,10 @@ void b53_disable_port(struct dsa_switch *ds, int port)
+ 	struct b53_device *dev = ds->priv;
+ 	u8 reg;
+ 
++	/* Port 8 carries frames for the CPU to the mirror */
++	if (port == B53_CPU_PORT && dev->cpu_mirror)
++		return;
++
+ 	/* Disable Tx/Rx for the port */
+ 	b53_read8(dev, B53_CTRL_PAGE, B53_PORT_CTRL(port), &reg);
+ 	reg |= PORT_CTRL_RX_DISABLE | PORT_CTRL_TX_DISABLE;
+@@ -1273,6 +1277,42 @@ int b53_setup_devlink_resources(struct dsa_switch *ds)
+ }
+ EXPORT_SYMBOL(b53_setup_devlink_resources);
+ 
++/* With port 5 as the CPU port and port 8 unused, the switch runs in dual-IMP
++ * mode and still traps frames for the CPU from the user ports to port 8.
++ * Mirror them to port 5: frames to the bridge group address as they enter a
++ * user port, everything else as it leaves port 8, which needs Rx/Tx enabled
++ * and its link forced up for that, so b53_disable_port() leaves it alone.
++ * This takes the switch's only mirror.
++ */
++static void b53_setup_cpu_mirror(struct dsa_switch *ds)
++{
++	struct b53_device *dev = ds->priv;
++	int cpu_port = 5;
++
++	dev->cpu_mirror = false;
++	if (dev->tag_protocol == DSA_TAG_PROTO_NONE ||
++	    dev->imp_port != B53_CPU_PORT || B53_CPU_PORT >= ds->num_ports ||
++	    !dsa_is_cpu_port(ds, cpu_port) ||
++	    !dsa_is_unused_port(ds, B53_CPU_PORT))
++		return;
++
++	/* Rx/Tx on, STP disabled: only trapped frames leave port 8 */
++	b53_write8(dev, B53_CTRL_PAGE, B53_PORT_CTRL(B53_CPU_PORT),
++		   PORT_CTRL_DIS_STATE);
++	b53_write8(dev, B53_CTRL_PAGE, B53_PORT_OVERRIDE_CTRL,
++		   PORT_OVERRIDE_EN | PORT_OVERRIDE_SPEED_1000M |
++		   PORT_OVERRIDE_FULL_DUPLEX | PORT_OVERRIDE_LINK);
++
++	b53_write48(dev, B53_MGMT_PAGE, B53_IG_MIR_MAC,
++		    ether_addr_to_u64(eth_stp_addr));
++	b53_write16(dev, B53_MGMT_PAGE, B53_IG_MIR_CTL,
++		    (MIRROR_DA << MIRROR_FILTER_SHIFT) |
++		    (dsa_user_ports(ds) & MIRROR_MASK));
++	b53_write16(dev, B53_MGMT_PAGE, B53_EG_MIR_CTL, BIT(B53_CPU_PORT));
++	b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL, MIRROR_EN | cpu_port);
++	dev->cpu_mirror = true;
++}
++
+ static int b53_setup(struct dsa_switch *ds)
+ {
+ 	struct b53_device *dev = ds->priv;
+@@ -1334,6 +1374,8 @@ static int b53_setup(struct dsa_switch *ds)
+ 			b53_disable_port(ds, port);
+ 	}
+ 
++	b53_setup_cpu_mirror(ds);
++
+ 	return b53_setup_devlink_resources(ds);
+ }
+ 
+@@ -2541,6 +2583,12 @@ int b53_mirror_add(struct dsa_switch *ds, int port,
+ 	struct b53_device *dev = ds->priv;
+ 	u16 reg, loc;
+ 
++	if (dev->cpu_mirror) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "The mirror carries CPU traffic to port 5");
++		return -EOPNOTSUPP;
++	}
++
+ 	if (ingress)
+ 		loc = B53_IG_MIR_CTL;
+ 	else
+diff --git a/drivers/net/dsa/b53/b53_priv.h b/drivers/net/dsa/b53/b53_priv.h
+index 29cca7945df7..28b155ee071b 100644
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -170,6 +170,7 @@ struct b53_device {
+ 
+ 	/* run time configuration */
+ 	bool enable_jumbo;
++	bool cpu_mirror;
+ 
+ 	unsigned int num_vlans;
+ 	struct b53_vlan *vlans;
