@@ -4,11 +4,11 @@ Subject: [PATCH] net: dsa: b53: mirror CPU-bound frames to port 5 when port 8 is
 A dual-IMP switch can reach the host through its IMP port (8) or through
 port 5. With port 5 as the CPU port, b53_brcm_hdr_setup() puts the switch
 in dual-IMP mode, in which frames the switch sends to the CPU from the
-user ports still go to port 8: BPDUs, multicast snooping copies where the
-switch makes them, and most traffic of standalone ports. On boards that
-leave port 8 unconnected these are lost, so STP never sees its peers, a
-loop between two user ports takes the host off the network, and
-standalone ports receive almost nothing.
+user ports still go to port 8: BPDUs, the IGMP/MLD copies that
+b53_enable_mcast_snooping() enables, and most traffic of standalone
+ports. On boards that leave port 8 unconnected these are lost, so STP
+never sees its peers, a loop between two user ports takes the host off
+the network, and standalone ports receive almost nothing.
 
 Mirror them to port 5. Frames to the bridge group address are mirrored
 as they enter a user port, as the egress mirror does not see the BPDUs
@@ -20,10 +20,22 @@ so tc mirroring is refused on these boards. Frames to
 01:80:c2:00:00:02, 03 and 0d still do not reach the CPU from a bridged
 port.
 
+This was observed on a BCM53125 board in real use, when both user ports
+were cabled into the same LAN. Tested on that board with a host sending
+one of each test frame about once a second into a user port. With the
+port bridged, BPDUs, LLDP frames, broadcasts and unicasts to the host
+reached the CPU once each, and the switch counters showed broadcasts
+forwarded between the two user ports both ways. With the port
+standalone, every frame type but EAPOL to 01:80:c2:00:00:03 reached the
+CPU once, IGMP reports and Slow Protocols frames included. In an earlier
+run with the same register settings and the IGMP copies enabled by hand,
+a bridged port's IGMP reports reached the CPU once each as well. No
+selftests were run.
+
 Fixes: 8fab459e69ab ("net: dsa: b53: Enable Broadcom tags for 531x5/539x families")
 ---
 diff --git a/drivers/net/dsa/b53/b53_common.c b/drivers/net/dsa/b53/b53_common.c
-index 0880310c9ce3..3ad660920f06 100644
+index 0880310c9ce3..d0de38545c7c 100644
 --- a/drivers/net/dsa/b53/b53_common.c
 +++ b/drivers/net/dsa/b53/b53_common.c
 @@ -745,6 +745,10 @@ void b53_disable_port(struct dsa_switch *ds, int port)
@@ -37,7 +49,7 @@ index 0880310c9ce3..3ad660920f06 100644
  	/* Disable Tx/Rx for the port */
  	b53_read8(dev, B53_CTRL_PAGE, B53_PORT_CTRL(port), &reg);
  	reg |= PORT_CTRL_RX_DISABLE | PORT_CTRL_TX_DISABLE;
-@@ -1273,6 +1277,40 @@ int b53_setup_devlink_resources(struct dsa_switch *ds)
+@@ -1273,6 +1277,42 @@ int b53_setup_devlink_resources(struct dsa_switch *ds)
  }
  EXPORT_SYMBOL(b53_setup_devlink_resources);
  
@@ -51,11 +63,13 @@ index 0880310c9ce3..3ad660920f06 100644
 +static void b53_setup_cpu_mirror(struct dsa_switch *ds)
 +{
 +	struct b53_device *dev = ds->priv;
++	int cpu_port = 5;
 +
 +	dev->cpu_mirror = false;
 +	if (dev->tag_protocol == DSA_TAG_PROTO_NONE ||
 +	    dev->imp_port != B53_CPU_PORT || B53_CPU_PORT >= ds->num_ports ||
-+	    !dsa_is_cpu_port(ds, 5) || dsa_is_cpu_port(ds, B53_CPU_PORT))
++	    !dsa_is_cpu_port(ds, cpu_port) ||
++	    !dsa_is_unused_port(ds, B53_CPU_PORT))
 +		return;
 +
 +	/* Rx/Tx on, STP disabled: only trapped frames leave port 8 */
@@ -71,14 +85,14 @@ index 0880310c9ce3..3ad660920f06 100644
 +		    (MIRROR_DA << MIRROR_FILTER_SHIFT) |
 +		    (dsa_user_ports(ds) & MIRROR_MASK));
 +	b53_write16(dev, B53_MGMT_PAGE, B53_EG_MIR_CTL, BIT(B53_CPU_PORT));
-+	b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL, MIRROR_EN | 5);
++	b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL, MIRROR_EN | cpu_port);
 +	dev->cpu_mirror = true;
 +}
 +
  static int b53_setup(struct dsa_switch *ds)
  {
  	struct b53_device *dev = ds->priv;
-@@ -1334,6 +1372,8 @@ static int b53_setup(struct dsa_switch *ds)
+@@ -1334,6 +1374,8 @@ static int b53_setup(struct dsa_switch *ds)
  			b53_disable_port(ds, port);
  	}
  
@@ -87,7 +101,7 @@ index 0880310c9ce3..3ad660920f06 100644
  	return b53_setup_devlink_resources(ds);
  }
  
-@@ -2541,6 +2581,12 @@ int b53_mirror_add(struct dsa_switch *ds, int port,
+@@ -2541,6 +2583,12 @@ int b53_mirror_add(struct dsa_switch *ds, int port,
  	struct b53_device *dev = ds->priv;
  	u16 reg, loc;
  
