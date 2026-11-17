@@ -723,8 +723,8 @@ static int ce5300_hdmi_probe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_quiesce, h);
 	if (ret)
 		return ret;
+	pdata->set_notify(pdata->core, ce5300_hdmi_sink_changed, h);	/* takes the lock */
 	mutex_lock(h->lock);
-	pdata->set_notify(pdata->core, ce5300_hdmi_sink_changed, h);
 	h->dvi_sink = h->sink->connected && h->sink->edid && !h->sink->hdmi;
 	mutex_unlock(h->lock);
 
