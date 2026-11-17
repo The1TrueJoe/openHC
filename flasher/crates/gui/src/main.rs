@@ -368,7 +368,7 @@ struct App {
     details: bool,
     self_install: bool,
     /// After installing openHC, make it a Control4 controller again
-    /// (openhc-control4). On by default where the board supports it.
+    /// (openhc-control4): the driver for every board, the box side where it runs.
     control4: bool,
     /// Has the first automatic scan been kicked off?
     ///
@@ -1207,17 +1207,18 @@ impl App {
                         ui.monospace(&self.images);
                         ui.end_row();
                     });
-                if control4::supports(b) {
-                    ui.add_space(10.0);
-                    ui.checkbox(&mut self.control4, RichText::new("Make it a Control4 controller again").strong());
-                    ui.label(
-                        RichText::new(
-                            "Adds the on-screen navigator and puts its relays, contacts, IR and serial \
-                             back into your Control4 project. You get the Composer driver at the end.",
-                        )
-                        .weak(),
-                    );
-                }
+                ui.add_space(10.0);
+                ui.checkbox(&mut self.control4, RichText::new("Make it a Control4 controller again").strong());
+                ui.label(
+                    RichText::new(if control4::runs_on_box(b) {
+                        "Adds the on-screen navigator and puts its relays, contacts, IR and serial \
+                         back into your Control4 project. You get the Composer driver at the end."
+                    } else {
+                        "Puts its relays, contacts, IR and serial back into your Control4 project \
+                         (no on-screen navigator on this board yet). You get the Composer driver at the end."
+                    })
+                    .weak(),
+                );
                 ui.add_space(12.0);
                 ui.label(
                     "This takes a few minutes and the controller restarts on its own. \
@@ -1243,15 +1244,28 @@ impl App {
             }
             Some(Phase::Done) if sh.control4_driver.is_some() => {
                 let driver = sh.control4_driver.clone().unwrap_or_default();
+                let on_box = control4::runs_on_box(b);
                 ui.heading(RichText::new("Done").color(OK));
                 ui.add_space(8.0);
                 ui.label("openHC is installed and it is a Control4 controller again. In Composer Pro:");
                 ui.add_space(6.0);
-                for (n, step) in [
-                    format!("Driver → Add Driver… and pick {} (saved to {}).", control4::DRIVER, driver.display()),
-                    "Add the openHC box from the discovered devices. It brings its own address.".into(),
-                    "Bind HDMI to the TV's input, and the relays, contacts, IR and serial it has.".into(),
-                ]
+                let add = format!("Driver → Add Driver… and pick {} (saved to {}).", control4::DRIVER, driver.display());
+                let steps: [String; 3] = if on_box {
+                    [
+                        add,
+                        "Add the openHC box from the discovered devices. It brings its own address.".into(),
+                        "Bind HDMI to the TV's input, and the relays, contacts, IR and serial it has.".into(),
+                    ]
+                } else {
+                    [
+                        add,
+                        "On the Network tab, identify its openHC Controller connection with the box's \
+                         address (Find it again here if a reboot changed it)."
+                            .into(),
+                        "Bind the relays, contacts, IR and serial it has.".into(),
+                    ]
+                };
+                for (n, step) in steps
                 .iter()
                 .enumerate()
                 {
@@ -1259,10 +1273,12 @@ impl App {
                 }
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(
+                    RichText::new(if on_box {
                         "The room's C4 button then opens the navigator on that TV. The driver's \
-                         Documentation tab shows the box's own dashboard.",
-                    )
+                         Documentation tab shows the box's own dashboard."
+                    } else {
+                        "The driver's Documentation tab shows the box's own dashboard."
+                    })
                     .weak(),
                 );
                 ui.add_space(12.0);
@@ -1520,7 +1536,8 @@ impl App {
         let secure = b.secure_boot;
         let self_install = self.self_install;
         let Some(m) = method_for(b) else { return };
-        let c4 = self.control4 && control4::supports(b) && !finish_only;
+        let c4 = self.control4 && !finish_only;
+        let on_box = control4::runs_on_box(b);
         // The MAC finds the box again after its reboot, on whatever lease it gets.
         let mac = sh.found.iter().find(|u| u.ip == host).and_then(|u| u.mac.clone());
 
@@ -1537,7 +1554,7 @@ impl App {
             let out = run_install(s, &p, &ssh, &host, &rel, m, secure, self_install, finish_only);
             if out.is_ok() && c4 {
                 s.lock().unwrap().phase = Some(Phase::Control4);
-                let r = run_control4(&p, &host, mac.as_deref());
+                let r = run_control4(&p, &host, mac.as_deref(), on_box);
                 let mut g = s.lock().unwrap();
                 match r {
                     Ok(driver) => g.control4_driver = Some(driver),
@@ -1817,11 +1834,14 @@ fn run_install(
     network::stage2_write_rootfs(&ssh2, rel, sizes, p).map_err(|e| format!("{e:#}"))
 }
 
-/// After openHC is in: download openhc-control4, find the box again once it
-/// has rebooted (by MAC, if its lease changed), install it. Returns where the
-/// Composer driver was saved.
-fn run_control4(p: &Progress, host: &str, mac: Option<&str>) -> Result<PathBuf, String> {
-    let b = control4::fetch(&control4::driver_dir(), p).map_err(|e| format!("{e:#}"))?;
+/// After openHC is in: download openhc-control4 and, where the box side runs,
+/// find the box again once it has rebooted (by MAC, if its lease changed) and
+/// install it. Returns where the Composer driver was saved.
+fn run_control4(p: &Progress, host: &str, mac: Option<&str>, on_box: bool) -> Result<PathBuf, String> {
+    let b = control4::fetch(&control4::driver_dir(), on_box, p).map_err(|e| format!("{e:#}"))?;
+    if !on_box {
+        return Ok(b.driver);
+    }
     let (_, ssh) = control4::find_again(host, mac, REBOOT_WAIT, p).ok_or_else(|| {
         "openHC did not come back on the network in time. Once it is up, run \
          `ohc-flash control4 <address>`."
@@ -2000,6 +2020,10 @@ mod tests {
         // Done after the Control4 step: the Composer steps, then the failed-extension note.
         app.shared.lock().unwrap().control4_driver = Some(PathBuf::from("/tmp/openhc.c4z"));
         pass(&mut app);
+        // ...and on a board that gets the driver alone (no on-screen view yet).
+        app.forced = Some(board::by_name("hc250").unwrap());
+        pass(&mut app);
+        app.forced = Some(board::by_name("ea3-v2").unwrap());
         {
             let mut g = app.shared.lock().unwrap();
             g.control4_driver = None;

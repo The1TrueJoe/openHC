@@ -706,15 +706,22 @@ fn install(rest: &[String]) -> bool {
     };
     // The MAC finds it again after the reboot; ask before the install, while it answers.
     let mac = tp::discover(false).into_iter().find(|f| f.ip == host).and_then(|f| f.mac);
+    let forced = rest.windows(2).find(|w| w[0] == "--board").and_then(|w| board::by_name(&w[1]));
+    let on_box = forced
+        .or_else(|| connect(rest).and_then(|(_, s)| tp::identify(&s).board))
+        .is_some_and(control4::runs_on_box);
     if !install_image(rest) {
         return false;
+    }
+    if !on_box {
+        return control4_driver_only(&host);
     }
     if ["--dry-run", "--no-wait", "--ram-only"].iter().any(|f| rest.iter().any(|a| a == f)) {
         println!("  (Control4 skipped: the install did not finish here; run `ohc-flash control4 <ip>` once openHC is up)");
         return true;
     }
     let p = Progress::stdout();
-    let bundle = match control4::fetch(&control4::driver_dir(), &p) {
+    let bundle = match control4::fetch(&control4::driver_dir(), true, &p) {
         Ok(b) => b,
         Err(e) => { eprintln!("  openHC is installed, but the Control4 extension: {e:#}"); return false; }
     };
@@ -732,13 +739,28 @@ fn control4_cmd(rest: &[String]) -> bool {
         eprintln!("  {host} is not running openHC — install it first (ohc-flash install --control4)");
         return false;
     }
-    if let Some(b) = tp::identify(&ssh).board.filter(|b| !control4::supports(b)) {
-        eprintln!("  {} has no video output to run the navigator on; add {} in Composer for its IO", b.name, control4::DRIVER);
-        return false;
+    if tp::identify(&ssh).board.is_some_and(|b| !control4::runs_on_box(b)) {
+        return control4_driver_only(&host);
     }
     let p = Progress::stdout();
-    match control4::fetch(&control4::driver_dir(), &p) {
+    match control4::fetch(&control4::driver_dir(), true, &p) {
         Ok(b) => control4_install(&host, &ssh, &b),
+        Err(e) => { eprintln!("  {e:#}"); false }
+    }
+}
+
+/// A board with no on-screen view in openHC yet (HC-250, CA-1, IO Extender):
+/// nothing goes on the box, and the driver gives Composer its IO.
+fn control4_driver_only(host: &str) -> bool {
+    match control4::fetch(&control4::driver_dir(), false, &Progress::stdout()) {
+        Ok(b) => {
+            println!("\n  This board has no on-screen navigator in openHC yet; its IO goes into Control4. In Composer Pro:");
+            println!("    1. Driver → Add Driver… {} (saved to {})", control4::DRIVER, b.driver.display());
+            println!("    2. On the Network tab, identify its openHC Controller connection as {host}");
+            println!("       (ohc-flash discover finds it if a reboot gave it a new address)");
+            println!("    3. Bind the relays, contacts, IR and serial it has");
+            true
+        }
         Err(e) => { eprintln!("  {e:#}"); false }
     }
 }

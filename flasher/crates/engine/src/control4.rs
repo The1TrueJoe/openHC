@@ -2,10 +2,11 @@
 //! project — the on-screen navigator on its video output and its IO as
 //! ordinary Control4 connections (https://github.com/The1TrueJoe/openhc-control4).
 //!
-//! Two artefacts come from that repository's latest release: the box side
+//! Two artefacts come from that repository's latest release: the Composer
+//! driver (`openhc.c4z`, saved where the user will find it), which every board
+//! uses for its IO, and on the boards with an on-screen view the box side
 //! (`openhc-control4.tar.gz`, unpacked into `/data/extensions`, which openHC's
-//! `S96ohc-extensions` starts at every boot) and the Composer driver
-//! (`openhc.c4z`), saved where the user will find it.
+//! `S96ohc-extensions` starts at every boot).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -22,17 +23,17 @@ const TARBALL: &str = "openhc-control4.tar.gz";
 pub const DRIVER: &str = "openhc.c4z";
 const DIR: &str = "/data/extensions";
 
-/// The boards it runs on: the x86_64 ones with a video output. (The CA-1 and
-/// IO Extender can still use the driver for their IO; there is nothing to put
-/// on the box.)
-pub fn supports(board: &Board) -> bool {
+/// The boards the box side runs on: the x86_64 ones with openHC's on-screen
+/// view (`wpe`) and a persistent `/data`. Every other board (HC-250, CA-1, IO
+/// Extender) gets the driver alone, for its IO.
+pub fn runs_on_box(board: &Board) -> bool {
     board.name.starts_with("ea") || board.name == "hc800"
 }
 
-/// What was downloaded: the box side, already gunzipped (busybox tar on the
-/// box has no -z), and where the driver was saved.
+/// What was downloaded: the box side if asked for, already gunzipped (busybox
+/// tar on the box has no -z), and where the driver was saved.
 pub struct Bundle {
-    pub tar: Vec<u8>,
+    pub tar: Option<Vec<u8>>,
     pub driver: PathBuf,
 }
 
@@ -45,8 +46,9 @@ pub fn driver_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// Download the latest release: the box side into memory, the driver into `dir`.
-pub fn fetch(dir: &Path, p: &Progress) -> Result<Bundle> {
+/// Download the latest release: the driver into `dir`, and with `with_box` the
+/// box side into memory.
+pub fn fetch(dir: &Path, with_box: bool, p: &Progress) -> Result<Bundle> {
     p.emit(Event::step("downloading the Control4 extension".into()));
     let rel = updates::latest_release_from(REPO)?;
     let url = |name: &str| {
@@ -56,13 +58,18 @@ pub fn fetch(dir: &Path, p: &Progress) -> Result<Bundle> {
             .map(|a| a.url.clone())
             .with_context(|| format!("{REPO} {} has no {name}", rel.tag_name))
     };
-    let tmp = std::env::temp_dir().join(TARBALL);
-    updates::download(&url(TARBALL)?, &tmp)?;
-    let mut tar = Vec::new();
-    flate2::read::GzDecoder::new(std::fs::File::open(&tmp)?)
-        .read_to_end(&mut tar)
-        .context("unpacking the extension")?;
-    let _ = std::fs::remove_file(&tmp);
+    let tar = if with_box {
+        let tmp = std::env::temp_dir().join(TARBALL);
+        updates::download(&url(TARBALL)?, &tmp)?;
+        let mut tar = Vec::new();
+        flate2::read::GzDecoder::new(std::fs::File::open(&tmp)?)
+            .read_to_end(&mut tar)
+            .context("unpacking the extension")?;
+        let _ = std::fs::remove_file(&tmp);
+        Some(tar)
+    } else {
+        None
+    };
     let driver = dir.join(DRIVER);
     updates::download(&url(DRIVER)?, &driver)?;
     p.emit(Event::detail(format!("{REPO} {}: driver saved to {}", rel.tag_name, driver.display())));
@@ -71,9 +78,10 @@ pub fn fetch(dir: &Path, p: &Progress) -> Result<Bundle> {
 
 /// Unpack the box side, start it, and point the on-screen view at the navigator.
 pub fn install(ssh: &tp::Ssh, b: &Bundle, p: &Progress) -> Result<()> {
+    let tar = b.tar.as_deref().context("the box side was not downloaded")?;
     p.emit(Event::step("setting the controller up for Control4".into()));
     ssh.put_stream(
-        &b.tar,
+        tar,
         &format!(
             "mkdir -p {DIR} && tar xf - -C {DIR} && {DIR}/control4/init start && {DIR}/control4/init display"
         ),
@@ -146,9 +154,9 @@ mod tests {
     }
 
     #[test]
-    fn only_video_boards() {
+    fn box_side_only_where_there_is_an_onscreen_view() {
         let b = |n| ohc_flash_core::board::by_name(n).unwrap();
-        assert!(supports(b("ea3-v2")) && supports(b("hc800")));
-        assert!(!supports(b("ca1")) && !supports(b("ioxv1")));
+        assert!(runs_on_box(b("ea3-v2")) && runs_on_box(b("hc800")));
+        assert!(!runs_on_box(b("hc250")) && !runs_on_box(b("ca1")) && !runs_on_box(b("ioxv1")));
     }
 }
