@@ -95,9 +95,14 @@ the bootloader's own addressing.
 
 ### Going back
 
-Press the recessed factory-restore button. It reimages kernel, rootfs **and**
-CEFDK from p2. Or, if the box still boots, `script off` at the CEFDK shell
-restores the stock verified boot path without touching anything else.
+`ohc-flash restore`, the web UI's **Reset to stock** or `restore stock` on the
+box returns it to Control4 with no button: Control4's kernel back in its slot,
+openHC's autoscript off, p1 reimaged from p2, and the radio and IO firmware
+back. See [recovery](/shared/recovery/#openhcs-own-software-return-to-stock).
+
+The recessed factory-restore button is the fallback. It reimages kernel, rootfs
+**and** CEFDK from p2. Or, if the box still boots, `script off` at the CEFDK
+shell restores the stock verified boot path without touching anything else.
 
 ## CA-1
 

@@ -131,11 +131,13 @@ endif
 # A driver kept in its own repository maps onto ONE kernel directory instead of
 # mirroring a tree: <source dir>:<kernel dir>. powervr_sgx (the submodule at
 # ea/common/powervr_sgx) holds more than the kernel driver (the Mesa driver, the
-# microkernel, tools); only its drm/powervr_sgx is kernel source. Its Kconfig and
+# microkernel, tools); only its drm/powervr_sgx is kernel source. iio-fan (the
+# submodule at ea/common/iio-fan) is a whole hwmon driver. Their Kconfig and
 # Makefile lines are registered by ea/common/kernel/objs.mk.
 OHC_KERNEL_DRIVER_REPOS =
 ifeq ($(BR2_OHC_EA_KERNEL_DRIVERS),y)
 OHC_KERNEL_DRIVER_REPOS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/powervr_sgx/drm/powervr_sgx:drivers/gpu/drm/powervr_sgx
+OHC_KERNEL_DRIVER_REPOS += $(BR2_EXTERNAL_OPENHC_PATH)/ea/common/iio-fan:drivers/hwmon/iio-fan
 endif
 
 define OHC_KERNEL_MIRROR_HOOK

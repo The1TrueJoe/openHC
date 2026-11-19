@@ -34,12 +34,20 @@ pub struct GhRelease {
 }
 
 impl GhRelease {
-    /// The image bundle for a board: `openhc-<board>-<version>.zip`.
+    /// The image bundle for a board: `openhc-<board>-<version>.zip`. Never a
+    /// longer board's bundle: `ea1-v2` must not pick `ea1-v2-poe`'s.
     pub fn image_asset(&self, board: &str) -> Option<&Asset> {
         let prefix = format!("openhc-{board}-");
-        self.assets
+        let longer: Vec<String> = ohc_flash_core::board::BOARDS
             .iter()
-            .find(|a| a.name.starts_with(&prefix) && a.name.ends_with(".zip"))
+            .filter(|b| b.name.len() > board.len() && b.name.starts_with(&format!("{board}-")))
+            .map(|b| format!("openhc-{}-", b.name))
+            .collect();
+        self.assets.iter().find(|a| {
+            a.name.starts_with(&prefix)
+                && a.name.ends_with(".zip")
+                && !longer.iter().any(|l| a.name.starts_with(l))
+        })
     }
 
     /// The flasher build for the OS this binary is running on:
@@ -65,7 +73,15 @@ pub fn this_os() -> &'static str {
 
 /// The latest published (non-prerelease, non-draft) release.
 pub fn latest_release() -> Result<GhRelease> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    release_at(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
+}
+
+/// The rolling `dev` pre-release, which main's builds update.
+pub fn dev_release() -> Result<GhRelease> {
+    release_at(&format!("https://api.github.com/repos/{REPO}/releases/tags/dev"))
+}
+
+fn release_at(url: &str) -> Result<GhRelease> {
     let out = Command::new("curl")
         .args([
             "-fsSL",
@@ -73,7 +89,7 @@ pub fn latest_release() -> Result<GhRelease> {
             "ohc-flasher",
             "-H",
             "Accept: application/vnd.github+json",
-            &url,
+            url,
         ])
         .output()
         .context("running curl (is it installed?)")?;
@@ -159,6 +175,8 @@ mod tests {
     fn rel() -> GhRelease {
         serde_json::from_str(
             r#"{"tag_name":"v1.2.0","assets":[
+                {"name":"openhc-ea1-v2-poe-v1.2.0.zip","browser_download_url":"http://x/p","size":10},
+                {"name":"openhc-ea1-v2-v1.2.0.zip","browser_download_url":"http://x/q","size":10},
                 {"name":"openhc-ea3-v2-v1.2.0.zip","browser_download_url":"http://x/a","size":10},
                 {"name":"openhc-ca1-v1.2.0.zip","browser_download_url":"http://x/b","size":10},
                 {"name":"ohc-flasher-v1.2.0-macos.zip","browser_download_url":"http://x/c","size":10},
@@ -173,6 +191,8 @@ mod tests {
         assert_eq!(rel().image_asset("ea3-v2").unwrap().name, "openhc-ea3-v2-v1.2.0.zip");
         assert_eq!(rel().image_asset("ca1").unwrap().name, "openhc-ca1-v1.2.0.zip");
         assert!(rel().image_asset("hc800").is_none());
+        assert_eq!(rel().image_asset("ea1-v2").unwrap().name, "openhc-ea1-v2-v1.2.0.zip");
+        assert_eq!(rel().image_asset("ea1-v2-poe").unwrap().name, "openhc-ea1-v2-poe-v1.2.0.zip");
     }
 
     #[test]

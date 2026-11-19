@@ -1,0 +1,5 @@
+# Fan: iio-fan (submodule) on an AD5246 (mcp4018, patches 0025-0029) with a
+# fixed regulator on ldo_enable; see ea3-v2.dts.
+CONFIG_IIO=y
+CONFIG_MCP4018=y
+CONFIG_SENSORS_IIO_FAN=y

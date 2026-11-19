@@ -29,13 +29,14 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0015 | x86 built-in DTB | x86 has no way to carry its own device tree; adds `BUILTIN_DTB`. **Shared**: lives in `board/common/patches/linux/` |
 | 0016 | ehci-pci VBUS supply | rear-USB power (gpio44) follows root-hub port power, so the port is switchable from Linux |
 | 0017 | PCI bridge keeps its ACPI companion | the A/V bridge 00:01.0 needs a DT node (bus 1 inherits it), which used to cost it its ACPI companion and so every bus-1 device its IRQ (the _PRT lives there); a bridge with a DT node now gets its companion too, with the node kept as of_node only, as `device_add_of_node()` does |
-| 0019 | b53 BPDU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode traps BPDUs to the unwired IMP port 8, so STP never sees a loop; mirror them to port 5 (WAN-port select also delivers them but stops lan1↔lan2 forwarding) |
+| 0019 | b53 CPU mirror to port 5 | with port 5 as the only CPU port, b53's dual-IMP mode sends CPU-bound frames (BPDUs, snooping copies, standalone traffic) to the unwired IMP port 8; mirror them to port 5: the bridge group address on user-port ingress, everything else on port 8 egress (WAN-port select would stop lan1↔lan2 forwarding) |
 | 0020 | simple-card `link-name` | name a link's PCM from the DT (`simple-audio-card,link-name` or `link-name` on a dai-link) instead of `<cpu dai>-<codec dai>`, so the EA3's PCMs are `Analog`, `Coax` and `Coax in`; also stops passing the name as a format string |
 | 0021 | b53 LEDs | the BCM53125 drives the jack LEDs from its own LED controller, which mainline b53 leaves at strap defaults; registers the DT `leds` of each user port as netdev-trigger LEDs offloaded to it (upstream candidate, net-next) |
 | 0022 | e1000 CE4100 phylink fixed link | with a `fixed-link` (switch boards) phylink owns the link and the MAC is forced to what it resolves; mainline e1000 otherwise fails probe there (no PHY on the MDIO bus). Replaced 0003, the hand-rolled fixed link |
 | 0023 | e1000 CE4100 PHY via phylink | with a `phy-handle` (the EA1's RTL8211E) the GbE's own MDIO bus is registered from the `mdio` node and phylink connects the PHY (RGMII delays, netdev-trigger LEDs) |
 | 0024 | e1000 CE4100 no EEE | the MAC has no LPI; empty LPI ops make phylink disable EEE, whose LED mode blinks the RTL8211E's link LED at idle. 0022-0024: upstream candidates (iwl-next), no change without the DT properties; E1000 selects PHYLINK |
-| 0025 | iosf_mbi CE5300 PCI ID | the CE5300 host bridge (`8086:0c40`) has the standard IOSF mailbox; `ce5300-drm` reaches the display PLL and HDMI PHY through `iosf_mbi` instead of its own copy (upstream candidate, x86/platform) |
+| 0025–0029 | mcp4018: AD5246 + `read_avail` + vdd; its binding; generic `out_resistanceY_raw_available` ABI | the EA-3 v2's fan speed is an AD5246, which needs an IIO channel for iio-fan (the `iio-fan` submodule). Upstream-ready series for iio.git, not sent yet |
+| 0030 | iosf_mbi CE5300 PCI ID | the CE5300 host bridge (`8086:0c40`) has the standard IOSF mailbox; `ce5300-drm` reaches the display PLL and HDMI PHY through `iosf_mbi` instead of its own copy (upstream candidate, x86/platform) |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now

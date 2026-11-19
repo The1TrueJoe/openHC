@@ -2,19 +2,20 @@
 # Ethernet jack LEDs, the same on every board (as on the HC-250): yellow = link,
 # green = link and activity (on with link, blinks off with traffic).
 # The kernel registers the jack LEDs from the board DT as netdev-trigger LEDs
-# the hardware runs itself (b53: <switch>:<port>:<led>:<color>:lan).
+# the hardware runs itself (b53: b53-<tree>.<switch>:<port>:<led>:<color>:lan).
 # See site docs ea/switch (Jack LEDs).
 
 LEDS=/sys/class/leds
 
-# netdev for a DSA user port's LED, from phys_port_name pN + the switch device
+# netdev for a DSA user port's LED: same switch device, port pN = ":NN:"
 dsa_netdev() {
     led=${1##*/}
+    sw=$(readlink -f "$1/device")
     for net in /sys/class/net/*; do
         pp=$(cat "$net/phys_port_name" 2>/dev/null) || continue
-        sw=$(basename "$(readlink "$net/device")")
+        [ "$(readlink -f "$net/device")" = "$sw" ] || continue
         case $led in
-            "$sw:$(printf %02d "${pp#p}"):"*) echo "${net##*/}"; return ;;
+            *":$(printf %02d "${pp#p}"):"*) echo "${net##*/}"; return ;;
         esac
     done
 }

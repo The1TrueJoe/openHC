@@ -1,6 +1,6 @@
 ---
 title: Fan and thermal
-description: How the kernel runs the EA fan from the device tree — the 100 kHz PWM, the 30% floor, the trip curve, manual control and the 95 °C poweroff.
+description: How the kernel runs the EA fan from the device tree — the 100 kHz PWM, the EA-3 v2's switched fan, the 30% floor, the trip curve, manual control and the 95 °C poweroff.
 sidebar:
   order: 12
 ---
@@ -31,6 +31,54 @@ is off, then 30% to 100% in tens. 77/255 is the lowest level that is not off,
 and it is quiet (confirmed by ear, 2026-10-27). From a standstill, 25% already
 started clean at 100 kHz, so the fan needs no start kick. If a different fan ever
 does, that is pwm-fan's `fan-stop-to-start-percent`/`-us`.
+
+## EA-3 v2: a switched fan with a speed pot
+
+The EA-3 v2's fan isn't on the PWM. Its supply comes from a regulator switched
+by `ldo_enable` (GPIO 43), and an AD5246 digital potentiometer at 0x2e on I2C
+bus 0 sets its speed: a 7-bit wiper, power-on 0x40, higher is faster. Heard on
+a v2 (straps 0x29), 2026-11-16:
+
+- pwm-fan at 0%, 30% and 100% sounded the same.
+- `ldo_enable` low stopped the fan, and high started it again.
+- Wiper 0x00 was quieter and 0x7f louder.
+
+This is stock `c4faultd`'s AD5246 path. On an EA it tries hwmon `pwm1`/`pwm2`, the
+AD5246 (which also switches `ldo_enable`), PWM channel 2, then an LTC1695, and
+uses the first one present. Stock's `c4_gpio_config` drives `ldo_enable` high on
+every board, and nothing else in stock touches it.
+
+So `ea3-v2.dts` replaces the pwm-fan with an **`io-channel-fan`** (the
+iio-fan driver) under the same `fan` label, so `ea.dtsi`'s curve and cooling
+maps apply unchanged:
+
+- **Speed:** the AD5246, through the `mcp4018` IIO driver. A cooling level from
+  0 to 255 is scaled onto the wiper's 0–127.
+- **Power:** a `regulator-fixed` on GPIO 43 is the fan's `fan-supply`, so level 0
+  turns the fan off. The `ldo_enable` hog is gone on the v2.
+- **The floor:** 20% (wiper 25), then even steps to 100%. From a stop, 30%
+  (wiper 38) and 20% (wiper 25) start the fan; 10% (wiper 13) and wiper 0 do
+  not. Heard on ea3b, 2026-11-16.
+
+The regulator core is only in the real kernel, so the bootstrap kernel drives
+the speed but not the supply: GPIO 43 stays as CEFDK left it until `S00kexec`
+hands over.
+
+The AD5246's resistance variant (5, 10, 50 or 100 kΩ) can't be read over I2C,
+since the part has no ID register, and this one hasn't been read off the
+package. The tree says `adi,ad5246-010`. Only IIO's scale depends on it; the fan
+uses raw wiper values.
+
+The fan driver is its own repository, [iio-fan](https://github.com/The1TrueJoe/iio-fan),
+a submodule at `board/ea/common/iio-fan` that the build copies into the kernel
+tree. The AD5246 support in `mcp4018` is written for upstream (IIO); until it
+lands, openHC carries it as patches 0025–0029.
+
+sysmond finds the `iiofan` hwmon and `iio-fan` cooling device the same way as a
+pwm-fan, and manual control works the same.
+
+The EA-3 v1 has no AD5246. Its fan is assumed to be on PWM channel 2 like the
+EA-1's, which isn't confirmed by ear yet.
 
 ## The curve
 

@@ -1,0 +1,142 @@
+iio: potentiometer: mcp4018: Add Analog Devices AD5246
+
+The AD5246 is a 128-position digital rheostat with the same I2C
+interface as the MCP4017/18/19: a single data byte writes the 7-bit
+wiper and a single-byte read returns it, with no command byte. Add its
+four resistance options.
+
+Its resistance is D/128 of the end-to-end value, where the MCP401x's is
+D/127, so the scale divisor moves into the per-part config.
+
+The misc ad525x_dpot driver also knows the AD5246, by I2C id only and
+through its own sysfs files. It can't provide an IIO channel, which a
+consumer such as dpot-dac needs. The AD5272 is likewise in both drivers.
+
+Tested on an AD5246 at 0x2e that sets a fan's speed, described as
+adi,ad5246-010 with a vdd-supply. It probes, out_resistance0_raw_available
+reads [0 1 127] and out_resistance_scale reads 78.125000000. Raw writes
+of 0, 64, 100 and 127 read back the same value, and 128 is rejected.
+Writes through iio_write_channel_raw() from an in-kernel consumer of the
+channel read back as well (127, 38, 0 and 76). The rheostat sets a fan's
+supply voltage there, and by ear the fan ran at full speed at 127 and
+audibly slower at 38.
+
+Datasheet: https://www.analog.com/media/en/technical-documentation/data-sheets/AD5246.pdf
+Signed-off-by: Joseph Telaak <joseph@telaak.dev>
+---
+ drivers/iio/potentiometer/Kconfig   |  6 +++---
+ drivers/iio/potentiometer/mcp4018.c | 33 +++++++++++++++++++++++------
+ 2 files changed, 30 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/iio/potentiometer/Kconfig b/drivers/iio/potentiometer/Kconfig
+index e6a9a3c67845..7945c75f06da 100644
+--- a/drivers/iio/potentiometer/Kconfig
++++ b/drivers/iio/potentiometer/Kconfig
+@@ -70,12 +70,12 @@ config MAX5487
+ 	  module will be called max5487.
+ 
+ config MCP4018
+-	tristate "Microchip MCP4017/18/19 Digital Potentiometer driver"
++	tristate "Microchip MCP4017/18/19 and Analog Devices AD5246 Digital Potentiometer driver"
+ 	depends on I2C
+ 	help
+ 	  Say yes here to build support for the Microchip
+-	  MCP4017, MCP4018, MCP4019
+-	  digital potentiometer chips.
++	  MCP4017, MCP4018, MCP4019 digital potentiometer chips
++	  and the Analog Devices AD5246 digital rheostat.
+ 
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called mcp4018.
+diff --git a/drivers/iio/potentiometer/mcp4018.c b/drivers/iio/potentiometer/mcp4018.c
+index 0d80bdfdf243..1368d7cfa5b0 100644
+--- a/drivers/iio/potentiometer/mcp4018.c
++++ b/drivers/iio/potentiometer/mcp4018.c
+@@ -5,11 +5,13 @@
+  * Author: Peter Rosin <peda@axentia.se>
+  *
+  * Datasheet: http://www.microchip.com/downloads/en/DeviceDoc/22147a.pdf
++ * Datasheet: https://www.analog.com/media/en/technical-documentation/data-sheets/AD5246.pdf
+  *
+  * DEVID	#Wipers	#Positions	Resistor Opts (kOhm)
+  * mcp4017	1	128		5, 10, 50, 100
+  * mcp4018	1	128		5, 10, 50, 100
+  * mcp4019	1	128		5, 10, 50, 100
++ * ad5246	1	128		5, 10, 50, 100
+  */
+ 
+ #include <linux/err.h>
+@@ -23,6 +25,8 @@
+ 
+ struct mcp4018_cfg {
+ 	int kohms;
++	/* Wiper position divisor: R = raw * kohms / div. */
++	int div;
+ };
+ 
+ enum mcp4018_type {
+@@ -30,13 +34,22 @@ enum mcp4018_type {
+ 	MCP4018_103,
+ 	MCP4018_503,
+ 	MCP4018_104,
++	AD5246_005,
++	AD5246_010,
++	AD5246_050,
++	AD5246_100,
+ };
+ 
+ static const struct mcp4018_cfg mcp4018_cfg[] = {
+-	[MCP4018_502] = { .kohms =   5, },
+-	[MCP4018_103] = { .kohms =  10, },
+-	[MCP4018_503] = { .kohms =  50, },
+-	[MCP4018_104] = { .kohms = 100, },
++	[MCP4018_502] = { .kohms =   5, .div = MCP4018_WIPER_MAX, },
++	[MCP4018_103] = { .kohms =  10, .div = MCP4018_WIPER_MAX, },
++	[MCP4018_503] = { .kohms =  50, .div = MCP4018_WIPER_MAX, },
++	[MCP4018_104] = { .kohms = 100, .div = MCP4018_WIPER_MAX, },
++	/* The AD5246's resistance is D / 128 of the end-to-end value. */
++	[AD5246_005] = { .kohms =   5, .div = 128, },
++	[AD5246_010] = { .kohms =  10, .div = 128, },
++	[AD5246_050] = { .kohms =  50, .div = 128, },
++	[AD5246_100] = { .kohms = 100, .div = 128, },
+ };
+ 
+ struct mcp4018_data {
+@@ -72,7 +85,7 @@ static int mcp4018_read_raw(struct iio_dev *indio_dev,
+ 		return IIO_VAL_INT;
+ 	case IIO_CHAN_INFO_SCALE:
+ 		*val = 1000 * data->cfg->kohms;
+-		*val2 = MCP4018_WIPER_MAX;
++		*val2 = data->cfg->div;
+ 		return IIO_VAL_FRACTIONAL;
+ 	}
+ 
+@@ -125,6 +138,10 @@ static const struct iio_info mcp4018_info = {
+ }
+ 
+ static const struct i2c_device_id mcp4018_id[] = {
++	MCP4018_ID_TABLE("ad5246-005", AD5246_005),
++	MCP4018_ID_TABLE("ad5246-010", AD5246_010),
++	MCP4018_ID_TABLE("ad5246-050", AD5246_050),
++	MCP4018_ID_TABLE("ad5246-100", AD5246_100),
+ 	MCP4018_ID_TABLE("mcp4017-502", MCP4018_502),
+ 	MCP4018_ID_TABLE("mcp4017-103", MCP4018_103),
+ 	MCP4018_ID_TABLE("mcp4017-503", MCP4018_503),
+@@ -147,6 +164,10 @@ MODULE_DEVICE_TABLE(i2c, mcp4018_id);
+ }
+ 
+ static const struct of_device_id mcp4018_of_match[] = {
++	MCP4018_COMPATIBLE("adi,ad5246-005", AD5246_005),
++	MCP4018_COMPATIBLE("adi,ad5246-010", AD5246_010),
++	MCP4018_COMPATIBLE("adi,ad5246-050", AD5246_050),
++	MCP4018_COMPATIBLE("adi,ad5246-100", AD5246_100),
+ 	MCP4018_COMPATIBLE("microchip,mcp4017-502", MCP4018_502),
+ 	MCP4018_COMPATIBLE("microchip,mcp4017-103", MCP4018_103),
+ 	MCP4018_COMPATIBLE("microchip,mcp4017-503", MCP4018_503),
+@@ -209,5 +230,5 @@ static struct i2c_driver mcp4018_driver = {
+ module_i2c_driver(mcp4018_driver);
+ 
+ MODULE_AUTHOR("Peter Rosin <peda@axentia.se>");
+-MODULE_DESCRIPTION("MCP4018 digital potentiometer");
++MODULE_DESCRIPTION("MCP4018 and AD5246 digital potentiometer");
+ MODULE_LICENSE("GPL v2");

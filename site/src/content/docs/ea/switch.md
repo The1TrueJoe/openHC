@@ -165,6 +165,13 @@ A WAN port sends all its traffic to the CPU only, so that route breaks the
 bridge between the jacks. Patch 0019 takes the mirror route instead. It costs the
 switch's only mirror, so `tc` mirroring on the ports is refused.
 
+The rest of what the switch sends to the CPU goes to port 8 too: multicast
+snooping copies, and all traffic of a port outside the bridge. Since v2 (the
+version sent upstream after review), 0019 also mirrors whatever leaves port 8
+to port 5. Port 8 gets Rx/Tx enabled, its link forced up and the disabled STP
+state, so only frames for the CPU leave it. The egress mirror alone misses the
+BPDUs of a bridged port, so both mirrors run.
+
 The fix doesn't help on the bench network. The EA3 sends a BPDU out `lan2`
 every 2 s, and none of them reaches the HC-800 on the same unmanaged switch, nor
 the other way round. A switch that drops BPDUs hides any loop through it from
@@ -333,12 +340,20 @@ Stock firmware never programs any of this: nothing in Control4's kernel, init
 scripts or LED daemons touches these registers, so stock runs on the strap
 defaults. Mainline b53 doesn't either.
 
-Patch 0021 adds LED support to b53: the `leds` node of a user port in the board
-DT (`ea3.dtsi`) becomes LED class devices
-(`spi92.1:<port>:<led>:<color>:lan`) that the netdev trigger offloads to the
-switch. `S42port-leds` sets yellow LEDs to `link` and green ones to
-`link rx tx` at boot: LNK/ACT (bit 5) on LED 0 in front of LNK (bit 1) on LED 1. With `ohc.switch=1` off, b53 is not loaded and the LEDs stay at the strap
-defaults.
+Patch 0021 adds LED support to b53, for chips flagged as having this
+controller (the BCM53125 only). The `leds` node of a user port in the board DT
+(`ea3.dtsi`) becomes LED class devices
+(`b53-<tree>.<switch>:<port>:<led>:<color>:lan`, e.g. `b53-0.0:02:0:green:lan`)
+that the netdev trigger offloads to the switch. A request is accepted only if
+the port's LED order can show it and a function word can hold the port's new
+word: one that already does, else an unused one, else one only ports without
+LED nodes use (they then show the same functions; on the EA3 those ports are
+unwired). A word another described port uses is never rewritten. There is no
+brightness or blink control of a single LED: the mode maps are per port.
+
+`S42port-leds` sets yellow LEDs to `link` and green ones to `link rx tx` at
+boot: LNK/ACT (bit 5) on LED 0 in front of LNK (bit 1) on LED 1. With
+`ohc.switch=1` off, b53 is not loaded and the LEDs stay at the strap defaults.
 
 ### EA1: a PHY, not a switch
 
