@@ -90,8 +90,10 @@ static const u32 upp_bases[] = { 0x0000, 0x1000, 0x2000, 0x3000, 0xf000 };
 #define PITCH_ALIGN		64
 
 /*
- * Clocks, as CEFDK sets them at every boot (its gen5 splash_screen_gen5.c):
- * the dot clock is the display PLL, IOSF sideband port 0x8a, registers 0-7
+ * Clocks. The register values and their order are the ones Intel's CE
+ * firmware (CEFDK) programs at every boot; no CEFDK code is used here, and the
+ * 27 MHz set matches a read-back of the running hardware. The dot clock is
+ * the display PLL, IOSF sideband port 0x8a, registers 0-7
  * and 0x11; the TMDS clock is the HDMI transmitter's PLL and PHY, port 0x82,
  * 23 registers. On both, writing 1 to register 0 latches the others (it
  * still reads back the table value). Their resets and the VDC clock gates are
