@@ -348,7 +348,8 @@ static const struct snd_kcontrol_new ce5300_hdmi_jack_ctl = {
 static void ce5300_hdmi_link_down(struct ce5300_hdmi *h);
 
 /*
- * The bridge saw a display come or go (or blip), with its lock held. A DVI
+ * The bridge saw a display come or go (or blip), or a mode change, with its
+ * lock held. A DVI
  * sink takes the link back to DVI and refuses audio; an HDMI sink with audio
  * running gets the link set up again (infoframes, AV mute cleared), so a
  * replugged TV plays again with nothing restarted. No EDID: as before.
@@ -370,9 +371,11 @@ static void ce5300_hdmi_sink_changed(void *priv)
 			ce5300_hdmi_link_down(h);
 		hdmi_update(h, HDMI_OPMODE, HDMI_OPMODE_HDMI, 0);
 		dev_info(h->dev, "link back to DVI mode for a DVI sink\n");
-	} else if (s->connected && h->streaming) {
+	} else if (s->connected && (h->streaming || hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI)) {
+		/* Also after a mode change: the data islands follow the timing. */
 		ce5300_hdmi_link_to_hdmi(h, true);
-		ce5300_hdmi_audio_packets(h);
+		if (h->streaming)
+			ce5300_hdmi_audio_packets(h);
 	}
 	snd_ctl_notify(h->card, SNDRV_CTL_EVENT_MASK_VALUE, &h->jack->id);
 }

@@ -31,6 +31,7 @@
 
 #include <asm/iosf_mbi.h>
 
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_edid.h>
@@ -52,6 +53,8 @@
 #define   HDMI_INT_DDC		(HDMI_INT_DDC_DONE | HDMI_INT_DDC_FULL | HDMI_INT_DDC_ERROR)
 #define HDMI_OPMODE		0x3000
 #define   HDMI_OPMODE_HDMI	BIT(0)	/* clear = DVI */
+#define   HDMI_OPMODE_HSYNC_HIGH	BIT(3)
+#define   HDMI_OPMODE_VSYNC_HIGH	BIT(4)
 
 /* DDC master (pd_hdmi's hdmi_i2c_*; CE5300 = its generic read) */
 #define HDMI_DDC_CTRL		0x1100
@@ -405,7 +408,34 @@ static const struct drm_edid *ce5300_hdmi_edid(struct drm_bridge *bridge,
 	return drm_edid_read_ddc(connector, &bridge_to_hdmi(bridge)->ddc);
 }
 
+/*
+ * After a mode change: the sync polarity (CEFDK's hdmiCfg), and the audio
+ * driver puts the data island timing right for the new mode.
+ */
+static void ce5300_hdmi_atomic_enable(struct drm_bridge *bridge, struct drm_atomic_commit *state)
+{
+	struct ce5300_hdmi *h = bridge_to_hdmi(bridge);
+	struct drm_crtc *crtc = drm_atomic_get_new_crtc_for_encoder(state, bridge->encoder);
+	const struct drm_display_mode *m;
+	u32 sync = 0;
+
+	if (!crtc)
+		return;
+	m = &drm_atomic_get_new_crtc_state(state, crtc)->adjusted_mode;
+	if (m->flags & DRM_MODE_FLAG_PHSYNC)
+		sync |= HDMI_OPMODE_HSYNC_HIGH;
+	if (m->flags & DRM_MODE_FLAG_PVSYNC)
+		sync |= HDMI_OPMODE_VSYNC_HIGH;
+
+	mutex_lock(&h->lock);
+	hdmi_update(h, HDMI_OPMODE, HDMI_OPMODE_HSYNC_HIGH | HDMI_OPMODE_VSYNC_HIGH, sync);
+	if (h->notify)
+		h->notify(h->notify_priv);
+	mutex_unlock(&h->lock);
+}
+
 static const struct drm_bridge_funcs ce5300_hdmi_bridge_funcs = {
+	.atomic_enable		= ce5300_hdmi_atomic_enable,
 	.atomic_create_state	= drm_atomic_helper_bridge_create_state,
 	.atomic_duplicate_state	= drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state	= drm_atomic_helper_bridge_destroy_state,

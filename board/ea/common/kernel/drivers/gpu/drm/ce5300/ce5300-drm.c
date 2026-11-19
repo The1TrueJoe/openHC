@@ -52,6 +52,7 @@
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_rect.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -73,6 +74,10 @@
 #define VDC_UPP			0x30000
 #define VDC_UPP_SURF		0x100
 #define VDC_UPP_PITCH		0x118	/* bytes; read back 2944 under CEFDK */
+#define VDC_UPP_POS		0x12c	/* y << 16 | x on the pipe */
+#define VDC_UPP_DST_SIZE	0x130	/* height << 16 | width */
+#define VDC_UPP_SRC_W		0x134
+#define VDC_UPP_SRC_H		0x13c
 #define VDC_UPP_CTRL		0x168
 #define   UPP_CTRL_ENABLE	BIT(0)
 #define   UPP_CTRL_PIPE_B	BIT(3)
@@ -171,7 +176,7 @@ static const struct ce5300_clock *ce5300_clock_find(int khz)
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(ce5300_clocks); i++)
-		if (abs(ce5300_clocks[i].khz - khz) <= ce5300_clocks[i].khz / 1000)
+		if (abs(ce5300_clocks[i].khz - khz) <= ce5300_clocks[i].khz / 2000)
 			return &ce5300_clocks[i];
 	return NULL;
 }
@@ -180,12 +185,17 @@ static bool takeover;
 module_param(takeover, bool, 0644);
 MODULE_PARM_DESC(takeover, "Take the display over from the firmware framebuffer (untested; set, then bind 01:08.0)");
 
+static bool modeset;
+module_param(modeset, bool, 0644);
+MODULE_PARM_DESC(modeset, "Allow mode changes to the 480p, 720p and 1080p clocks (bring-up)");
+
 struct ce5300 {
 	struct drm_device	drm;
 	void __iomem		*mmio;
 	void __iomem		*ccu;		/* clock-control unit, or NULL */
 	u32			upp;		/* the scanout UPP's register base */
 	struct drm_display_mode	mode;		/* what the firmware runs */
+	struct drm_display_mode	hw;		/* what pipe A runs now */
 
 	struct drm_plane	plane;
 	struct drm_crtc		crtc;
@@ -286,6 +296,10 @@ static void ce5300_plane_atomic_update(struct drm_plane *plane, struct drm_atomi
 	ctrl = vdc_read(p, p->upp + VDC_UPP_CTRL) & ~UPP_CTRL_FMT;
 	ctrl |= UPP_FMT_RGB_32;
 
+	vdc_write(p, p->upp + VDC_UPP_POS, ps->dst.y1 << 16 | ps->dst.x1);
+	vdc_write(p, p->upp + VDC_UPP_DST_SIZE, drm_rect_height(&ps->dst) << 16 | drm_rect_width(&ps->dst));
+	vdc_write(p, p->upp + VDC_UPP_SRC_W, drm_rect_width(&ps->src) >> 16);
+	vdc_write(p, p->upp + VDC_UPP_SRC_H, drm_rect_height(&ps->src) >> 16);
 	vdc_write(p, p->upp + VDC_UPP_PITCH, pitch);
 	vdc_write(p, p->upp + VDC_UPP_SURF, drm_fb_dma_get_gem_addr(fb, ps, 0));
 	vdc_write(p, p->upp + VDC_UPP_CTRL, ctrl | UPP_CTRL_ENABLE);
@@ -307,17 +321,49 @@ static const struct drm_plane_funcs ce5300_plane_funcs = {
 
 /* ---- CRTC: pipe A, as the firmware runs it ----------------------------- */
 
-static bool ce5300_mode_is_current(struct ce5300 *p, const struct drm_display_mode *m)
+static bool ce5300_mode_same(const struct drm_display_mode *a, const struct drm_display_mode *b)
 {
-	return m->hdisplay == p->mode.hdisplay && m->vdisplay == p->mode.vdisplay &&
-	       m->htotal == p->mode.htotal && m->vtotal == p->mode.vtotal &&
-	       abs(m->clock - p->mode.clock) <= p->mode.clock / 500;
+	return a->hdisplay == b->hdisplay && a->vdisplay == b->vdisplay &&
+	       a->htotal == b->htotal && a->vtotal == b->vtotal &&
+	       a->hsync_start == b->hsync_start && a->hsync_end == b->hsync_end &&
+	       a->vsync_start == b->vsync_start && a->vsync_end == b->vsync_end &&
+	       abs(a->clock - b->clock) <= b->clock / 2000;	/* 59.94 isn't 60 */
 }
+
+static int ce5300_program_mode(struct ce5300 *p, const struct drm_display_mode *m);
 
 static enum drm_mode_status ce5300_crtc_mode_valid(struct drm_crtc *crtc,
 						   const struct drm_display_mode *m)
 {
-	return ce5300_mode_is_current(to_ce5300(crtc->dev), m) ? MODE_OK : MODE_BAD;
+	struct ce5300 *p = to_ce5300(crtc->dev);
+
+	if (ce5300_mode_same(m, &p->mode))
+		return MODE_OK;
+	if (!modeset)
+		return MODE_BAD;
+	if (m->flags & DRM_MODE_FLAG_INTERLACE)
+		return MODE_NO_INTERLACE;
+	if (m->hdisplay > 1920 || m->vdisplay > 1080)
+		return MODE_BAD;
+	return ce5300_clock_find(m->clock) ? MODE_OK : MODE_CLOCK_RANGE;
+}
+
+/* A new mode is programmed with the pipe off; the plane is already set up. */
+static void ce5300_crtc_atomic_enable(struct drm_crtc *crtc, struct drm_atomic_commit *state)
+{
+	struct ce5300 *p = to_ce5300(crtc->dev);
+	const struct drm_display_mode *m = &drm_atomic_get_new_crtc_state(state, crtc)->adjusted_mode;
+
+	if (!ce5300_mode_same(m, &p->hw) && ce5300_program_mode(p, m))
+		drm_err(&p->drm, "%s not set, pipe A stays at %s\n", m->name, p->hw.name);
+	vdc_write(p, VDC_PIPEACONF, vdc_read(p, VDC_PIPEACONF) | VDC_PIPECONF_ENABLE);
+}
+
+static void ce5300_crtc_atomic_disable(struct drm_crtc *crtc, struct drm_atomic_commit *state)
+{
+	struct ce5300 *p = to_ce5300(crtc->dev);
+
+	vdc_write(p, VDC_PIPEACONF, vdc_read(p, VDC_PIPEACONF) & ~VDC_PIPECONF_ENABLE);
 }
 
 static int ce5300_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
@@ -345,6 +391,8 @@ static const struct drm_crtc_helper_funcs ce5300_crtc_helper_funcs = {
 	.mode_valid	= ce5300_crtc_mode_valid,
 	.atomic_check	= ce5300_crtc_atomic_check,
 	.atomic_flush	= ce5300_crtc_atomic_flush,
+	.atomic_enable	= ce5300_crtc_atomic_enable,
+	.atomic_disable	= ce5300_crtc_atomic_disable,
 };
 
 static const struct drm_crtc_funcs ce5300_crtc_funcs = {
@@ -562,7 +610,7 @@ static int ce5300_clocks_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
-/* ---- Bring-up: the running mode programmed again, unchanged ----------- */
+/* ---- Mode setting ---------------------------------------------------- */
 
 /* Pipe A timing words, then PIPESRC. */
 static const u32 ce5300_pipe_regs[] = {
@@ -570,80 +618,106 @@ static const u32 ce5300_pipe_regs[] = {
 	VDC_PIPEASRC,
 };
 
-/*
- * Pipe off, the clocks and the timings programmed again with what the
- * hardware already runs, pipe on: the first sideband writes, with nothing
- * meant to change. Every register written is read and logged first; it
- * refuses unless the live clocks are exactly @mode's table, and if a
- * read-back afterwards differs, it programs what it read first back in.
- */
-static int ce5300_noop_modeset(struct ce5300 *p)
+#define VDC_SPAN(end, start)	(((end) - 1) << 16 | ((start) - 1))
+
+static void ce5300_mode_timings(const struct drm_display_mode *m, u32 *t)
 {
-	const struct ce5300_clock *c = ce5300_clock_find(p->mode.clock);
+	t[0] = VDC_SPAN(m->htotal, m->hdisplay);
+	t[1] = VDC_SPAN(m->htotal, m->hdisplay);	/* blanking: active to total */
+	t[2] = VDC_SPAN(m->hsync_end, m->hsync_start);
+	t[3] = VDC_SPAN(m->vtotal, m->vdisplay);
+	t[4] = VDC_SPAN(m->vtotal, m->vdisplay);
+	t[5] = VDC_SPAN(m->vsync_end, m->vsync_start);
+	t[6] = VDC_SPAN(m->hdisplay, m->vdisplay);
+}
+
+static void ce5300_pipe_write(struct ce5300 *p, const struct ce5300_clock *c, const u32 *dpll,
+			      u32 x11, const u32 *phy, const u32 *timing)
+{
+	unsigned int i;
+
+	if (ce5300_clk_write(p, dpll, x11, phy))
+		drm_err(&p->drm, "%d kHz: a sideband write failed\n", c->khz);
+	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
+		vdc_write(p, ce5300_pipe_regs[i], timing[i]);
+}
+
+/*
+ * Program @m on pipe A with CEFDK's sequence. Every register written is read
+ * and logged first, and nothing is written unless the clocks are the table of
+ * the mode running now. If a read-back afterwards differs, what was read
+ * first goes back in. The pipe and the plane come back as they were.
+ */
+static int ce5300_program_mode(struct ce5300 *p, const struct drm_display_mode *m)
+{
+	const struct ce5300_clock *c = ce5300_clock_find(m->clock);
+	const struct ce5300_clock *cur = ce5300_clock_find(p->hw.clock);
+	u32 timing[ARRAY_SIZE(ce5300_pipe_regs)], old[ARRAY_SIZE(ce5300_pipe_regs)];
+	u32 phy[HDMI_PHY_NREGS], pipeconf, upp_ctrl;
 	struct ce5300_clk_state before, after;
-	u32 pipe[ARRAY_SIZE(ce5300_pipe_regs)], phy_before[HDMI_PHY_NREGS];
-	u32 pipeconf, upp_ctrl;
 	unsigned int i;
 	bool ok;
 	int ret;
 
-	if (!c || !p->ccu || !iosf_mbi_available())
+	if (!c || !cur || !p->ccu || !iosf_mbi_available())
 		return -ENODEV;
 	ret = ce5300_clk_read(p, &before);
 	if (ret)
 		return ret;
-	ce5300_clk_log(p, "no-op: before", &before);
-	if (!ce5300_clk_matches(p, c, &before)) {
-		drm_err(&p->drm, "no-op: the live clocks aren't the %d kHz table; nothing written\n",
-			c->khz);
+	ce5300_clk_log(p, "modeset: before", &before);
+	if (!ce5300_clk_matches(p, cur, &before)) {
+		drm_err(&p->drm, "modeset: the clocks aren't the %d kHz table; nothing written\n",
+			cur->khz);
 		return -EINVAL;
 	}
 	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
-		pipe[i] = vdc_read(p, ce5300_pipe_regs[i]);
+		old[i] = vdc_read(p, ce5300_pipe_regs[i]);
 	pipeconf = vdc_read(p, VDC_PIPEACONF);
 	upp_ctrl = vdc_read(p, p->upp + VDC_UPP_CTRL);
-	drm_info(&p->drm, "no-op: pipe %08x %08x %08x %08x %08x %08x src %08x conf %08x upp %08x\n",
-		 pipe[0], pipe[1], pipe[2], pipe[3], pipe[4], pipe[5], pipe[6], pipeconf, upp_ctrl);
+	drm_info(&p->drm, "modeset: pipe %08x %08x %08x %08x %08x %08x src %08x conf %08x upp %08x\n",
+		 old[0], old[1], old[2], old[3], old[4], old[5], old[6], pipeconf, upp_ctrl);
+	ce5300_mode_timings(m, timing);
 	for (i = 0; i < HDMI_PHY_NREGS; i++)
-		phy_before[i] = ce5300_phy_word(c, i);
+		phy[i] = ce5300_phy_word(c, i);
 
-	drm_modeset_lock_all(&p->drm);
 	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl & ~UPP_CTRL_ENABLE);
 	vdc_write(p, VDC_PIPEACONF, pipeconf & ~VDC_PIPECONF_ENABLE);
 	msleep(50);	/* two frames at 480p */
-	ret = ce5300_clk_write(p, c->dpll, DPLL_X11, phy_before);
-	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
-		vdc_write(p, ce5300_pipe_regs[i], pipe[i]);
-	vdc_write(p, VDC_PIPEACONF, pipeconf);
-	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl);
-	drm_modeset_unlock_all(&p->drm);
+	ce5300_pipe_write(p, c, c->dpll, DPLL_X11, phy, timing);
 
-	ok = !ret && !ce5300_clk_read(p, &after);
+	ok = !ce5300_clk_read(p, &after);
 	if (ok) {
-		ce5300_clk_log(p, "no-op: after", &after);
+		ce5300_clk_log(p, "modeset: after", &after);
 		ok = ce5300_clk_matches(p, c, &after);
 	}
 	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
-		ok &= vdc_read(p, ce5300_pipe_regs[i]) == pipe[i];
-	if (ok) {
-		drm_info(&p->drm, "no-op: %d kHz programmed again, read-back matches\n", c->khz);
-		return 0;
+		ok &= vdc_read(p, ce5300_pipe_regs[i]) == timing[i];
+	if (!ok) {
+		drm_err(&p->drm, "modeset: read-back differs; putting the first read back\n");
+		ce5300_pipe_write(p, cur, before.dpll, before.x11, before.phy, old);
+		if (!ce5300_clk_read(p, &after))
+			ce5300_clk_log(p, "modeset: restored", &after);
 	}
-
-	drm_err(&p->drm, "no-op: read-back differs (write %d); putting the first read back\n", ret);
-	drm_modeset_lock_all(&p->drm);
-	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl & ~UPP_CTRL_ENABLE);
-	vdc_write(p, VDC_PIPEACONF, pipeconf & ~VDC_PIPECONF_ENABLE);
-	msleep(50);
-	ce5300_clk_write(p, before.dpll, before.x11, before.phy);
-	for (i = 0; i < ARRAY_SIZE(ce5300_pipe_regs); i++)
-		vdc_write(p, ce5300_pipe_regs[i], pipe[i]);
 	vdc_write(p, VDC_PIPEACONF, pipeconf);
 	vdc_write(p, p->upp + VDC_UPP_CTRL, upp_ctrl);
+	if (!ok)
+		return -EIO;
+	drm_mode_copy(&p->hw, m);
+	drm_info(&p->drm, "modeset: %s at %d kHz, read-back matches\n", m->name, c->khz);
+	return 0;
+}
+
+/* Bring-up: the running mode programmed again, unchanged. */
+static int ce5300_noop_modeset(struct ce5300 *p)
+{
+	struct drm_display_mode m;
+	int ret;
+
+	drm_modeset_lock_all(&p->drm);
+	drm_mode_copy(&m, &p->hw);
+	ret = ce5300_program_mode(p, &m);
 	drm_modeset_unlock_all(&p->drm);
-	if (!ce5300_clk_read(p, &after))
-		ce5300_clk_log(p, "no-op: restored", &after);
-	return -EIO;
+	return ret;
 }
 
 static ssize_t ce5300_modeset_write(struct file *f, const char __user *ubuf,
@@ -753,6 +827,7 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 
 	ret = ce5300_read_mode(p);
+	drm_mode_copy(&p->hw, &p->mode);
 	if (ret) {
 		drm_err(&p->drm, "pipe A is off or unreadable; nothing to take over\n");
 		return ret;
