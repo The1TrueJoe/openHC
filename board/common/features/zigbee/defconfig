@@ -7,22 +7,17 @@
 # EA, a native UART on the ca1 (ttymxc4) and hc800 (ttyS4). The kernel side of
 # the USB bridge is this feature's linux.fragment.
 #
-# The NCP BRING-UP (run the app out of the bootloader, hold the port) is the
-# feature's own Rust package `zigbee` -> /opt/ohc/bin/zigbee, staged by
-# packages/build.sh only for boards that enable this feature (see features/
-# zigbee/packages). Node.js here is for the BRIDGE: zigbee2mqtt, the stack that
-# turns EZSP into MQTT, is a node app installed on-target (not vendored), so the
-# runtime + npm ship with the feature.
-BR2_PACKAGE_NODEJS=y
-BR2_PACKAGE_NODEJS_NPM=y
+# Everything the feature runs is a static Rust binary built by packages/build.sh
+# from features/zigbee/packages, not a Buildroot package:
+#   * zigbee         NCP bring-up: out of the bootloader, onto the bundled
+#                    EmberZNet 6.7.8, then holds the port (S91ohczigbee);
+#   * zigbee-bridge  github.com/pulzar-net/zigbee-bridge, the Zigbee to MQTT
+#                    bridge on that port (S92ohczigbee-bridge, this feature's
+#                    overlay). It replaced zigbee2mqtt, and with it Node.js.
+# The broker is the box's mosquitto (common_defconfig).
 
-# Node's V8 needs the C++ runtime. Harmless where the toolchain already has it.
+# Kept from the Node.js days: dropping them changes the toolchain, and Buildroot
+# quietly drops any other package that needs libstdc++. Remove them once nothing
+# on these boards does.
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INSTALL_LIBSTDCPP=y
-
-# NOTE on the broker: openHC's IO already speaks MQTT (iod, a rumqttc client), and
-# zigbee2mqtt publishes to a broker too. The broker is per board, not here: the
-# CA-1 enables mosquitto (fixed by the move to Buildroot 2026.02.3). The HC-800's
-# EM357 shipped on EmberZNet 4.7.2 (EZSP v4), which zigbee2mqtt's drivers cannot
-# speak; the boot-time reflash to 6.7.8 (board/common/firmware/zigbee/em357) is what
-# changes that.

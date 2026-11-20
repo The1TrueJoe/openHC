@@ -280,24 +280,33 @@ the EA's MCU-routed combo ports, but plain Linux serial plus seven pins:
 
 **Z-Wave — Sigma Designs ZM5304** (500-series), on UART4. Identified from
 `/control4/firmware/zwave/`, which contains only
-`serialapi_controller_static_ZM5304_<region>.hex`. `zwaved` is running and talking
-to it. `/dev/gpio/zwave_module` is a **presence sense input**. It reads `1`, so
-the module is fitted.
+`serialapi_controller_static_ZM5304_<region>.hex`. `/dev/gpio/zwave_module` is a
+**presence sense input**. It reads `1`, so the module is fitted.
+
+**A unit never set up in Control4 has a blank ZM5304.** On one such unit `zwaved`
+logged `bootloaderRunning`, synced the module's programming interface (`0xAA
+0x55`, module type `U`), then `Could not validate module using firmware file:
+none`. The reason is that `/etc/zwaved/zwave.conf` ships with `firmwareFile=`
+empty, and Control4 fills it in when the project's region is set. Until then
+nothing answers the Serial API. To program it, boot the stock kernel, set
+`firmwareFile=serialapi_controller_static_ZM5304_US.hex` (or your region's
+file), and restart `zwaved`. Control4's own updater then writes and verifies it
+(`Flash CRC Ok`, lock bits, `Update complete`), and can write it again later.
+Afterwards the module runs Serial API 4.45 ("Z-Wave 4.54", a static
+controller), and openHC's `zwave-bridge` drives it on `/dev/zwave`.
 
 The unit also supports an *external USB* Z-Wave dongle via a udev rule, but
 `interfacePriority=localInterface` means the onboard module wins.
 
-**Zigbee — EM35x NCP on UART5, and it did not answer.** The Zigbee stack is a
-library inside `director`, not a daemon, and it isn't running on this unpaired
-unit; nothing holds `ttymxc4`. A direct EZSP/ASH probe (`1A C0 38 BC 7E`) at
-115200/57600/38400, with and without RTS/CTS, and again after pulsing
-`zigbee_reset`, returned **zero bytes**; a bare CR/LF got no bootloader prompt
-either.
-
-So the exact part is **not confirmed at runtime**. Control4 uses the EM357
-everywhere else, ships the matching `.ebl`, and UART5 is the one radio UART with
-RTS/CTS — all consistent with an EM357, but the NCP is either unprogrammed or
-needs a bring-up step not yet found. Treat as EM357 `?`.
+**Zigbee — an EM357 on UART5.** After a cold boot it sits in its serial
+bootloader (`EM357 Serial Bootloader v4.7.2.0`), which echoes what it is sent.
+That is why the first probes here looked silent. Sending `2` (run) starts the
+NCP app, and an ASH reset is then answered with `1A C1 02 0B 0A 52 7E`, behind
+the `11` (XON) of a software-flow-control build. On the unit examined, the app
+was EmberZNet 6.7.10 (EZSP 8) at 115200. On the stock OS, Director's Zigbee
+library starts the app. On openHC, `zigbee` (S91ohczigbee) does, and
+`zigbee-bridge` then owns the radio. The app takes about 1.5 s to answer an ASH
+reset.
 
 ### Wi-Fi + Bluetooth — one Realtek RTL8723BS
 
@@ -364,14 +373,14 @@ Work remaining, roughly in order:
 2. **Boot it via `boot.scr`.** Non-destructive, reversible, no serial needed.
 3. **Wi-Fi on the in-tree `rtl8723bs`**, which needs the PWM3 32 kHz clock
    re-expressed as a mainline clock provider.
-4. **Zigbee NCP**, find out why the radio is silent before assuming EM357.
+4. **Zigbee and Z-Wave** run on openHC's `zigbee-bridge` and `zwave-bridge`
+   (both proven on the unit examined).
 5. **RS-485 direction control.** The seven transceiver GPIOs have no mainline
    consumer; `rs485-rts-*` on the UART node plus a small userspace helper is the
    likely shape.
 
 ## Open questions
 
-- The exact Zigbee part, and why the NCP does not respond.
 - `SRK0..7` fuses were never read, irrelevant while `SEC_CONFIG` is open, but it
   would confirm whether Control4 ever burned a key hash.
 - Whether `board_id` is ever non-zero (a CA-1 variant, or a CA-10 sharing the DTB

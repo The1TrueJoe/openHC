@@ -1,0 +1,5 @@
+# Crates this feature adds to the board's package build (packages/build.sh).
+# A line with cargo install arguments after the binary is an upstream binary.
+ohcmqtt ohc-mqtt-base
+# The Z-Wave to MQTT bridge (Serial API controllers: 500, 700 and 800 series).
+zwave-bridge zwave-bridge --git https://github.com/pulzar-net/zwave-bridge --rev 8810f2a065b726bd764067099e417b44b9c115c5

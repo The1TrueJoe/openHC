@@ -1,0 +1,69 @@
+#!/bin/sh
+# openHC Z-Wave to MQTT bridge — the 'zwave' feature.
+#
+# zwave-bridge (github.com/pulzar-net/zwave-bridge, built by packages/build.sh
+# from the feature's `packages`) runs the controller on /dev/zwave and puts its
+# nodes on MQTT under <box base>/zwave. The device is an onboard module (the
+# board's udev rule) or a USB stick (61-openhc-zwave.rules); a stick plugged in
+# after boot is picked up within 30 s, and one pulled out stops the bridge until
+# it is back. The network keys live in /data/ohc/zwave.
+#
+# The controller must run Silicon Labs' Serial API firmware. A CA-1 that was
+# never set up in Control4 has a blank ZM5304: its firmware is the
+# serialapi_controller_static_ZM5304_<region>.hex Control4 ships, which its own
+# zwaved writes once /etc/zwaved/zwave.conf names one (see the CA-1 page).
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+BIN=/opt/ohc/bin/zwave-bridge
+CONF=/run/ohc/zwave-bridge.toml
+DATA=/data/ohc/zwave
+PID=/var/run/zwave-bridge.pid
+
+run() {
+    echo $$ > "$PID.run"   # so `stop` ends this loop even mid-sleep
+    base=$(/opt/ohc/bin/ohc-mqtt-base)
+    set -- $(/opt/ohc/bin/ohc-mqtt-base broker)
+    mkdir -p "$DATA" "${CONF%/*}"
+    cat > "$CONF" <<CONF
+# Written by $0 at every start.
+[serial]
+port = "/dev/zwave"
+
+[store]
+dir = "$DATA"
+
+[mqtt]
+host = "$1"
+port = $2
+client_id = "${base##*/}-zwave"
+base_topic = "$base/zwave"
+CONF
+    # ponytail: a plain restart loop, 30 s apart, no backoff.
+    while [ -f "$PID" ]; do
+        if [ -e /dev/zwave ]; then
+            "$BIN" --config "$CONF"
+            echo "zwave-bridge exited ($?); restarting in 30 s"
+        fi
+        sleep 30
+    done
+}
+
+start() {
+    [ -x "$BIN" ] || return 0
+    start-stop-daemon -S -q -b -m -p "$PID" --exec /bin/sh -- \
+        -c "$0 run 2>&1 | logger -t zwave-bridge" \
+        && echo "zwave-bridge: watching /dev/zwave"
+}
+stop() {
+    [ -f "$PID" ] || return 0
+    start-stop-daemon -K -q -p "$PID"
+    [ -f "$PID.run" ] && kill "$(cat "$PID.run")" 2>/dev/null
+    rm -f "$PID" "$PID.run"
+    killall zwave-bridge 2>/dev/null
+}
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    run) run ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

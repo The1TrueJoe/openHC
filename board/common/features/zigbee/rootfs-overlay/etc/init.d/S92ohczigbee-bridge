@@ -1,0 +1,86 @@
+#!/bin/sh
+# openHC Zigbee to MQTT bridge — the 'zigbee' feature.
+#
+# zigbee-bridge (github.com/pulzar-net/zigbee-bridge, built by packages/build.sh
+# from the feature's `packages`) runs the network on the box's EM35x and puts its
+# devices on MQTT under <box base>/zigbee. S91ohczigbee has already taken the NCP
+# out of its bootloader (reflashing it when it is behind) and holds the port; it
+# writes /run/zigbee.ncp once the app answers, which is what this waits for.
+#
+# OHC_ZIGBEE_STACK (board.env, or /data/ohc/zigbee.env to change it per box):
+#   bridge  (default) this bridge owns the radio
+#   radio   S91 serves the port over TCP for a zigpy host elsewhere instead;
+#           this script does nothing
+# The bridge needs EZSP 8 or newer (EmberZNet 6.7+). Control4's 4.7.2 (EZSP 4,
+# the Control4 Zigbee mode) is left alone, so whatever drives that has the port.
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+[ -r /data/ohc/zigbee.env ] && . /data/ohc/zigbee.env
+BIN=/opt/ohc/bin/zigbee-bridge
+CONF=/run/ohc/zigbee-bridge.toml
+DATA=/data/ohc/zigbee
+PID=/var/run/zigbee-bridge.pid
+
+run() {
+    echo $$ > "$PID.run"   # so `stop` ends this loop even mid-sleep
+    # A first-boot reflash takes about 30 s; a radio that never answers, forever.
+    n=0
+    while [ ! -s /run/zigbee.ncp ]; do
+        [ -f "$PID" ] || return 0
+        n=$((n + 1)); [ $n -ge 300 ] && { echo "no NCP app answered in 5 min; not starting"; return 1; }
+        sleep 1
+    done
+    stack= protocol= baud=
+    . /run/zigbee.ncp
+    if [ "${protocol:-0}" -lt 8 ]; then
+        echo "the NCP runs EmberZNet $stack (EZSP $protocol); the bridge needs EZSP 8 or newer"
+        return 0
+    fi
+    base=$(/opt/ohc/bin/ohc-mqtt-base)
+    set -- $(/opt/ohc/bin/ohc-mqtt-base broker)
+    mkdir -p "$DATA" "${CONF%/*}"
+    cat > "$CONF" <<CONF
+# Written by $0 at every start; settings that persist go in board.env.
+[serial]
+port = "/dev/zigbee"
+baud = ${baud:-57600}
+flow_control = "software"
+adapter = "ezsp"
+
+[mqtt]
+host = "$1"
+port = $2
+client_id = "${base##*/}-zigbee"
+base_topic = "$base/zigbee"
+
+[data]
+dir = "$DATA"
+CONF
+    # ponytail: a plain restart loop, 10 s apart, no backoff.
+    while [ -f "$PID" ]; do
+        "$BIN" --config "$CONF"
+        echo "zigbee-bridge exited ($?); restarting in 10 s"
+        sleep 10
+    done
+}
+
+start() {
+    [ -x "$BIN" ] && [ -e /dev/zigbee ] || return 0
+    [ "${OHC_ZIGBEE_STACK:-bridge}" = bridge ] || return 0
+    start-stop-daemon -S -q -b -m -p "$PID" --exec /bin/sh -- \
+        -c "$0 run 2>&1 | logger -t zigbee-bridge" \
+        && echo "zigbee-bridge: starting on /dev/zigbee"
+}
+stop() {
+    [ -f "$PID" ] || return 0
+    start-stop-daemon -K -q -p "$PID"
+    [ -f "$PID.run" ] && kill "$(cat "$PID.run")" 2>/dev/null
+    rm -f "$PID" "$PID.run"
+    killall zigbee-bridge 2>/dev/null
+}
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    run) run ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

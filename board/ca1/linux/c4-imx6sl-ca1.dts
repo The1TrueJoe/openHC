@@ -293,9 +293,9 @@
 
 /*
  * ── UART5 → ttymxc4: Zigbee NCP (EM35x, RTS/CTS) ───────────────────────
- * The part is unconfirmed: on the recon unit this NCP returned nothing to an
- * EZSP/ASH reset at any baud, with or without flow control, before or after
- * pulsing zigbee_reset. See https://the1truejoe.github.io/openHC/ca1/.
+ * An EM357. It cold-boots into its serial bootloader, which only echoes;
+ * S91ohczigbee sends it "2" to run the NCP app. See
+ * https://the1truejoe.github.io/openHC/ca1/.
  */
 &uart5 {
 	pinctrl-names = "default";

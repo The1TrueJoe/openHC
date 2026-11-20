@@ -1,0 +1,6 @@
+# openHC feature: zwave — the Z-Wave to MQTT bridge, zwave-bridge
+# (github.com/pulzar-net/zwave-bridge), on the board's Serial API controller:
+# an onboard module (the CA-1's ZM5304, tagged by the board's udev rule) or a
+# USB stick (61-openhc-zwave.rules). Nothing from Buildroot: the bridge is one
+# static binary, built by packages/build.sh from this feature's `packages`, and
+# talks to the box's mosquitto (common_defconfig).
