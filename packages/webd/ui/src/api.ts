@@ -552,7 +552,35 @@ export interface DisplayCfg {
   next_change?: number | null;
 }
 
+/** USB/IP export (webd's own endpoint). Off by default. `devices` are the box's
+ *  shareable USB devices — hubs and the box's own radios never appear. */
+export interface UsbipDevice {
+  busid: string;
+  /** vid:pid */
+  id: string;
+  product: string;
+  manufacturer: string;
+  /** Bound to usbip-host right now. */
+  exported: boolean;
+}
+export interface UsbipCfg {
+  enabled: boolean;
+  /** Busids to export (may name a device that is unplugged). */
+  selected: string[];
+  devices: UsbipDevice[];
+  /** The board has the 'usbip' feature. */
+  available: boolean;
+}
+
 export const rest = {
+  usbip: () => j<UsbipCfg>(`${location.origin}/api/usbip`),
+  /** Saves and applies at once (usbipd up/down, devices bound/unbound); returns the new state. */
+  setUsbip: (u: Pick<UsbipCfg, 'enabled' | 'selected'>) =>
+    j<UsbipCfg>(`${location.origin}/api/usbip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(u),
+    }),
   /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
   telemetry: () => j<Telemetry>(`${SYS}/api/now`),
   /** The on-panel web view's current config (webd's own endpoint). */
