@@ -316,9 +316,18 @@ static void ce5300_plane_atomic_update(struct drm_plane *plane, struct drm_atomi
 	vdc_write(p, p->upp + VDC_UPP_CTRL, ctrl | UPP_CTRL_ENABLE);
 }
 
+/* Stop scanning out before the framebuffer can be freed. */
+static void ce5300_plane_atomic_disable(struct drm_plane *plane, struct drm_atomic_commit *state)
+{
+	struct ce5300 *p = to_ce5300(plane->dev);
+
+	vdc_write(p, p->upp + VDC_UPP_CTRL, vdc_read(p, p->upp + VDC_UPP_CTRL) & ~UPP_CTRL_ENABLE);
+}
+
 static const struct drm_plane_helper_funcs ce5300_plane_helper_funcs = {
 	.atomic_check	= ce5300_plane_atomic_check,
 	.atomic_update	= ce5300_plane_atomic_update,
+	.atomic_disable	= ce5300_plane_atomic_disable,
 };
 
 static const struct drm_plane_funcs ce5300_plane_funcs = {
@@ -381,6 +390,8 @@ static int ce5300_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_com
 {
 	struct drm_crtc_state *cs = drm_atomic_get_new_crtc_state(state, crtc);
 
+	if (!cs->enable)
+		return 0;
 	return drm_atomic_helper_check_crtc_primary_plane(cs);
 }
 
