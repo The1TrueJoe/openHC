@@ -1,0 +1,3 @@
+# display: libdrm's modetest, to list and set KMS modes on the CE5300 display.
+BR2_PACKAGE_LIBDRM=y
+BR2_PACKAGE_LIBDRM_INSTALL_TESTS=y

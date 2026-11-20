@@ -19,9 +19,11 @@ The HDMI transmitter (`01:08.2`, `8086:2e63`) carries its **own** audio DMA
 engine, which reads PCM from memory straight into its audio FIFO. HDMI audio
 never touches the I²S block below. Stock drives
 it from Intel's closed `pd_hdmi.ko`; its HAL's function names survive, and the
-map below comes from them. `sound/x86/ce5300-hdmi.c` is a plain ALSA card
-(`hw:HDMI`), loaded by udev off the PCI id, from the `audio-hdmi` feature
-(every EA).
+map below comes from them. `sound/x86/ce5300-hdmi-audio.c` is a plain ALSA
+card (`hw:HDMI`), from the `audio-hdmi` feature (every EA). It binds a child
+device of the transmitter's DRM bridge driver (`ce5300-hdmi`, see
+[display](/ea/display/)), which owns the BAR, the DDC master and the plug
+state, the way dw-hdmi hands its AHB audio a child device.
 
 | BAR0 offset | Register |
 |---|---|

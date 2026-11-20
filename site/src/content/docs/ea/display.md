@@ -77,7 +77,7 @@ buffer, clear the bit, and set **continue**. The last chunk ends with **done**
 
 Seen on hardware:
 - with no sink, a read at `0xa0` ends in a bus error;
-- `ce5300-hdmi` drives this block as an i2c adapter, and on an EA-3 with no display it NAKs cleanly.
+- `ce5300-hdmi`, the transmitter's DRM bridge driver, drives this block as an i2c adapter; on an EA-3 with no display it NAKs cleanly.
 
 ## Display controller (`01:08.0`, `8086:2e61`)
 

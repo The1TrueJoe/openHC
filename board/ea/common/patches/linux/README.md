@@ -36,6 +36,7 @@ grep and compile-check, with no diff context to go stale on a kernel bump.
 | 0023 | e1000 CE4100 PHY via phylink | with a `phy-handle` (the EA1's RTL8211E) the GbE's own MDIO bus is registered from the `mdio` node and phylink connects the PHY (RGMII delays, netdev-trigger LEDs) |
 | 0024 | e1000 CE4100 no EEE | the MAC has no LPI; empty LPI ops make phylink disable EEE, whose LED mode blinks the RTL8211E's link LED at idle. 0022-0024: upstream candidates (iwl-next), no change without the DT properties; E1000 selects PHYLINK |
 | 0025–0029 | mcp4018: AD5246 + `read_avail` + vdd; its binding; generic `out_resistanceY_raw_available` ABI | the EA-3 v2's fan speed is an AD5246, which needs an IIO channel for iio-fan (the `iio-fan` submodule). Upstream-ready series for iio.git, not sent yet |
+| 0030 | iosf_mbi CE5300 PCI ID | the CE5300 host bridge (`8086:0c40`) has the standard IOSF mailbox; `ce5300-drm` reaches the display PLL and HDMI PHY through `iosf_mbi` instead of its own copy (upstream candidate, x86/platform) |
 
 Retired: **0012** (GEN3 FCR/FIFO — not needed, tested live; see below).
 Retired by the device tree: **0006** (force the GEN3 UARTs to XScale — now

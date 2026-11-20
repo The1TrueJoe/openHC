@@ -1,4 +1,4 @@
-# HDMI audio (sound/x86/ce5300-hdmi.c, objs.mk): no Kconfig symbol of its own,
+# HDMI audio (sound/x86/ce5300-hdmi-audio.c, objs.mk): no Kconfig symbol of its own,
 # it builds whenever SND is set. Modules, for the copy window.
 CONFIG_SOUND=m
 CONFIG_SND=m

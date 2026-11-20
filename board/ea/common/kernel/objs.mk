@@ -48,8 +48,11 @@ sound/soc/Makefile|obj-$(CONFIG_SND_SOC) += ce5300/
 sound/soc/Makefile|obj-$(CONFIG_SND_SOC) += control4/
 # HDMI audio is the HDMI transmitter's own DMA, not the I2S block, and is a plain
 # ALSA card rather than ASoC, so it sits in sound/x86 (descended whenever
-# CONFIG_SND is set). Every EA has HDMI; features/audio-hdmi turns ALSA on.
-sound/x86/Makefile|obj-m += ce5300-hdmi.o
+# CONFIG_SND is set). Every EA has HDMI; features/audio-hdmi turns ALSA on. It is
+# a child of the transmitter's bridge driver (drivers/gpu/drm/ce5300/ce5300-hdmi,
+# built into the real kernel) and takes no symbols from it, so the bootstrap
+# build's module loads into the real kernel.
+sound/x86/Makefile|obj-m += ce5300-hdmi-audio.o
 
 # --- GPU: PowerVR SGX545 (the powervr_sgx submodule's drm/powervr_sgx) ---
 # Copied to drivers/gpu/drm/powervr_sgx by OHC_KERNEL_DRIVER_REPOS (external.mk);

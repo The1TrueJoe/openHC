@@ -2,7 +2,9 @@
 /*
  * ALSA playback driver for the Intel CE5300's HDMI transmitter audio.
  *
- * Binds PCI 8086:2e63 ("CE Media Processor HDMI Tx Interface"). Stock never
+ * A child of the transmitter's DRM bridge driver (drivers/gpu/drm/ce5300/
+ * ce5300-hdmi.c, PCI 8086:2e63), which owns the BAR, the DDC master and the
+ * plug state, and hands this driver what it needs as platform data. Stock never
  * plays HDMI audio through the SoC's I2S block (8086:2e60, ce5300-i2s): the
  * HDMI transmitter has an audio DMA engine of its own that reads PCM straight
  * from memory into its audio FIFO. Stock drives it from Intel's closed
@@ -19,7 +21,8 @@
  *  - The audio master clock. The HDMI audio block divides MCLK down to
  *    128 x fs. MCLK is the SoC's audio PLL (IOSF sideband port 0x8b), which
  *    CEFDK programs at boot to stock's "mode 17", 24.576 MHz; /4 is 48 kHz.
- *    The probe reads the PLL back and refuses to guess if it is anything else.
+ *    The bridge reads the PLL back and adds no audio device if it is anything
+ *    else.
  *  - HDMI mode. CEFDK leaves the link in DVI mode, and DVI carries no audio.
  *    The first playback switches it (+0x3000 bit 0) unless the EDID says DVI,
  *    and first does what stock
@@ -39,15 +42,9 @@
  *
  * HOTPLUG
  * -------
- * The connector's +5V goes on first, as the stock driver does (+0x1000 bit 3
- * and a PHY bit): a sink raises HPD from it. The plug state is polled: HPD
- * (+0x1008 bit 0, plus its latched change bit), or else an EDID that answers
- * at 0x50, since on an EA1 HPD stayed low with a monitor in. The EDID is read
- * over the transmitter's own DDC master (the SoC's I2C buses don't reach the
- * connector); it is also an i2c adapter.
- * A DVI sink keeps the link in DVI and refuses audio. An HDMI sink plugged in
- * while audio runs gets the HDMI setup above again, so the stream carries on.
- * "HDMI Jack" reports the state.
+ * The bridge reports every sink change. A DVI sink keeps the link in DVI and
+ * refuses audio. An HDMI sink plugged in while audio runs gets the HDMI setup
+ * above again, so the stream carries on. "HDMI Jack" reports the state.
  *
  * Periods are paced by a timer from the DMA position, as in ce5300-i2s: no
  * interrupt is needed and none is routed reliably on the kernels openHC boots.
@@ -67,24 +64,22 @@
  * Samples are MSB-aligned in their 32-bit FIFO word (S32_LE; bits 7:0 are not
  * sent). Heard: the same tone LSB-aligned is ~60 dB down, inaudible.
  */
-#include <linux/debugfs.h>
-#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/hrtimer.h>
-#include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
+#include <linux/platform_data/ce5300-hdmi.h>
+#include <linux/platform_device.h>
 #include <linux/unaligned.h>
-#include <linux/workqueue.h>
 #include <sound/control.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/pcm.h>
 
-#define DRV_NAME		"ce5300-hdmi"
+#define DRV_NAME		CE5300_HDMI_AUDIO_NAME
 
 /* ---- Audio DMA: one context at BAR0 +0x00, ce5300-i2s.h's layout ------- */
 #define HDMI_DMA_NEXT_DESC	0x0c	/* start: the head descriptor goes here */
@@ -106,39 +101,6 @@
 /* ---- General ----------------------------------------------------------- */
 #define HDMI_CLOCKS		0x1000
 #define   HDMI_CLK_AUDIO	BIT(2)	/* hdmi_general_audio_clock_enable */
-#define   HDMI_5V_ENABLE	BIT(3)	/* hdmi_general_5V_enable */
-#define HDMI_STATUS		0x1008	/* hdmi_general_get_status */
-#define   HDMI_STATUS_HPD	BIT(0)
-#define HDMI_INT_MASK		0x1004
-#define   HDMI_INT_MASK_STOCK	0x1ae0bf	/* __hdmi_hw_init's value */
-/* Latched whether masked (+0x1004) or not; write 1 to clear. */
-#define HDMI_INT_STATUS		0x100c
-#define   HDMI_INT_HPD		BIT(0)	/* HPD changed */
-#define   HDMI_INT_DDC_DONE	BIT(2)
-#define   HDMI_INT_DDC_FULL	BIT(3)	/* 64 bytes in the buffer */
-#define   HDMI_INT_DDC_ERROR	BIT(4)	/* NAK, arbitration */
-#define   HDMI_INT_DDC		(HDMI_INT_DDC_DONE | HDMI_INT_DDC_FULL | HDMI_INT_DDC_ERROR)
-
-/* ---- DDC master (pd_hdmi's hdmi_i2c_*; CE5300 = its generic read) ----- */
-#define HDMI_DDC_CTRL		0x1100
-#define   HDMI_DDC_RESET	BIT(14)
-#define   HDMI_DDC_ON		0x8760	/* hdmi_i2c_enable(.., 1) */
-#define HDMI_DDC_STATUS		0x1104
-#define   HDMI_DDC_BUSY		(BIT(2) | BIT(3))	/* transaction_start refuses */
-#define HDMI_DDC_LINES		0x110c	/* bus monitor: [1:0] SDA, SCL */
-#define HDMI_DDC_SPEED		0x1110
-#define   HDMI_DDC_SPEED_STD	0x1f
-#define HDMI_DDC_BUF		0x1200	/* 64 bytes */
-#define HDMI_DDC_BUF_LEN	64
-#define HDMI_DDC_CMD		0x1240	/* [28:20] length, [11:4] offset */
-#define   HDMI_DDC_CMD_READ	BIT(3)
-#define   HDMI_DDC_CMD_NEXT	BIT(1)	/* buffer read, carry on */
-#define   HDMI_DDC_CMD_GO	BIT(0)
-#define HDMI_DDC_ADDR_W		0x1254
-#define HDMI_DDC_ADDR_R		0x1258
-#define HDMI_EDID_ADDR		0x50	/* the sink's EDID, 7-bit */
-#define HDMI_DDC_MAX_LEN	256
-
 #define HDMI_OPMODE		0x3000
 #define   HDMI_OPMODE_HDMI	BIT(0)	/* clear = DVI */
 #define HDMI_LINE_TIMING	0x3100	/* hdmi_video_set_tv_timings: active << 16 | hblank */
@@ -193,20 +155,6 @@
 #define HDMI_N_48K		6144
 #define HDMI_FIFO_THRESHOLD	0x40
 
-/* ---- Audio PLL and HDMI PHY, over the IOSF sideband (host 00:00.0) ---- */
-#define IOSF_MCR		0xd0
-#define IOSF_MDR		0xd4
-#define IOSF_MCRX		0xd8
-#define IOSF_OP_CR_READ		0x06
-#define IOSF_OP_CR_WRITE	0x07
-#define IOSF_PORT_APLL		0x8b
-#define IOSF_PORT_HDMI_PHY	0x82
-#define   HDMI_PHY_5V		0x0c
-#define     HDMI_PHY_5V_OFF	BIT(17)	/* revision 6 only */
-/* apll_cr[1] and [2] of stock's AUDIO_HAL_PLL_MODE17 (24.576 MHz, internal) */
-#define APLL_MODE17_CR1		0x00090020
-#define APLL_MODE17_CR2		0x00063309
-
 /*
  * The descriptor the engine walks. pd_hdmi's ring has a 24-byte stride
  * (create_dma_descriptors_chain): the five hardware words plus a tag.
@@ -231,8 +179,10 @@ module_param(index, int, 0444);
 MODULE_PARM_DESC(index, "Index value for the CE5300 HDMI soundcard.");
 
 struct ce5300_hdmi {
-	struct pci_dev		*pdev;
+	struct device		*dev;
 	void __iomem		*base;
+	struct device		*dma_dev;	/* the transmitter's PCI device */
+	const struct ce5300_hdmi_audio_pdata *pdata;
 	struct snd_card		*card;
 	struct snd_pcm_substream *substream;
 
@@ -247,24 +197,11 @@ struct ce5300_hdmi {
 	ktime_t			period;
 	atomic_t		running;
 
-	struct mutex		lock;		/* link setup vs. hotplug */
-	struct i2c_adapter	ddc;
-	struct delayed_work	hpd_work;
-	bool			hpd_pending;	/* changed; handle on the next poll */
-	bool			connected;
+	struct mutex		*lock;		/* the bridge's: link setup vs. hotplug */
+	const struct ce5300_hdmi_sink *sink;	/* the bridge's, under @lock */
 	bool			dvi_sink;	/* EDID read, no HDMI VSDB: no audio */
 	struct snd_kcontrol	*jack;
 };
-
-/* What the sink's EDID says, as far as audio cares. */
-struct hdmi_sink {
-	bool	hdmi;		/* HDMI VSDB (OUI 00-0c-03) */
-	bool	audio;		/* basic audio or an audio data block */
-	char	name[14];
-};
-
-#define HDMI_HPD_POLL_MS	500
-#define HDMI_EDID_TRIES		3
 
 static u32 hdmi_read(struct ce5300_hdmi *h, u32 off)
 {
@@ -279,69 +216,6 @@ static void hdmi_write(struct ce5300_hdmi *h, u32 off, u32 val)
 static void hdmi_update(struct ce5300_hdmi *h, u32 off, u32 mask, u32 val)
 {
 	hdmi_write(h, off, (hdmi_read(h, off) & ~mask) | (val & mask));
-}
-
-static u32 iosf_cr_read(struct pci_dev *host, u8 port, u32 off)
-{
-	u32 val;
-
-	pci_write_config_dword(host, IOSF_MCRX, off & ~0xff);
-	pci_write_config_dword(host, IOSF_MCR, (IOSF_OP_CR_READ << 24) |
-			       (port << 16) | ((off & 0xff) << 8) | 0xf0);
-	pci_read_config_dword(host, IOSF_MDR, &val);
-	return val;
-}
-
-static void iosf_cr_write(struct pci_dev *host, u8 port, u32 off, u32 val)
-{
-	pci_write_config_dword(host, IOSF_MDR, val);
-	pci_write_config_dword(host, IOSF_MCRX, off & ~0xff);
-	pci_write_config_dword(host, IOSF_MCR, (IOSF_OP_CR_WRITE << 24) |
-			       (port << 16) | ((off & 0xff) << 8) | 0xf0);
-}
-
-/*
- * hdmi_general_5V_enable: +0x1000 bit 3, and on revision 6 (CE5300) also
- * PHY register 0xc bit 17 clear. A sink raises HPD only from this +5V.
- */
-static void ce5300_hdmi_5v_on(struct ce5300_hdmi *h)
-{
-	struct pci_dev *host;
-	u32 v;
-
-	hdmi_update(h, HDMI_CLOCKS, HDMI_5V_ENABLE, HDMI_5V_ENABLE);
-	if (h->pdev->revision != 6)
-		return;
-	host = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(0, 0));
-	if (!host)
-		return;
-	v = iosf_cr_read(host, IOSF_PORT_HDMI_PHY, HDMI_PHY_5V);
-	if (v & HDMI_PHY_5V_OFF) {
-		iosf_cr_write(host, IOSF_PORT_HDMI_PHY, HDMI_PHY_5V, v & ~HDMI_PHY_5V_OFF);
-		dev_info(&h->pdev->dev, "HDMI +5V on (PHY 0xc %08x)\n", v);
-	}
-	pci_dev_put(host);
-}
-
-/* Is MCLK the 24.576 MHz the divider assumes? Read-only; CEFDK set it. */
-static int ce5300_hdmi_check_pll(struct ce5300_hdmi *h)
-{
-	struct pci_dev *host = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(0, 0));
-	u32 cr1, cr2;
-
-	if (!host)
-		return -ENODEV;
-	cr1 = iosf_cr_read(host, IOSF_PORT_APLL, 1);
-	cr2 = iosf_cr_read(host, IOSF_PORT_APLL, 2);
-	pci_dev_put(host);
-
-	if (cr1 != APLL_MODE17_CR1 || cr2 != APLL_MODE17_CR2) {
-		dev_err(&h->pdev->dev,
-			"audio PLL not at 24.576 MHz (cr1 %#x cr2 %#x); refusing to guess a divider\n",
-			cr1, cr2);
-		return -ENODEV;
-	}
-	return 0;
 }
 
 /* Write a 3-byte header + checksummed payload into an infoframe slot. */
@@ -398,7 +272,7 @@ static int ce5300_hdmi_link_timing(struct ce5300_hdmi *h, struct hdmi_link_timin
 	vfp = (vsync & 0xfff) - (vblank & 0xfff);
 	if (!active || active > 0xfff || !blank || blank > 0x3ff ||
 	    !hfp || hfp > blank || !vfp || vfp > 0x3fff) {
-		dev_err(&h->pdev->dev,
+		dev_err(h->dev,
 			"VDC timing unreadable (h %#x/%#x/%#x v %#x/%#x)\n",
 			htotal, hblank, hsync, vblank, vsync);
 		return -EINVAL;
@@ -427,13 +301,13 @@ static int ce5300_hdmi_link_to_hdmi(struct ce5300_hdmi *h, bool again)
 	if (ret)
 		return ret;
 	hdmi_write(h, HDMI_LINE_TIMING, t.line);
-	hdmi_update(h, HDMI_GCP_LINE, ~HDMI_GCP_LINE_KEEP, HDMI_GCP_LINE_ENABLE | t.gcp);
+	hdmi_update(h, HDMI_GCP_LINE, ~(u32)HDMI_GCP_LINE_KEEP, HDMI_GCP_LINE_ENABLE | t.gcp);
 	hdmi_infoframe(h, HDMI_IF_SLOT_AVI, 0x82, 2, avi, sizeof(avi));
 	hdmi_update(h, HDMI_GCP, HDMI_GCP_SET_AVMUTE | HDMI_GCP_CLEAR_AVMUTE | HDMI_GCP_SEND,
 		    HDMI_GCP_CLEAR_AVMUTE | HDMI_GCP_SEND);
 	hdmi_update(h, HDMI_OPMODE, HDMI_OPMODE_HDMI, HDMI_OPMODE_HDMI);
 	if (!was_hdmi)
-		dev_info(&h->pdev->dev,
+		dev_info(h->dev,
 			 "link switched from DVI to HDMI mode for audio (line %u + %u, porches %u/%u)\n",
 			 t.line >> 16, t.line & 0xffff, t.gcp >> 16, t.gcp & 0xffff);
 	return 0;
@@ -451,179 +325,15 @@ static void ce5300_hdmi_audio_packets(struct ce5300_hdmi *h)
 	hdmi_infoframe(h, HDMI_IF_SLOT_AUDIO, 0x84, 1, audio_if, sizeof(audio_if));
 }
 
-/* ---- DDC and the sink -------------------------------------------------- */
-
-static void ce5300_hdmi_ddc_on(struct ce5300_hdmi *h)
-{
-	hdmi_write(h, HDMI_DDC_CTRL, HDMI_DDC_RESET);
-	usleep_range(500, 1000);
-	hdmi_write(h, HDMI_DDC_CTRL, HDMI_DDC_ON);
-	hdmi_write(h, HDMI_DDC_SPEED, HDMI_DDC_SPEED_STD);
-}
-
-static int ce5300_hdmi_ddc_wait(struct ce5300_hdmi *h, u32 *st)
-{
-	return readl_poll_timeout(h->base + HDMI_INT_STATUS, *st, *st & HDMI_INT_DDC,
-				  500, 100 * USEC_PER_MSEC);
-}
-
-/*
- * Write @off to @addr, then read @len bytes back: the one transaction the
- * engine runs. It fills a 64-byte buffer, says so, and goes on when told.
- */
-static int ce5300_hdmi_ddc_read(struct ce5300_hdmi *h, u8 addr, u8 off, u8 *buf,
-				unsigned int len)
-{
-	unsigned int got = 0, n, i;
-	u32 st;
-	__le32 w;
-	int ret = 0;
-
-	if (!len || len > HDMI_DDC_MAX_LEN)
-		return -EINVAL;
-	if ((hdmi_read(h, HDMI_DDC_LINES) & 3) != 3 ||
-	    hdmi_read(h, HDMI_DDC_STATUS) & HDMI_DDC_BUSY) {
-		ce5300_hdmi_ddc_on(h);
-		if ((hdmi_read(h, HDMI_DDC_LINES) & 3) != 3)
-			return -EBUSY;
-	}
-	hdmi_write(h, HDMI_INT_STATUS, HDMI_INT_DDC);
-	hdmi_write(h, HDMI_DDC_ADDR_W, addr << 1);
-	hdmi_write(h, HDMI_DDC_ADDR_R, addr << 1 | 1);
-	hdmi_write(h, HDMI_DDC_CMD, (len & 0x1ff) << 20 | off << 4 |
-		   HDMI_DDC_CMD_READ | HDMI_DDC_CMD_GO);
-
-	while (got < len) {
-		ret = ce5300_hdmi_ddc_wait(h, &st);
-		if (ret)
-			break;
-		if (st & HDMI_INT_DDC_ERROR) {
-			ret = -ENXIO;
-			break;
-		}
-		n = min_t(unsigned int, len - got, HDMI_DDC_BUF_LEN);
-		for (i = 0; i < n; i += 4) {
-			put_unaligned_le32(hdmi_read(h, HDMI_DDC_BUF + i), &w);
-			memcpy(buf + got + i, &w, min_t(unsigned int, 4, n - i));
-		}
-		got += n;
-		hdmi_write(h, HDMI_INT_STATUS, st & HDMI_INT_DDC);
-		if (got < len)
-			hdmi_update(h, HDMI_DDC_CMD, HDMI_DDC_CMD_NEXT, HDMI_DDC_CMD_NEXT);
-	}
-	hdmi_update(h, HDMI_DDC_CMD, HDMI_DDC_CMD_GO, 0);
-	hdmi_write(h, HDMI_INT_STATUS, HDMI_INT_DDC);
-	return ret;
-}
-
-/* The E-DDC read pattern only: offset write + read, segment 0. */
-static int ce5300_hdmi_ddc_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
-{
-	struct ce5300_hdmi *h = i2c_get_adapdata(adap);
-	int ret;
-
-	if (num && msgs[0].addr == 0x30 && !(msgs[0].flags & I2C_M_RD) &&
-	    msgs[0].len == 1 && !msgs[0].buf[0]) {
-		msgs++;
-		num--;
-	}
-	if (num != 2 || msgs[0].flags & I2C_M_RD || msgs[0].len != 1 ||
-	    !(msgs[1].flags & I2C_M_RD) || msgs[0].addr != msgs[1].addr)
-		return -EOPNOTSUPP;
-	ret = ce5300_hdmi_ddc_read(h, msgs[0].addr, msgs[0].buf[0], msgs[1].buf,
-				   msgs[1].len);
-	return ret ? ret : num;
-}
-
-static u32 ce5300_hdmi_ddc_func(struct i2c_adapter *adap)
-{
-	return I2C_FUNC_I2C;
-}
-
-static const struct i2c_algorithm ce5300_hdmi_ddc_algo = {
-	.master_xfer	= ce5300_hdmi_ddc_xfer,
-	.functionality	= ce5300_hdmi_ddc_func,
-};
-
-static bool edid_block_ok(const u8 *b)
-{
-	u8 sum = 0;
-	unsigned int i;
-
-	for (i = 0; i < 128; i++)
-		sum += b[i];
-	return !sum;
-}
-
-/* Base block and the first extension: where a CEA block says HDMI. */
-static int ce5300_hdmi_read_sink(struct ce5300_hdmi *h, struct hdmi_sink *s)
-{
-	static const u8 header[8] = { 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0 };
-	u8 *edid, *cea, *d;
-	unsigned int i, end, len, tries;
-	int ret = -EIO;
-
-	memset(s, 0, sizeof(*s));
-	edid = kmalloc(256, GFP_KERNEL);
-	if (!edid)
-		return -ENOMEM;
-	for (tries = 0; tries < HDMI_EDID_TRIES; tries++) {
-		if (tries)
-			msleep(100);
-		ret = ce5300_hdmi_ddc_read(h, HDMI_EDID_ADDR, 0, edid, 128);
-		if (ret)
-			continue;
-		ret = -EBADMSG;
-		if (memcmp(edid, header, 8) || !edid_block_ok(edid))
-			continue;
-		if (!edid[126])
-			break;
-		ret = ce5300_hdmi_ddc_read(h, HDMI_EDID_ADDR, 128, edid + 128, 128);
-		if (!ret && !edid_block_ok(edid + 128))
-			ret = -EBADMSG;
-		if (!ret)
-			break;
-	}
-	if (ret)
-		goto out;
-
-	/* Monitor name descriptor: 13 bytes, LF-terminated, space-padded. */
-	for (i = 54; i <= 108; i += 18)
-		if (!edid[i] && !edid[i + 1] && edid[i + 3] == 0xfc) {
-			memcpy(s->name, &edid[i + 5], 13);
-			s->name[strcspn(s->name, "\n")] = 0;
-		}
-
-	cea = edid + 128;
-	if (!edid[126] || cea[0] != 0x02 || cea[1] < 3)
-		goto out;
-	s->audio = cea[3] & BIT(6);
-	end = min_t(unsigned int, cea[2], 127);
-	for (i = 4; i < end; i += len + 1) {
-		d = &cea[i];
-		len = d[0] & 0x1f;
-		if (i + len >= end)
-			break;
-		switch (d[0] >> 5) {
-		case 1:		/* audio data block */
-			s->audio |= len >= 3;
-			break;
-		case 3:		/* vendor-specific */
-			if (len >= 5 && d[1] == 0x03 && d[2] == 0x0c && d[3] == 0x00)
-				s->hdmi = true;
-			break;
-		}
-	}
-out:
-	kfree(edid);
-	return ret;
-}
+/* ---- The sink ----------------------------------------------------------- */
 
 static int ce5300_hdmi_jack_get(struct snd_kcontrol *kc, struct snd_ctl_elem_value *uc)
 {
 	struct ce5300_hdmi *h = snd_kcontrol_chip(kc);
 
-	uc->value.integer.value[0] = READ_ONCE(h->connected);
+	mutex_lock(h->lock);
+	uc->value.integer.value[0] = h->sink->connected;
+	mutex_unlock(h->lock);
 	return 0;
 }
 
@@ -638,31 +348,20 @@ static const struct snd_kcontrol_new ce5300_hdmi_jack_ctl = {
 static void ce5300_hdmi_link_down(struct ce5300_hdmi *h);
 
 /*
- * A display came or went (or blipped). A new one gets its EDID read: a DVI
- * sink takes the link back to DVI and refuses audio, an HDMI sink with audio
+ * The bridge saw a display come or go (or blip), or a mode change, with its
+ * lock held. A DVI
+ * sink takes the link back to DVI and refuses audio; an HDMI sink with audio
  * running gets the link set up again (infoframes, AV mute cleared), so a
  * replugged TV plays again with nothing restarted. No EDID: as before.
  */
-static void ce5300_hdmi_sink_changed(struct ce5300_hdmi *h, bool connected)
+static void ce5300_hdmi_sink_changed(void *priv)
 {
+	struct ce5300_hdmi *h = priv;
+	const struct ce5300_hdmi_sink *s = h->sink;
 	struct snd_pcm_substream *ss;
-	struct hdmi_sink s;
-	int ret;
 
-	mutex_lock(&h->lock);
-	h->dvi_sink = false;
-	if (connected) {
-		ret = ce5300_hdmi_read_sink(h, &s);
-		if (ret) {
-			dev_info(&h->pdev->dev, "display connected, no EDID (%d)\n", ret);
-		} else {
-			dev_info(&h->pdev->dev, "display connected: \"%s\", %s%s\n", s.name,
-				 s.hdmi ? "HDMI" : "DVI", s.hdmi && s.audio ? " with audio" : "");
-			h->dvi_sink = !s.hdmi;
-		}
-	} else {
-		dev_info(&h->pdev->dev, "display disconnected\n");
-	}
+	lockdep_assert_held(h->lock);
+	h->dvi_sink = s->connected && s->edid && !s->hdmi;
 
 	if (h->dvi_sink && hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI) {
 		ss = h->substream;
@@ -671,51 +370,14 @@ static void ce5300_hdmi_sink_changed(struct ce5300_hdmi *h, bool connected)
 		if (h->streaming)
 			ce5300_hdmi_link_down(h);
 		hdmi_update(h, HDMI_OPMODE, HDMI_OPMODE_HDMI, 0);
-		dev_info(&h->pdev->dev, "link back to DVI mode for a DVI sink\n");
-	} else if (connected && h->streaming) {
+		dev_info(h->dev, "link back to DVI mode for a DVI sink\n");
+	} else if (s->connected && (h->streaming || hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI)) {
+		/* Also after a mode change: the data islands follow the timing. */
 		ce5300_hdmi_link_to_hdmi(h, true);
-		ce5300_hdmi_audio_packets(h);
+		if (h->streaming)
+			ce5300_hdmi_audio_packets(h);
 	}
-
-	WRITE_ONCE(h->connected, connected);
-	mutex_unlock(&h->lock);
 	snd_ctl_notify(h->card, SNDRV_CTL_EVENT_MASK_VALUE, &h->jack->id);
-}
-
-/* HPD has no interrupt we can count on here, so poll it (one read). */
-/* A sink: HPD, or an EDID that answers (HPD isn't wired on every board). */
-static bool ce5300_hdmi_plugged(struct ce5300_hdmi *h)
-{
-	u8 off = 0, buf;
-	struct i2c_msg msgs[] = {
-		{ .addr = HDMI_EDID_ADDR, .len = 1, .buf = &off },
-		{ .addr = HDMI_EDID_ADDR, .flags = I2C_M_RD, .len = 1, .buf = &buf },
-	};
-
-	return hdmi_read(h, HDMI_STATUS) & HDMI_STATUS_HPD ||
-	       i2c_transfer(&h->ddc, msgs, ARRAY_SIZE(msgs)) == ARRAY_SIZE(msgs);
-}
-
-static void ce5300_hdmi_hpd_work(struct work_struct *work)
-{
-	struct ce5300_hdmi *h = container_of(work, struct ce5300_hdmi, hpd_work.work);
-	bool hpd = ce5300_hdmi_plugged(h);
-	u32 st = hdmi_read(h, HDMI_INT_STATUS) & HDMI_INT_HPD;
-
-	if (st)
-		hdmi_write(h, HDMI_INT_STATUS, st);
-	/* Debounce: act one poll after the change, on the level then. */
-	if (h->hpd_pending)
-		ce5300_hdmi_sink_changed(h, hpd);
-	h->hpd_pending = st || hpd != READ_ONCE(h->connected);
-	schedule_delayed_work(&h->hpd_work, msecs_to_jiffies(HDMI_HPD_POLL_MS));
-}
-
-static void ce5300_hdmi_hpd_stop(void *data)
-{
-	struct ce5300_hdmi *h = data;
-
-	cancel_delayed_work_sync(&h->hpd_work);
 }
 
 /* ---- PCM ---------------------------------------------------------------- */
@@ -755,9 +417,9 @@ static int ce5300_hdmi_pcm_open(struct snd_pcm_substream *ss)
 					 HDMI_BYTES_ALIGN);
 	if (ret < 0)
 		return ret;
-	mutex_lock(&h->lock);
+	mutex_lock(h->lock);
 	h->substream = ss;
-	mutex_unlock(&h->lock);
+	mutex_unlock(h->lock);
 	return 0;
 }
 
@@ -765,9 +427,9 @@ static int ce5300_hdmi_pcm_close(struct snd_pcm_substream *ss)
 {
 	struct ce5300_hdmi *h = snd_pcm_substream_chip(ss);
 
-	mutex_lock(&h->lock);
+	mutex_lock(h->lock);
 	h->substream = NULL;
-	mutex_unlock(&h->lock);
+	mutex_unlock(h->lock);
 	return 0;
 }
 
@@ -848,14 +510,14 @@ static int ce5300_hdmi_pcm_prepare(struct snd_pcm_substream *ss)
 	if (rt->periods > HDMI_PERIODS_MAX)
 		return -EINVAL;
 
-	mutex_lock(&h->lock);
+	mutex_lock(h->lock);
 	if (h->dvi_sink) {
-		mutex_unlock(&h->lock);
-		dev_info_ratelimited(&h->pdev->dev, "DVI sink: no audio\n");
+		mutex_unlock(h->lock);
+		dev_info_ratelimited(h->dev, "DVI sink: no audio\n");
 		return -ENODEV;
 	}
 	ret = ce5300_hdmi_link_up(h);
-	mutex_unlock(&h->lock);
+	mutex_unlock(h->lock);
 	if (ret)
 		return ret;
 
@@ -924,7 +586,7 @@ static int ce5300_hdmi_pcm_sync_stop(struct snd_pcm_substream *ss)
 	timeout_us = 4 * div_u64((u64)rt->period_size * USEC_PER_SEC, rt->rate) +
 		     10 * USEC_PER_MSEC;
 	if (read_poll_timeout(ce5300_hdmi_idle, idle, idle, 500, timeout_us, false, h)) {
-		dev_warn(&h->pdev->dev, "engine not back on the silence; stopping it\n");
+		dev_warn(h->dev, "engine not back on the silence; stopping it\n");
 		ce5300_hdmi_link_down(h);
 	}
 	return 0;
@@ -966,12 +628,11 @@ static const struct snd_pcm_ops ce5300_hdmi_pcm_ops = {
 	.pointer	= ce5300_hdmi_pcm_pointer,
 };
 
-/* ---- PCI --------------------------------------------------------------- */
+/* ---- Platform device --------------------------------------------------- */
 
 /*
- * No register access here: BAR0 is a later devres than the card, so it is
- * already unmapped when the card is freed. ce5300_hdmi_quiesce stopped the
- * engine before that.
+ * No register access here: the BAR is the bridge's, and the card is freed
+ * after ce5300_hdmi_quiesce stopped the engine.
  */
 static void ce5300_hdmi_free(struct snd_card *card)
 {
@@ -980,81 +641,60 @@ static void ce5300_hdmi_free(struct snd_card *card)
 	hrtimer_cancel(&h->tick);
 }
 
-/* A devres after BAR0 and the ring: stop the engine before either goes. */
+/* A devres after the ring: stop the engine and the notifier before it goes. */
 static void ce5300_hdmi_quiesce(void *data)
 {
 	struct ce5300_hdmi *h = data;
 
+	h->pdata->set_notify(h->pdata->core, NULL, NULL);
 	if (h->streaming)
 		ce5300_hdmi_link_down(h);
 }
 
-/* Named registers only, for bring-up: debugfs ce5300-hdmi/regs. */
-static int ce5300_hdmi_regs_show(struct seq_file *m, void *unused)
+static void ce5300_hdmi_ring_free(void *data)
 {
-	struct ce5300_hdmi *h = m->private;
-	struct pci_dev *host = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(0, 0));
+	struct ce5300_hdmi *h = data;
 
-	seq_printf(m, "clocks %08x\nint_mask %08x\nstatus %08x\nint_status %08x\nopmode %08x\n",
-		   hdmi_read(h, HDMI_CLOCKS), hdmi_read(h, HDMI_INT_MASK),
-		   hdmi_read(h, HDMI_STATUS), hdmi_read(h, HDMI_INT_STATUS),
-		   hdmi_read(h, HDMI_OPMODE));
-	if (host) {
-		seq_printf(m, "phy12 %08x\n", iosf_cr_read(host, IOSF_PORT_HDMI_PHY, HDMI_PHY_5V));
-		pci_dev_put(host);
-	}
-	return 0;
-}
-DEFINE_SHOW_ATTRIBUTE(ce5300_hdmi_regs);
-
-static void ce5300_hdmi_debugfs_remove(void *data)
-{
-	debugfs_remove_recursive(data);
+	dma_free_coherent(h->dma_dev, (HDMI_PERIODS_MAX + 1) * sizeof(*h->ring) +
+			  HDMI_BYTES_ALIGN + HDMI_SILENCE_BYTES, h->ring, h->ring_phys);
 }
 
-static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+static int ce5300_hdmi_probe(struct platform_device *pdev)
 {
+	const struct ce5300_hdmi_audio_pdata *pdata = dev_get_platdata(&pdev->dev);
 	struct snd_card *card;
 	struct ce5300_hdmi *h;
 	struct snd_pcm *pcm;
 	int ret;
 
+	if (!pdata)
+		return -EINVAL;
 	ret = snd_devm_card_new(&pdev->dev, index, "HDMI", THIS_MODULE,
 				sizeof(*h), &card);
 	if (ret)
 		return ret;
 	h = card->private_data;
 	h->card = card;
-	h->pdev = pdev;
+	h->dev = &pdev->dev;
+	h->pdata = pdata;
+	h->base = pdata->base;
+	h->dma_dev = pdata->dma_dev;
+	h->lock = pdata->lock;
+	h->sink = pdata->sink;
 
-	ret = pcim_enable_device(pdev);
-	if (ret)
-		return ret;
-	h->base = pcim_iomap(pdev, 0, 0);
-	if (!h->base)
-		return -ENOMEM;
-	pci_set_master(pdev);
-
-	ret = ce5300_hdmi_check_pll(h);
-	if (ret)
-		return ret;
-
-	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-	if (ret)
-		return ret;
 	/* The ring, the idle descriptor after it, then the silence it loops. */
-	h->ring = dmam_alloc_coherent(&pdev->dev,
-				      (HDMI_PERIODS_MAX + 1) * sizeof(*h->ring) +
-				      HDMI_BYTES_ALIGN + HDMI_SILENCE_BYTES,
-				      &h->ring_phys, GFP_KERNEL);
+	h->ring = dma_alloc_coherent(h->dma_dev,
+				     (HDMI_PERIODS_MAX + 1) * sizeof(*h->ring) +
+				     HDMI_BYTES_ALIGN + HDMI_SILENCE_BYTES,
+				     &h->ring_phys, GFP_KERNEL);
 	if (!h->ring)
 		return -ENOMEM;
+	ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_ring_free, h);
+	if (ret)
+		return ret;
 	h->idle = &h->ring[HDMI_PERIODS_MAX];
 	h->idle_phys = h->ring_phys + HDMI_PERIODS_MAX * sizeof(*h->ring);
 	h->silence_phys = ALIGN(h->idle_phys + sizeof(*h->idle), HDMI_BYTES_ALIGN);
-	ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_quiesce, h);
-	if (ret)
-		return ret;
 
 	hrtimer_setup(&h->tick, ce5300_hdmi_tick, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 	card->private_free = ce5300_hdmi_free;
@@ -1065,27 +705,16 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	pcm->private_data = h;
 	strscpy(pcm->name, "HDMI");
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &ce5300_hdmi_pcm_ops);
-	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV, &pdev->dev,
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV, h->dma_dev,
 				       HDMI_BUFFER_BYTES_MAX, HDMI_BUFFER_BYTES_MAX);
 
 	strscpy(card->driver, "CE5300HDMI");
 	strscpy(card->shortname, "CE5300 HDMI");
 	snprintf(card->longname, sizeof(card->longname),
-		 "Intel CE5300 HDMI audio at %pR", &pdev->resource[0]);
+		 "Intel CE5300 HDMI audio at %s", dev_name(h->dma_dev));
 
-	mutex_init(&h->lock);
 	h->jack = snd_ctl_new1(&ce5300_hdmi_jack_ctl, h);
 	ret = snd_ctl_add(card, h->jack);
-	if (ret)
-		return ret;
-
-	ce5300_hdmi_ddc_on(h);
-	h->ddc.owner = THIS_MODULE;
-	h->ddc.algo = &ce5300_hdmi_ddc_algo;
-	h->ddc.dev.parent = &pdev->dev;
-	strscpy(h->ddc.name, "ce5300-hdmi DDC");
-	i2c_set_adapdata(&h->ddc, h);
-	ret = devm_i2c_add_adapter(&pdev->dev, &h->ddc);
 	if (ret)
 		return ret;
 
@@ -1093,42 +722,26 @@ static int ce5300_hdmi_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	if (ret)
 		return ret;
 
-	dev_info(&pdev->dev, "HDMI audio: 2ch LPCM 48 kHz, link in %s mode\n",
-		 hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI ? "HDMI" : "DVI");
-
-	ce5300_hdmi_5v_on(h);
-	/* As stock does before trusting HPD. IRQ 34 is never requested here. */
-	hdmi_write(h, HDMI_INT_MASK, HDMI_INT_MASK_STOCK);
-	{
-		struct dentry *d = debugfs_create_dir("ce5300-hdmi", NULL);
-
-		debugfs_create_file("regs", 0400, d, h, &ce5300_hdmi_regs_fops);
-		ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_debugfs_remove, d);
-		if (ret)
-			return ret;
-	}
-	hdmi_write(h, HDMI_INT_STATUS, HDMI_INT_HPD);
-	ce5300_hdmi_sink_changed(h, ce5300_hdmi_plugged(h));
-	INIT_DELAYED_WORK(&h->hpd_work, ce5300_hdmi_hpd_work);
-	ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_hpd_stop, h);
+	/* From here on the bridge reports sink changes; take the current one. */
+	ret = devm_add_action_or_reset(&pdev->dev, ce5300_hdmi_quiesce, h);
 	if (ret)
 		return ret;
-	schedule_delayed_work(&h->hpd_work, msecs_to_jiffies(HDMI_HPD_POLL_MS));
+	pdata->set_notify(pdata->core, ce5300_hdmi_sink_changed, h);	/* takes the lock */
+	mutex_lock(h->lock);
+	h->dvi_sink = h->sink->connected && h->sink->edid && !h->sink->hdmi;
+	mutex_unlock(h->lock);
+
+	dev_info(h->dev, "HDMI audio: 2ch LPCM 48 kHz, link in %s mode\n",
+		 hdmi_read(h, HDMI_OPMODE) & HDMI_OPMODE_HDMI ? "HDMI" : "DVI");
 	return 0;
 }
 
-static const struct pci_device_id ce5300_hdmi_ids[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x2e63) },
-	{ }
-};
-MODULE_DEVICE_TABLE(pci, ce5300_hdmi_ids);
-
-static struct pci_driver ce5300_hdmi_driver = {
-	.name		= DRV_NAME,
-	.id_table	= ce5300_hdmi_ids,
+static struct platform_driver ce5300_hdmi_driver = {
+	.driver.name	= DRV_NAME,
 	.probe		= ce5300_hdmi_probe,
 };
-module_pci_driver(ce5300_hdmi_driver);
+module_platform_driver(ce5300_hdmi_driver);
 
+MODULE_ALIAS("platform:" CE5300_HDMI_AUDIO_NAME);
 MODULE_DESCRIPTION("Intel CE5300 HDMI transmitter audio");
 MODULE_LICENSE("GPL");
