@@ -189,13 +189,13 @@ static const struct ce5300_clock *ce5300_clock_find(int khz)
 	return NULL;
 }
 
-static bool takeover;
+static bool takeover = true;
 module_param(takeover, bool, 0644);
-MODULE_PARM_DESC(takeover, "Take the display over from the firmware framebuffer (untested; set, then bind 01:08.0)");
+MODULE_PARM_DESC(takeover, "Take the display over from the firmware framebuffer (default on; off leaves it to simpledrm)");
 
-static bool modeset;
+static bool modeset = true;
 module_param(modeset, bool, 0644);
-MODULE_PARM_DESC(modeset, "Allow mode changes to the 480p, 720p and 1080p clocks (bring-up)");
+MODULE_PARM_DESC(modeset, "Allow modes other than the firmware's: 480p, 720p and 1080p (default on)");
 
 struct ce5300 {
 	struct drm_device	drm;
@@ -833,6 +833,8 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	if (!takeover)
 		return -ENODEV;
+	if (modeset && !iosf_mbi_available())
+		return -EPROBE_DEFER;	/* the clocks are on the sideband */
 
 	p = devm_drm_dev_alloc(&pdev->dev, &ce5300_driver, struct ce5300, drm);
 	if (IS_ERR(p))

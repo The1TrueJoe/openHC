@@ -21,14 +21,13 @@ on a port of its GPL kernel driver. That story is in
 |---|---|---|
 | Kernel driver | `powervr_sgx`, render-only (`/dev/dri/renderD128`) | `drm/powervr_sgx` of the `board/ea/common/powervr_sgx` submodule, mirrored to `drivers/gpu/drm/powervr_sgx` (`board/external.mk`) |
 | Microkernel | `/lib/firmware/powervr_sgx/sgx545_ukernel.bin` (MIT) | the release's firmware package (`powervr-sgx-firmware`) |
-| Display | `simpledrm` on the framebuffer CEFDK leaves running (`/dev/dri/card0`, and `/dev/fb0` through fbdev emulation) | mainline |
+| Display | `ce5300-drm`: the display controller and the HDMI transmitter, at the monitor's preferred 480p, 720p or 1080p (`/dev/fb0` through fbdev emulation). It replaces `simpledrm` on CEFDK's framebuffer early in boot; `ce5300_drm.takeover=0` keeps `simpledrm` | `board/ea/common/kernel/drivers/gpu/drm/ce5300`, see [display](/ea/display/) |
 | GL | Mesa 26.2.5 with the `sgx` gallium driver: EGL, OpenGL ES 2.0, GBM | Buildroot's `mesa3d` with the submodule's `mesa/` overlay (`BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SGX`) |
 | Web view | WPE WebKit's DRM platform, run by `webview` | Buildroot's `wpewebkit` (WPE Platform, `build/buildroot-patches/0005`) |
 
-The GPU only renders. Mesa's kmsro pairs it with simpledrm: a buffer to show is
-a simpledrm buffer the SGX renders into. simpledrm copies it to the CEFDK
-framebuffer, because nothing drives the display controller itself (see
-[the 720x480 ceiling](#the-720x480-ceiling-and-why)).
+The GPU only renders. Mesa's kmsro pairs it with the display device:
+- With `ce5300-drm`, a buffer to show is a ce5300 dumb buffer, contiguous memory the display controller scans out, imported into the SGX through PRIME. Nothing is copied; kmscube measured 289 fps at 480p.
+- With `simpledrm`, a buffer to show is a simpledrm buffer that simpledrm copies to the CEFDK framebuffer, at 720x480 only (see [the 720x480 ceiling](#the-720x480-ceiling-and-why)).
 
 The driver loads the microkernel when it probes and starts the GPU itself, so
 nothing runs at boot for the GPU. On the bootstrap kernel `powervr_sgx` is a
@@ -46,9 +45,11 @@ powervr_sgx 0000:01:02.0: [drm] microkernel started
 [drm] Initialized powervr_sgx 1.0.0 for 0000:01:02.0 on minor 1
 ```
 
-So `card0` is simpledrm, and `card1` and `renderD128` are the GPU.
+Then `ce5300-drm` takes the display over from simpledrm (`card0` goes away),
+and the display card is the one `/sys/class/drm/card*-HDMI-A-1` belongs to.
+`card1` and `renderD128` are the GPU.
 
-`kmscube` is in the image as a GL check: `kmscube -D /dev/dri/card0` draws a
+`kmscube` is in the image as a GL check: `kmscube -D /dev/dri/card<display>` draws a
 spinning cube on the display, at about 100 fps at 720x480. Stop the web view
 first, since only one program can drive the display. Run over ssh, give it a
 stdin that stays open (`sleep 60 | kmscube ...`): it quits on the first byte,
