@@ -5,7 +5,7 @@
 ################################################################################
 
 # The release's firmware package: keep it the same release as the submodule.
-POWERVR_SGX_FIRMWARE_VERSION = 0.2.1
+POWERVR_SGX_FIRMWARE_VERSION = 0.2.2
 POWERVR_SGX_FIRMWARE_SOURCE = sgx545-firmware_$(POWERVR_SGX_FIRMWARE_VERSION)_all.deb
 POWERVR_SGX_FIRMWARE_SITE = https://github.com/The1TrueJoe/powervr_sgx/releases/download/v$(POWERVR_SGX_FIRMWARE_VERSION)
 POWERVR_SGX_FIRMWARE_LICENSE = MIT
