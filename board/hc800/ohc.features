@@ -16,3 +16,5 @@ update      # software updates from the web UI (updated): stable releases or
             # the dev channel, installed onto sda3 and rebooted
 usb-input   # USB keyboards, mice, game controllers (front USB, hubs too) for the
             # on-screen UI
+gstreamer   # network audio runtime (GStreamer: RTP, FLAC, ALSA) for an extension
+            # to play into the outputs; Control4 Digital Media (openhc-control4)

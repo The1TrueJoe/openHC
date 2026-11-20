@@ -2,7 +2,7 @@
 //! for power users and scripts.
 
 use ohc_flash_core::{board, cefdk, image, method, Method};
-use ohc_flash_engine::{ca1, ea, hc250, hc800, iox, netboot, network, Progress, Release};
+use ohc_flash_engine::{ca1, control4, ea, hc250, hc800, iox, netboot, network, Progress, Release};
 use ohc_flash_transport as tp;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,6 +18,7 @@ fn main() -> ExitCode {
         "plan" => plan(rest),
         "validate" => validate(rest),
         "install" => install(rest),
+        "control4" => control4_cmd(rest),
         "rootfs" => rootfs(rest),
         // Two boards, two netboot wire protocols. The EA drives CEFDK's serial
         // console and answers a bare BOOTP cookie (--serial); the IO-Extender has
@@ -77,6 +78,10 @@ fn help() {
                                     5 min); --method kexec runs it from RAM, writing\n\
                                     nothing. `boot` and `uninstall` take --images too.\n\
                                     --netconsole <ip>[:port] ships the boot log to you\n\
+                                    --control4 then makes it a Control4 controller again\n\
+                                    (openhc-control4): waits for openHC, installs it, and\n\
+                                    saves the Composer driver to your Downloads\n\
+           control4 [HOST]          the same, on a box already running openHC\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            netboot --serial <dev> --mac <aa:bb:..> [--images <dir|zip>]\n\
@@ -690,7 +695,89 @@ fn restore(rest: &[String]) -> bool {
     true
 }
 
+/// `install`, then with `--control4` make the new openHC box a Control4
+/// controller again once it is back up — wherever its new DHCP lease put it.
 fn install(rest: &[String]) -> bool {
+    if !rest.iter().any(|a| a == "--control4") {
+        return install_image(rest);
+    }
+    let Some(host) = rest.iter().find(|a| !a.starts_with("--")).cloned().or_else(auto_host) else {
+        return false;
+    };
+    // The MAC finds it again after the reboot; ask before the install, while it answers.
+    let mac = tp::discover(false).into_iter().find(|f| f.ip == host).and_then(|f| f.mac);
+    let forced = rest.windows(2).find(|w| w[0] == "--board").and_then(|w| board::by_name(&w[1]));
+    let on_box = forced
+        .or_else(|| connect(rest).and_then(|(_, s)| tp::identify(&s).board))
+        .is_some_and(control4::runs_on_box);
+    if !install_image(rest) {
+        return false;
+    }
+    if !on_box {
+        return control4_driver_only(&host);
+    }
+    if ["--dry-run", "--no-wait", "--ram-only"].iter().any(|f| rest.iter().any(|a| a == f)) {
+        println!("  (Control4 skipped: the install did not finish here; run `ohc-flash control4 <ip>` once openHC is up)");
+        return true;
+    }
+    let p = Progress::stdout();
+    let bundle = match control4::fetch(&control4::driver_dir(), true, &p) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("  openHC is installed, but the Control4 extension: {e:#}"); return false; }
+    };
+    let Some((ip, ssh)) = control4::find_again(&host, mac.as_deref(), 300, &p) else {
+        eprintln!("  openHC did not come back within 300s. Once it is up: ohc-flash control4 <ip>");
+        return false;
+    };
+    control4_install(&ip, &ssh, &bundle)
+}
+
+/// `control4` — make a box already running openHC a Control4 controller again.
+fn control4_cmd(rest: &[String]) -> bool {
+    let Some((host, ssh)) = connect(rest) else { return false };
+    if !ssh.test("-f /etc/openhc-release") {
+        eprintln!("  {host} is not running openHC — install it first (ohc-flash install --control4)");
+        return false;
+    }
+    if tp::identify(&ssh).board.is_some_and(|b| !control4::runs_on_box(b)) {
+        return control4_driver_only(&host);
+    }
+    let p = Progress::stdout();
+    match control4::fetch(&control4::driver_dir(), true, &p) {
+        Ok(b) => control4_install(&host, &ssh, &b),
+        Err(e) => { eprintln!("  {e:#}"); false }
+    }
+}
+
+/// A board with no on-screen view in openHC yet (HC-250, CA-1, IO Extender):
+/// nothing goes on the box, and the driver gives Composer its IO.
+fn control4_driver_only(host: &str) -> bool {
+    match control4::fetch(&control4::driver_dir(), false, &Progress::stdout()) {
+        Ok(b) => {
+            println!("\n  This board has no on-screen navigator in openHC yet; its IO goes into Control4. In Composer Pro:");
+            println!("    1. Driver → Add Driver… {} (saved to {})", control4::DRIVER, b.driver.display());
+            println!("    2. On the Network tab, identify its openHC Controller connection as {host}");
+            println!("       (ohc-flash discover finds it if a reboot gave it a new address)");
+            println!("    3. Bind the relays, contacts, IR and serial it has");
+            true
+        }
+        Err(e) => { eprintln!("  {e:#}"); false }
+    }
+}
+
+fn control4_install(host: &str, ssh: &tp::Ssh, b: &control4::Bundle) -> bool {
+    if let Err(e) = control4::install(ssh, b, &Progress::stdout()) {
+        eprintln!("  {e:#}");
+        return false;
+    }
+    println!("\n  {host} is a Control4 controller again. In Composer Pro:");
+    println!("    1. Driver → Add Driver… {} (saved to {})", control4::DRIVER, b.driver.display());
+    println!("    2. Add the openHC box from the discovered devices — it fills in its own address");
+    println!("    3. Bind HDMI to the TV's input, and the IO the box has");
+    true
+}
+
+fn install_image(rest: &[String]) -> bool {
     let dry = rest.iter().any(|a| a == "--dry-run");
     let yes = rest.iter().any(|a| a == "--yes");
     let Some((host, ssh)) = connect(rest) else { return false };

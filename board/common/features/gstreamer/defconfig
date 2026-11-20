@@ -1,0 +1,24 @@
+# GStreamer: the runtime for network audio played into the board's outputs.
+# RTP (rtpbin, rtpgstdepay) over UDP, FLAC, and the network clock (libgstnet,
+# part of the core), into ALSA. SHARED: the EA family and the HC-800 select it.
+#
+# Only libraries and plugins: the program comes with an extension (Control4
+# Digital Media's audio client, from openhc-control4), which plays into the
+# shared ohc_<id> PCMs audiod writes, so it mixes with everything else.
+
+BR2_PACKAGE_GSTREAMER1=y
+# The client describes its pipeline as text (gst_parse_launch).
+BR2_PACKAGE_GSTREAMER1_PARSE=y
+
+BR2_PACKAGE_GST1_PLUGINS_BASE=y
+BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_ALSA=y
+BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_AUDIOCONVERT=y
+BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_AUDIORESAMPLE=y
+BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_VOLUME=y
+
+BR2_PACKAGE_GST1_PLUGINS_GOOD=y
+BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_AUDIOPARSERS=y
+BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_FLAC=y
+BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_RTP=y
+BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_RTPMANAGER=y
+BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_UDP=y
