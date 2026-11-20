@@ -1,5 +1,5 @@
 # wpe: the on-screen web view, the same stack as the HC-800's: Mesa (the sgx
-# gallium driver, powervr_sgx) and WPE WebKit's DRM platform on simpledrm. See
+# gallium driver, powervr_sgx) and WPE WebKit's DRM platform on ce5300-drm. See
 # docs: ea/graphics.
 
 # Mesa: sgx only, with EGL, GLES and GBM. No LLVM.
