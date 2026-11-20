@@ -125,8 +125,11 @@ fi
 # fails, the build still ships; a fresh install just lacks /boot/bzImage, so
 # S00kexec finds no target and the box runs the lean bootstrap kernel (boots, only
 # without the built-in subsystems). A failure must not cost the whole image.
+# Except in CI (GITHUB_ACTIONS, or OHC_REQUIRE_REAL_KERNEL=1): there a missing real
+# kernel fails the build, so a green image always carries it.
 OUTTREE="$IMAGES/.."
 REALK="$IMAGES/bzImage-real"
+REALK_OK=0
 if [ -x "$EXT/../build/mk-real-kernel.sh" ] && [ -f "$IMAGES/rootfs.ext2" ]; then
 	if bash "$EXT/../build/mk-real-kernel.sh" "$OUTTREE" "$EXT/.." "$REALK"; then
 		# Find a debugfs (host e2fsprogs first, then PATH) to edit the ext2 offline.
@@ -174,6 +177,7 @@ if [ -x "$EXT/../build/mk-real-kernel.sh" ] && [ -f "$IMAGES/rootfs.ext2" ]; the
 			      | sed -n 's/.*[Ss]ize: *\([0-9][0-9]*\).*/\1/p' | head -1)
 			if [ "$got" = "$realsz" ]; then
 				echo "post-image: real kernel -> rootfs.ext2:/boot/bzImage ($realsz B) + ohc-kexec.enable"
+				REALK_OK=1
 			else
 				echo "post-image: WARNING real-kernel inject unverified (stat size '${got:-none}' != $realsz); p1 will run the lean kernel" >&2
 			fi
@@ -183,6 +187,10 @@ if [ -x "$EXT/../build/mk-real-kernel.sh" ] && [ -f "$IMAGES/rootfs.ext2" ]; the
 	else
 		echo "post-image: WARNING mk-real-kernel failed; shipping the lean kernel only" >&2
 	fi
+fi
+if [ "$REALK_OK" != 1 ] && [ "${OHC_REQUIRE_REAL_KERNEL:-${GITHUB_ACTIONS:-}}" = 1 -o "${OHC_REQUIRE_REAL_KERNEL:-${GITHUB_ACTIONS:-}}" = true ]; then
+	echo "post-image: ERROR the real kernel is not in rootfs.ext2 (see the warning above); failing the CI build" >&2
+	exit 1
 fi
 
 # Stage image: a gzipped copy of the ext2 rootfs, which the tiny /init streams
