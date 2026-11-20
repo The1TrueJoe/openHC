@@ -6,6 +6,18 @@ locked.
 
 📖 **[Documentation and the full hardware research →](https://the1truejoe.github.io/openHC/)**
 
+## Extensions
+
+Separate projects that build on openHC:
+
+- **[openhc-control4](https://github.com/The1TrueJoe/openhc-control4)**: back
+  into a Control4 project as a controller, with its IO and the on-screen
+  navigator on the TV.
+- **[openhc-minecraft](https://github.com/The1TrueJoe/openhc-minecraft)**:
+  Minecraft on an EA's HDMI output.
+- **[c4-ea-homeassistant](https://github.com/The1TrueJoe/c4-ea-homeassistant)**:
+  Home Assistant on the EA series.
+
 ## Currently Supported controllers
 
 | Controller | Supported |
@@ -34,6 +46,9 @@ cable and no lid off, and it identifies the controller before touching it.
 **GUI:** download `ohc-flasher` for macOS, Windows or Linux from the
 [latest release](https://github.com/The1TrueJoe/openHC/releases), along with the
 image bundle for your controller (`openhc-<board>-<version>.zip`), and run it.
+On an HC-800 or EA, **Make it a Control4 controller again** on the Install
+screen also sets it up with [openhc-control4](https://github.com/The1TrueJoe/openhc-control4)
+and saves the Composer driver to your Downloads.
 
 **Command line:** build `ohc-flash` from this repository:
 
@@ -50,6 +65,7 @@ ohc-flash discover                                # find controllers on the netw
 ohc-flash identify <ip>                           # what it is, and what is running
 ohc-flash plan <board>                            # what an install would do
 ohc-flash install <ip> --images openhc-<board>-<version>.zip
+ohc-flash control4 <ip>                           # make it a Control4 controller again
 ohc-flash boot <ip>                               # go back into an installed openHC
 ohc-flash uninstall <ip>                          # boot stock Control4 again
 ohc-flash restore <ip>                            # back to factory

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Extensions — separate projects that build on openHC, installed onto /data so
+# they survive a reboot on every board (the HC-800's root is a RAM initramfs;
+# /data is real storage there, see S08ohcdata).
+#
+# Each is a directory /data/extensions/<name>/ with an executable `init` that
+# takes start|stop. This starts them in name order after the base services
+# (S95ohc-display included) and stops them in reverse.
+D=/data/extensions
+
+case "$1" in
+	start)
+		for x in "$D"/*/init; do [ -x "$x" ] && "$x" start; done ;;
+	stop)
+		for x in $(ls -r "$D"/*/init 2>/dev/null); do [ -x "$x" ] && "$x" stop; done ;;
+	restart)
+		"$0" stop; "$0" start ;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

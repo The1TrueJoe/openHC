@@ -7,6 +7,7 @@
 //! keeps the "wait for the box" policy in the front end where a user can watch.
 pub mod event;
 pub mod ca1;
+pub mod control4;
 pub mod ea;
 pub mod hc250;
 pub mod hc800;
