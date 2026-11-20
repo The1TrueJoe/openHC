@@ -87,6 +87,12 @@
 
 static const u32 upp_bases[] = { 0x0000, 0x1000, 0x2000, 0x3000, 0xf000 };
 
+/* A UPP's scanout registers, control last (it enables the plane). */
+static const u32 ce5300_upp_regs[] = {
+	VDC_UPP_POS, VDC_UPP_DST_SIZE, VDC_UPP_SRC_W, VDC_UPP_SRC_H, VDC_UPP_PITCH,
+	VDC_UPP_SURF, VDC_UPP_CTRL,
+};
+
 #define PITCH_ALIGN		64
 
 /*
@@ -198,6 +204,7 @@ struct ce5300 {
 	u32			upp;		/* the scanout UPP's register base */
 	struct drm_display_mode	mode;		/* what the firmware runs */
 	struct drm_display_mode	hw;		/* what pipe A runs now */
+	u32			fw_upp[ARRAY_SIZE(ce5300_upp_regs)];	/* the firmware's scanout */
 
 	struct drm_plane	plane;
 	struct drm_crtc		crtc;
@@ -252,13 +259,15 @@ static int ce5300_read_mode(struct ce5300 *p)
 
 static int ce5300_find_plane(struct ce5300 *p)
 {
-	unsigned int i;
+	unsigned int i, j;
 	u32 ctrl;
 
 	for (i = 0; i < ARRAY_SIZE(upp_bases); i++) {
 		ctrl = vdc_read(p, VDC_UPP + upp_bases[i] + VDC_UPP_CTRL);
 		if ((ctrl & UPP_CTRL_ENABLE) && !(ctrl & UPP_CTRL_PIPE_B)) {
 			p->upp = VDC_UPP + upp_bases[i];
+			for (j = 0; j < ARRAY_SIZE(ce5300_upp_regs); j++)
+				p->fw_upp[j] = vdc_read(p, p->upp + ce5300_upp_regs[j]);
 			drm_info(&p->drm, "firmware scanout: UPP %#x ctrl %#x surface %#x pitch %u\n",
 				 p->upp, ctrl, vdc_read(p, p->upp + VDC_UPP_SURF),
 				 vdc_read(p, p->upp + VDC_UPP_PITCH));
@@ -867,20 +876,39 @@ static int ce5300_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	return 0;
 }
 
+/*
+ * Back to what the firmware left: its mode and its framebuffer, which lies
+ * outside the kernel's RAM and still holds its picture. A kernel started
+ * after this one (kexec) finds the display its simple-framebuffer describes.
+ */
+static void ce5300_restore_firmware(struct ce5300 *p)
+{
+	unsigned int i;
+
+	if (!ce5300_mode_same(&p->hw, &p->mode) && ce5300_program_mode(p, &p->mode))
+		return;
+	for (i = 0; i < ARRAY_SIZE(ce5300_upp_regs); i++)
+		vdc_write(p, p->upp + ce5300_upp_regs[i], p->fw_upp[i]);
+	vdc_write(p, VDC_PIPEACONF, vdc_read(p, VDC_PIPEACONF) | VDC_PIPECONF_ENABLE);
+}
+
 static void ce5300_remove(struct pci_dev *pdev)
 {
 	struct drm_device *drm = pci_get_drvdata(pdev);
 
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
+	ce5300_restore_firmware(to_ce5300(drm));
 }
 
 static void ce5300_shutdown(struct pci_dev *pdev)
 {
 	struct drm_device *drm = pci_get_drvdata(pdev);
 
-	if (drm)
-		drm_atomic_helper_shutdown(drm);
+	if (!drm)
+		return;
+	drm_atomic_helper_shutdown(drm);
+	ce5300_restore_firmware(to_ce5300(drm));
 }
 
 static const struct pci_device_id ce5300_ids[] = {
