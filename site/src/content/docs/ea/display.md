@@ -131,7 +131,10 @@ control as `0x08ff4c01` (enabled, pipe A, ARGB 32), its surface as
 | `+0x118` | pitch in bytes (read 2944) |
 | `+0x064` | read 0 on the console plane (YUV pitches?) |
 | `+0x164`, `+0x16c`, `+0x178`, `+0x00c` | further control and attribute bits |
-| `+0x12c`–`+0x150` | keys and alpha |
+| `+0x12c` | position on the pipe, `y << 16 \| x` |
+| `+0x130` | destination size, `height << 16 \| width` |
+| `+0x134`, `+0x13c` | source width, source height |
+| `+0x138`–`+0x150` | keys and alpha |
 | `+0x200`–`+0x23c` | the scaler |
 | `+0x900`, `+0x300` | gamma and LUT |
 
@@ -182,8 +185,8 @@ by their rounded value (74176 → 74175, 148352 → 148350).
 | 297000 | 0 | `01802116 0005002c 04041da4 4044000c 04045800 00404100 02040440 01424001` |
 
 The table also has 25175, 25200, 40000, 59340, 59400, 65000, 79700, 85000,
-108000, 118681, 118800 and 296700 kHz. None of it has been read back on
-hardware yet.
+108000, 118681, 118800 and 296700 kHz. On an EA-1 under CEFDK's 480p,
+registers 0–7 read back exactly the 27000 row.
 
 ## HDMI TX PLL and PHY (`pd_hdmi.ko` `__program_clocks_ce5300`)
 
@@ -227,12 +230,42 @@ The other words, all clocks:
 - words 3–6: `00100000 40214000 80000001 0007f03f`;
 - words 12–22: `ff001ffe ffffffff bc0000ff 36d8fff7 00100000 ffd00000 00100000 1c010000 0 0 00010101`.
 
-A full modeset for the M4 driver is therefore:
-- the display PLL (port `0x8a`) for the dot clock;
-- the TX PLL and PHY (port `0x82`, plus the resets above) for the TMDS clock;
-- pipe A's timing and PIPESRC;
-- the HDMI line timing and GCP position (`+0x3100`/`+0x3104`, see audio);
-- the AVI infoframe.
+## Mode setting as `ce5300-drm` does it
 
-None of the sideband writes have been tried on hardware.
+CEFDK, Intel's CE firmware, sets the display up at every boot, and its own
+order and values are what `ce5300-drm` uses. The PHY drive words differ from
+`pd_hdmi`'s table above:
+- words 7–14: `02004000`, then `e8055053` (27 and 74.176 MHz) or `e80550f3`
+  (74.25 and 148.352 MHz) ×4, then `1f010002 0 80000000`;
+- word 22: 0.
+
+1. Gate the VDC clocks: clock-control `+0x14` bits 9, 8 and 7.
+2. Display PLL:
+   - register 1 = `0x06000000`, latch (write 1 to register 0);
+   - registers 0–7 with register 1 bit 26 set (reset held), latch, wait 300 µs;
+   - registers 0–7 again with bit 26 clear, register `0x11` = `0x80`, latch.
+3. HDMI TX PLL and PHY:
+   - clock-control `+0x04` bit 9 = 0, then bit 7 = 0;
+   - PHY registers 0–22, with register 12 at the table value with bit 16 (global power down) clear and bits 2 and 29–31 (analog power down) set;
+   - latch (write 1 to PHY register 0);
+   - bit 7 = 1, wait 300 µs; bit 9 = 1, wait 50 µs.
+4. Ungate, then clear the power-down bits in PHY register 12.
+5. Pipe A timing and PIPESRC; the transmitter's `+0x3000` bits 3/4 set high
+   sync polarity (720p, 1080p).
+
+CEFDK also resets the whole HDMI unit (clock-control `+0x04` bit 17) after the
+PHY. On an EA-1 no mode needed it.
+
+DPLL rows for the other clocks (CEFDK):
+
+| kHz | registers 0–7 |
+|---|---|
+| 74176 | `01802116 0005002c 040411a0 40404004 04045800 00004140 92000404 01424139` |
+| 74250 | `01802116 0005002c 044011a0 80440008 04045800 00404100 02040440 01424001` |
+| 148352 | `01802116 0005002c 040411a0 40440000 04045800 000041c0 12000404 01424139` |
+
+Seen on an EA-1, with a monitor watching and a 1 kHz tone playing:
+- 480p written again unchanged;
+- 720p60 and 1080p59.94, and back;
+- every register read back as written, and picture and HDMI audio were fine in each mode.
 
