@@ -13,6 +13,11 @@ CONFIG_DRM_POWERVR_SGX=y
 # Its display PLL and HDMI PHY are on the IOSF sideband (patch 0030).
 CONFIG_IOSF_MBI=y
 CONFIG_DRM_CE5300=y
+# Contiguous memory for its scanout buffers: a 1080p XRGB buffer is 8.3 MB,
+# past the page allocator's 4 MB; 32 MB holds two.
+CONFIG_CMA=y
+CONFIG_DMA_CMA=y
+CONFIG_CMA_SIZE_MBYTES=32
 
 # --- display: simpledrm on the CEFDK framebuffer (the DTB's simple-framebuffer) ---
 # A KMS device for the GPU's buffers (kmsro); /dev/fb0 is its fbdev emulation.
