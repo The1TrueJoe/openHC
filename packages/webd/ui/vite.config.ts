@@ -16,6 +16,11 @@ export default defineConfig({
     proxy: {
       "/api": { target, changeOrigin: true },
       "/ws": { target: target.replace(/^http/, "ws"), ws: true },
+      // The page's MQTT socket; webd proxies it to mosquitto's WebSocket
+      // listener. OHC_DEV_MQTT points it at a broker's WebSocket directly.
+      "/mqtt": process.env.OHC_DEV_MQTT
+        ? { target: process.env.OHC_DEV_MQTT, ws: true, rewrite: () => "/" }
+        : { target: target.replace(/^http/, "ws"), ws: true },
       // Mirrors what webd does in production: strip the mount point and
       // forward, upgrades included.
       "/iod": {

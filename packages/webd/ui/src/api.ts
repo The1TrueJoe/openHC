@@ -687,6 +687,9 @@ export class Io {
   #c: MqttClient | null = null;
   #onChange = new Set<() => void>();
   #onEvent = new Set<(topic: string, data: any) => void>();
+  /** Subtrees under the base that are not iod's: the radio bridges' own
+   *  topics (`zigbee/...`, `zwave/...`), in the shape their projects define. */
+  #trees = new Map<string, Set<(tail: string, body: string) => void>>();
 
   /** Re-render hook; every retained or live state message calls these. */
   watch(fn: () => void) {
@@ -722,6 +725,7 @@ export class Io {
       // "give me everything" round trip, and a page loaded an hour after the
       // last change still renders the truth.
       c.subscribe([`${base}/state/#`, `${base}/status`, `${base}/error`]);
+      for (const tree of this.#trees.keys()) c.subscribe(`${base}/${tree}/#`);
       this.#changed();
     });
     c.on('close', () => {
@@ -741,6 +745,13 @@ export class Io {
 
     c.on('message', (topic, payload) => {
       const body = payload.toString();
+      for (const [tree, fns] of this.#trees) {
+        const pre = `${base}/${tree}/`;
+        if (topic.startsWith(pre)) {
+          fns.forEach((f) => f(topic.slice(pre.length), body));
+          return;
+        }
+      }
       if (topic === `${base}/error`) {
         try { this.lastError = JSON.parse(body).message ?? body; } catch { this.lastError = body; }
         toastError(this.lastError, 'IO server');
@@ -768,6 +779,24 @@ export class Io {
     const full = topics.map((t) => `${this.base}/event/${t}`);
     this.#c?.subscribe(full);
     return () => this.#c?.unsubscribe(full);
+  }
+
+  /** Follow `<base>/<tree>/#`. Retained topics arrive at once, so the first
+   *  messages are the snapshot; `fn` gets the topic after `<base>/<tree>/` and
+   *  the raw payload (empty when a retained topic is cleared). */
+  subscribeTree(tree: string, fn: (tail: string, body: string) => void) {
+    let fns = this.#trees.get(tree);
+    if (!fns) {
+      this.#trees.set(tree, (fns = new Set()));
+      if (this.#c?.connected) this.#c.subscribe(`${this.base}/${tree}/#`);
+    }
+    fns.add(fn);
+    return () => fns!.delete(fn);
+  }
+  /** Publish `<base>/<tree>/<tail>`: a request in another program's own format. */
+  publishTree(tree: string, tail: string, body: string) {
+    if (!this.#c?.connected) throw new Error('not connected to the box');
+    this.#c.publish(`${this.base}/${tree}/${tail}`, body);
   }
 
   #publish(tail: string, body: string) {
