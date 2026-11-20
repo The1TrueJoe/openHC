@@ -35,12 +35,16 @@ BR2_PACKAGE_ALSA_UTILS_ALSACTL=y
 BR2_PACKAGE_SHAIRPORT_SYNC=y
 BR2_PACKAGE_SHAIRPORT_SYNC_AIRPLAY2=y
 BR2_PACKAGE_SHAIRPORT_SYNC_DBUS=y
-# FFmpeg is AirPlay 2's AAC and ALAC decoder; nothing here encodes, muxes or
-# needs the ffmpeg program.
+# FFmpeg is AirPlay 2's AAC and ALAC decoder; nothing here muxes or needs the
+# ffmpeg program. The raw-PCM codecs are for shairport-sync's pipe/stdout output
+# backend: its automatic output-format path sets up a PCM codec context, and a
+# decoders-only ffmpeg (aac/alac) without PCM fails classic-RAOP SETUP with
+# "No codec provided to avcodec_open2()" (the ALAC decoder itself is present and
+# works). s16 covers CD-quality AirPlay; the wider set is cheap insurance.
 # BR2_PACKAGE_FFMPEG_FFMPEG is not set
-BR2_PACKAGE_FFMPEG_ENCODERS=""
+BR2_PACKAGE_FFMPEG_ENCODERS="pcm_s16le pcm_s16be"
 BR2_PACKAGE_FFMPEG_MUXERS=""
-BR2_PACKAGE_FFMPEG_DECODERS="aac aac_fixed alac"
+BR2_PACKAGE_FFMPEG_DECODERS="aac aac_fixed alac pcm_s16le pcm_s16be pcm_s24le pcm_s32le"
 
 # ...and the mDNS responder it announces through — a full one (openHC's own
 # _openhc._tcp responder is too minimal for other AirPlay implementations).
