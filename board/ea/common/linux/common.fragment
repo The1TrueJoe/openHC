@@ -21,11 +21,13 @@ CONFIG_BLK_DEV_INITRD=y
 CONFIG_RD_GZIP=y
 
 # CMA for ce5300-drm's scanout buffers (a 1080p XRGB buffer is 8.3 MB, past
-# the page allocator's 4 MB; 32 MB holds two). In both kernels: DMA_CMA adds a
-# field to struct device, and the real kernel loads this kernel's modules.
+# the page allocator's 4 MB). 96 MB holds eleven: fbdev's one, a client's
+# swapchain of up to four, and the next client's while the last one exits.
+# Movable pages still use it. In both kernels: DMA_CMA adds a field to struct
+# device, and the real kernel loads this kernel's modules.
 CONFIG_CMA=y
 CONFIG_DMA_CMA=y
-CONFIG_CMA_SIZE_MBYTES=32
+CONFIG_CMA_SIZE_MBYTES=96
 
 # Size: the bzImage must fit CEFDK bootlinux's 7,417,856-byte copy window.
 CONFIG_KERNEL_XZ=y
