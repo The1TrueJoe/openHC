@@ -244,8 +244,10 @@ fresh install of p1 needs the network set again.
 
 ### Zigbee
 
-Every EA has Zigbee (no Z-Wave), from the shared `zigbee` feature (node +
-cp210x). Boards without Wi-Fi still have it.
+Every EA has Zigbee, from the shared `zigbee` feature (zigbee-bridge +
+cp210x). Boards without Wi-Fi still have it. None has a Z-Wave module, but the
+`zwave` feature runs a USB Z-Wave stick plugged into the rear port. See
+[Zigbee and Z-Wave](/shared/radios/).
 
 The radio is an EM357 NCP behind a CP2104 USB bridge (`10c4:ea60`) on an
 internal USB host (`01:0d.2` on an EA1). The family's udev rule
@@ -260,7 +262,7 @@ bootloader. On an EA1 a bare ASH `RST` returns `RSTACK` (`0xc1`). See
 | Key | Meaning |
 |---|---|
 | `OHC_ZIGBEE_BAUD` | `115200` |
-| `OHC_ZIGBEE_TCP_PORT` | `6638`. The NCP ships on EmberZNet EZSP v4; the zigbee daemon reflashes it at boot to the feature's 6.7.8 image (EZSP v8, `packages/zigbee/src/ncp.rs`). zigpy's bellows speaks both. The daemon holds the port and relays it over TCP, and `S91ohczigbee` advertises `_zigbee-coordinator._tcp` (ser2net style) so ZHA attaches as `socket://<box>:6638` |
+| `OHC_ZIGBEE_TCP_PORT` | `6638`. The NCP ships on EmberZNet EZSP v4; the zigbee daemon reflashes it at boot to the feature's 6.7.8 image (EZSP v8, `packages/zigbee/src/ncp.rs`). zigbee-bridge runs it by default. Used only with `OHC_ZIGBEE_STACK=radio`: then the daemon relays the port over TCP instead, and `S91ohczigbee` advertises `_zigbee-coordinator._tcp` (ser2net style) so ZHA attaches as `socket://<box>:6638`. zigpy's bellows speaks EZSP 4 and 8 |
 | `OHC_ZIGBEE_RADIO_TYPE` | `ezsp` |
 | `OHC_ZIGBEE_STOCK_ARCHIVE` | `/dev/mmcblk0p2:/recfs.tar.xz`. A return to stock first puts Control4's own NCP image back, unpacked from p2's factory rootfs (`zigbee --restore-stock`). Same member path as the HC-800's; checked on an EA1 on 2026-10-26 |
 

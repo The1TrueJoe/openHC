@@ -1,0 +1,4 @@
+# Crates this feature adds to the board's package build (packages/build.sh).
+ohcmqtt ohc-mqtt-base
+# The Bluetooth LE to MQTT bridge: its own host stack over the HCI user channel, no BlueZ.
+bluetooth-bridge bluetooth-bridge --git https://github.com/pulzar-net/bluetooth-bridge --rev 726cffb37fcc159e5df0e8b0b17714544174d48a

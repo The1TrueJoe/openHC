@@ -1,3 +1,7 @@
 # Crates this feature adds to the board's package build (packages/build.sh).
-# "<crate> <binary>"; binary defaults to the crate name.
+# "<crate> <binary>"; binary defaults to the crate name. A line with cargo
+# install arguments after the binary is an upstream binary (see build.sh).
 zigbee zigbee
+ohcmqtt ohc-mqtt-base
+# The Zigbee to MQTT bridge (EZSP 8 support landed in pulzar-net/zigbee-bridge#5).
+zigbee-bridge zigbee-bridge --git https://github.com/pulzar-net/zigbee-bridge --rev 6c76e10882071cab51f73bd2e02e4c99c9978e96

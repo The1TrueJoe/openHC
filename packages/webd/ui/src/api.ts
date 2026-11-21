@@ -85,6 +85,8 @@ export interface Capabilities {
   switch?: SwitchOverview;
   /** External drives + the SMB share, when this board runs storaged. */
   storage?: StorageStatus;
+  /** The board has the 'usbip' feature (set by the UI from /api/usbip). */
+  usbip?: boolean;
   /** The on-screen web view, when this board has a display program. */
   display?: DisplayCfg;
 }
@@ -552,7 +554,62 @@ export interface DisplayCfg {
   next_change?: number | null;
 }
 
+/** USB/IP export (webd's own endpoint). Off by default. `devices` are the box's
+ *  shareable USB devices — hubs and the box's own radios never appear. */
+export interface UsbipDevice {
+  busid: string;
+  /** vid:pid */
+  id: string;
+  product: string;
+  manufacturer: string;
+  /** Bound to usbip-host right now. */
+  exported: boolean;
+}
+export interface UsbipCfg {
+  enabled: boolean;
+  /** Busids to export (may name a device that is unplugged). */
+  selected: string[];
+  devices: UsbipDevice[];
+  /** The board has the 'usbip' feature. */
+  available: boolean;
+}
+
+/** What is plugged into the USB ports (webd's /api/usb), and what the box made of each. */
+export type UsbUse =
+  | { kind: 'storage'; block: string }
+  | { kind: 'radio'; radio: string; tty: string }
+  | { kind: 'serial'; tty: string }
+  | { kind: 'network'; iface: string }
+  | { kind: 'bluetooth'; hci: string }
+  | { kind: 'input'; name: string }
+  | { kind: 'audio'; card: string };
+export interface UsbDevice {
+  busid: string;
+  id: string;
+  manufacturer: string;
+  product: string;
+  /** Mbit/s */
+  speed: string;
+  class: string;
+  uses: UsbUse[];
+  shareable: boolean;
+  exported: boolean;
+}
+export interface UsbState {
+  devices: UsbDevice[];
+  usbip: boolean;
+}
+
 export const rest = {
+  usb: () => j<UsbState>(`${location.origin}/api/usb`),
+  usbip: () => j<UsbipCfg>(`${location.origin}/api/usbip`),
+  /** Saves and applies at once (usbipd up/down, devices bound/unbound); returns the new state. */
+  setUsbip: (u: Pick<UsbipCfg, 'enabled' | 'selected'>) =>
+    j<UsbipCfg>(`${location.origin}/api/usbip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(u),
+    }),
   /** Telemetry lives behind /sys, proxied by webd to sysmond on :7071. */
   telemetry: () => j<Telemetry>(`${SYS}/api/now`),
   /** The on-panel web view's current config (webd's own endpoint). */
@@ -687,6 +744,9 @@ export class Io {
   #c: MqttClient | null = null;
   #onChange = new Set<() => void>();
   #onEvent = new Set<(topic: string, data: any) => void>();
+  /** Subtrees under the base that are not iod's: the radio bridges' own
+   *  topics (`zigbee/...`, `zwave/...`), in the shape their projects define. */
+  #trees = new Map<string, Set<(tail: string, body: string) => void>>();
 
   /** Re-render hook; every retained or live state message calls these. */
   watch(fn: () => void) {
@@ -722,6 +782,7 @@ export class Io {
       // "give me everything" round trip, and a page loaded an hour after the
       // last change still renders the truth.
       c.subscribe([`${base}/state/#`, `${base}/status`, `${base}/error`]);
+      for (const tree of this.#trees.keys()) c.subscribe(`${base}/${tree}/#`);
       this.#changed();
     });
     c.on('close', () => {
@@ -741,6 +802,13 @@ export class Io {
 
     c.on('message', (topic, payload) => {
       const body = payload.toString();
+      for (const [tree, fns] of this.#trees) {
+        const pre = `${base}/${tree}/`;
+        if (topic.startsWith(pre)) {
+          fns.forEach((f) => f(topic.slice(pre.length), body));
+          return;
+        }
+      }
       if (topic === `${base}/error`) {
         try { this.lastError = JSON.parse(body).message ?? body; } catch { this.lastError = body; }
         toastError(this.lastError, 'IO server');
@@ -768,6 +836,24 @@ export class Io {
     const full = topics.map((t) => `${this.base}/event/${t}`);
     this.#c?.subscribe(full);
     return () => this.#c?.unsubscribe(full);
+  }
+
+  /** Follow `<base>/<tree>/#`. Retained topics arrive at once, so the first
+   *  messages are the snapshot; `fn` gets the topic after `<base>/<tree>/` and
+   *  the raw payload (empty when a retained topic is cleared). */
+  subscribeTree(tree: string, fn: (tail: string, body: string) => void) {
+    let fns = this.#trees.get(tree);
+    if (!fns) {
+      this.#trees.set(tree, (fns = new Set()));
+      if (this.#c?.connected) this.#c.subscribe(`${this.base}/${tree}/#`);
+    }
+    fns.add(fn);
+    return () => fns!.delete(fn);
+  }
+  /** Publish `<base>/<tree>/<tail>`: a request in another program's own format. */
+  publishTree(tree: string, tail: string, body: string) {
+    if (!this.#c?.connected) throw new Error('not connected to the box');
+    this.#c.publish(`${this.base}/${tree}/${tail}`, body);
   }
 
   #publish(tail: string, body: string) {

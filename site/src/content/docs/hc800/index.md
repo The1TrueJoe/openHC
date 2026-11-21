@@ -236,11 +236,11 @@ upload that dies part-way leaves the bootloader resident, and the next boot
 finishes the job (`packages/zigbee/src/ncp.rs`; `zigbee --info` and
 `--flash <image.ebl>` by hand).
 
-For the radio stack: zigbee-herdsman's current `ember` driver needs EZSP 13+
-(EmberZNet 7.4), which no EM35x runs; its deprecated `ezsp` driver needs 8+,
-which 6.7.8 meets. zigpy's **bellows speaks both 4 and 8**. So `zigbee`
-serves the port over TCP (`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA
-drives the radio from there:
+For the radio stack: by default **zigbee-bridge** runs it on the box and puts
+the devices on MQTT ([Zigbee and Z-Wave](/shared/radios/)). It speaks EZSP 8,
+which 6.7.8 meets. With `OHC_ZIGBEE_STACK=radio`, `zigbee` serves the port over
+TCP instead (`OHC_ZIGBEE_TCP_PORT=6638`), and Home Assistant's ZHA drives the
+radio from there. zigpy's bellows speaks both EZSP 4 and 8:
 
 - ZHA → add integration → radio type **EZSP**, path
   `socket://<box>:6638`. Or just accept the discovered device: the box advertises

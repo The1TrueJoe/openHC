@@ -1,0 +1,7 @@
+# openHC feature: zwave (kernel half) — USB Z-Wave sticks. Most present the
+# Silicon Labs Serial API as a CDC ACM modem (Aeotec Z-Stick, UZB, Zooz 500
+# series: 0658:0200); the rest sit behind a CP210x or CH34x, which the zigbee
+# feature and the boards already build. Built in here, because the HC-800 runs
+# MODULES=n; the EA family re-layers it as a module (board/ea/common/features/zwave).
+# An onboard module (the CA-1's ZM5304) is a plain UART and needs none of this.
+CONFIG_USB_ACM=y

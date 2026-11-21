@@ -16,6 +16,8 @@ mod proxy;
 mod board;
 mod daynight;
 mod system;
+mod usbip;
+mod usb;
 
 use std::sync::Arc;
 

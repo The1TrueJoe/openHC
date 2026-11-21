@@ -1,0 +1,2 @@
+# Locally computed (the npm registry publishes sha512 in base64)
+sha256  bf0e4f14d6470e975383c94f924e6df9a46015b18796e968f237ac14da44cdc7  config-15.32.4.tgz

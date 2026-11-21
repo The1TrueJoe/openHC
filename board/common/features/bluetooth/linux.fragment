@@ -1,0 +1,10 @@
+# openHC feature: bluetooth (kernel half) — the Bluetooth core and USB dongles.
+# The bridge drives the controller itself through the HCI user channel, so only
+# the core and the transport drivers are needed (no RFCOMM, BNEP, HIDP).
+# Built in here, because the HC-800 runs MODULES=n; the EA family and the CA-1
+# re-layer it as modules.
+CONFIG_BT=y
+CONFIG_BT_LE=y
+CONFIG_BT_HCIBTUSB=y
+CONFIG_BT_HCIBTUSB_RTL=y
+CONFIG_BT_HCIBTUSB_BCM=y

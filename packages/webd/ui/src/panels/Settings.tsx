@@ -170,6 +170,7 @@ export function SettingsPanel() {
           </span>
         )}
       </div>
+
     </div>
   );
 }

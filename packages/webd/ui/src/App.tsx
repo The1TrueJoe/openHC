@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, Settings, BookOpen, Activity, Music, Network, HardDrive, Monitor } from 'lucide-react';
+import { Cpu, ToggleLeft, Settings, BookOpen, Activity, Music, Network, Usb, Monitor, Radio, Waves, Bluetooth } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { toast, toastError } from './toast';
 import { IoPanel } from './panels/Io';
@@ -9,8 +9,10 @@ import { DocsPanel } from './panels/Docs';
 import { SystemPanel } from './panels/System';
 import { AudioPanel } from './panels/Audio';
 import { SwitchPanel } from './panels/Switch';
-import { StoragePanel } from './panels/Storage';
+import { UsbPanel } from './panels/Usb';
 import { DisplayPanel } from './panels/Display';
+import { RadiosPanel, startRadios, useTree, present } from './panels/radios/Radios';
+import { BluetoothPanel } from './panels/radios/Bluetooth';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -25,7 +27,7 @@ export function useIoState(): IoState {
 
 type Dest = {
   id: string; label: string; icon: typeof Cpu;
-  render: (c: Capabilities) => React.ReactNode;
+  render: (c: Capabilities, go: (id: string) => void) => React.ReactNode;
   /** Take the whole pane: no padding, no outer scroll. For a panel that
    *  manages its own viewport — the API reference scrolls internally, and an
    *  outer scrollbar on top of that is two scrollbars for one document. */
@@ -36,8 +38,13 @@ type Dest = {
  *  A board with no relays, contacts or IR shows no IO destination at all —
  *  the same rule the house UI uses for rooms: a service with nothing behind it
  *  does not appear. */
-function destinations(c: Capabilities): Dest[] {
+function destinations(c: Capabilities, radios: { zigbee: boolean; zwave: boolean; bluetooth: boolean }): Dest[] {
   const d: Dest[] = [{ id: 'overview', label: 'Overview', icon: Cpu, render: (c) => <OverviewPanel caps={c} /> }];
+  // One page per radio, once its bridge has reported in (the 'zigbee' and
+  // 'zwave' features; a board without the radio never shows it).
+  if (radios.zigbee) d.push({ id: 'zigbee', label: 'Zigbee', icon: Radio, render: () => <RadiosPanel proto="zigbee" /> });
+  if (radios.zwave) d.push({ id: 'zwave', label: 'Z-Wave', icon: Waves, render: () => <RadiosPanel proto="zwave" /> });
+  if (radios.bluetooth) d.push({ id: 'bluetooth', label: 'Bluetooth', icon: Bluetooth, render: () => <BluetoothPanel /> });
   // Serial lives on the IO page — it IS IO, and a rail entry for it implied
   // otherwise. The terminal itself opens as a window over that page.
   if (c.relays || c.contacts || c.ir || c.serials?.length) {
@@ -50,10 +57,11 @@ function destinations(c: Capabilities): Dest[] {
     // the single-output view pads itself).
     d.push({ id: 'audio', label: 'Audio', icon: Music, render: (c) => <AudioPanel caps={c} />, full: true });
   }
-  // Storage appears on boards that run storaged (the 'storage' feature:
-  // every board with USB).
-  if (c.storage) {
-    d.push({ id: 'storage', label: 'Storage', icon: HardDrive, render: (c) => <StoragePanel caps={c} /> });
+  // USB: what is in the ports and what the box does with each — drives
+  // (storaged, the 'storage' feature), radio sticks (linked to their page),
+  // USB/IP sharing. Every board with USB has storaged or usbip.
+  if (c.storage || c.usbip) {
+    d.push({ id: 'usb', label: 'USB', icon: Usb, render: (c, go) => <UsbPanel caps={c} go={go} /> });
   }
   // The managed switch: only on a board whose DSA ports switchd actually found.
   if (c.switch) {
@@ -82,6 +90,11 @@ export default function App() {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [failed, setFailed] = useState(false);
   const [at, setAt] = useState('overview');
+  // Both hooks, every render (React's hook order), then combine.
+  const zbTree = useTree('zigbee');
+  const zwTree = useTree('zwave');
+  const btTree = useTree('bluetooth');
+  const radios = { zigbee: present(zbTree), zwave: present(zwTree), bluetooth: present(btTree) };
 
   const load = useCallback(() => {
     setFailed(false);
@@ -96,8 +109,9 @@ export default function App() {
       rest.storage().catch(() => null),
       rest.switch().catch(() => null),
       rest.display().catch(() => null),
+      rest.usbip().catch(() => null),
     ])
-      .then(([caps, cfg, audio, storage, sw, display]) => {
+      .then(([caps, cfg, audio, storage, sw, display, usbip]) => {
         const hasAudio = !!audio && (!!audio.map || audio.outputs.length > 0 || audio.receivers.some((r) => r.installed));
         // switchd present and reporting ports → a Switch panel. A board without
         // the managed switch has no switchd, so this rejected and sw is null.
@@ -107,8 +121,10 @@ export default function App() {
           ...(storage ? { storage } : {}),
           ...(sw && sw.ports.length > 0 ? { switch: sw } : {}),
           ...(display?.available ? { display } : {}),
+          ...(usbip?.available ? { usbip: true } : {}),
         });
         io.connect(cfg.topics.base);
+        startRadios();
         toast.dismiss('boot');
       })
       .catch((e: unknown) => {
@@ -129,8 +145,9 @@ export default function App() {
   }
   if (!caps) return <div className="p-8 text-muted">Reading the board…</div>;
 
-  const dests = destinations(caps);
-  const here = dests.find((d) => d.id === at) ?? dests[0];
+  const dests = destinations(caps, radios);
+  // Old bookmarks/state: Storage is part of the USB page now.
+  const here = dests.find((d) => d.id === (at === 'storage' ? 'usb' : at)) ?? dests[0];
 
   return (
     <div className="flex h-full">
@@ -164,7 +181,7 @@ export default function App() {
             : 'min-w-0 flex-1 overflow-auto p-5 sm:p-7'
         }
       >
-        {here.render(caps)}
+        {here.render(caps, setAt)}
       </main>
     </div>
   );

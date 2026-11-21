@@ -2,7 +2,8 @@
 # openHC Zigbee NCP bring-up — SHARED (board/common).
 #
 # zigbee takes the EM35x out of its serial bootloader and holds the port open
-# so the radio stack (zigbee2mqtt) finds a live NCP. First it brings the NCP's
+# so the radio stack finds a live NCP: zigbee-bridge (S92ohczigbee-bridge), or a
+# zigpy host on the network. First it brings the NCP's
 # firmware up to the image the zigbee feature ships when the radio runs an older
 # EmberZNet (a one-time reflash, ~30 s, logged; see packages/zigbee/src/ncp.rs),
 # so the port is held — and served over TCP — only once that is settled. This script is on EVERY
@@ -13,11 +14,18 @@
 #   * the board's udev rule named a radio port (/dev/zigbee).
 # Runs after S90ohcweb; the radio owner starts later and connects to the live NCP.
 #
-# With OHC_ZIGBEE_TCP_PORT set, zigbee also serves the port over TCP (a
-# network radio for zigpy / Home Assistant ZHA), and this script advertises it
-# over mDNS as _zigbee-coordinator._tcp — the record ZHA's discovery reads. ZHA
-# wants exactly two TXT keys, radio_type and serial_number.
+# OHC_ZIGBEE_STACK says who owns the radio (board.env; /data/ohc/zigbee.env
+# changes it per box and survives updates):
+#   bridge  (default) zigbee-bridge on the box. The port is only held: serving
+#           it over TCP would read the tty and take the bridge's bytes.
+#   radio   with OHC_ZIGBEE_TCP_PORT set, zigbee serves the port over TCP (a
+#           network radio for zigpy / Home Assistant ZHA), and this script
+#           advertises it over mDNS as _zigbee-coordinator._tcp — the record
+#           ZHA's discovery reads. ZHA wants exactly two TXT keys, radio_type
+#           and serial_number.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+[ -r /data/ohc/zigbee.env ] && . /data/ohc/zigbee.env
+[ "${OHC_ZIGBEE_STACK:-bridge}" = radio ] || unset OHC_ZIGBEE_TCP_PORT
 BIN=/opt/ohc/bin/zigbee
 SVC=/etc/avahi/services/zigbee.service
 

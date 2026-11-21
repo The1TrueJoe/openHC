@@ -1,0 +1,6 @@
+# USB Z-Wave sticks -> /dev/zwave (70-openhc-io.rules turns the tag into the name).
+# Only an id that is unmistakably a Z-Wave controller: Silicon Labs' Serial API
+# id (Aeotec Z-Stick Gen5/7, UZB, Zooz 500 series). Sticks behind a generic
+# CP210x or CH34x bridge cannot be told from a Zigbee stick or an RS-485
+# adapter by their id, so they are not guessed at; tag one in a board rule.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0658", ATTRS{idProduct}=="0200", ENV{OHC_RADIO}="zwave"
