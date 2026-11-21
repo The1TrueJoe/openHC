@@ -5,7 +5,7 @@ import {
   CircleHelp, Gamepad2, History, ChevronDown, Save,
 } from 'lucide-react';
 import {
-  type Device, type Kind, type Proto, type Reading, useTree, zigbeeDevices, zwaveDevices, info, describe,
+  type Control, type Device, type Kind, type Proto, type Reading, useTree, zigbeeDevices, zwaveDevices, info, describe,
   setOn, setLevel, setColorTemp, rename, reinterview, remove, trees, zwaveParams, configure,
 } from './model';
 import { AddDevice } from './AddDevice';
@@ -214,7 +214,8 @@ const READING_ICON: Record<string, typeof Lightbulb> = {
 
 function DeviceCard({ d, onOpen }: { d: Device; onOpen: () => void }) {
   const Icon = KIND_ICON[d.kind];
-  const lit = d.on === true;
+  const lit = d.controls.some((c) => c.on);
+  const single = d.controls.length === 1 ? d.controls[0] : null;
   return (
     <div
       className="hair group flex cursor-pointer flex-col gap-3 rounded-xl border bg-panel p-4 transition hover:border-accent/40"
@@ -228,10 +229,11 @@ function DeviceCard({ d, onOpen }: { d: Device; onOpen: () => void }) {
           <div className="truncate text-sm font-medium">{d.name}</div>
           <div className="truncate text-xs text-muted">{[d.vendor, d.model].filter(Boolean).join(' · ') || label(d.proto)}</div>
         </div>
-        {d.switchable && <OnOff d={d} />}
+        {single && <OnOff d={d} c={single} />}
       </div>
 
-      {d.level !== undefined && <LevelSlider d={d} />}
+      {single?.level !== undefined && <LevelSlider d={d} c={single} />}
+      {d.controls.length > 1 && <Channels d={d} />}
 
       {d.readings.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -273,10 +275,10 @@ function ReadingChip({ r }: { r: Reading }) {
 
 /** The on/off switch. Optimistic: flips at once, and the device's own report
  *  (which the bridge reads back) settles it. */
-function OnOff({ d }: { d: Device }) {
+function OnOff({ d, c }: { d: Device; c: Control }) {
   const [want, setWant] = useState<boolean | null>(null);
-  useEffect(() => setWant(null), [d.on]);
-  const on = want ?? !!d.on;
+  useEffect(() => setWant(null), [c.on]);
+  const on = want ?? !!c.on;
   return (
     <button
       role="switch"
@@ -285,7 +287,7 @@ function OnOff({ d }: { d: Device }) {
       onClick={(e) => {
         e.stopPropagation();
         setWant(!on);
-        setOn(d, !on);
+        setOn(d, c, !on);
       }}
       className={`relative h-6 w-11 shrink-0 rounded-full transition ${on ? 'bg-accent' : 'bg-edge'}`}
     >
@@ -294,12 +296,30 @@ function OnOff({ d }: { d: Device }) {
   );
 }
 
-function LevelSlider({ d }: { d: Device }) {
+function LevelSlider({ d, c }: { d: Device; c: Control }) {
   return (
     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
       <Sun size={13} className="text-muted" />
-      <Committed value={d.level ?? 0} min={1} max={100} onCommit={(v) => setLevel(d, v)} label="Brightness" />
-      <span className="w-9 text-right text-xs tabular-nums text-muted">{d.level}%</span>
+      <Committed value={c.level ?? 0} min={1} max={100} onCommit={(v) => setLevel(d, c, v)} label={`${c.label} brightness`} />
+      <span className="w-9 text-right text-xs tabular-nums text-muted">{c.level}%</span>
+    </div>
+  );
+}
+
+/** A multi-channel device (a double relay, a two-gang switch): a row per channel. */
+function Channels({ d }: { d: Device }) {
+  return (
+    <div className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
+      {d.controls.map((c) => (
+        <div key={c.ep} className="space-y-1 rounded-lg bg-raised px-2.5 py-1.5">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="min-w-0 flex-1 truncate">{c.label}</span>
+            <span className="text-xs text-muted">{c.on === undefined ? '' : c.on ? 'On' : 'Off'}</span>
+            <OnOff d={d} c={c} />
+          </div>
+          {c.level !== undefined && <LevelSlider d={d} c={c} />}
+        </div>
+      ))}
     </div>
   );
 }
@@ -371,16 +391,18 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
         </div>
 
         <div className="space-y-5 p-4">
-          {(d.switchable || d.level !== undefined || d.colorTemp) && (
+          {(d.controls.length > 0 || d.colorTemp) && (
             <section className="space-y-3">
               <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Control</h3>
-              {d.switchable && (
-                <div className="flex items-center justify-between text-sm">
-                  <span>{d.on === undefined ? 'Not reported yet' : d.on ? 'On' : 'Off'}</span>
-                  <OnOff d={d} />
-                </div>
-              )}
-              {d.level !== undefined && <LevelSlider d={d} />}
+              {d.controls.length === 1 ? (
+                <>
+                  <div className="flex items-center justify-between text-sm">
+                    <span>{d.controls[0].on === undefined ? 'Not reported yet' : d.controls[0].on ? 'On' : 'Off'}</span>
+                    <OnOff d={d} c={d.controls[0]} />
+                  </div>
+                  {d.controls[0].level !== undefined && <LevelSlider d={d} c={d.controls[0]} />}
+                </>
+              ) : d.controls.length > 1 ? <Channels d={d} /> : null}
               {d.colorTemp && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted">Warm</span>

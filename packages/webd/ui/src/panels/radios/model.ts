@@ -88,6 +88,17 @@ export type Reading = {
   alert?: boolean;
 };
 
+export type Control = {
+  /** Which channel: '' for the device itself, else the endpoint/suffix. */
+  ep: string;
+  label: string;
+  on?: boolean;
+  /** 0..100, for a dimmer. */
+  level?: number;
+  /** Z-Wave: the command class it is set through. */
+  cc?: 'binary_switch' | 'multilevel_switch';
+};
+
 export type Device = {
   key: string;
   proto: Proto;
@@ -102,11 +113,9 @@ export type Device = {
   status: string;
   healthy: boolean;
   interviewing: boolean;
-  /** It has an on/off control, whether or not it has reported its state yet. */
-  switchable: boolean;
-  on?: boolean;
-  /** 0..100. */
-  level?: number;
+  /** Its switches and dimmers: one for a plug or a bulb, one per relay or
+   *  gang on a multi-channel device. Present before the first report, too. */
+  controls: Control[];
   colorTemp?: { mireds: number; min: number; max: number };
   readings: Reading[];
   battery?: number;
@@ -174,8 +183,14 @@ function zigbeeDevice(d: any, st: any): Device {
   const done = !!d.interview?.done;
   const stage = d.interview?.stage;
   const kind = zigbeeKind(d, st);
-  const on = typeof st.state === 'string' ? st.state.toUpperCase() === 'ON' : undefined;
-  const bri = num(st.brightness);
+  // `state` is the first endpoint's On/Off, `state_2`, `state_3` the others'.
+  const sfx = [...new Set(Object.keys(st).filter((k) => /^state(_\d+)?$/.test(k)).map((k) => k.slice(5)))];
+  const controls: Control[] = sfx.map((ep) => {
+    const on = typeof st[`state${ep}`] === 'string' ? String(st[`state${ep}`]).toUpperCase() === 'ON' : undefined;
+    const bri = num(st[`brightness${ep}`]);
+    return { ep, label: sfx.length > 1 ? `Switch ${ep ? ep.slice(1) : 1}` : 'Power', on, level: bri !== undefined ? Math.round((bri / 254) * 100) : undefined };
+  });
+  if (!controls.length && (kind === 'light' || kind === 'switch' || kind === 'plug')) controls.push({ ep: '', label: 'Power' });
   return {
     key: `zigbee:${d.ieee_address}`,
     proto: 'zigbee',
@@ -188,9 +203,7 @@ function zigbeeDevice(d: any, st: any): Device {
     status: done ? 'Ready' : d.interview?.error ? `Interview stopped: ${d.interview.error}` : `Setting up${stage ? `: ${stage.replace(/_/g, ' ')}` : '…'}`,
     healthy: done && !d.interview?.error,
     interviewing: !done,
-    switchable: on !== undefined || kind === 'light' || kind === 'switch' || kind === 'plug',
-    on,
-    level: bri !== undefined ? Math.round((bri / 254) * 100) : undefined,
+    controls,
     colorTemp: num(st.color_temp) !== undefined ? { mireds: st.color_temp, min: 153, max: 500 } : undefined,
     readings,
     battery,
@@ -243,16 +256,23 @@ function zwaveDevice(id: string, t: Tree): Device {
   }
   const readings: Reading[] = [];
   let kind: Kind = ZW_GENERIC[n.protocol?.generic] ?? 'unknown';
-  let on: boolean | undefined;
-  let level: number | undefined;
   let battery: number | undefined;
+  /** A multi-channel device's endpoints, named by its device file when it has names. */
+  const epName = (ep: string) => n.device?.endpoints?.[ep]?.label ?? n.device?.endpoints?.[ep] ?? null;
+  const byEp = new Map<string, Control>();
   for (const [path, v] of values) {
-    const [cc, prop] = path.split('/');
-    const label = v.label ?? prop;
-    if (cc === 'binary_switch' && prop === 'current') { on = !!v.value; continue; }
+    const parts = path.split('/');
+    const ep = /^\d+$/.test(parts[parts.length - 1]) && parts.length > 2 ? parts.pop()! : '';
+    const [cc, prop] = parts;
+    const name = typeof epName(ep) === 'string' ? epName(ep) : null;
+    const label = (v.label ?? prop) + (ep ? ` (${name ?? `channel ${ep}`})` : '');
+    if (cc === 'binary_switch' && prop === 'current') {
+      byEp.set(ep, { ep, label: name ?? '', on: !!v.value, cc: 'binary_switch' });
+      continue;
+    }
     if (cc === 'multilevel_switch' && prop === 'current') {
-      level = Math.max(0, Math.min(100, Math.round((Number(v.value) / 99) * 100)));
-      on = Number(v.value) > 0;
+      byEp.set(ep, { ep, label: name ?? '', on: Number(v.value) > 0, cc: 'multilevel_switch',
+        level: Math.max(0, Math.min(100, Math.round((Number(v.value) / 99) * 100))) });
       if (kind === 'switch' || kind === 'unknown') kind = 'light';
       continue;
     }
@@ -276,6 +296,12 @@ function zwaveDevice(id: string, t: Tree): Device {
     const icon = /temperature/i.test(prop) ? 'temperature' : /humidity/i.test(prop) ? 'humidity' : /illuminance|luminance/i.test(prop) ? 'light' : 'gauge';
     readings.push({ key: path, label, text: `${typeof v.value === 'number' ? fmt(v.value) : v.state ?? String(v.value)}${v.unit ? ` ${v.unit}` : ''}`, icon });
   }
+  // Endpoint channels replace the root's own switch, which only mirrors one of them.
+  let controls = [...byEp.values()];
+  if (controls.some((c) => c.ep)) controls = controls.filter((c) => c.ep);
+  controls.sort((a, b) => Number(a.ep || 0) - Number(b.ep || 0));
+  controls.forEach((c) => { c.label ||= controls.length > 1 ? `Switch ${c.ep}` : 'Power'; });
+  if (!controls.length && (kind === 'light' || kind === 'switch' || kind === 'plug')) controls.push({ ep: '', label: 'Power', cc: 'binary_switch' });
   const stage = n.stage as string | undefined;
   const interviewing = !!stage && stage !== 'complete';
   const dead = status === 'dead';
@@ -294,9 +320,7 @@ function zwaveDevice(id: string, t: Tree): Device {
     status: dead ? 'Not responding' : interviewing ? `Setting up: ${stage!.replace(/_/g, ' ')}` : status === 'asleep' ? 'Asleep' : status === 'awake' ? 'Awake' : 'Ready',
     healthy: !dead && !interviewing,
     interviewing,
-    switchable: on !== undefined || kind === 'light' || kind === 'switch' || kind === 'plug',
-    on,
-    level,
+    controls,
     readings,
     battery,
     signal: num(route?.rssi) !== undefined ? `${route.rssi} dBm` : undefined,
@@ -383,15 +407,16 @@ export { parse };
 
 /* ---------------- commands ---------------- */
 
-export function setOn(d: Device, on: boolean) {
-  if (d.proto === 'zigbee') return trees.zigbee.send(`${d.name}/set`, { state: on ? 'ON' : 'OFF' });
-  const path = d.level !== undefined ? 'multilevel_switch/current' : 'binary_switch/current';
-  trees.zwave.send(`nodes/${d.id}/${path}/set`, on ? 'ON' : 'OFF');
+const zwPath = (d: Device, c: Control) => `nodes/${d.id}/${c.cc ?? 'binary_switch'}/current${c.ep ? `/${c.ep}` : ''}/set`;
+
+export function setOn(d: Device, c: Control, on: boolean) {
+  if (d.proto === 'zigbee') return trees.zigbee.send(`${d.name}/set`, { [`state${c.ep}`]: on ? 'ON' : 'OFF' });
+  trees.zwave.send(zwPath(d, c), on ? 'ON' : 'OFF');
 }
 
-export function setLevel(d: Device, pct: number) {
-  if (d.proto === 'zigbee') return trees.zigbee.send(`${d.name}/set`, { brightness: Math.round((pct / 100) * 254) });
-  trees.zwave.send(`nodes/${d.id}/multilevel_switch/current/set`, String(Math.round((pct / 100) * 99)));
+export function setLevel(d: Device, c: Control, pct: number) {
+  if (d.proto === 'zigbee') return trees.zigbee.send(`${d.name}/set`, { [`brightness${c.ep}`]: Math.round((pct / 100) * 254) });
+  trees.zwave.send(zwPath(d, c), String(Math.round((pct / 100) * 99)));
 }
 
 export function setColorTemp(d: Device, mireds: number) {
