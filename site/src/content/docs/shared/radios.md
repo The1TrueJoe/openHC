@@ -1,6 +1,6 @@
 ---
-title: Zigbee and Z-Wave
-description: The box's radios on MQTT, through zigbee-bridge and zwave-bridge.
+title: Zigbee, Z-Wave and Bluetooth
+description: The box's radios on MQTT, through zigbee-bridge, zwave-bridge and bluetooth-bridge.
 sidebar:
   order: 8
 ---
@@ -12,13 +12,13 @@ the box's MQTT broker, under the same tree as the rest of the box:
 |---|---|---|---|---|
 | Zigbee (the EM357 on every controller) | [zigbee-bridge](https://pulzar-net.github.io/zigbee-bridge/) | `/dev/zigbee` | `<base>/zigbee/...` | `/data/ohc/zigbee` |
 | Z-Wave (the CA-1's ZM5304, or a USB stick) | [zwave-bridge](https://pulzar-net.github.io/zwave-bridge/) | `/dev/zwave` | `<base>/zwave/...` | `/data/ohc/zwave` |
+| Bluetooth LE (the CA-1's RTL8723BS, or a USB dongle) | [bluetooth-bridge](https://pulzar-net.github.io/bluetooth-bridge/) | `hci0` | `<base>/bluetooth/...` | `/data/ohc/bluetooth` |
 
 `<base>` is the box's topic root, `openhc/<hostname>` unless iod's MQTT settings
 rename it (`ohc-mqtt-base` prints it). The bridges' own docs cover the topics:
-`bridge/info`, `bridge/request/permit_join`, a device's state and `/set`, and the
-Home Assistant discovery they publish. Both bridges are upstream projects, built
-at the revision pinned in their feature's `packages` file
-(`board/common/features/zigbee`, `board/common/features/zwave`).
+`bridge/info`, `bridge/request/permit_join`, a device's state and `/set`. The
+bridges are upstream projects, built at the revision pinned in their feature's
+`packages` file (`board/common/features/zigbee`, `zwave`, `bluetooth`).
 
 ## Zigbee
 
@@ -53,3 +53,13 @@ by their id, so they need a board udev rule that tags them `OHC_RADIO=zwave`.
 The controller must run Silicon Labs' Serial API firmware. A CA-1 that was never
 set up in Control4 has a blank ZM5304. See [the CA-1 page](/ca1/#radios) for
 programming it with Control4's own updater.
+
+## Bluetooth
+
+`S92ohcbluetooth` starts bluetooth-bridge once the box has a controller (`hci0`).
+The bridge is its own Bluetooth LE host over the kernel's HCI user channel, with
+no BlueZ: it scans, decodes beacons and sensors (BTHome, Ruuvi, iBeacon,
+Eddystone) to `<base>/bluetooth/device/<ADDRESS>`, and takes connections, GATT
+and pairing as `bridge/request/...`. The kernel only brings the controller up:
+the CA-1's onboard RTL8723BS is Realtek H5 on UART2 (`hci_uart` loads its
+firmware), and a USB dongle is `btusb`.

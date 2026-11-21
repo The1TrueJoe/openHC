@@ -1,0 +1,12 @@
+# bluetooth, CA-1 kernel half: the RTL8723BS's Bluetooth is Realtek H5 on UART2
+# (ttymxc1, 115200 8E1), described as a serdev child of &uart2 in the DTS. The
+# kernel's hci_uart does the Realtek setup (firmware download from
+# /lib/firmware/rtl_bt, then the config's baud rate) and hands the bridge hci0.
+# Modules, like the Wi-Fi half: a firmware hiccup must not stall boot.
+CONFIG_BT=m
+CONFIG_BT_HCIBTUSB=m
+CONFIG_SERIAL_DEV_BUS=y
+CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
+CONFIG_BT_HCIUART=m
+CONFIG_BT_HCIUART_3WIRE=y
+CONFIG_BT_HCIUART_RTL=y

@@ -1,0 +1,4 @@
+# bluetooth, EA kernel half: modules (the copy window); eudev loads btusb when
+# a dongle is plugged in.
+CONFIG_BT=m
+CONFIG_BT_HCIBTUSB=m

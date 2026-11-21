@@ -18,11 +18,8 @@ CONFIG_RTL8723BS=m
 CONFIG_CFG80211=y
 CONFIG_MAC80211=y
 CONFIG_RFKILL=y
-# The Bluetooth half of the same package, over UART/H5.
-CONFIG_BT=m
-CONFIG_BT_HCIUART=m
-CONFIG_BT_HCIUART_H4=y
-CONFIG_BT_HCIUART_3WIRE=y
+# The Bluetooth half of the same package (H5 on UART2) is the 'bluetooth'
+# feature's: board/ca1/features/bluetooth/linux.fragment.
 
 # --- MMC: SDIO for the radio, 8-bit eMMC for root ---
 CONFIG_MMC=y

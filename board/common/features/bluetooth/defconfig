@@ -1,0 +1,9 @@
+# openHC feature: bluetooth — the Bluetooth LE to MQTT bridge, bluetooth-bridge
+# (github.com/pulzar-net/bluetooth-bridge), on the box's controller: an onboard
+# one (the CA-1's RTL8723BS, board/ca1/features/bluetooth) or a USB dongle.
+# The bridge is its own host stack over the kernel's HCI user channel, so there
+# is no BlueZ and no D-Bus; it is one static binary built by packages/build.sh
+# from this feature's `packages`. Realtek parts (most cheap dongles, and the
+# CA-1's) need their firmware, which the kernel loads before handing over hci0.
+BR2_PACKAGE_LINUX_FIRMWARE=y
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX_BT=y

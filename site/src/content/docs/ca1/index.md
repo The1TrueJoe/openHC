@@ -242,7 +242,7 @@ aliases follow function rather than address:
 | Alias | i.MX UART | `/dev` | RTS/CTS | Use |
 |---|---|---|---|---|
 | serial0 | UART1 | `ttymxc0` | no | **console** @115200 |
-| serial1 | UART2 | `ttymxc1` | yes | unused / spare |
+| serial1 | UART2 | `ttymxc1` | yes | Bluetooth (RTL8723BS, Realtek H5, 115200 8E1) |
 | serial2 | UART3 | `ttymxc2` | yes | **RS-232/RS-485 port** (`ioserver`) |
 | serial3 | UART4 | `ttymxc3` | no | **Z-Wave** → `/dev/ttySZwave` |
 | serial4 | UART5 | `ttymxc4` | yes | **Zigbee** → `/dev/ttySZigbee` |
@@ -313,6 +313,11 @@ reset.
 SDIO device `024c:b723` on usdhc1, driven by an out-of-tree `8723bs.ko`, the only
 module loaded. The same package is the Bluetooth radio, which is why the GPIO
 table has `bt_enable`, `bt_wake_host` and `host_wake_bt`.
+
+Control4 never turned the Bluetooth half on (stock holds `bt_enable` low). openHC
+does: it is Realtek H5 on UART2 (`ttymxc1`, 115200 8E1), a `realtek,rtl8723bs-bt`
+node under `&uart2` that `hci_uart` brings up as `hci0` for bluetooth-bridge
+([radios](/shared/radios/)).
 
 **This is the one peripheral where mainline is clearly better placed than the
 vendor:** `drivers/staging/rtl8723bs` has been in mainline since v4.12, so the
