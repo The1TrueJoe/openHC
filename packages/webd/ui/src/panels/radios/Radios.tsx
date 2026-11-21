@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Plus, Minus, Lightbulb, ToggleRight, Plug, Thermometer, Droplets, DoorOpen, PersonStanding, Lock, Gauge, Battery,
-  BatteryLow, Signal, ShieldCheck, ShieldAlert, Zap, Flame, Sun, Radio, Cpu, X, Pencil, RefreshCw, Trash2, Check,
-  CircleHelp, Gamepad2, History, ChevronDown, Save,
+  BatteryLow, Signal, ShieldCheck, ShieldAlert, Zap, Flame, Sun, Radio, Waves, Cpu, X, Pencil, RefreshCw, Trash2, Check,
+  CircleHelp, Gamepad2, History, ChevronDown, ChevronRight, Save, Search, LayoutList, Share2, SlidersHorizontal, HardDriveDownload,
 } from 'lucide-react';
 import {
   type Control, type Device, type Kind, type Proto, type Reading, useTree, zigbeeDevices, zwaveDevices, info, describe,
@@ -17,54 +17,83 @@ import { NetworkMap } from './NetworkMap';
 
 export { startRadios, useTree, present } from './model';
 
+type Tab = 'devices' | 'map' | 'activity' | 'network';
+
+/** The last sub-tab per radio, kept in the browser (a convenience; it may be gone). */
+function useStoredTab(proto: Proto): [Tab, (t: Tab) => void] {
+  const key = `ohc.radios.${proto}.tab`;
+  const [tab, set] = useState<Tab>(() => {
+    try { return (localStorage.getItem(key) as Tab) || 'devices'; } catch { return 'devices'; }
+  });
+  return [tab, (t) => { set(t); try { localStorage.setItem(key, t); } catch { /* private mode */ } }];
+}
+
 export function RadiosPanel({ proto }: { proto: Proto }) {
   const t = useTree(proto);
+  const i = info(t) ?? {};
   const devices = proto === 'zigbee' ? zigbeeDevices(t) : zwaveDevices(t);
+  const [tab, setTab] = useStoredTab(proto);
   const [open, setOpen] = useState<string | null>(null);
   const [wizard, setWizard] = useState<null | 'add' | 'remove'>(null);
   const selected = devices.find((d) => d.key === open);
+  const online = /online/.test(t.topics.get('bridge/state') ?? '');
+  const pairing = proto === 'zigbee' && !!i.permit_join;
+  const attention = devices.filter((d) => !d.healthy && !d.interviewing).length;
+  const Icon = proto === 'zigbee' ? Radio : Waves;
+  const tabs: { id: Tab; label: string; icon: typeof Radio; badge?: number }[] = [
+    { id: 'devices', label: 'Devices', icon: LayoutList, badge: devices.length },
+    { id: 'map', label: 'Network map', icon: Share2 },
+    { id: 'activity', label: 'Activity', icon: History },
+    { id: 'network', label: proto === 'zigbee' ? 'Network' : 'Controller', icon: SlidersHorizontal },
+  ];
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <div>
-          <h1 className="text-base font-semibold tracking-tight">{label(proto)}</h1>
-          <p className="text-xs text-muted">
-            {devices.length ? `${devices.length} device${devices.length === 1 ? '' : 's'}` : 'Nothing paired yet'}
-          </p>
+    <div className="flex min-h-full flex-col gap-4">
+      <header className="flex flex-wrap items-center gap-3">
+        <div className="grid h-10 w-10 place-items-center rounded-xl bg-accent/15 text-accent"><Icon size={20} /></div>
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold leading-tight tracking-tight">{label(proto)}</h1>
+          <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
+            <span className={`inline-flex items-center gap-1 ${online ? (pairing ? 'text-accent' : 'text-live') : 'text-alarm'}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${online ? (pairing ? 'animate-pulse bg-accent' : 'bg-live') : 'bg-alarm'}`} />
+              {online ? (pairing ? 'Pairing open' : 'Online') : 'Offline'}
+            </span>
+            <span>·</span>
+            <span>{devices.length} device{devices.length === 1 ? '' : 's'}</span>
+            {attention > 0 && <><span>·</span><span className="text-alarm">{attention} not responding</span></>}
+            <span>·</span>
+            <span className="font-mono">{proto === 'zigbee' ? `EZSP ${i.coordinator?.firmware ?? '?'} · ch ${i.network?.channel ?? '?'}` : `${i.library_version ?? '?'} · home ${i.home_id ?? '?'}`}</span>
+          </div>
         </div>
         <div className="ml-auto flex gap-2">
           {proto === 'zwave' && (
-            <button className={ghost} onClick={() => setWizard('remove')}>
-              <Minus size={15} /> Remove a device
-            </button>
+            <button className={ghost} onClick={() => setWizard('remove')}><Minus size={15} /> Remove device</button>
           )}
-          <button className={primary} onClick={() => setWizard('add')}>
-            <Plus size={15} /> Add device
+          <button className={primary} onClick={() => setWizard('add')}><Plus size={15} /> Add device</button>
+        </div>
+      </header>
+
+      <nav className="hair flex gap-1 overflow-x-auto border-b [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist">
+        {tabs.map((x) => (
+          <button
+            key={x.id}
+            role="tab"
+            aria-selected={tab === x.id}
+            onClick={() => setTab(x.id)}
+            className={`-mb-px inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-sm transition ${
+              tab === x.id ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink'
+            }`}
+          >
+            <x.icon size={14} /> {x.label}
+            {x.badge !== undefined && <span className="rounded-full bg-raised px-1.5 text-[10px] tabular-nums text-muted">{x.badge}</span>}
           </button>
-        </div>
-      </div>
+        ))}
+      </nav>
 
-      <NetworkCard proto={proto} />
-
-      {devices.length ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {devices.map((d) => <DeviceCard key={d.key} d={d} onOpen={() => setOpen(d.key)} />)}
-        </div>
-      ) : (
-        <div className="hair rounded-xl border border-dashed bg-panel p-8 text-center">
-          <Radio size={22} className="mx-auto mb-2 text-muted" />
-          <p className="text-sm">No devices yet</p>
-          <p className="mt-1 text-xs text-muted">Add a light, plug, switch or sensor and it shows up here.</p>
-          <button className={`${primary} mt-4`} onClick={() => setWizard('add')}>
-            <Plus size={15} /> Add device
-          </button>
-        </div>
-      )}
-
-      <NetworkMap proto={proto} />
-
-      <Activity proto={proto} />
+      {tab === 'devices' && <DeviceList proto={proto} devices={devices} onOpen={setOpen} onAdd={() => setWizard('add')} />}
+      {tab === 'map' && <NetworkMap proto={proto} embedded />}
+      {tab === 'activity' && <ActivityList proto={proto} />}
+      {tab === 'network' && <NetworkTab proto={proto} devices={devices} onExclude={() => setWizard('remove')} />}
 
       {selected && <DeviceSheet d={selected} onClose={() => setOpen(null)} onExclude={() => { setOpen(null); setWizard('remove'); }} />}
       {wizard && <AddDevice protos={[proto]} mode={wizard} onClose={() => setWizard(null)} />}
@@ -75,54 +104,110 @@ export function RadiosPanel({ proto }: { proto: Proto }) {
 export const label = (p: Proto) => (p === 'zigbee' ? 'Zigbee' : 'Z-Wave');
 export const primary = 'inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40';
 export const ghost = 'hair inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm text-ink hover:border-accent/50 disabled:opacity-40';
+const card = 'hair rounded-xl border bg-panel p-4';
+const h2 = 'mb-3 flex items-center gap-2 text-sm font-medium';
 
-/* ---------------- networks ---------------- */
+/* ---------------- network / controller tab ---------------- */
 
-function NetworkCard({ proto }: { proto: Proto }) {
+function Facts({ rows }: { rows: [string, React.ReactNode][] }) {
+  return (
+    <dl className="divide-y text-sm hair">
+      {rows.map(([k, v]) => (
+        <div key={k} className="hair flex gap-3 py-2">
+          <dt className="w-36 shrink-0 text-muted">{k}</dt>
+          <dd className="min-w-0 break-words font-mono text-xs leading-5">{v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function NetworkTab({ proto, devices, onExclude }: { proto: Proto; devices: Device[]; onExclude: () => void }) {
   const t = useTree(proto);
   const i = info(t) ?? {};
-  const state = t.topics.get('bridge/state') ?? '';
-  const online = /online/.test(state);
-  const rows: [string, string][] =
-    proto === 'zigbee'
-      ? [
-          ['Coordinator', `${(i.coordinator?.type ?? '').toUpperCase()} ${i.coordinator?.firmware ?? ''}`.trim() || '—'],
-          ['Channel', String(i.network?.channel ?? '—')],
-          ['PAN', i.network?.pan_id !== undefined ? `0x${Number(i.network.pan_id).toString(16).padStart(4, '0')}` : '—'],
-        ]
-      : [
-          ['Controller', i.library_version ?? '—'],
-          ['Home ID', i.home_id ?? '—'],
-          ['Node', String(i.node_id ?? '—')],
-        ];
-  const pairing = proto === 'zigbee' && i.permit_join;
+  const backup = t.log.find((l) => l.tail === 'bridge/response/backup');
+  const hex = (n: unknown, w = 4) => (typeof n === 'number' ? `0x${n.toString(16).padStart(w, '0')}` : '—');
+  const rows: [string, React.ReactNode][] = proto === 'zigbee'
+    ? [
+        ['Coordinator', `${(i.coordinator?.type ?? '').toUpperCase()} · EmberZNet ${i.coordinator?.firmware ?? '?'} · protocol ${i.coordinator?.protocol ?? '?'}`],
+        ['IEEE address', i.coordinator?.ieee_address ?? '—'],
+        ['Channel', String(i.network?.channel ?? '—')],
+        ['PAN ID', hex(i.network?.pan_id)],
+        ['Extended PAN ID', i.network?.extended_pan_id ?? '—'],
+        ['Network update ID', String(i.network?.update_id ?? '—')],
+        ['Pairing', i.permit_join ? `open (${i.permit_join_timeout ?? '?'} s)` : 'closed'],
+        ['Bridge', `zigbee-bridge ${i.version ?? ''}`],
+      ]
+    : [
+        ['Controller', `${String(i.library_type ?? '?').replace(/^./, (c: string) => c.toUpperCase())} · ${i.library_version ?? '?'}`],
+        ['Firmware', i.firmware ?? '—'],
+        ['Home ID', i.home_id ?? '—'],
+        ['Node ID', String(i.node_id ?? '—')],
+        ['SIS', i.sis ? 'yes (this controller)' : 'no'],
+        ['Region', i.region ?? 'set by firmware'],
+        ['Chip', i.chip_type !== undefined ? `type ${i.chip_type}` : '—'],
+        ['Bridge', `zwave-bridge ${i.version ?? ''}`],
+      ];
+  const dead = devices.filter((d) => proto === 'zwave' && d.status === 'Not responding');
   return (
-    <section className="hair rounded-xl border bg-panel p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <Radio size={15} className="text-muted" />
-        <h2 className="text-sm font-medium">{label(proto)}</h2>
-        <span className={`ml-1 inline-flex items-center gap-1 text-xs ${online ? 'text-live' : 'text-alarm'}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${online ? 'bg-live' : 'bg-alarm'}`} />
-          {online ? (pairing ? 'Pairing open' : 'Online') : 'Offline'}
-        </span>
-        <button
-          className="ml-auto text-xs text-muted hover:text-ink"
-          title="Save the network's keys and settings to the box"
-          onClick={() => trees[proto].send('bridge/request/backup')}
-        >
-          Back up
-        </button>
-      </div>
-      <dl className="grid grid-cols-3 gap-2 text-xs">
-        {rows.map(([k, v]) => (
-          <div key={k} className="min-w-0">
-            <dt className="text-muted">{k}</dt>
-            <dd className="truncate font-mono" title={v}>{v}</dd>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <section className={card}>
+        <h2 className={h2}><Cpu size={15} className="text-muted" /> {proto === 'zigbee' ? 'Coordinator' : 'Controller'}</h2>
+        <Facts rows={rows} />
+      </section>
+      <div className="space-y-4">
+        {proto === 'zigbee' && (
+          <section className={card}>
+            <h2 className={h2}><Signal size={15} className="text-muted" /> Channel</h2>
+            <ChannelSettings current={i.network?.channel} />
+          </section>
+        )}
+        <section className={card}>
+          <h2 className={h2}><HardDriveDownload size={15} className="text-muted" /> Backup</h2>
+          <p className="mb-3 text-xs text-muted">
+            {proto === 'zigbee'
+              ? 'The network key, PAN and every device\'s link key, saved on the box. A restore brings the same network back onto a new coordinator, with nothing paired again. The bridge also backs up after changes.'
+              : 'The controller\'s memory (its node table, routes and keys), saved on the box, to bring the same network back onto a replacement controller.'}
+          </p>
+          <div className="flex items-center gap-3">
+            <button className={ghost} onClick={() => trees[proto].send('bridge/request/backup')}><Save size={14} /> Back up now</button>
+            {backup && (
+              <span className="text-xs text-muted">
+                {backup.data?.status === 'ok' || backup.data?.ok
+                  ? `Saved ${new Date(backup.at).toLocaleTimeString()}${backup.data?.data?.path ?? backup.data?.file ? ` to ${backup.data?.data?.path ?? backup.data?.file}` : ''}`
+                  : `Failed: ${backup.data?.error ?? 'unknown'}`}
+              </span>
+            )}
           </div>
-        ))}
-      </dl>
-      {proto === 'zigbee' && <ChannelSettings current={i.network?.channel} />}
-    </section>
+        </section>
+        {proto === 'zwave' && (
+          <section className={card}>
+            <h2 className={h2}><Trash2 size={15} className="text-muted" /> Remove devices</h2>
+            <p className="mb-3 text-xs text-muted">
+              A working device leaves by exclusion: start it here, then press the device's button. Any device can be
+              excluded this way, even one from another controller.
+            </p>
+            <button className={ghost} onClick={onExclude}><Minus size={14} /> Remove a device</button>
+            {dead.length > 0 && (
+              <div className="mt-4 space-y-2">
+                <div className="text-xs text-muted">Not responding: these can be removed without the device.</div>
+                {dead.map((d) => (
+                  <div key={d.key} className="flex items-center gap-2 rounded-lg bg-raised px-3 py-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{d.name} <span className="text-xs text-muted">node {d.id}</span></span>
+                    <button
+                      className="text-xs text-alarm hover:underline"
+                      onClick={() => confirm(`Remove ${d.name} (node ${d.id})? It no longer answers.`) && remove(d)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -131,7 +216,6 @@ const BETWEEN_WIFI = [15, 20, 25, 26];
 
 function ChannelSettings({ current }: { current?: number }) {
   const t = useTree('zigbee');
-  const [open, setOpen] = useState(false);
   const [asked, setAsked] = useState(0);
   const [pick, setPick] = useState<number | null>(null);
   const scan = t.log.find((l) => l.tail === 'bridge/response/energy_scan' && l.at >= asked);
@@ -141,12 +225,9 @@ function ChannelSettings({ current }: { current?: number }) {
   const quietest = [...channels].filter((c) => BETWEEN_WIFI.includes(c.channel)).sort((a, b) => a.max_rssi - b.max_rssi)[0]?.channel;
   const run = () => { setAsked(Date.now()); trees.zigbee.send('bridge/request/energy_scan'); };
   return (
-    <div className="hair mt-3 border-t pt-3">
-      <button className="flex w-full items-center gap-2 text-xs text-muted hover:text-ink" onClick={() => setOpen(!open)}>
-        Channel settings <ChevronDown size={13} className={`transition ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="mt-3 space-y-3">
+    <div>
+      {(
+        <div className="space-y-3">
           <p className="text-xs text-muted">
             Zigbee shares 2.4 GHz with Wi-Fi. Channels 15, 20, 25 and 26 fall between Wi-Fi's 1, 6 and 11; a scan
             measures how busy each channel is right here. Moving takes the whole network along, without pairing again;
@@ -215,54 +296,98 @@ const READING_ICON: Record<string, typeof Lightbulb> = {
   motion: PersonStanding, leak: Droplets, alarm: Flame, gauge: Gauge,
 };
 
-function DeviceCard({ d, onOpen }: { d: Device; onOpen: () => void }) {
-  const Icon = KIND_ICON[d.kind];
-  const lit = d.controls.some((c) => c.on);
-  const single = d.controls.length === 1 ? d.controls[0] : null;
-  return (
-    <div
-      className="hair group flex cursor-pointer flex-col gap-3 rounded-xl border bg-panel p-4 transition hover:border-accent/40"
-      onClick={onOpen}
-    >
-      <div className="flex items-start gap-3">
-        <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${lit ? 'bg-warm/20 text-warm' : 'bg-raised text-muted'}`}>
-          <Icon size={18} />
+const KIND_NAME: Record<Kind, string> = {
+  light: 'Light', switch: 'Switch', plug: 'Plug', sensor: 'Sensor', contact: 'Contact sensor', motion: 'Motion sensor',
+  leak: 'Leak sensor', lock: 'Lock', thermostat: 'Thermostat', remote: 'Remote', unknown: 'Device',
+};
+
+function DeviceList({ proto, devices, onOpen, onAdd }: { proto: Proto; devices: Device[]; onOpen: (key: string) => void; onAdd: () => void }) {
+  const [q, setQ] = useState('');
+  const shown = devices.filter((d) => !q || `${d.name} ${d.vendor ?? ''} ${d.model ?? ''} ${d.id}`.toLowerCase().includes(q.toLowerCase()));
+  if (!devices.length) {
+    return (
+      <div className="hair grid place-items-center rounded-xl border border-dashed bg-panel px-6 py-14 text-center">
+        <div>
+          {proto === 'zigbee' ? <Radio size={26} className="mx-auto mb-3 text-muted" /> : <Waves size={26} className="mx-auto mb-3 text-muted" />}
+          <p className="text-sm font-medium">No {label(proto)} devices yet</p>
+          <p className="mx-auto mt-1 max-w-sm text-xs text-muted">
+            {proto === 'zigbee'
+              ? 'Lights, plugs, switches and sensors from Hue, IKEA, Aqara, Sonoff and other Zigbee 3.0 makers.'
+              : 'Switches, dimmers, relays, locks and sensors, secured with S2 as they join.'}
+          </p>
+          <button className={`${primary} mt-5`} onClick={onAdd}><Plus size={15} /> Add a device</button>
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{d.name}</div>
-          <div className="truncate text-xs text-muted">{[d.vendor, d.model].filter(Boolean).join(' · ') || label(d.proto)}</div>
-        </div>
-        {single && <OnOff d={d} c={single} />}
       </div>
-
-      {single?.level !== undefined && <LevelSlider d={d} c={single} />}
-      {d.controls.length > 1 && <Channels d={d} />}
-
-      {d.readings.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {d.readings.filter((r) => r.icon !== 'battery').slice(0, 4).map((r) => <ReadingChip key={r.key} r={r} />)}
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <label className="hair flex w-full max-w-xs items-center gap-2 rounded-lg border bg-panel px-2.5 py-1.5 focus-within:border-accent/50">
+          <Search size={14} className="text-muted" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search devices" className="w-full bg-transparent text-sm outline-none" />
+        </label>
+        <span className="ml-auto text-xs text-muted">{shown.length} of {devices.length}</span>
+      </div>
+      <div className="hair overflow-hidden rounded-xl border bg-panel">
+        <div className="hair hidden grid-cols-[minmax(0,2.2fr)_minmax(0,1.6fr)_7rem_minmax(0,1.4fr)_1.25rem] gap-3 border-b bg-raised px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted md:grid">
+          <span>Device</span><span>Readings</span><span>Status</span><span>Control</span><span />
         </div>
-      )}
-
-      <div className="mt-auto flex items-center gap-3 text-xs text-muted">
-        <span className="inline-flex items-center gap-1">
-          <span className={`h-1.5 w-1.5 rounded-full ${d.healthy ? 'bg-live' : d.interviewing ? 'bg-warm' : 'bg-alarm'}`} />
-          {d.status}
-        </span>
-        <span className="ml-auto flex items-center gap-2">
-          {d.battery !== undefined && (
-            <span className={`inline-flex items-center gap-0.5 ${d.battery < 15 ? 'text-alarm' : ''}`}>
-              {d.battery < 15 ? <BatteryLow size={13} /> : <Battery size={13} />}
-              {d.battery}%
-            </span>
-          )}
-          {d.signal && <span className="inline-flex items-center gap-0.5" title={d.signal}><Signal size={12} /></span>}
-          {d.proto === 'zwave' &&
-            (d.security ? <ShieldCheck size={13} className="text-live" aria-label="Secure" /> : <ShieldAlert size={13} aria-label="Not secure" />)}
-          <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] uppercase tracking-wide">{label(d.proto)}</span>
-        </span>
+        <ul className="divide-y hair">
+          {shown.map((d) => <DeviceRow key={d.key} d={d} onOpen={() => onOpen(d.key)} />)}
+        </ul>
       </div>
     </div>
+  );
+}
+
+function DeviceRow({ d, onOpen }: { d: Device; onOpen: () => void }) {
+  const Icon = KIND_ICON[d.kind];
+  const lit = d.controls.some((c) => c.on);
+  return (
+    <li
+      className="hair grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 transition hover:bg-raised md:grid-cols-[minmax(0,2.2fr)_minmax(0,1.6fr)_7rem_minmax(0,1.4fr)_1.25rem]"
+      onClick={onOpen}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${lit ? 'bg-warm/20 text-warm' : 'bg-raised text-muted'}`}><Icon size={17} /></div>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{d.name}</div>
+          <div className="truncate text-xs text-muted">{[d.vendor, d.model].filter(Boolean).join(' · ') || KIND_NAME[d.kind]}</div>
+        </div>
+      </div>
+      <div className="hidden min-w-0 flex-wrap gap-1 md:flex">
+        {d.readings.filter((r) => r.icon !== 'battery').slice(0, 3).map((r) => <ReadingChip key={r.key} r={r} />)}
+        {!d.readings.length && <span className="text-xs text-muted">—</span>}
+      </div>
+      <div className="hidden flex-col gap-1 text-xs md:flex">
+        <span className="inline-flex items-center gap-1.5">
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${d.healthy ? 'bg-live' : d.interviewing ? 'bg-warm' : 'bg-alarm'}`} />
+          <span className="truncate">{d.healthy ? 'Ready' : d.status}</span>
+        </span>
+        <span className="flex items-center gap-2 text-muted">
+          {d.proto === 'zwave'
+            ? (d.security ? <span className="inline-flex items-center gap-0.5 text-live" title={d.security.join(', ')}><ShieldCheck size={12} /> S2</span>
+              : <span className="inline-flex items-center gap-0.5" title="Not secure"><ShieldAlert size={12} /> Insecure</span>)
+            : d.signal && <span className="inline-flex items-center gap-0.5" title={d.signal}><Signal size={12} /> {d.signal.replace('LQI ', '')}</span>}
+          {d.battery !== undefined && (
+            <span className={`inline-flex items-center gap-0.5 ${d.battery < 15 ? 'text-alarm' : ''}`}>
+              {d.battery < 15 ? <BatteryLow size={12} /> : <Battery size={12} />}{d.battery}%
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 md:justify-start" onClick={(e) => e.stopPropagation()}>
+        {d.controls.length === 1 && <OnOff d={d} c={d.controls[0]} />}
+        {d.controls.length > 1 && d.controls.map((c) => (
+          <span key={c.ep} className="inline-flex items-center gap-1.5 rounded-lg bg-raised py-1 pl-2 pr-1 text-xs">
+            <span className="max-w-24 truncate">{c.label}</span>
+            <OnOff d={d} c={c} />
+          </span>
+        ))}
+      </div>
+      <ChevronRight size={16} className="hidden text-muted md:block" />
+    </li>
   );
 }
 
@@ -585,29 +710,28 @@ function ZwaveSettings({ id }: { id: string }) {
 
 /* ---------------- activity ---------------- */
 
-function Activity({ proto }: { proto: Proto }) {
+function ActivityList({ proto }: { proto: Proto }) {
   const t = useTree(proto);
-  const [open, setOpen] = useState(false);
   const lines = t.log
     .map((l) => ({ at: l.at, s: describe(proto, l.tail, l.data) }))
     .filter((l): l is { at: number; s: string } => !!l.s);
-  if (!lines.length) return null;
   return (
-    <section className="hair rounded-xl border bg-panel">
-      <button className="flex w-full items-center gap-2 px-4 py-3 text-sm" onClick={() => setOpen(!open)}>
-        <History size={14} className="text-muted" /> Recent activity
-        <span className="text-xs text-muted">{lines[0].s}</span>
-        <ChevronDown size={14} className={`ml-auto text-muted transition ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <ul className="hair space-y-1 border-t px-4 py-3 text-xs">
-          {lines.slice(0, 30).map((l, i) => (
-            <li key={i} className="flex gap-3">
-              <span className="w-16 shrink-0 tabular-nums text-muted">{new Date(l.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-              <span>{l.s}</span>
+    <section className="hair overflow-hidden rounded-xl border bg-panel">
+      {lines.length ? (
+        <ul className="divide-y hair">
+          {lines.map((l, i) => (
+            <li key={i} className="hair flex gap-4 px-4 py-2.5 text-sm">
+              <span className="w-20 shrink-0 tabular-nums text-xs leading-5 text-muted">
+                {new Date(l.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+              <span>{l.s.replace(/^(Zigbee|Z-Wave): /, '')}</span>
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="px-4 py-10 text-center text-xs text-muted">
+          Nothing yet. Pairing, devices joining and leaving, and network changes show up here as they happen.
+        </p>
       )}
     </section>
   );
