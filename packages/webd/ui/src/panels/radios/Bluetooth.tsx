@@ -55,7 +55,7 @@ export function BluetoothPanel() {
         <h1 className="text-lg font-semibold">Bluetooth</h1>
         <span className={`text-xs ${online ? 'text-live' : 'text-warm'}`}>{online ? 'scanning' : 'offline'}</span>
         <span className="text-xs text-muted">
-          {[info?.address && fmtAddr(String(info.address).replace(/:/g, '')), info?.core_version?.replace(/^Bluetooth® Core Specification /, 'Bluetooth ')]
+          {[info?.address && fmtAddr(String(info.address).replace(/:/g, '')), info?.core_version?.replace(/^Bluetooth® Core Specification /, 'Bluetooth ').replace(/ \(Withdrawn\)$/, '')]
             .filter(Boolean).join(' · ')}
         </span>
         <label className="hair ml-auto flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-sm">
