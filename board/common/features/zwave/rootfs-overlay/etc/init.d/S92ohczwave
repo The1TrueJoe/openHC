@@ -17,6 +17,7 @@ BIN=/opt/ohc/bin/zwave-bridge
 CONF=/run/ohc/zwave-bridge.toml
 DATA=/data/ohc/zwave
 PID=/var/run/zwave-bridge.pid
+DEVICES=/usr/share/zwave-js-config/devices
 
 run() {
     echo $$ > "$PID.run"   # so `stop` ends this loop even mid-sleep
@@ -38,6 +39,9 @@ port = $2
 client_id = "${base##*/}-zwave"
 base_topic = "$base/zwave"
 CONF
+    # Z-Wave JS's device database (the zwave-js-config package): node names
+    # and named configuration parameters.
+    [ -d "$DEVICES" ] && printf '\n[devices]\ndir = "%s"\n' "$DEVICES" >> "$CONF"
     # ponytail: a plain restart loop, 30 s apart, no backoff.
     while [ -f "$PID" ]; do
         if [ -e /dev/zwave ]; then

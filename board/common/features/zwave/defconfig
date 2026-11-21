@@ -4,3 +4,7 @@
 # USB stick (61-openhc-zwave.rules). Nothing from Buildroot: the bridge is one
 # static binary, built by packages/build.sh from this feature's `packages`, and
 # talks to the box's mosquitto (common_defconfig).
+#
+# Its device library is Z-Wave JS's device database, installed as data
+# (packages/zwave-js-config): it names each node and its parameters.
+BR2_PACKAGE_ZWAVE_JS_CONFIG=y

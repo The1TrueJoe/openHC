@@ -237,7 +237,7 @@ function zwaveDevice(id: string, t: Tree): Device {
   for (const [k, v] of t.topics) {
     if (!k.startsWith(pre)) continue;
     const path = k.slice(pre.length);
-    if (['status', 'route', 'parameters', 'command'].includes(path)) continue;
+    if (['status', 'route', 'parameters', 'command'].includes(path) || path.startsWith('configuration/')) continue;
     const pv = parse(v);
     if (pv && typeof pv === 'object' && 'value' in pv) values.set(path, pv);
   }
@@ -329,6 +329,43 @@ const CC_NAMES: Record<number, string> = {
   0x73: 'Powerlevel', 0x75: 'Protection', 0x7a: 'Firmware Update', 0x80: 'Battery', 0x84: 'Wake Up', 0x85: 'Association',
   0x86: 'Version', 0x87: 'Indicator', 0x8e: 'Multi Channel Association', 0x98: 'Security S0', 0x9f: 'Security S2',
 };
+
+/** A device-file parameter (zwave-bridge's `nodes/<id>/parameters`) and its
+ *  current value, from the node's Configuration reports when it has sent one. */
+export type Param = {
+  key: string;
+  label: string;
+  description?: string;
+  min: number;
+  max: number;
+  default: number;
+  unit?: string | null;
+  readOnly: boolean;
+  options: { value: number; label: string }[];
+  value?: number;
+};
+
+export function zwaveParams(t: Tree, id: string): Param[] {
+  const list: any[] = parse(t.topics.get(`nodes/${id}/parameters`)) ?? [];
+  return list.map((p) => {
+    const [num, mask] = /^(\d+)(?:\[(0x[0-9a-f]+)\])?$/i.exec(p.key)?.slice(1) ?? [p.key];
+    const raw = parse(t.topics.get(`nodes/${id}/configuration/parameter_${num}`))?.value;
+    let value: number | undefined = typeof raw === 'number' ? raw : undefined;
+    if (value !== undefined && mask) {
+      const m = Number(mask);
+      value = (value & m) >>> Math.log2(m & -m);
+    }
+    return {
+      key: p.key, label: p.label ?? `Parameter ${p.key}`, description: p.description ?? undefined,
+      min: p.min ?? 0, max: p.max ?? 255, default: p.default ?? 0, unit: p.unit, readOnly: !!p.read_only,
+      options: p.options ?? [], value,
+    };
+  });
+}
+
+export function configure(id: string, settings: Record<string, number>) {
+  trees.zwave.send('bridge/request/configure', { node: Number(id), settings });
+}
 
 export function zwaveDevices(t: Tree): Device[] {
   const info = parse(t.topics.get('bridge/info')) ?? {};

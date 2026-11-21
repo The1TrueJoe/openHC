@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Plus, Minus, Lightbulb, ToggleRight, Plug, Thermometer, Droplets, DoorOpen, PersonStanding, Lock, Gauge, Battery,
   BatteryLow, Signal, ShieldCheck, ShieldAlert, Zap, Flame, Sun, Radio, Cpu, X, Pencil, RefreshCw, Trash2, Check,
-  CircleHelp, Gamepad2, History, ChevronDown,
+  CircleHelp, Gamepad2, History, ChevronDown, Save,
 } from 'lucide-react';
 import {
-  type Device, type Kind, type Proto, type Reading, useTree, zigbeeDevices, zwaveDevices, info, present, describe,
-  setOn, setLevel, setColorTemp, rename, reinterview, remove, trees,
+  type Device, type Kind, type Proto, type Reading, useTree, zigbeeDevices, zwaveDevices, info, describe,
+  setOn, setLevel, setColorTemp, rename, reinterview, remove, trees, zwaveParams, configure,
 } from './model';
 import { AddDevice } from './AddDevice';
 
@@ -16,28 +16,24 @@ import { AddDevice } from './AddDevice';
 
 export { startRadios, useTree, present } from './model';
 
-export function RadiosPanel() {
-  const zb = useTree('zigbee');
-  const zw = useTree('zwave');
-  const protos: Proto[] = [...(present(zb) ? (['zigbee'] as const) : []), ...(present(zw) ? (['zwave'] as const) : [])];
-  const devices = [...(present(zb) ? zigbeeDevices(zb) : []), ...(present(zw) ? zwaveDevices(zw) : [])];
-  const [filter, setFilter] = useState<Proto | 'all'>('all');
+export function RadiosPanel({ proto }: { proto: Proto }) {
+  const t = useTree(proto);
+  const devices = proto === 'zigbee' ? zigbeeDevices(t) : zwaveDevices(t);
   const [open, setOpen] = useState<string | null>(null);
   const [wizard, setWizard] = useState<null | 'add' | 'remove'>(null);
-  const shown = devices.filter((d) => filter === 'all' || d.proto === filter);
   const selected = devices.find((d) => d.key === open);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <div>
-          <h1 className="text-base font-semibold tracking-tight">Devices</h1>
+          <h1 className="text-base font-semibold tracking-tight">{label(proto)}</h1>
           <p className="text-xs text-muted">
-            {devices.length ? `${devices.length} on ${protos.map(label).join(' and ')}` : `Nothing paired yet on ${protos.map(label).join(' or ')}`}
+            {devices.length ? `${devices.length} device${devices.length === 1 ? '' : 's'}` : 'Nothing paired yet'}
           </p>
         </div>
         <div className="ml-auto flex gap-2">
-          {protos.includes('zwave') && (
+          {proto === 'zwave' && (
             <button className={ghost} onClick={() => setWizard('remove')}>
               <Minus size={15} /> Remove a device
             </button>
@@ -48,28 +44,11 @@ export function RadiosPanel() {
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        {present(zb) && <NetworkCard proto="zigbee" />}
-        {present(zw) && <NetworkCard proto="zwave" />}
-      </div>
+      <NetworkCard proto={proto} />
 
-      {protos.length > 1 && devices.length > 0 && (
-        <div className="flex gap-1">
-          {(['all', ...protos] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`rounded-lg px-3 py-1 text-xs ${filter === f ? 'bg-accent/15 text-ink' : 'text-muted hover:text-ink'}`}
-            >
-              {f === 'all' ? 'All' : label(f)}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {shown.length ? (
+      {devices.length ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {shown.map((d) => <DeviceCard key={d.key} d={d} onOpen={() => setOpen(d.key)} />)}
+          {devices.map((d) => <DeviceCard key={d.key} d={d} onOpen={() => setOpen(d.key)} />)}
         </div>
       ) : (
         <div className="hair rounded-xl border border-dashed bg-panel p-8 text-center">
@@ -82,10 +61,10 @@ export function RadiosPanel() {
         </div>
       )}
 
-      <Activity />
+      <Activity proto={proto} />
 
       {selected && <DeviceSheet d={selected} onClose={() => setOpen(null)} onExclude={() => { setOpen(null); setWizard('remove'); }} />}
-      {wizard && <AddDevice protos={protos} mode={wizard} onClose={() => setWizard(null)} />}
+      {wizard && <AddDevice protos={[proto]} mode={wizard} onClose={() => setWizard(null)} />}
     </div>
   );
 }
@@ -139,7 +118,85 @@ function NetworkCard({ proto }: { proto: Proto }) {
           </div>
         ))}
       </dl>
+      {proto === 'zigbee' && <ChannelSettings current={i.network?.channel} />}
     </section>
+  );
+}
+
+/** Channels 15, 20, 25 and 26 sit between Wi-Fi's 1, 6 and 11. */
+const BETWEEN_WIFI = [15, 20, 25, 26];
+
+function ChannelSettings({ current }: { current?: number }) {
+  const t = useTree('zigbee');
+  const [open, setOpen] = useState(false);
+  const [asked, setAsked] = useState(0);
+  const [pick, setPick] = useState<number | null>(null);
+  const scan = t.log.find((l) => l.tail === 'bridge/response/energy_scan' && l.at >= asked);
+  const moved = t.log.find((l) => l.tail === 'bridge/response/change_channel' && l.at >= asked);
+  const channels: { channel: number; max_rssi: number }[] = scan?.data?.data?.channels ?? [];
+  const scanning = asked > 0 && !scan;
+  const quietest = [...channels].filter((c) => BETWEEN_WIFI.includes(c.channel)).sort((a, b) => a.max_rssi - b.max_rssi)[0]?.channel;
+  const run = () => { setAsked(Date.now()); trees.zigbee.send('bridge/request/energy_scan'); };
+  return (
+    <div className="hair mt-3 border-t pt-3">
+      <button className="flex w-full items-center gap-2 text-xs text-muted hover:text-ink" onClick={() => setOpen(!open)}>
+        Channel settings <ChevronDown size={13} className={`transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          <p className="text-xs text-muted">
+            Zigbee shares 2.4 GHz with Wi-Fi. Channels 15, 20, 25 and 26 fall between Wi-Fi's 1, 6 and 11; a scan
+            measures how busy each channel is right here. Moving takes the whole network along, without pairing again;
+            sleepy devices follow when they next wake.
+          </p>
+          <div className="flex items-center gap-2">
+            <button className={ghost} disabled={scanning} onClick={run}>
+              {scanning ? <RefreshCw size={14} className="animate-spin" /> : <Signal size={14} />} {scanning ? 'Scanning…' : 'Scan channels'}
+            </button>
+            {quietest && <span className="text-xs text-muted">Quietest between Wi-Fi: <b className="text-ink">{quietest}</b></span>}
+          </div>
+          <div className="flex h-28 items-end gap-1">
+            {Array.from({ length: 16 }, (_, k) => k + 11).map((ch) => {
+              const r = channels.find((c) => c.channel === ch)?.max_rssi;
+              // -100 dBm (silent) to -20 dBm (loud) as 4% to 100% height.
+              const h = r === undefined ? 4 : Math.max(4, Math.min(100, ((r + 100) / 80) * 100));
+              const isCur = ch === current;
+              const sel = ch === pick;
+              return (
+                <button
+                  key={ch}
+                  title={r === undefined ? `Channel ${ch}` : `Channel ${ch}: ${r} dBm`}
+                  onClick={() => setPick(ch === current ? null : ch)}
+                  className="flex h-full flex-1 flex-col items-center justify-end gap-1"
+                >
+                  <span
+                    className={`w-full rounded-t ${sel ? 'bg-accent' : isCur ? 'bg-live' : BETWEEN_WIFI.includes(ch) ? 'bg-muted/50' : 'bg-edge'}`}
+                    style={{ height: `${h}%` }}
+                  />
+                  <span className={`text-[10px] tabular-nums ${isCur ? 'font-semibold text-live' : sel ? 'text-accent' : 'text-muted'}`}>{ch}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted">Lower bars are quieter. Current: <b className="text-live">{current ?? '?'}</b></span>
+            <button
+              className={`${primary} ml-auto`}
+              disabled={!pick}
+              onClick={() => {
+                if (!pick || !confirm(`Move the Zigbee network to channel ${pick}? Every device follows; sleepy ones when they next wake.`)) return;
+                setAsked(Date.now());
+                trees.zigbee.send('bridge/request/change_channel', { channel: pick });
+                setPick(null);
+              }}
+            >
+              Move to {pick ?? '…'}
+            </button>
+          </div>
+          {moved?.data?.status === 'ok' && <p className="text-xs text-live">Moved to channel {moved.data.data?.channel}.</p>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -351,6 +408,8 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
             </section>
           )}
 
+          {d.proto === 'zwave' && <ZwaveSettings id={d.id} />}
+
           <section className="space-y-2">
             <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Status</h3>
             <div className="flex flex-wrap gap-2 text-xs">
@@ -420,18 +479,93 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
   );
 }
 
+/* ---------------- Z-Wave settings (configuration parameters) ---------------- */
+
+function ZwaveSettings({ id }: { id: string }) {
+  const t = useTree('zwave');
+  const params = zwaveParams(t, id);
+  const [edits, setEdits] = useState<Record<string, number>>({});
+  if (!params.length) {
+    return (
+      <section className="space-y-1">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Settings</h3>
+        <p className="text-xs text-muted">No settings known for this device: it is not in the device library, or it has not been identified yet.</p>
+      </section>
+    );
+  }
+  const dirty = Object.keys(edits).length > 0;
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Settings</h3>
+        <button
+          className={`${primary} ml-auto px-2.5 py-1 text-xs`}
+          disabled={!dirty}
+          onClick={() => { configure(id, edits); setEdits({}); }}
+        >
+          <Save size={13} /> Save{dirty ? ` (${Object.keys(edits).length})` : ''}
+        </button>
+      </div>
+      <div className="space-y-2">
+        {params.map((p) => {
+          const shown = edits[p.key] ?? p.value ?? p.default;
+          const set = (v: number) => setEdits((e) => {
+            const n = { ...e };
+            if (v === (p.value ?? p.default)) delete n[p.key]; else n[p.key] = v;
+            return n;
+          });
+          return (
+            <div key={p.key} className="rounded-lg bg-raised p-2.5">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm">{p.label}</div>
+                  {p.description && <div className="mt-0.5 text-xs text-muted">{p.description}</div>}
+                </div>
+                <div className="shrink-0">
+                  {p.readOnly ? (
+                    <span className="text-sm">{p.options.find((o) => o.value === shown)?.label ?? shown}</span>
+                  ) : p.options.length ? (
+                    <select
+                      value={shown}
+                      onChange={(e) => set(Number(e.target.value))}
+                      className="hair max-w-48 rounded-md border bg-panel px-2 py-1 text-sm outline-none focus:border-accent/50"
+                    >
+                      {p.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  ) : (
+                    <span className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={p.min}
+                        max={p.max}
+                        value={shown}
+                        onChange={(e) => set(Math.max(p.min, Math.min(p.max, Number(e.target.value))))}
+                        className="hair w-24 rounded-md border bg-panel px-2 py-1 text-right text-sm outline-none focus:border-accent/50"
+                      />
+                      {p.unit && <span className="text-xs text-muted">{p.unit}</span>}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="mt-1 text-[10px] text-muted">
+                #{p.key}{p.value === undefined ? ' · not read yet' : ''}{edits[p.key] !== undefined ? ' · changed' : ''}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 /* ---------------- activity ---------------- */
 
-function Activity() {
-  const zb = useTree('zigbee');
-  const zw = useTree('zwave');
+function Activity({ proto }: { proto: Proto }) {
+  const t = useTree(proto);
   const [open, setOpen] = useState(false);
-  const lines = [
-    ...zb.log.map((l) => ({ at: l.at, s: describe('zigbee', l.tail, l.data) })),
-    ...zw.log.map((l) => ({ at: l.at, s: describe('zwave', l.tail, l.data) })),
-  ]
-    .filter((l): l is { at: number; s: string } => !!l.s)
-    .sort((a, b) => b.at - a.at);
+  const lines = t.log
+    .map((l) => ({ at: l.at, s: describe(proto, l.tail, l.data) }))
+    .filter((l): l is { at: number; s: string } => !!l.s);
   if (!lines.length) return null;
   return (
     <section className="hair rounded-xl border bg-panel">

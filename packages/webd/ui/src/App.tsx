@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, Settings, BookOpen, Activity, Music, Network, HardDrive, Monitor, Radio } from 'lucide-react';
+import { Cpu, ToggleLeft, Settings, BookOpen, Activity, Music, Network, HardDrive, Monitor, Radio, Waves } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { toast, toastError } from './toast';
 import { IoPanel } from './panels/Io';
@@ -37,13 +37,12 @@ type Dest = {
  *  A board with no relays, contacts or IR shows no IO destination at all —
  *  the same rule the house UI uses for rooms: a service with nothing behind it
  *  does not appear. */
-function destinations(c: Capabilities, radios: boolean): Dest[] {
+function destinations(c: Capabilities, radios: { zigbee: boolean; zwave: boolean }): Dest[] {
   const d: Dest[] = [{ id: 'overview', label: 'Overview', icon: Cpu, render: (c) => <OverviewPanel caps={c} /> }];
-  // Zigbee and Z-Wave devices: once either radio bridge has reported in (the
-  // 'zigbee' and 'zwave' features; a board without a radio never shows it).
-  if (radios) {
-    d.push({ id: 'devices', label: 'Devices', icon: Radio, render: () => <RadiosPanel /> });
-  }
+  // One page per radio, once its bridge has reported in (the 'zigbee' and
+  // 'zwave' features; a board without the radio never shows it).
+  if (radios.zigbee) d.push({ id: 'zigbee', label: 'Zigbee', icon: Radio, render: () => <RadiosPanel proto="zigbee" /> });
+  if (radios.zwave) d.push({ id: 'zwave', label: 'Z-Wave', icon: Waves, render: () => <RadiosPanel proto="zwave" /> });
   // Serial lives on the IO page — it IS IO, and a rail entry for it implied
   // otherwise. The terminal itself opens as a window over that page.
   if (c.relays || c.contacts || c.ir || c.serials?.length) {
@@ -91,7 +90,7 @@ export default function App() {
   // Both hooks, every render (React's hook order), then combine.
   const zbTree = useTree('zigbee');
   const zwTree = useTree('zwave');
-  const radios = present(zbTree) || present(zwTree);
+  const radios = { zigbee: present(zbTree), zwave: present(zwTree) };
 
   const load = useCallback(() => {
     setFailed(false);
