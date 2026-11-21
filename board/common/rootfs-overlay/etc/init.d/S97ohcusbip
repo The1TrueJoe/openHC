@@ -1,0 +1,62 @@
+#!/bin/sh
+# USB/IP export — SHARED (board/common). OFF BY DEFAULT and inert unless the
+# 'usbip' feature installed usbipd.
+#
+# webd (/api/usbip) writes the setting to /data/ohc/usbip.conf:
+#   OHC_USBIP_ENABLE=1            serve at all
+#   OHC_USBIP_DEVICES="1-1 1-2"   busids to export
+# and runs `reload`, which converges on it: usbipd up or down, selected devices
+# bound to usbip-host, the rest handed back to their own drivers — so a change
+# never drops a client attached to a device that stayed selected.
+#
+# The box's own radios are never bound, even if the file names them: busids in
+# board.env OHC_USBIP_RESERVED, and whatever USB device carries a radio tty the
+# board's udev rule named (/dev/ohc/radio/* — the EA's CP2104 Zigbee bridge).
+#
+# ponytail: devices are bound at boot and on reload only; a selected stick
+# plugged in later waits for the next reload (add a udev rule if that matters).
+[ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+CONF=${OHC_DATA:-/data}/ohc/usbip.conf
+[ -r "$CONF" ] && . "$CONF"
+STUB=/sys/bus/usb/drivers/usbip-host
+
+bound() { ls "$STUB" 2>/dev/null | grep -E '^[0-9]+-[0-9.]+$'; }
+
+reserved() {   # $1 = busid
+    for r in $OHC_USBIP_RESERVED; do [ "$r" = "$1" ] && return 0; done
+    for t in /dev/ohc/radio/*; do
+        t=$(readlink -f "$t") || continue; t=${t##*/}
+        case "$(readlink -f "/sys/class/tty/$t/device" 2>/dev/null)" in
+            */"$1"/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+up() {
+    modprobe usbip-host 2>/dev/null   # a module on the EA; built in elsewhere
+    pidof usbipd >/dev/null || usbipd -D || { echo "usbip: usbipd failed to start"; return 1; }
+    for b in $(bound); do
+        case " $OHC_USBIP_DEVICES " in *" $b "*) ;; *) usbip unbind -b "$b" ;; esac
+    done
+    for b in $OHC_USBIP_DEVICES; do
+        if reserved "$b"; then echo "usbip: $b is this controller's own radio, not exported"; continue; fi
+        [ -e "$STUB/$b" ] || usbip bind -b "$b"
+    done
+    echo "usbip: serving on :3240${OHC_USBIP_DEVICES:+ — $OHC_USBIP_DEVICES}"
+}
+
+down() {
+    for b in $(bound); do usbip unbind -b "$b"; done
+    killall usbipd 2>/dev/null
+    return 0
+}
+
+case "$1" in
+    start|reload)
+        command -v usbipd >/dev/null || exit 0     # no usbip feature on this board
+        if [ "$OHC_USBIP_ENABLE" = 1 ]; then up; else down; fi ;;
+    stop) down ;;
+    restart) down; "$0" start ;;
+    *) echo "usage: $0 {start|stop|restart|reload}"; exit 1 ;;
+esac

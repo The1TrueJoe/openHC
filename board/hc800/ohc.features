@@ -19,3 +19,5 @@ usb-input   # USB keyboards, mice, game controllers (front USB, hubs too) for th
             # on-screen UI
 gstreamer   # network audio runtime (GStreamer: RTP, FLAC, ALSA) for an extension
             # to play into the outputs; Control4 Digital Media (openhc-control4)
+usbip       # USB/IP: share the front USB jack's devices over the network
+            # (off until the web UI turns it on; the 1-7 Wi-Fi is reserved)

@@ -16,7 +16,7 @@ pub struct Board {
     pub wifi_iface: String,
 }
 
-fn read_env(path: &str) -> HashMap<String, String> {
+pub(crate) fn read_env(path: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     if let Ok(s) = std::fs::read_to_string(path) {
         for line in s.lines() {

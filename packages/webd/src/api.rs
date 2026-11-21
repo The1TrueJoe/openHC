@@ -48,6 +48,8 @@ to rather than a request/response. See the AsyncAPI document.",
         (name = "Wi-Fi", description = "Setup-AP scanning and joining."),
         (name = "Display", description = "The opt-in on-panel web view (off by default; the panel \
 shows the splash until it is enabled here)."),
+        (name = "USB/IP", description = "Share this box's USB devices with another machine over \
+the network (off by default)."),
         (name = "Reference", description = "The specifications this box serves."),
     )
 )]
@@ -64,6 +66,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
     .routes(utoipa_axum::routes!(wifi_connect))
     .routes(utoipa_axum::routes!(display_get, display_set))
     .routes(utoipa_axum::routes!(display_screenshot))
+    .routes(utoipa_axum::routes!(crate::usbip::usbip_get, crate::usbip::usbip_set))
     .split_for_parts();
     OWN_SPEC.set(api).ok();
 
@@ -556,7 +559,7 @@ fn merge_spec(doc: &mut serde_json::Value, sub: serde_json::Value, mount: &str, 
     }
 }
 
-fn err(code: StatusCode, msg: &str) -> Response {
+pub(crate) fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(serde_json::json!({ "error": msg }))).into_response()
 }
 

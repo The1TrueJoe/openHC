@@ -6,3 +6,5 @@ zigbee
 zwave       # zwave-bridge on the onboard ZM5304 (ttymxc3), or a USB stick
 storage     # USB drives mounted and shared over SMB (storaged); no audio
             # playback here, so a network share only
+usbip       # USB/IP: share USB devices over the network (off until the web UI
+            # turns it on)
