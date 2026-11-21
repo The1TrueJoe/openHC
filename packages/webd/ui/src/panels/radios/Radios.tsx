@@ -9,6 +9,7 @@ import {
   setOn, setLevel, setColorTemp, rename, reinterview, remove, trees, zwaveParams, configure,
 } from './model';
 import { AddDevice } from './AddDevice';
+import { NetworkMap } from './NetworkMap';
 
 /* Devices: everything on the box's Zigbee and Z-Wave networks, as things you
    can see and use. The networks themselves are run by zigbee-bridge and
@@ -60,6 +61,8 @@ export function RadiosPanel({ proto }: { proto: Proto }) {
           </button>
         </div>
       )}
+
+      <NetworkMap proto={proto} />
 
       <Activity proto={proto} />
 

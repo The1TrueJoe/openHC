@@ -156,3 +156,25 @@ body {
 [data-sonner-toast] [data-close-button]:hover {
   color: var(--ink) !important;
 }
+
+/* The radio network maps: read-only, so no connection handles; controls in
+   the page's own colours rather than the library's white. */
+.ohc-map .react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+.ohc-map .react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ohc-map .react-flow__controls-button {
+  background: var(--raised);
+  border-bottom: 1px solid var(--edge);
+  fill: var(--ink);
+  color: var(--ink);
+}
+.ohc-map .react-flow__controls-button:hover {
+  background: var(--panel);
+}
