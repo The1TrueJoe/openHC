@@ -434,24 +434,6 @@ function LevelSlider({ d, c }: { d: Device; c: Control }) {
   );
 }
 
-/** A multi-channel device (a double relay, a two-gang switch): a row per channel. */
-function Channels({ d }: { d: Device }) {
-  return (
-    <div className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
-      {d.controls.map((c) => (
-        <div key={c.ep} className="space-y-1 rounded-lg bg-raised px-2.5 py-1.5">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="min-w-0 flex-1 truncate">{c.label}</span>
-            <span className="text-xs text-muted">{c.on === undefined ? '' : c.on ? 'On' : 'Off'}</span>
-            <OnOff d={d} c={c} />
-          </div>
-          {c.level !== undefined && <LevelSlider d={d} c={c} />}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /** A range input that sends once, when released, not on every pixel. */
 function Committed({ value, min, max, onCommit, label }: { value: number; min: number; max: number; onCommit: (v: number) => void; label: string }) {
   const [local, setLocal] = useState(value);
@@ -476,10 +458,18 @@ function Committed({ value, min, max, onCommit, label }: { value: number; min: n
 
 /* ---------------- detail sheet ---------------- */
 
+type SheetTab = 'overview' | 'settings' | 'details';
+
+/* A device opens as a centered dialog with its own tabs, the way the Z-Wave and
+   Zigbee controller UIs people already know lay a device out: what it does
+   (overview), how it is configured (settings, grouped by what each setting
+   acts on), and what it is (details). Actions sit in the header. */
 function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void; onExclude: () => void }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(d.name);
-  const [raw, setRaw] = useState(false);
+  const [tab, setTab] = useState<SheetTab>('overview');
+  const t = useTree('zwave');
+  const params = d.proto === 'zwave' ? zwaveParams(t, d.id) : [];
   const Icon = KIND_ICON[d.kind];
   useEffect(() => setName(d.name), [d.name]);
   const save = () => {
@@ -493,226 +483,279 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
     window.addEventListener('keydown', esc);
     return () => window.removeEventListener('keydown', esc);
   }, [onClose, editing]);
+  const removeIt = () => {
+    if (d.proto === 'zigbee') {
+      if (!confirm(`Remove ${d.name} from the network?`)) return;
+      remove(d, !d.healthy);
+      onClose();
+    } else if (dead) {
+      if (!confirm(`${d.name} does not answer. Remove it from the controller?`)) return;
+      remove(d);
+      onClose();
+    } else onExclude();
+  };
+  const tabs: [SheetTab, string, number?][] = [
+    ['overview', 'Overview'],
+    ...(d.proto === 'zwave' ? [['settings', 'Settings', params.length] as [SheetTab, string, number]] : []),
+    ['details', 'Details'],
+  ];
+  const chip = 'inline-flex items-center gap-1 rounded-md bg-raised px-2 py-0.5 text-xs';
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
       <div
         role="dialog"
         aria-modal="true"
         aria-label={d.name}
-        className="hair flex max-h-[90vh] w-full max-w-2xl flex-col overflow-y-auto rounded-xl border bg-panel shadow-2xl"
+        className="hair flex h-[min(44rem,90vh)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border bg-panel shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="hair sticky top-0 z-10 flex items-center gap-3 border-b bg-panel p-4">
-          <div className="grid h-10 w-10 place-items-center rounded-lg bg-raised text-muted"><Icon size={20} /></div>
-          <div className="min-w-0 flex-1">
-            {editing ? (
-              <div className="flex gap-1">
-                <input
-                  autoFocus
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
-                  className="hair w-full rounded-md border bg-raised px-2 py-1 text-sm outline-none focus:border-accent/50"
-                />
-                <button className={ghost} onClick={save} aria-label="Save name"><Check size={14} /></button>
-              </div>
-            ) : (
-              <button className="flex items-center gap-1.5 text-left text-sm font-medium hover:text-accent" onClick={() => setEditing(true)}>
-                {d.name} <Pencil size={12} className="text-muted" />
-              </button>
-            )}
-            <div className="text-xs text-muted">{[label(d.proto), d.vendor, d.model].filter(Boolean).join(' · ')}</div>
-          </div>
-          <button className="text-muted hover:text-ink" onClick={onClose} aria-label="Close"><X size={18} /></button>
-        </div>
-
-        <div className="space-y-5 p-4">
-          {(d.controls.length > 0 || d.colorTemp) && (
-            <section className="space-y-3">
-              <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Control</h3>
-              {d.controls.length === 1 ? (
-                <>
-                  <div className="flex items-center justify-between text-sm">
-                    <span>{d.controls[0].on === undefined ? 'Not reported yet' : d.controls[0].on ? 'On' : 'Off'}</span>
-                    <OnOff d={d} c={d.controls[0]} />
-                  </div>
-                  {d.controls[0].level !== undefined && <LevelSlider d={d} c={d.controls[0]} />}
-                </>
-              ) : d.controls.length > 1 ? <Channels d={d} /> : null}
-              {d.colorTemp && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted">Warm</span>
-                  <Committed value={d.colorTemp.mireds} min={d.colorTemp.min} max={d.colorTemp.max} onCommit={(v) => setColorTemp(d, v)} label="Colour temperature" />
-                  <span className="text-xs text-muted">Cool</span>
+        <header className="hair border-b px-5 pt-4">
+          <div className="flex items-start gap-3">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-accent/15 text-accent"><Icon size={22} /></div>
+            <div className="min-w-0 flex-1">
+              {editing ? (
+                <div className="flex gap-1">
+                  <input
+                    autoFocus
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
+                    className="hair w-full rounded-md border bg-raised px-2 py-1 text-base outline-none focus:border-accent/50"
+                  />
+                  <button className={ghost} onClick={save} aria-label="Save name"><Check size={14} /></button>
                 </div>
+              ) : (
+                <button className="group flex items-center gap-1.5 text-left text-base font-semibold" onClick={() => setEditing(true)}>
+                  {d.name} <Pencil size={13} className="text-muted opacity-0 group-hover:opacity-100" />
+                </button>
               )}
-            </section>
-          )}
-
-          {d.readings.length > 0 && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Readings</h3>
-              <div className="grid grid-cols-2 gap-2">
-                {d.readings.map((r) => {
-                  const I = READING_ICON[r.icon] ?? Gauge;
-                  return (
-                    <div key={r.key} className={`rounded-lg p-2.5 ${r.alert ? 'bg-alarm/10' : 'bg-raised'}`}>
-                      <div className="flex items-center gap-1 text-xs text-muted"><I size={12} /> {r.label}</div>
-                      <div className={`mt-0.5 text-sm font-medium ${r.alert ? 'text-alarm' : ''}`}>{r.text}</div>
-                    </div>
-                  );
-                })}
+              <div className="truncate text-xs text-muted">{[d.vendor, d.model, label(d.proto)].filter(Boolean).join(' · ')}</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <span className={chip}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${d.healthy ? 'bg-live' : d.interviewing ? 'bg-warm' : 'bg-alarm'}`} />
+                  {d.status}
+                </span>
+                <span className={`${chip} ${d.security ? 'bg-live/15 text-live' : ''}`}>
+                  {d.security ? <ShieldCheck size={12} /> : <ShieldAlert size={12} />}
+                  {d.security ? d.security[0] : d.proto === 'zwave' ? 'Not secure' : 'Network key'}
+                </span>
+                {d.signal && <span className={chip}><Signal size={12} /> {d.signal}</span>}
+                {d.battery !== undefined && <span className={chip}><Battery size={12} /> {d.battery}%</span>}
+                {d.firmware && <span className={chip}><Cpu size={12} /> {d.firmware}</span>}
               </div>
-            </section>
-          )}
-
-          {d.proto === 'zwave' && <ZwaveSettings id={d.id} />}
-
-          <section className="space-y-2">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Status</h3>
-            <div className="flex flex-wrap gap-2 text-xs">
-              <span className="inline-flex items-center gap-1 rounded-md bg-raised px-2 py-1">
-                <span className={`h-1.5 w-1.5 rounded-full ${d.healthy ? 'bg-live' : d.interviewing ? 'bg-warm' : 'bg-alarm'}`} />
-                {d.status}
-              </span>
-              {d.signal && <span className="inline-flex items-center gap-1 rounded-md bg-raised px-2 py-1"><Signal size={12} /> {d.signal}</span>}
-              <span className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${d.security ? 'bg-live/15 text-live' : 'bg-raised'}`}>
-                {d.security ? <ShieldCheck size={12} /> : <ShieldAlert size={12} />}
-                {d.security ? d.security.join(', ') : d.proto === 'zwave' ? 'Not secure' : 'Network key'}
-              </span>
             </div>
-          </section>
-
-          <section className="space-y-1">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Device</h3>
-            <dl className="divide-y text-xs hair">
-              {d.details.map(([k, v]) => (
-                <div key={k} className="hair flex gap-3 py-1.5">
-                  <dt className="w-32 shrink-0 text-muted">{k}</dt>
-                  <dd className="min-w-0 break-words font-mono">{v}</dd>
-                </div>
-              ))}
-            </dl>
-            <button className="mt-1 inline-flex items-center gap-1 text-xs text-muted hover:text-ink" onClick={() => setRaw(!raw)}>
-              <Cpu size={12} /> {raw ? 'Hide' : 'Show'} technical record <ChevronDown size={12} className={raw ? 'rotate-180' : ''} />
-            </button>
-            {raw && <pre className="hair max-h-64 overflow-auto rounded-lg border bg-raised p-2 text-[11px]">{JSON.stringify(d.raw, null, 2)}</pre>}
-          </section>
-
-          <section className="flex flex-wrap gap-2 pt-1">
-            <button className={ghost} onClick={() => reinterview(d)}>
-              <RefreshCw size={14} /> Set up again
-            </button>
-            {d.proto === 'zigbee' ? (
+            <div className="flex shrink-0 items-center gap-1">
+              <button className="rounded-lg p-2 text-muted hover:bg-raised hover:text-ink" title="Set up again" aria-label="Set up again" onClick={() => reinterview(d)}>
+                <RefreshCw size={16} />
+              </button>
+              <button className="rounded-lg p-2 text-muted hover:bg-alarm/10 hover:text-alarm" title="Remove" aria-label="Remove" onClick={removeIt}>
+                <Trash2 size={16} />
+              </button>
+              <button className="rounded-lg p-2 text-muted hover:bg-raised hover:text-ink" onClick={onClose} aria-label="Close"><X size={18} /></button>
+            </div>
+          </div>
+          <nav className="mt-3 flex gap-1" role="tablist">
+            {tabs.map(([k, l, n]) => (
               <button
-                className={`${ghost} text-alarm`}
-                onClick={() => {
-                  if (!confirm(`Remove ${d.name} from the network?`)) return;
-                  remove(d, !d.healthy);
-                  onClose();
-                }}
+                key={k}
+                role="tab"
+                aria-selected={tab === k}
+                onClick={() => setTab(k)}
+                className={`-mb-px border-b-2 px-3 py-2 text-sm transition ${tab === k ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink'}`}
               >
-                <Trash2 size={14} /> Remove
+                {l}{n ? <span className="ml-1.5 rounded bg-raised px-1.5 text-[11px] text-muted">{n}</span> : null}
               </button>
-            ) : dead ? (
-              <button
-                className={`${ghost} text-alarm`}
-                onClick={() => {
-                  if (!confirm(`${d.name} does not answer. Remove it from the controller?`)) return;
-                  remove(d);
-                  onClose();
-                }}
-              >
-                <Trash2 size={14} /> Remove
-              </button>
-            ) : (
-              <button className={`${ghost} text-alarm`} onClick={onExclude}>
-                <Trash2 size={14} /> Remove…
-              </button>
-            )}
-          </section>
+            ))}
+          </nav>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {tab === 'overview' && <Overview d={d} />}
+          {tab === 'settings' && <ZwaveSettings id={d.id} />}
+          {tab === 'details' && <Details d={d} />}
         </div>
       </div>
     </div>
   );
 }
 
+function Overview({ d }: { d: Device }) {
+  const heading = 'mb-2 text-xs font-medium uppercase tracking-wide text-muted';
+  const nothing = !d.controls.length && !d.colorTemp && !d.readings.length;
+  return (
+    <div className="space-y-6 p-5">
+      {d.controls.length > 0 && (
+        <section>
+          <h3 className={heading}>{d.controls.length > 1 ? 'Channels' : 'Control'}</h3>
+          <div className={`grid gap-2 ${d.controls.length > 1 ? 'sm:grid-cols-2' : ''}`}>
+            {d.controls.map((c) => (
+              <div key={c.ep} className="rounded-xl bg-raised p-3.5">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium">{d.controls.length > 1 ? c.label : d.name}</div>
+                    <div className="text-xs text-muted">{c.on === undefined ? 'Not reported yet' : c.on ? 'On' : 'Off'}</div>
+                  </div>
+                  <OnOff d={d} c={c} />
+                </div>
+                {c.level !== undefined && <div className="mt-3"><LevelSlider d={d} c={c} /></div>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {d.colorTemp && (
+        <section>
+          <h3 className={heading}>Colour temperature</h3>
+          <div className="flex items-center gap-2 rounded-xl bg-raised p-3.5">
+            <span className="text-xs text-muted">Warm</span>
+            <Committed value={d.colorTemp.mireds} min={d.colorTemp.min} max={d.colorTemp.max} onCommit={(v) => setColorTemp(d, v)} label="Colour temperature" />
+            <span className="text-xs text-muted">Cool</span>
+          </div>
+        </section>
+      )}
+      {d.readings.length > 0 && (
+        <section>
+          <h3 className={heading}>Readings</h3>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {d.readings.map((r) => {
+              const I = READING_ICON[r.icon] ?? Gauge;
+              return (
+                <div key={r.key} className={`rounded-xl p-3 ${r.alert ? 'bg-alarm/10' : 'bg-raised'}`}>
+                  <div className="flex items-center gap-1 text-xs text-muted"><I size={12} /> {r.label}</div>
+                  <div className={`mt-1 text-lg font-medium tabular-nums ${r.alert ? 'text-alarm' : ''}`}>{r.text}</div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+      {nothing && <p className="py-10 text-center text-sm text-muted">Nothing to control or read on this device yet.</p>}
+    </div>
+  );
+}
+
+function Details({ d }: { d: Device }) {
+  const [raw, setRaw] = useState(false);
+  return (
+    <div className="space-y-4 p-5">
+      <dl className="hair divide-y overflow-hidden rounded-xl border text-sm">
+        {d.details.map(([k, v]) => (
+          <div key={k} className="hair flex gap-4 px-3.5 py-2">
+            <dt className="w-36 shrink-0 text-muted">{k}</dt>
+            <dd className="min-w-0 break-words">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <button className="inline-flex items-center gap-1 text-xs text-muted hover:text-ink" onClick={() => setRaw(!raw)}>
+        <Cpu size={12} /> {raw ? 'Hide' : 'Show'} technical record <ChevronDown size={12} className={raw ? 'rotate-180' : ''} />
+      </button>
+      {raw && <pre className="hair max-h-80 overflow-auto rounded-lg border bg-raised p-3 text-[11px]">{JSON.stringify(d.raw, null, 2)}</pre>}
+    </div>
+  );
+}
+
 /* ---------------- Z-Wave settings (configuration parameters) ---------------- */
+
+/** "Relay 1: Auto Turn-Off Timer" files under "Relay 1"; anything else under General. */
+const groupOf = (label: string) => (label.includes(':') ? label.slice(0, label.indexOf(':')).trim() : 'General');
+const shortLabel = (label: string) => (label.includes(':') ? label.slice(label.indexOf(':') + 1).trim() : label);
 
 function ZwaveSettings({ id }: { id: string }) {
   const t = useTree('zwave');
   const params = zwaveParams(t, id);
   const [edits, setEdits] = useState<Record<string, number>>({});
+  const [help, setHelp] = useState<string | null>(null);
   if (!params.length) {
-    return (
-      <section className="space-y-1">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Settings</h3>
-        <p className="text-xs text-muted">No settings known for this device: it is not in the device library, or it has not been identified yet.</p>
-      </section>
-    );
+    return <p className="p-10 text-center text-sm text-muted">No settings known for this device: it is not in the device library, or it has not been identified yet.</p>;
   }
-  const dirty = Object.keys(edits).length > 0;
+  const groups = new Map<string, typeof params>();
+  for (const p of params) {
+    const g = groupOf(p.label);
+    groups.set(g, [...(groups.get(g) ?? []), p]);
+  }
+  const n = Object.keys(edits).length;
   return (
-    <section className="space-y-2">
-      <div className="flex items-center">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Settings</h3>
-        <button
-          className={`${primary} ml-auto px-2.5 py-1 text-xs`}
-          disabled={!dirty}
-          onClick={() => { configure(id, edits); setEdits({}); }}
-        >
-          <Save size={13} /> Save{dirty ? ` (${Object.keys(edits).length})` : ''}
-        </button>
-      </div>
-      <div className="space-y-2">
-        {params.map((p) => {
-          const shown = edits[p.key] ?? p.value ?? p.default;
-          const set = (v: number) => setEdits((e) => {
-            const n = { ...e };
-            if (v === (p.value ?? p.default)) delete n[p.key]; else n[p.key] = v;
-            return n;
-          });
-          return (
-            <div key={p.key} className="rounded-lg bg-raised p-2.5">
-              <div className="flex items-start gap-2">
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm">{p.label}</div>
-                  {p.description && <div className="mt-0.5 text-xs text-muted">{p.description}</div>}
-                </div>
-                <div className="shrink-0">
-                  {p.readOnly ? (
-                    <span className="text-sm">{p.options.find((o) => o.value === shown)?.label ?? shown}</span>
-                  ) : p.options.length ? (
-                    <select
-                      value={shown}
-                      onChange={(e) => set(Number(e.target.value))}
-                      className="hair max-w-48 rounded-md border bg-panel px-2 py-1 text-sm outline-none focus:border-accent/50"
-                    >
-                      {p.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </select>
-                  ) : (
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={p.min}
-                        max={p.max}
-                        value={shown}
-                        onChange={(e) => set(Math.max(p.min, Math.min(p.max, Number(e.target.value))))}
-                        className="hair w-24 rounded-md border bg-panel px-2 py-1 text-right text-sm outline-none focus:border-accent/50"
-                      />
-                      {p.unit && <span className="text-xs text-muted">{p.unit}</span>}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="mt-1 text-[10px] text-muted">
-                #{p.key}{p.value === undefined ? ' · not read yet' : ''}{edits[p.key] !== undefined ? ' · changed' : ''}
-              </div>
+    <div className="flex min-h-full flex-col">
+      <div className="flex-1 space-y-5 p-5">
+        {[...groups].map(([g, ps]) => (
+          <section key={g}>
+            <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">{g}</h3>
+            <div className="hair divide-y overflow-hidden rounded-xl border">
+              {ps.map((p) => {
+                const shown = edits[p.key] ?? p.value ?? p.default;
+                const changed = edits[p.key] !== undefined;
+                const set = (v: number) => setEdits((e) => {
+                  const x = { ...e };
+                  if (v === (p.value ?? p.default)) delete x[p.key]; else x[p.key] = v;
+                  return x;
+                });
+                return (
+                  <div key={p.key} className={`hair px-3.5 py-2.5 ${changed ? 'bg-accent/5' : ''}`}>
+                    <div className="flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 text-sm">
+                          {changed && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
+                          {groups.size > 1 ? shortLabel(p.label) : p.label}
+                          {p.description && (
+                            <button
+                              className="text-muted hover:text-ink"
+                              aria-label="About this setting"
+                              onClick={() => setHelp(help === p.key ? null : p.key)}
+                            >
+                              <CircleHelp size={13} />
+                            </button>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-muted">#{p.key}{p.value === undefined ? ' · not read yet' : ''}</div>
+                      </div>
+                      <div className="shrink-0">
+                        {p.readOnly ? (
+                          <span className="text-sm">{p.options.find((o) => o.value === shown)?.label ?? shown}</span>
+                        ) : p.options.length ? (
+                          <select
+                            value={shown}
+                            onChange={(e) => set(Number(e.target.value))}
+                            className="hair w-56 rounded-lg border bg-raised px-2 py-1.5 text-sm outline-none focus:border-accent/50"
+                          >
+                            {p.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        ) : (
+                          <span className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={p.min}
+                              max={p.max}
+                              value={shown}
+                              onChange={(e) => set(Math.max(p.min, Math.min(p.max, Number(e.target.value))))}
+                              className="hair w-28 rounded-lg border bg-raised px-2 py-1.5 text-right text-sm tabular-nums outline-none focus:border-accent/50"
+                            />
+                            {p.unit && <span className="whitespace-nowrap text-xs text-muted">{p.unit}</span>}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {help === p.key && p.description && (
+                      <p className="mt-2 rounded-lg bg-raised p-2.5 text-xs text-muted">
+                        {p.description} <span className="whitespace-nowrap">Range {p.min}–{p.max}, default {p.options.find((o) => o.value === p.default)?.label ?? p.default}.</span>
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </section>
+        ))}
       </div>
-    </section>
+      {n > 0 && (
+        <div className="hair sticky bottom-0 flex items-center gap-3 border-t bg-panel px-5 py-3">
+          <span className="text-sm">{n} unsaved {n === 1 ? 'change' : 'changes'}</span>
+          <button className={`${ghost} ml-auto`} onClick={() => setEdits({})}>Discard</button>
+          <button className={primary} onClick={() => { configure(id, edits); setEdits({}); }}>
+            <Save size={14} /> Save to device
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
