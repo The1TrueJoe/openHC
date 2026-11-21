@@ -43,6 +43,7 @@ export function UsbPanel({ caps, go }: { caps: Capabilities; go: (id: string) =>
 const RADIO: Record<string, { label: string; icon: typeof Usb }> = {
   zigbee: { label: 'Zigbee', icon: Radio },
   zwave: { label: 'Z-Wave', icon: Waves },
+  bluetooth: { label: 'Bluetooth', icon: Bluetooth },
 };
 
 function iconFor(u?: UsbUse): typeof Usb {
@@ -72,7 +73,8 @@ function describe(u: UsbUse): string {
 
 function DeviceRow({ d, go }: { d: UsbDevice; go: (id: string) => void }) {
   const Icon = iconFor(d.uses[0]);
-  const radio = d.uses.find((u) => u.kind === 'radio');
+  const r = d.uses.find((u) => u.kind === 'radio');
+  const radio = r ?? (d.uses.some((u) => u.kind === 'bluetooth') ? { radio: 'bluetooth' } : undefined);
   const speed = Number(d.speed);
   return (
     <div className="hair flex items-center gap-3 rounded-xl border bg-raised p-3">

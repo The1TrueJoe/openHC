@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import { Cpu, ToggleLeft, Settings, BookOpen, Activity, Music, Network, Usb, Monitor, Radio, Waves } from 'lucide-react';
+import { Cpu, ToggleLeft, Settings, BookOpen, Activity, Music, Network, Usb, Monitor, Radio, Waves, Bluetooth } from 'lucide-react';
 import { io, rest, type Capabilities, type IoState } from './api';
 import { toast, toastError } from './toast';
 import { IoPanel } from './panels/Io';
@@ -12,6 +12,7 @@ import { SwitchPanel } from './panels/Switch';
 import { UsbPanel } from './panels/Usb';
 import { DisplayPanel } from './panels/Display';
 import { RadiosPanel, startRadios, useTree, present } from './panels/radios/Radios';
+import { BluetoothPanel } from './panels/radios/Bluetooth';
 
 /** Subscribe a component to the mirrored state.
  *  `useSyncExternalStore` rather than a context + effect because the socket is
@@ -37,12 +38,13 @@ type Dest = {
  *  A board with no relays, contacts or IR shows no IO destination at all —
  *  the same rule the house UI uses for rooms: a service with nothing behind it
  *  does not appear. */
-function destinations(c: Capabilities, radios: { zigbee: boolean; zwave: boolean }): Dest[] {
+function destinations(c: Capabilities, radios: { zigbee: boolean; zwave: boolean; bluetooth: boolean }): Dest[] {
   const d: Dest[] = [{ id: 'overview', label: 'Overview', icon: Cpu, render: (c) => <OverviewPanel caps={c} /> }];
   // One page per radio, once its bridge has reported in (the 'zigbee' and
   // 'zwave' features; a board without the radio never shows it).
   if (radios.zigbee) d.push({ id: 'zigbee', label: 'Zigbee', icon: Radio, render: () => <RadiosPanel proto="zigbee" /> });
   if (radios.zwave) d.push({ id: 'zwave', label: 'Z-Wave', icon: Waves, render: () => <RadiosPanel proto="zwave" /> });
+  if (radios.bluetooth) d.push({ id: 'bluetooth', label: 'Bluetooth', icon: Bluetooth, render: () => <BluetoothPanel /> });
   // Serial lives on the IO page — it IS IO, and a rail entry for it implied
   // otherwise. The terminal itself opens as a window over that page.
   if (c.relays || c.contacts || c.ir || c.serials?.length) {
@@ -91,7 +93,8 @@ export default function App() {
   // Both hooks, every render (React's hook order), then combine.
   const zbTree = useTree('zigbee');
   const zwTree = useTree('zwave');
-  const radios = { zigbee: present(zbTree), zwave: present(zwTree) };
+  const btTree = useTree('bluetooth');
+  const radios = { zigbee: present(zbTree), zwave: present(zwTree), bluetooth: present(btTree) };
 
   const load = useCallback(() => {
     setFailed(false);

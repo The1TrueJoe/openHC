@@ -10,8 +10,11 @@ import { io } from '../../api';
 import { toastError } from '../../toast';
 
 export type Proto = 'zigbee' | 'zwave';
+/** Every bridge tree the UI follows: the two mesh radios, and Bluetooth LE. */
+export type TreeName = Proto | 'bluetooth';
+const NAME = { zigbee: 'Zigbee', zwave: 'Z-Wave', bluetooth: 'Bluetooth' } as const;
 
-type Tree = {
+export type Tree = {
   topics: Map<string, string>;
   /** Events and request responses, newest first, with when they arrived. */
   log: { at: number; tail: string; data: any }[];
@@ -22,7 +25,7 @@ const parse = (s: string | undefined): any => {
   try { return JSON.parse(s); } catch { return s; }
 };
 
-function makeTree(proto: Proto) {
+function makeTree(proto: TreeName) {
   let snap: Tree = { topics: new Map(), log: [] };
   const subs = new Set<() => void>();
   let started = false;
@@ -39,7 +42,7 @@ function makeTree(proto: Proto) {
           const data = parse(body);
           log = [{ at: Date.now(), tail, data }, ...log].slice(0, 200);
           if (tail.startsWith('bridge/response/') && (data?.status === 'error' || data?.ok === false) && !quiet(tail, data)) {
-            toastError(data.error ?? body, `${proto === 'zigbee' ? 'Zigbee' : 'Z-Wave'}: ${tail.slice(16).replace(/_/g, ' ')}`);
+            toastError(data.error ?? body, `${NAME[proto]}: ${tail.slice(16).replace(/_/g, ' ')}`);
           }
         }
         snap = { topics, log };
@@ -53,7 +56,7 @@ function makeTree(proto: Proto) {
       try {
         io.publishTree(proto, tail, typeof body === 'string' ? body : JSON.stringify(body));
       } catch (e) {
-        toastError(e, proto === 'zigbee' ? 'Zigbee' : 'Z-Wave');
+        toastError(e, NAME[proto]);
       }
     },
   };
@@ -62,15 +65,16 @@ function makeTree(proto: Proto) {
 /** Outcomes the wizard explains itself, so they need no toast. */
 const quiet = (tail: string, data: any) => tail === 'bridge/response/exclude' && /no node/i.test(data?.error ?? '');
 
-export const trees = { zigbee: makeTree('zigbee'), zwave: makeTree('zwave') };
+export const trees = { zigbee: makeTree('zigbee'), zwave: makeTree('zwave'), bluetooth: makeTree('bluetooth') };
 
-/** Follow both bridges; called once the MQTT client is set up. */
+/** Follow the bridges; called once the MQTT client is set up. */
 export function startRadios() {
   trees.zigbee.start();
   trees.zwave.start();
+  trees.bluetooth.start();
 }
 
-export function useTree(p: Proto): Tree {
+export function useTree(p: TreeName): Tree {
   return useSyncExternalStore(trees[p].subscribe, trees[p].get);
 }
 
