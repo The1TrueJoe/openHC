@@ -136,3 +136,23 @@ body {
 [data-sonner-toast] .ohc-toast-desc {
   color: var(--muted) !important;
 }
+
+/* sonner hangs its close button off the toast's top-left corner, where it
+   lands on the error/success icon. Inside, top-right instead, with room kept
+   so the title never runs under it. */
+
+[data-sonner-toast]:has([data-close-button]) {
+  padding-right: 2.25rem !important;
+}
+[data-sonner-toast] [data-close-button] {
+  left: auto !important;
+  right: 0.5rem !important;
+  top: 0.5rem !important;
+  transform: none !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--muted) !important;
+}
+[data-sonner-toast] [data-close-button]:hover {
+  color: var(--ink) !important;
+}
