@@ -20,7 +20,8 @@ export function StoragePanel({ caps }: { caps: Capabilities }) {
   const share = live?.share ?? caps.storage?.share;
   return (
     <div className="space-y-4">
-      <Drives volumes={volumes} />
+      {/* The USB page above already says when nothing is plugged in. */}
+      {volumes.length > 0 && <Drives volumes={volumes} />}
       {volumes.length > 0 && <Files volumes={volumes} />}
       {share && <Share share={share} volumes={volumes} initialPassword={caps.storage?.share.initial_password} />}
     </div>

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Check, Lock, Server, Share2, Hash } from 'lucide-react';
 import { rest, type ConfigDoc, type MqttWrite } from '../api';
 import { toastError } from '../toast';
-import { UsbipSection } from './Usbip';
 
 /** Fields the environment has pinned cannot be edited here: a restart would
  *  discard the change, and a form that silently ignores you is worse than one
@@ -172,7 +171,6 @@ export function SettingsPanel() {
         )}
       </div>
 
-      <UsbipSection />
     </div>
   );
 }

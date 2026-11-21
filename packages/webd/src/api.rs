@@ -67,6 +67,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
     .routes(utoipa_axum::routes!(display_get, display_set))
     .routes(utoipa_axum::routes!(display_screenshot))
     .routes(utoipa_axum::routes!(crate::usbip::usbip_get, crate::usbip::usbip_set))
+    .routes(utoipa_axum::routes!(crate::usb::usb_get))
     .split_for_parts();
     OWN_SPEC.set(api).ok();
 

@@ -14,7 +14,7 @@ use std::{collections::HashSet, path::{Path, PathBuf}, sync::Arc};
 
 const SVC: &str = "/etc/init.d/S97ohcusbip";
 const USB: &str = "/sys/bus/usb/devices";
-const STUB: &str = "usbip-host";
+pub(crate) const STUB: &str = "usbip-host";
 
 fn conf_path() -> PathBuf {
     let data = std::env::var("OHC_DATA").unwrap_or_else(|_| "/data".into());
@@ -22,7 +22,7 @@ fn conf_path() -> PathBuf {
 }
 
 /// `1-1`, `2-1.4.3`: a USB device (not a root hub `usb1`, not an interface `1-1:1.0`).
-fn is_busid(s: &str) -> bool {
+pub(crate) fn is_busid(s: &str) -> bool {
     let Some((bus, port)) = s.split_once('-') else { return false };
     !bus.is_empty() && bus.bytes().all(|b| b.is_ascii_digit())
         && !port.is_empty() && !port.starts_with('.') && !port.ends_with('.') && !port.contains("..")
@@ -38,7 +38,7 @@ fn busids_in(path: &Path) -> impl Iterator<Item = String> + '_ {
         .map(String::from)
 }
 
-fn reserved(cfg: &Config) -> HashSet<String> {
+pub(crate) fn reserved(cfg: &Config) -> HashSet<String> {
     let env = crate::board::read_env(&cfg.board_env);
     let mut r: HashSet<String> = env.get("OHC_USBIP_RESERVED").map(|v| v.split_whitespace().map(String::from).collect())
         .unwrap_or_default();
@@ -118,7 +118,7 @@ fn read_conf() -> UsbIp {
     u
 }
 
-fn available() -> bool {
+pub(crate) fn available() -> bool {
     Path::new(SVC).exists() && Path::new("/usr/sbin/usbipd").exists()
 }
 

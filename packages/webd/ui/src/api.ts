@@ -85,6 +85,8 @@ export interface Capabilities {
   switch?: SwitchOverview;
   /** External drives + the SMB share, when this board runs storaged. */
   storage?: StorageStatus;
+  /** The board has the 'usbip' feature (set by the UI from /api/usbip). */
+  usbip?: boolean;
   /** The on-screen web view, when this board has a display program. */
   display?: DisplayCfg;
 }
@@ -572,7 +574,34 @@ export interface UsbipCfg {
   available: boolean;
 }
 
+/** What is plugged into the USB ports (webd's /api/usb), and what the box made of each. */
+export type UsbUse =
+  | { kind: 'storage'; block: string }
+  | { kind: 'radio'; radio: string; tty: string }
+  | { kind: 'serial'; tty: string }
+  | { kind: 'network'; iface: string }
+  | { kind: 'bluetooth'; hci: string }
+  | { kind: 'input'; name: string }
+  | { kind: 'audio'; card: string };
+export interface UsbDevice {
+  busid: string;
+  id: string;
+  manufacturer: string;
+  product: string;
+  /** Mbit/s */
+  speed: string;
+  class: string;
+  uses: UsbUse[];
+  shareable: boolean;
+  exported: boolean;
+}
+export interface UsbState {
+  devices: UsbDevice[];
+  usbip: boolean;
+}
+
 export const rest = {
+  usb: () => j<UsbState>(`${location.origin}/api/usb`),
   usbip: () => j<UsbipCfg>(`${location.origin}/api/usbip`),
   /** Saves and applies at once (usbipd up/down, devices bound/unbound); returns the new state. */
   setUsbip: (u: Pick<UsbipCfg, 'enabled' | 'selected'>) =>
