@@ -22,6 +22,7 @@ PID=/var/run/zigbee-bridge.pid
 
 run() {
     echo $$ > "$PID.run"   # so `stop` ends this loop even mid-sleep
+    export NO_COLOR=1      # plain text in syslog, not ANSI colour codes
     # A first-boot reflash takes about 30 s; a radio that never answers, forever.
     n=0
     while [ ! -s /run/zigbee.ncp ]; do

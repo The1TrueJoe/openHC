@@ -20,6 +20,7 @@ PID=/var/run/zwave-bridge.pid
 
 run() {
     echo $$ > "$PID.run"   # so `stop` ends this loop even mid-sleep
+    export NO_COLOR=1      # plain text in syslog, not ANSI colour codes
     base=$(/opt/ohc/bin/ohc-mqtt-base)
     set -- $(/opt/ohc/bin/ohc-mqtt-base broker)
     mkdir -p "$DATA" "${CONF%/*}"
