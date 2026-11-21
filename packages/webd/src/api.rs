@@ -434,9 +434,12 @@ async fn static_asset(headers: HeaderMap, uri: axum::http::Uri) -> Response {
     let mut b = Response::builder()
         .header(header::CONTENT_TYPE, a.mime)
         .header(header::ETAG, a.etag);
-    if a.path.starts_with("assets/") {
-        b = b.header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
-    }
+    // Hashed assets never change; the page that names them must be revalidated
+    // every time, or a browser keeps running the UI from before an update.
+    b = b.header(
+        header::CACHE_CONTROL,
+        if a.path.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" },
+    );
     match (accept_gzip, a.gzip) {
         (true, Some(gz)) => b
             .header(header::CONTENT_ENCODING, "gzip")
