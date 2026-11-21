@@ -23,13 +23,13 @@ export function AddDevice({ protos, mode, onClose }: { protos: Proto[]; mode: 'a
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={onClose}>
-      <div className="hair w-full max-w-lg overflow-hidden rounded-xl border bg-panel shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="hair flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border bg-panel shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
         <div className="hair flex items-center gap-2 border-b px-4 py-3">
           <Radio size={15} className="text-muted" />
           <h2 className="text-sm font-medium">{title(step)}</h2>
           <button className="ml-auto text-muted hover:text-ink" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
-        <div className="p-4">
+        <div className="overflow-y-auto p-4">
           {step === 'choose' && (
             <div className="grid gap-3 sm:grid-cols-2">
               {protos.map((p) => (

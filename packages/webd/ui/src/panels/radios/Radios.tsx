@@ -171,7 +171,7 @@ function DeviceCard({ d, onOpen }: { d: Device; onOpen: () => void }) {
           <div className="truncate text-sm font-medium">{d.name}</div>
           <div className="truncate text-xs text-muted">{[d.vendor, d.model].filter(Boolean).join(' · ') || label(d.proto)}</div>
         </div>
-        {d.on !== undefined && <OnOff d={d} />}
+        {d.switchable && <OnOff d={d} />}
       </div>
 
       {d.level !== undefined && <LevelSlider d={d} />}
@@ -314,12 +314,12 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
         </div>
 
         <div className="space-y-5 p-4">
-          {(d.on !== undefined || d.level !== undefined || d.colorTemp) && (
+          {(d.switchable || d.level !== undefined || d.colorTemp) && (
             <section className="space-y-3">
               <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Control</h3>
-              {d.on !== undefined && (
+              {d.switchable && (
                 <div className="flex items-center justify-between text-sm">
-                  <span>{d.on ? 'On' : 'Off'}</span>
+                  <span>{d.on === undefined ? 'Not reported yet' : d.on ? 'On' : 'Off'}</span>
                   <OnOff d={d} />
                 </div>
               )}

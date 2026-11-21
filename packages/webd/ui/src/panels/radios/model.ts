@@ -102,6 +102,8 @@ export type Device = {
   status: string;
   healthy: boolean;
   interviewing: boolean;
+  /** It has an on/off control, whether or not it has reported its state yet. */
+  switchable: boolean;
   on?: boolean;
   /** 0..100. */
   level?: number;
@@ -186,6 +188,7 @@ function zigbeeDevice(d: any, st: any): Device {
     status: done ? 'Ready' : d.interview?.error ? `Interview stopped: ${d.interview.error}` : `Setting up${stage ? `: ${stage.replace(/_/g, ' ')}` : '…'}`,
     healthy: done && !d.interview?.error,
     interviewing: !done,
+    switchable: on !== undefined || kind === 'light' || kind === 'switch' || kind === 'plug',
     on,
     level: bri !== undefined ? Math.round((bri / 254) * 100) : undefined,
     colorTemp: num(st.color_temp) !== undefined ? { mireds: st.color_temp, min: 153, max: 500 } : undefined,
@@ -291,12 +294,13 @@ function zwaveDevice(id: string, t: Tree): Device {
     status: dead ? 'Not responding' : interviewing ? `Setting up: ${stage!.replace(/_/g, ' ')}` : status === 'asleep' ? 'Asleep' : status === 'awake' ? 'Awake' : 'Ready',
     healthy: !dead && !interviewing,
     interviewing,
+    switchable: on !== undefined || kind === 'light' || kind === 'switch' || kind === 'plug',
     on,
     level,
     readings,
     battery,
     signal: num(route?.rssi) !== undefined ? `${route.rssi} dBm` : undefined,
-    security: sec.length ? sec.map((s) => s.replace(/_/g, ' ').replace(/^s2 /, 'S2 ').replace(/^s0/, 'S0')) : undefined,
+    security: sec.length ? sec.map(secName) : undefined,
     details: [
       ['Node', id],
       ['Status', status],
@@ -304,14 +308,27 @@ function zwaveDevice(id: string, t: Tree): Device {
       ['Manufacturer', n.device?.manufacturer ?? (n.manufacturer ? hex4(n.manufacturer.manufacturer_id) : '—')],
       ['Product', n.device?.label ?? (n.manufacturer ? `${hex4(n.manufacturer.product_type)}:${hex4(n.manufacturer.product_id)}` : '—')],
       ['Firmware', typeof n.firmware === 'string' ? n.firmware : '—'],
-      ['Security', sec.length ? sec.join(', ') : 'None'],
+      ['Security', sec.length ? sec.map(secName).join(', ') : 'None'],
       ['Location', n.location || '—'],
       ['Interview', stage ?? '—'],
-      ['Command classes', Object.keys(n.endpoints?.['0']?.ccs ?? {}).join(', ') || '—'],
+      ['Command classes', Object.keys(n.endpoints?.['0']?.ccs ?? {}).map((c) => CC_NAMES[Number(c)] ?? `0x${Number(c).toString(16)}`).join(', ') || '—'],
     ],
     raw: n,
   };
 }
+
+const secName = (s: string) => s.replace(/_/g, ' ').replace(/^s2 /, 'S2 ').replace(/^s0/, 'S0');
+
+/** The command classes devices commonly have, for the detail sheet. */
+const CC_NAMES: Record<number, string> = {
+  0x20: 'Basic', 0x25: 'Binary Switch', 0x26: 'Multilevel Switch', 0x27: 'All Switch', 0x2b: 'Scene Activation',
+  0x30: 'Binary Sensor', 0x31: 'Multilevel Sensor', 0x32: 'Meter', 0x33: 'Color Switch', 0x40: 'Thermostat Mode',
+  0x43: 'Thermostat Setpoint', 0x55: 'Transport Service', 0x56: 'CRC-16', 0x59: 'Association Group Info',
+  0x5a: 'Device Reset Locally', 0x5b: 'Central Scene', 0x5e: 'Z-Wave Plus Info', 0x60: 'Multi Channel',
+  0x62: 'Door Lock', 0x6c: 'Supervision', 0x70: 'Configuration', 0x71: 'Notification', 0x72: 'Manufacturer Specific',
+  0x73: 'Powerlevel', 0x75: 'Protection', 0x7a: 'Firmware Update', 0x80: 'Battery', 0x84: 'Wake Up', 0x85: 'Association',
+  0x86: 'Version', 0x87: 'Indicator', 0x8e: 'Multi Channel Association', 0x98: 'Security S0', 0x9f: 'Security S2',
+};
 
 export function zwaveDevices(t: Tree): Device[] {
   const info = parse(t.topics.get('bridge/info')) ?? {};
