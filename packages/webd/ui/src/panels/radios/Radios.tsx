@@ -488,13 +488,21 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
     setEditing(false);
   };
   const dead = d.proto === 'zwave' && d.status === 'Not responding';
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !editing) onClose(); };
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  }, [onClose, editing]);
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onMouseDown={onClose}>
-      <aside
-        className="hair flex h-full w-full max-w-md flex-col overflow-y-auto border-l bg-panel shadow-2xl"
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onMouseDown={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={d.name}
+        className="hair flex max-h-[90vh] w-full max-w-2xl flex-col overflow-y-auto rounded-xl border bg-panel shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="hair flex items-center gap-3 border-b p-4">
+        <div className="hair sticky top-0 z-10 flex items-center gap-3 border-b bg-panel p-4">
           <div className="grid h-10 w-10 place-items-center rounded-lg bg-raised text-muted"><Icon size={20} /></div>
           <div className="min-w-0 flex-1">
             {editing ? (
@@ -624,7 +632,7 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
             )}
           </section>
         </div>
-      </aside>
+      </div>
     </div>
   );
 }
