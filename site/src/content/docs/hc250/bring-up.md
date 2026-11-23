@@ -405,6 +405,24 @@ The HC-250 DT raises `cpu_crit` to 105 °C, the DM3730's extended-range junction
 limit. The passive trip stays, but it does nothing here: `ti-cpufreq` finds no
 CPU regulator, so there is nothing to throttle.
 
+## TPS65950 HFCLK (2026-11-22)
+
+On an SD boot the rear audio card never registered. The codec's probe failed:
+
+```
+TWL4030: HFCLK is not configured
+twl4030-audio 48070000.i2c:twl@48:audio: Invalid audio_mclk
+```
+
+`twl-core` sets the TPS65950's HFCLK field (`CFG_BOOT`, PM_MASTER 0x3b) only
+when the `twl` node names its input clock. Without one it keeps the bootloader's
+value, and this U-Boot never writes it: it reads 0x18, frequency bits 0. Stock's
+kernel writes 26 MHz. The earlier analog test passed because it was a RAM boot
+from stock, which had already set the field.
+
+The HC-250 DT gives the `twl` node a fixed 26 MHz `fck`, as mainline's
+Beagle-xM, GTA04 and LogicPD boards do.
+
 ## Kernel patches
 
 **None for the first boot.** Everything the board needs is mainline:
