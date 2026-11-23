@@ -1,0 +1,9 @@
+# openHC feature: usbip (kernel half) — the SERVER side only: usbip-host, the
+# stub driver a device is rebound to so usbipd can export it. The client side
+# (VHCI) is the remote machine's business. The USB host controller itself is
+# board hardware and stays in each board's own fragment.
+#
+# Built in here (the HC-800 has MODULES off); the EA family turns it into
+# modules in board/ea/common/features/usbip for its kernel size ceiling.
+CONFIG_USBIP_CORE=y
+CONFIG_USBIP_HOST=y

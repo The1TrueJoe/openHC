@@ -14,3 +14,5 @@ storage     # USB drives mounted and shared over SMB (storaged)
 usb-input   # USB keyboards, mice and game controllers (hubs too) for the on-screen UI
 gstreamer   # network audio runtime (GStreamer: RTP, FLAC, ALSA) for an extension
             # to play into the outputs; Control4 Digital Media (openhc-control4)
+usbip       # USB/IP: share USB devices over the network (off until the web UI
+            # turns it on; the CP2104 Zigbee bridge is never offered)
