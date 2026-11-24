@@ -10,6 +10,7 @@ import {
 } from './model';
 import { AddDevice } from './AddDevice';
 import { NetworkMap } from './NetworkMap';
+import { ask } from '../../dialog';
 
 /* Devices: everything on the box's Zigbee and Z-Wave networks, as things you
    can see and use. The networks themselves are run by zigbee-bridge and
@@ -196,7 +197,7 @@ function NetworkTab({ proto, devices, onExclude }: { proto: Proto; devices: Devi
                     <span className="min-w-0 flex-1 truncate">{d.name} <span className="text-xs text-muted">node {d.id}</span></span>
                     <button
                       className="text-xs text-alarm hover:underline"
-                      onClick={() => confirm(`Remove ${d.name} (node ${d.id})? It no longer answers.`) && remove(d)}
+                      onClick={async () => (await ask(`Remove ${d.name} (node ${d.id})?`, { body: 'It no longer answers.', ok: 'Remove', danger: true })) && remove(d)}
                     >
                       Remove
                     </button>
@@ -267,8 +268,8 @@ function ChannelSettings({ current }: { current?: number }) {
             <button
               className={`${primary} ml-auto`}
               disabled={!pick}
-              onClick={() => {
-                if (!pick || !confirm(`Move the Zigbee network to channel ${pick}? Every device follows; sleepy ones when they next wake.`)) return;
+              onClick={async () => {
+                if (!pick || !(await ask(`Move the Zigbee network to channel ${pick}?`, { body: 'Every device follows; sleepy ones when they next wake.', ok: 'Move' }))) return;
                 setAsked(Date.now());
                 trees.zigbee.send('bridge/request/change_channel', { channel: pick });
                 setPick(null);
@@ -483,13 +484,13 @@ function DeviceSheet({ d, onClose, onExclude }: { d: Device; onClose: () => void
     window.addEventListener('keydown', esc);
     return () => window.removeEventListener('keydown', esc);
   }, [onClose, editing]);
-  const removeIt = () => {
+  const removeIt = async () => {
     if (d.proto === 'zigbee') {
-      if (!confirm(`Remove ${d.name} from the network?`)) return;
+      if (!(await ask(`Remove ${d.name} from the network?`, { ok: 'Remove', danger: true }))) return;
       remove(d, !d.healthy);
       onClose();
     } else if (dead) {
-      if (!confirm(`${d.name} does not answer. Remove it from the controller?`)) return;
+      if (!(await ask(`Remove ${d.name} from the controller?`, { body: 'It does not answer.', ok: 'Remove', danger: true }))) return;
       remove(d);
       onClose();
     } else onExclude();
