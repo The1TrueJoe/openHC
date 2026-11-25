@@ -8,7 +8,12 @@
 # iBeacon, Eddystone), connections, GATT and pairing as requests. A dongle
 # plugged in after boot is picked up within 30 s. Bonds and the bridge's own
 # identity live in /data/ohc/bluetooth.
+#
+# OHC_BLUETOOTH_DISCOVERY (board.env, or /data/ohc/bluetooth.env per box):
+#   false (default) no MQTT discovery messages for the sensors it hears
+#   true            it announces each decoded sensor with MQTT discovery
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
+[ -r /data/ohc/bluetooth.env ] && . /data/ohc/bluetooth.env
 BIN=/opt/ohc/bin/bluetooth-bridge
 CONF=/run/ohc/bluetooth-bridge.toml
 DATA=/data/ohc/bluetooth
@@ -33,7 +38,7 @@ client_id = "${base##*/}-bluetooth"
 base_topic = "$base/bluetooth"
 
 [homeassistant]
-enabled = false
+enabled = ${OHC_BLUETOOTH_DISCOVERY:-false}
 
 [data]
 dir = "$DATA"

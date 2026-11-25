@@ -1,0 +1,2 @@
+# bluetooth, EA half: the AR3012's firmware for ath3k (see linux.fragment).
+BR2_PACKAGE_LINUX_FIRMWARE_AR3012_USB=y
