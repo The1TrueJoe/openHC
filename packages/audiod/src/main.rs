@@ -246,10 +246,14 @@ impl App {
             "outputs": self.board.outputs,
             "inputs": self.board.inputs,
             "rate": self.board.rate,
+            // What a new endpoint is named after ("<product> <output label>").
+            "product": self.board.product,
             "spotify": e.spotify,
             "airplay": e.airplay,
             "routes": e.routes,
             "library": e.library,
+            "sendspin": e.sendspin,
+            "squeezelite": e.squeezelite,
             "instances": instances,
         }))
     }
@@ -259,7 +263,7 @@ type Ctx = State<Arc<App>>;
 
 #[utoipa::path(get, path = "/api/audio", tag = "Audio",
     summary = "Outputs, inputs, the endpoint map and the receivers",
-    description = "`map` is present on boards with named outputs: outputs/inputs (the board's ALSA PCMs), the configured spotify/airplay/routes lists, and `instances` with each one's running state. `outputs`/`receivers`/`selected`/`volume` describe the stock single receivers (boards without named outputs). For drawing a page once — live changes arrive over MQTT.",
+    description = "`map` is present on boards with named outputs: outputs/inputs (the board's ALSA PCMs), the configured spotify/airplay/sendspin/squeezelite/library/routes lists, `product` (what new endpoints are named after), and `instances` with each one's running state. `outputs`/`receivers`/`selected`/`volume` describe the stock single receivers (boards without named outputs). For drawing a page once — live changes arrive over MQTT.",
     responses((status = 200, description = "audio configuration and snapshot")))]
 async fn get_audio(State(app): Ctx) -> Json<Value> {
     Json(json!({

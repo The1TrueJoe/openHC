@@ -17,7 +17,9 @@
 //!   receivers are AirPlay 2 (shairport-sync 5.x): each on its own
 //!   port, 7000+n, its device id and nqptp shared memory derived from its name,
 //!   and ONE nqptp for them all, planned first. Without it they are classic
-//!   AirPlay on 5000+n.
+//!   AirPlay on 5000+n. A Sendspin endpoint is sendspin-cli on 8928+n; a
+//!   squeezelite endpoint finds its server by autodiscovery, under a MAC
+//!   derived from its output (squeezelite_mac) so the server keeps knowing it.
 //!
 //! Supervision is tokio's: each instance is a task that spawns the process with
 //! kill_on_drop, logs its output, and restarts it 3 s after it exits. Stopping
@@ -37,7 +39,20 @@ pub const LIBRESPOT: &str = "/usr/bin/librespot";
 pub const SHAIRPORT: &str = "/usr/bin/shairport-sync";
 /// AirPlay 2's PTP timing daemon: one per host, shared by every receiver.
 pub const NQPTP: &str = "/usr/bin/nqptp";
+pub const SENDSPIN: &str = "/usr/bin/sendspin-cli";
+pub const SQUEEZELITE: &str = "/usr/bin/squeezelite";
 const RUN_DIR: &str = "/run/ohc/audio";
+
+/// A squeezelite player's MAC, which is how the server tells players apart:
+/// locally administered and unicast (0x02 first), from the output id and the
+/// player's place among that output's squeezelite players (0 for the one the
+/// web UI's per-output switch adds) — so it survives a rename or a reorder.
+fn squeezelite_mac(output: &str, k: usize) -> String {
+    // FNV-1a: stable across builds, unlike std's hasher.
+    let h = format!("{output}/{k}").bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    let b = h.to_be_bytes();
+    format!("02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", b[0], b[1], b[2], b[3], b[4])
+}
 
 /// tag -> currently running.
 pub type Up = Arc<Mutex<HashMap<String, bool>>>;
@@ -312,6 +327,43 @@ fn plan(b: &Board, e: &Endpoints, live_inputs: &HashSet<String>) -> Vec<Spec> {
                 program: SHAIRPORT.into(), args: vec!["-c".into(), cfg] });
         }
     }
+    // The k-th player of its kind on its output: what keeps its identity (the
+    // squeezelite MAC, the Sendspin key) when the list around it changes.
+    let nth = |list: &[crate::config::Endpoint], n: usize| list[..n].iter().filter(|x| x.output == list[n].output).count();
+    if have(SENDSPIN) {
+        for (n, ep) in e.sendspin.iter().enumerate() {
+            let Some(out) = b.output(&ep.output) else { continue };
+            // Its identity key and what it remembers (volume, delay, last server).
+            let state = crate::config::data_dir().unwrap_or_else(|| RUN_DIR.into())
+                .join("sendspin").join(format!("{}-{}", ep.output, nth(&e.sendspin, n)));
+            let args: Vec<String> = vec![
+                "-o".into(), format!("alsa:{}", out.pcm),
+                "-n".into(), ep.name.clone(),
+                "--port".into(), (8928 + n).to_string(),
+                "--state-dir".into(), state.display().to_string(),
+                // Like AirPlay and squeezelite, any server on the LAN may play:
+                // there is no way to confirm a pairing from openHC yet.
+                "--allow-unpaired".into(),
+                "--no-control".into(),
+            ];
+            v.push(Spec { files: vec![], tag: format!("sendspin-{n}"), kind: "sendspin", name: Some(ep.name.clone()),
+                input: None, output: Some(ep.output.clone()), program: SENDSPIN.into(), args });
+        }
+    }
+    if have(SQUEEZELITE) {
+        for (n, ep) in e.squeezelite.iter().enumerate() {
+            let Some(out) = b.output(&ep.output) else { continue };
+            let args: Vec<String> = vec![
+                "-o".into(), out.pcm.clone(),
+                "-n".into(), ep.name.clone(),
+                "-m".into(), squeezelite_mac(&ep.output, nth(&e.squeezelite, n)),
+                // Let go of the output 5 s after playback stops.
+                "-C".into(), "5".into(),
+            ];
+            v.push(Spec { files: vec![], tag: format!("squeezelite-{n}"), kind: "squeezelite", name: Some(ep.name.clone()),
+                input: None, output: Some(ep.output.clone()), program: SQUEEZELITE.into(), args });
+        }
+    }
     if have(crate::library::MPD) {
         if let Some((ep, out)) = e.library.first().and_then(|ep| b.output(&ep.output).map(|o| (ep, o))) {
             let cfg = format!("{RUN_DIR}/mpd.conf");
@@ -454,6 +506,14 @@ mod tests {
         assert!(a.contains("pcm.ohc_in_coaxin_dsnoop {"), "{a}");
         assert!(a.contains("rate 48000\n        format S32_LE\n"), "{a}");
         assert!(!a.contains("S16_LE"));
+    }
+    #[test]
+    fn a_squeezelite_mac_is_local_stable_and_per_output() {
+        let m = squeezelite_mac("analog", 0);
+        assert!(m.starts_with("02:") && m.len() == 17 && m.split(':').count() == 6, "{m}");
+        assert_eq!(m, squeezelite_mac("analog", 0));
+        assert_ne!(m, squeezelite_mac("hdmi", 0));
+        assert_ne!(m, squeezelite_mac("analog", 1));
     }
     #[test]
     fn librespot_hook_runs_this_binary() {

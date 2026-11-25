@@ -401,7 +401,7 @@ wired reachability is unaffected.
 
 `wlan_disable` and `lan_disable` GPIOs can hard-disable either radio or NIC.
 
-## Audio: four independent outputs, line in, N Spotify + N AirPlay
+## Audio: four independent outputs, line in, network players per output
 
 ```
 card 0: HDA Intel at 0xfe978000 irq 16
@@ -444,10 +444,20 @@ into a `dsnoop`, all at 44.1 kHz so nothing resamples, and supervises:
 - **Spotify Connect** — one librespot per endpoint
 - **AirPlay** — one shairport-sync (classic AirPlay) per endpoint; each hashes
   its device ID from its name, so they are distinct devices
+- **Sendspin** — one `sendspin-cli` per endpoint, on port 8928+n, announced
+  over mDNS for a Sendspin server (Music Assistant) to find; any server on the
+  network may play to it (`--allow-unpaired`)
+- **Squeezelite** — one `squeezelite` per endpoint; it finds a Logitech Media
+  Server (or Music Assistant's Squeezelite provider) by autodiscovery, under a
+  MAC derived from its output, so the server keeps knowing it
 - **Input routes** — `alsaloop` from an input to an output, live
 
-Any number of endpoints can share an output; they mix. The default is one
-Spotify and one AirPlay endpoint per output.
+Any number of endpoints can share an output; they mix. Out of the box only
+AirPlay is on, one endpoint per output. Each kind is switched on or off per
+output in the web UI (an output's **Players**): on adds an endpoint named
+`<product> <output>`, off removes it. In `audio.json` a kind is on for an output
+when its list has an endpoint on that output; a kind missing from a saved file
+gets its default (AirPlay on everywhere, the rest off).
 
 The map is **configuration**, so it is REST — the web UI's Audio panel, or:
 
@@ -456,6 +466,8 @@ curl http://<box>/audio/api/audio
 curl -X PUT http://<box>/audio/api/audio/endpoints -H 'content-type: application/json' -d '{
   "spotify": [{"name": "Living Room", "output": "analog1"}, {"name": "Patio", "output": "analog2"}],
   "airplay": [{"name": "Den", "output": "hdmi"}],
+  "sendspin": [{"name": "Den", "output": "hdmi"}],
+  "squeezelite": [],
   "routes":  [{"input": "linein", "output": "analog2"}]
 }'
 ```

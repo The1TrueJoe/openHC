@@ -1,5 +1,5 @@
-# Audio: ALSA userspace plus the two network audio receivers (AirPlay + Spotify
-# Connect). SHARED: the EA family and the HC-800 both select it. There is no
+# Audio: ALSA userspace plus the network audio players (AirPlay, Spotify
+# Connect, Sendspin, squeezelite). SHARED: every board with audio selects it. There is no
 # kernel half here — the sound hardware is per board (the EA-3's ADAU1451 DSP is
 # the audio-dsp feature, the HC-800's HDA codec is in its own fragment).
 #
@@ -51,6 +51,15 @@ BR2_PACKAGE_AVAHI_LIBDNSSD_COMPATIBILITY=y
 
 # Spotify Connect. Not in Buildroot — packages/librespot is openHC's own (Rust).
 BR2_PACKAGE_LIBRESPOT=y
+
+# Sendspin and squeezelite players, one per endpoint that is switched on for an
+# output (audiod; off by default). sendspin-cli is openHC's own package
+# (packages/sendspin-cpp-cli, C++20 — the C++ toolchain below), announced over
+# Avahi's libdns_sd above. squeezelite is Buildroot's; RESAMPLE adds soxr for
+# its -R resampler.
+BR2_PACKAGE_SENDSPIN_CPP_CLI=y
+BR2_PACKAGE_SQUEEZELITE=y
+BR2_PACKAGE_SQUEEZELITE_RESAMPLE=y
 
 # The music-library player: mpd, run by audiod (one instance, when the
 # endpoint map has a `library` entry) over /media, where storaged mounts the
