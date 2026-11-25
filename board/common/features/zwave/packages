@@ -2,4 +2,4 @@
 # A line with cargo install arguments after the binary is an upstream binary.
 ohcmqtt ohc-mqtt-base
 # The Z-Wave to MQTT bridge (Serial API controllers: 500, 700 and 800 series).
-zwave-bridge zwave-bridge --git https://github.com/pulzar-net/zwave-bridge --rev a43381759c572c7a08e4c004186a388b011d1d1e
+zwave-bridge zwave-bridge --version 0.2.2

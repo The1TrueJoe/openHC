@@ -3,5 +3,5 @@
 # install arguments after the binary is an upstream binary (see build.sh).
 zigbee zigbee
 ohcmqtt ohc-mqtt-base
-# The Zigbee to MQTT bridge (EZSP 8 support landed in pulzar-net/zigbee-bridge#5).
-zigbee-bridge zigbee-bridge --git https://github.com/pulzar-net/zigbee-bridge --rev 6c76e10882071cab51f73bd2e02e4c99c9978e96
+# The Zigbee to MQTT bridge (EZSP 8 for the EM35x since 0.4.0).
+zigbee-bridge zigbee-bridge --version 0.4.0
