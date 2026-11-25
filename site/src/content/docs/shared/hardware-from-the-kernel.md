@@ -29,7 +29,7 @@ software defaults only.
 | Audio outputs and inputs | every ALSA playback and capture PCM (`/proc/asound`) | audiod |
 | Output label | the PCM's name: a DT sound card's link name, `HDMI` on the EA's HDMI card; or the board's udev rule | audiod |
 | DSP profile | the codec node's `firmware-name`: `openhc/<x>.bin` means `/usr/share/openhc/dsp/<x>.json` | audiod |
-| Default Spotify, AirPlay, library names | `<product> <label>` per output (`<product>` alone on a one-output board), library on the first output; renames are saved in `/data/ohc/audio.json` | audiod |
+| Default endpoint names (AirPlay, and Spotify/Sendspin/Squeezelite when switched on for an output), library name | `<product> <label>` per output (`<product>` alone on a one-output board), library on the first output; renames are saved in `/data/ohc/audio.json` | audiod |
 
 The product is the model without its vendor and variant: `Control4 EA-1 v2 PoE`
 gives `EA-1`. An output's id (`analog1`, `coax`, `hdmi`) is its label in lower

@@ -297,12 +297,16 @@ export interface AudioEndpoints {
   routes: AudioRoute[];
   /** The music-library player (mpd over the drives on /media): 0 or 1. */
   library?: AudioEndpoint[];
+  /** Sendspin players (sendspin-cli). */
+  sendspin?: AudioEndpoint[];
+  /** Squeezelite players (a Logitech Media Server / Music Assistant client). */
+  squeezelite?: AudioEndpoint[];
 }
 
 /** One supervised process audiod runs for the map. */
 export interface AudioInstance {
   tag: string;
-  kind: 'spotify' | 'airplay' | 'route' | 'library' | 'helper';
+  kind: 'spotify' | 'airplay' | 'sendspin' | 'squeezelite' | 'route' | 'library' | 'helper';
   name: string | null;
   input: string | null;
   output: string | null;
@@ -316,6 +320,8 @@ export interface AudioInstance {
  *  (`<base>/state/audio/map`) whenever it changes. */
 export interface AudioMap extends AudioEndpoints {
   rate: number;
+  /** What a new endpoint is named after: "<product> <output label>". */
+  product?: string;
   outputs: AudioPort[];
   inputs: AudioPort[];
   instances: AudioInstance[];

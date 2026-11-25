@@ -316,7 +316,7 @@
         }
       },
       "summary": "Audio endpoint map (retained, audiod)",
-      "description": "Boards with named outputs: `outputs` and `inputs` (hardware), the configured `spotify`/`airplay` (name + output) and `routes` (input + output), and `instances` — every supervised process with its `running` flag and whether it is `playing`. JSON. Changing the map is configuration: REST `PUT /audio/api/audio/endpoints`."
+      "description": "Boards with named outputs: `outputs` and `inputs` (hardware), `product`, the configured `spotify`/`airplay`/`sendspin`/`squeezelite`/`library` endpoints (name + output; an output with none of a kind has that kind off) and `routes` (input + output), and `instances` — every supervised process with its `running` flag and whether it is `playing`. JSON. Changing the map is configuration: REST `PUT /audio/api/audio/endpoints`."
     },
     "healthNow": {
       "address": "openhc/{box}/state/health/now",

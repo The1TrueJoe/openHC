@@ -431,10 +431,13 @@ with the device already enabled.
    plays, and the DSP's Mode → Test tone is the way to tell a dead I²S from a
    dead analog path.
 
-## AirPlay and Spotify Connect
+## AirPlay, Spotify Connect, Sendspin and Squeezelite
 
-Both are plain ALSA clients and need no special kernel support beyond a working
-card.
+All four are plain ALSA clients and need no special kernel support beyond a
+working card. audiod runs one process per endpoint on its output's PCM; out of
+the box only AirPlay is on (one per output), and each kind is switched on or
+off per output from the web UI (see the HC-800's
+[Endpoints](/hc800/#endpoints) for the map and `audio.json`).
 
 **AirPlay** is Buildroot's `shairport-sync` 5.6.3, built for AirPlay 2 and
 announced via Avahi over D-Bus. Each named AirPlay endpoint is its own receiver
@@ -449,6 +452,21 @@ the other openHC Rust daemons use, because it links against the target's
 alsa-lib. It **requires a Spotify Premium account**, with a free account the
 device is discovered and then refuses to play, which looks like a bug and isn't
 one.
+
+**Sendspin** is `sendspin-cli` ([sendspin-cpp-cli](https://github.com/Sendspin/sendspin-cpp-cli)
+v1.0.1), packaged here (`packages/sendspin-cpp-cli`). Upstream's CMake fetches
+sendspin-cpp and its libraries at configure time; the package downloads them
+through Buildroot instead and builds fully disconnected. Each endpoint is
+announced over Avahi's libdns_sd on its own port (8928+n) and keeps its
+identity key under `/data/ohc/sendspin/<output>-<k>`. It plays for any server
+on the network (`--allow-unpaired`), since openHC has no way to confirm a
+pairing yet.
+
+**Squeezelite** is Buildroot's, with soxr resampling. Each endpoint finds its
+server by autodiscovery and closes the output 5 s after playback stops (`-C 5`);
+its MAC is a locally administered one derived from its output, so the server
+sees the same player after a rename. It played to Music Assistant's Squeezelite
+provider at 48 kHz on an EA-3's `ohc_analog`.
 
 ## What still blocks sound (EA3 DSP path)
 

@@ -34,39 +34,44 @@ pub struct Endpoints {
     /// The music-library player (mpd, playing what is on /media — the drives
     /// storaged mounts): at most one, on the output named here.
     pub library: Vec<Endpoint>,
+    /// Sendspin players (sendspin-cli), which a Sendspin server finds over mDNS.
+    pub sendspin: Vec<Endpoint>,
+    /// Squeezelite players, which find a Logitech Media Server (or Music
+    /// Assistant's Squeezelite provider) by autodiscovery.
+    pub squeezelite: Vec<Endpoint>,
+}
+
+/// `$OHC_DATA/ohc` (default `/data/ohc`) when it exists: storage that survives
+/// a reboot.
+pub fn data_dir() -> Option<PathBuf> {
+    let data = std::env::var("OHC_DATA").unwrap_or_else(|_| "/data".into());
+    Some(PathBuf::from(&data).join("ohc")).filter(|d| d.is_dir())
 }
 
 pub fn path() -> PathBuf {
-    let data = std::env::var("OHC_DATA").unwrap_or_else(|_| "/data".into());
-    let dir = PathBuf::from(&data).join("ohc");
-    if dir.is_dir() {
-        dir.join("audio.json")
-    } else {
-        PathBuf::from("/etc/ohc/audio.json")
-    }
+    data_dir().map(|d| d.join("audio.json")).unwrap_or_else(|| PathBuf::from("/etc/ohc/audio.json"))
 }
 
 impl Endpoints {
-    /// One Spotify Connect and one AirPlay device per output, so every jack is
-    /// reachable from a phone with no setup ("HC-800 Analog 1", or just "EA-1"
-    /// on a one-output board), and the library player on the first output.
-    /// Inputs are not routed (one would play whatever is plugged in).
+    /// One AirPlay device per output, so every jack is reachable from a phone
+    /// with no setup ("HC-800 Analog 1", or just "EA-1" on a one-output board),
+    /// and the library player on the first output. Spotify Connect, Sendspin
+    /// and squeezelite start off; each is turned on per output (the web UI
+    /// names it the same way). Inputs are not routed (one would play whatever
+    /// is plugged in).
     pub fn defaults(b: &Board) -> Endpoints {
         let name = |label: &str| {
             if b.outputs.len() == 1 { b.product.clone() } else { format!("{} {label}", b.product) }
         };
-        let each: Vec<Endpoint> =
-            b.outputs.iter().map(|o| Endpoint { name: name(&o.label), output: o.id.clone() }).collect();
         Endpoints {
-            spotify: each.clone(),
-            airplay: each,
-            routes: Vec::new(),
+            airplay: b.outputs.iter().map(|o| Endpoint { name: name(&o.label), output: o.id.clone() }).collect(),
             library: b
                 .outputs
                 .first()
                 .map(|o| Endpoint { name: format!("{} Library", b.product), output: o.id.clone() })
                 .into_iter()
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -85,12 +90,22 @@ impl Endpoints {
     /// A saved map. One written before a kind of endpoint existed has no key
     /// for it, and gets the board's default for that kind (an explicitly empty
     /// list stays empty) — so a box that saved its map before the library
-    /// player existed still gets one.
+    /// player existed still gets one, and one saved before Sendspin and
+    /// squeezelite existed has them off.
     fn from_saved(text: &str, b: &Board) -> Result<Endpoints, serde_json::Error> {
         let raw: serde_json::Value = serde_json::from_str(text)?;
         let mut e: Endpoints = serde_json::from_value(raw.clone())?;
-        if raw.get("library").is_none() {
-            e.library = Endpoints::defaults(b).library;
+        let d = Endpoints::defaults(b);
+        for (key, list, default) in [
+            ("spotify", &mut e.spotify, d.spotify),
+            ("airplay", &mut e.airplay, d.airplay),
+            ("library", &mut e.library, d.library),
+            ("sendspin", &mut e.sendspin, d.sendspin),
+            ("squeezelite", &mut e.squeezelite, d.squeezelite),
+        ] {
+            if raw.get(key).is_none() {
+                *list = default;
+            }
         }
         Ok(e)
     }
@@ -115,7 +130,13 @@ impl Endpoints {
         if self.library.len() > 1 {
             return Err("library: one player at most".into());
         }
-        for (kind, list) in [("spotify", &self.spotify), ("airplay", &self.airplay), ("library", &self.library)] {
+        for (kind, list) in [
+            ("spotify", &self.spotify),
+            ("airplay", &self.airplay),
+            ("library", &self.library),
+            ("sendspin", &self.sendspin),
+            ("squeezelite", &self.squeezelite),
+        ] {
             for e in list {
                 if !name_ok(&e.name) {
                     return Err(format!("{kind}: '{}' must be 1-64 printable characters", e.name));
@@ -162,22 +183,38 @@ mod tests {
         assert!(none.library.is_empty());
     }
     #[test]
+    fn a_missing_kind_gets_its_default_and_a_saved_one_is_kept() {
+        let b = board();
+        // Saved before Sendspin/squeezelite existed: those are off, the rest as
+        // saved (Spotify stays on where it was).
+        let old = Endpoints::from_saved(
+            r#"{"spotify":[{"name":"S","output":"hdmi"}],"airplay":[],"routes":[],"library":[]}"#, &b).unwrap();
+        assert_eq!(old.spotify, vec![Endpoint { name: "S".into(), output: "hdmi".into() }]);
+        assert!(old.airplay.is_empty() && old.sendspin.is_empty() && old.squeezelite.is_empty());
+        // Nothing saved but the routes: every kind is its default.
+        assert_eq!(Endpoints::from_saved(r#"{"routes":[]}"#, &b).unwrap(), Endpoints::defaults(&b));
+        let on = Endpoints::from_saved(r#"{"squeezelite":[{"name":"Q","output":"analog1"}]}"#, &b).unwrap();
+        assert_eq!(on.squeezelite[0].output, "analog1");
+        assert_eq!(on.airplay.len(), 2);
+    }
+    #[test]
     fn defaults_name_every_output_after_the_product() {
         let mut b = board();
         b.outputs[0].label = "Analog 1".into();
         b.outputs[1].label = "HDMI".into();
         let d = Endpoints::defaults(&b);
-        let names: Vec<_> = d.spotify.iter().map(|e| (e.name.as_str(), e.output.as_str())).collect();
+        let names: Vec<_> = d.airplay.iter().map(|e| (e.name.as_str(), e.output.as_str())).collect();
         assert_eq!(names, [("HC-800 Analog 1", "analog1"), ("HC-800 HDMI", "hdmi")]);
-        assert_eq!(d.airplay, d.spotify);
+        // Out of the box only AirPlay (and the library player) is on.
+        assert!(d.spotify.is_empty() && d.sendspin.is_empty() && d.squeezelite.is_empty());
         assert!(d.routes.is_empty());
         assert!(d.validate(&b).is_ok());
         b.outputs.truncate(1);
         b.product = "EA-1".into();
-        assert_eq!(Endpoints::defaults(&b).spotify[0].name, "EA-1");
+        assert_eq!(Endpoints::defaults(&b).airplay[0].name, "EA-1");
         b.outputs.clear();
         let none = Endpoints::defaults(&b);
-        assert!(none.spotify.is_empty() && none.library.is_empty());
+        assert!(none.airplay.is_empty() && none.library.is_empty());
     }
     #[test]
     fn validates_against_the_board() {
@@ -187,8 +224,13 @@ mod tests {
             airplay: vec![],
             routes: vec![Route { input: "linein".into(), output: "hdmi".into() }],
             library: vec![Endpoint { name: "Library".into(), output: "analog1".into() }],
+            sendspin: vec![Endpoint { name: "Den".into(), output: "hdmi".into() }],
+            squeezelite: vec![Endpoint { name: "Den".into(), output: "analog1".into() }],
         };
         assert!(ok.validate(&b).is_ok());
+        let mut bad = ok.clone();
+        bad.squeezelite[0].output = "coax".into();
+        assert!(bad.validate(&b).is_err());
         let mut bad = ok.clone();
         bad.spotify[0].output = "coax".into();
         assert!(bad.validate(&b).is_err());

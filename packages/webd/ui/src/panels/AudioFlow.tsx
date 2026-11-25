@@ -6,7 +6,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   Music, Radio, Cable, Library, Speaker, Bell, Volume2, VolumeX, X, Plus, Trash2, Unplug, ChevronRight, RotateCcw,
-  Play, Pause, SkipBack, SkipForward, Square, Folder, FileAudio, Search, Shuffle, Repeat, RefreshCw,
+  AudioLines, Disc3, Play, Pause, SkipBack, SkipForward, Square, Folder, FileAudio, Search, Shuffle, Repeat, RefreshCw,
 } from 'lucide-react';
 import {
   io, rest, audioCover, toneValue, type AudioEndpoint, type AudioEndpoints, type AudioMap, type AudioMeta,
@@ -17,8 +17,8 @@ import { ask } from '../dialog';
 
 /* The audio switcher: the whole Audio page on boards with named outputs.
 
-   Sources (Spotify Connect and AirPlay endpoints, the library player, the
-   hardware inputs) on the left, outputs on the right. Two kinds of line:
+   Sources (Spotify Connect, AirPlay, Sendspin and squeezelite endpoints, the
+   library player, the hardware inputs) on the left, outputs on the right. Two kinds of line:
    a DEFAULT route (dashed, quiet) is where a source plays when its trigger
    fires — today, when it starts playing — and is configuration; a LIVE line
    (solid, lit) is audio actually flowing now. Spotify/AirPlay/library
@@ -28,7 +28,9 @@ import { ask } from '../dialog';
    remove it. A Spotify, AirPlay
    or library source plays to one output, so a new line replaces its old one;
    an input can feed any number of outputs. Click any node for its settings:
-   an output's level, tone and announcements; a source's name, what it is
+   an output's level, tone, announcements and which players run on it (one
+   switch per kind: on adds that kind's endpoint for the output, off removes
+   it); a source's name, what it is
    playing, and for the library its player and browser — in a popup on the
    chart itself (React Flow's NodeToolbar / EdgeToolbar), attached to what was
    clicked.
@@ -40,9 +42,19 @@ import { ask } from '../dialog';
    ones (network streams, more inputs) slot in as more node kinds. */
 
 type Live = NonNullable<IoState['audio']>;
-type Kind = 'spotify' | 'airplay' | 'library' | 'input';
-const KIND_ICON = { spotify: Music, airplay: Radio, library: Library, input: Cable } as const;
-const KIND_LABEL = { spotify: 'Spotify Connect', airplay: 'AirPlay', library: 'Library player', input: 'Input' } as const;
+/** The network players: each can be on or off per output. */
+const PLAYERS = ['spotify', 'airplay', 'sendspin', 'squeezelite'] as const;
+/** Every kind kept as an endpoint list (one output each). */
+const ENDPOINT_KINDS = [...PLAYERS, 'library'] as const;
+type EndpointKind = (typeof ENDPOINT_KINDS)[number];
+type Kind = EndpointKind | 'input';
+const KIND_ICON = {
+  spotify: Music, airplay: Radio, sendspin: AudioLines, squeezelite: Disc3, library: Library, input: Cable,
+} as const;
+const KIND_LABEL = {
+  spotify: 'Spotify Connect', airplay: 'AirPlay', sendspin: 'Sendspin', squeezelite: 'Squeezelite',
+  library: 'Library player', input: 'Input',
+} as const;
 
 type SourceData = {
   kind: Kind;
@@ -73,6 +85,7 @@ const outId = (id: string) => `out:${id}`;
 
 const endpointsOf = (map: AudioMap): AudioEndpoints => ({
   spotify: map.spotify, airplay: map.airplay, routes: map.routes, library: map.library ?? [],
+  sendspin: map.sendspin ?? [], squeezelite: map.squeezelite ?? [],
 });
 
 /* What the popups need: the map, the live state, and how to save or close. */
@@ -290,7 +303,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
 
   // What to draw, from the map and the live state.
   const sources: Array<{ id: string; data: SourceData }> = [];
-  (['spotify', 'airplay', 'library'] as const).forEach((kind) =>
+  ENDPOINT_KINDS.forEach((kind) =>
     (eps[kind] ?? []).forEach((e, n) => {
       const i = e.output ? inst(kind, e.name, e.output) : undefined;
       sources.push({ id: srcId(kind, n), data: {
@@ -308,7 +321,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
     } });
   });
   const feeding = (o: string) =>
-    (['spotify', 'airplay', 'library'] as const).reduce((a, k) => a + (eps[k] ?? []).filter((e) => e.output === o).length, 0) +
+    ENDPOINT_KINDS.reduce((a, k) => a + (eps[k] ?? []).filter((e) => e.output === o).length, 0) +
     eps.routes.filter((r) => r.output === o).length;
   const outputs = map.outputs.map((o) => ({ id: outId(o.id), data: {
     id: o.id, label: o.label, level: live.level?.[o.id], announcing: !!live.announcing?.[o.id], feeding: feeding(o.id),
@@ -336,7 +349,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
   }, [derivedKey]);
 
   const edges: Edge<RouteData>[] = [];
-  (['spotify', 'airplay', 'library'] as const).forEach((kind) =>
+  ENDPOINT_KINDS.forEach((kind) =>
     (eps[kind] ?? []).forEach((e, n) => {
       if (!e.output) return;
       const playing = sources.find((s) => s.id === srcId(kind, n))?.data.playing;
@@ -361,7 +374,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
       if (next.routes.some((r) => r.input === idx && r.output === out)) return;
       next.routes.push({ input: idx, output: out });
     } else {
-      const list = next[kind as 'spotify' | 'airplay' | 'library'] as AudioEndpoint[];
+      const list = next[kind as EndpointKind] as AudioEndpoint[];
       list[Number(idx)].output = out; // one output per endpoint: replaces
     }
     save(next);
@@ -370,11 +383,11 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
     const [, kind, idx] = edgeId.split(':');
     const next: AudioEndpoints = JSON.parse(JSON.stringify(eps));
     if (kind === 'route') next.routes.splice(Number(idx), 1);
-    else (next[kind as 'spotify' | 'airplay' | 'library'] as AudioEndpoint[])[Number(idx)].output = '';
+    else (next[kind as EndpointKind] as AudioEndpoint[])[Number(idx)].output = '';
     setSel(null);
     save(next);
   };
-  const addSource = (kind: 'spotify' | 'airplay' | 'library') => {
+  const addSource = (kind: EndpointKind) => {
     const next: AudioEndpoints = JSON.parse(JSON.stringify(eps));
     const list = (next[kind] ??= []) as AudioEndpoint[];
     const base = kind === 'library' ? 'Library' : KIND_LABEL[kind];
@@ -447,7 +460,7 @@ export function AudioFlow({ map, live }: { map: AudioMap; live: Live }) {
   );
 }
 
-function AddSource({ onAdd, hasLibrary }: { onAdd: (k: 'spotify' | 'airplay' | 'library') => void; hasLibrary: boolean }) {
+function AddSource({ onAdd, hasLibrary }: { onAdd: (k: EndpointKind) => void; hasLibrary: boolean }) {
   const [open, setOpen] = useState(false);
   const item = 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs hover:bg-raised disabled:opacity-40';
   return (
@@ -458,8 +471,10 @@ function AddSource({ onAdd, hasLibrary }: { onAdd: (k: 'spotify' | 'airplay' | '
       </button>
       {open && (
         <div className="hair absolute left-0 top-9 z-10 w-52 rounded-lg border bg-panel p-1 shadow-lg">
-          <button className={item} onClick={() => { onAdd('spotify'); setOpen(false); }}><Music size={13} /> Spotify Connect</button>
-          <button className={item} onClick={() => { onAdd('airplay'); setOpen(false); }}><Radio size={13} /> AirPlay</button>
+          {PLAYERS.map((k) => {
+            const Icon = KIND_ICON[k];
+            return <button key={k} className={item} onClick={() => { onAdd(k); setOpen(false); }}><Icon size={13} /> {KIND_LABEL[k]}</button>;
+          })}
           <button className={item} disabled={hasLibrary} title={hasLibrary ? 'One library player per box' : undefined}
             onClick={() => { onAdd('library'); setOpen(false); }}><Library size={13} /> Library player</button>
         </div>
@@ -631,6 +646,8 @@ function OutputInspector({
       <ToneSection title="Tone" output={id} knobs={tone} live={live} reset="Flat and centred" />
       <ToneSection title="Equalizer" output={id} knobs={eq} live={live} reset="Flat" />
 
+      <PlayerSwitches output={id} label={label} />
+
       <Section title="Sources">
         {feeding.length ? (
           <div className="flex flex-wrap gap-1.5">
@@ -650,6 +667,40 @@ function OutputInspector({
         )}
       </Section>
     </Popup>
+  );
+}
+
+/* Which network players run on an output, one switch per kind. On adds that
+   kind's endpoint for the output, named as audiod names its defaults
+   ("<product> <output>", or just the product on a one-output board); off
+   removes every endpoint of that kind playing here. */
+function PlayerSwitches({ output, label }: { output: string; label: string }) {
+  const { eps, map, save } = useFlow();
+  const on = (k: (typeof PLAYERS)[number]) => (eps[k] ?? []).some((e) => e.output === output);
+  const toggle = (k: (typeof PLAYERS)[number]) => {
+    const next: AudioEndpoints = JSON.parse(JSON.stringify(eps));
+    const list = (next[k] ?? []).filter((e) => e.output !== output);
+    if (!on(k)) {
+      const product = map.product || 'openHC';
+      list.push({ name: map.outputs.length === 1 ? product : `${product} ${label}`, output });
+    }
+    next[k] = list;
+    save(next);
+  };
+  return (
+    <Section title="Players">
+      <div className="flex flex-wrap gap-1.5">
+        {PLAYERS.map((k) => {
+          const Icon = KIND_ICON[k];
+          return (
+            <button key={k} className={`${pill(on(k))} flex items-center gap-1.5`} aria-pressed={on(k)} onClick={() => toggle(k)}>
+              <Icon size={12} /> {KIND_LABEL[k]}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-1.5 text-[11px] text-muted">What a phone or music server can play to here.</p>
+    </Section>
   );
 }
 
