@@ -1,0 +1,7 @@
+# openHC feature: usbip, EA kernel half — the shared fragment as MODULES.
+#
+# CEFDK's bootlinux window caps an EA bzImage at 7,417,856 bytes and x86_64 is
+# already ~7.0 MB, so new features cannot be built in. S97ohcusbip modprobes
+# usbip-host (which pulls usbip-core) only when USB/IP is turned on.
+CONFIG_USBIP_CORE=m
+CONFIG_USBIP_HOST=m

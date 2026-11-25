@@ -48,6 +48,8 @@ to rather than a request/response. See the AsyncAPI document.",
         (name = "Wi-Fi", description = "Setup-AP scanning and joining."),
         (name = "Display", description = "The opt-in on-panel web view (off by default; the panel \
 shows the splash until it is enabled here)."),
+        (name = "USB/IP", description = "Share this box's USB devices with another machine over \
+the network (off by default)."),
         (name = "Reference", description = "The specifications this box serves."),
     )
 )]
@@ -64,6 +66,8 @@ pub fn router(cfg: Arc<Config>) -> Router {
     .routes(utoipa_axum::routes!(wifi_connect))
     .routes(utoipa_axum::routes!(display_get, display_set))
     .routes(utoipa_axum::routes!(display_screenshot))
+    .routes(utoipa_axum::routes!(crate::usbip::usbip_get, crate::usbip::usbip_set))
+    .routes(utoipa_axum::routes!(crate::usb::usb_get))
     .split_for_parts();
     OWN_SPEC.set(api).ok();
 
@@ -430,9 +434,12 @@ async fn static_asset(headers: HeaderMap, uri: axum::http::Uri) -> Response {
     let mut b = Response::builder()
         .header(header::CONTENT_TYPE, a.mime)
         .header(header::ETAG, a.etag);
-    if a.path.starts_with("assets/") {
-        b = b.header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
-    }
+    // Hashed assets never change; the page that names them must be revalidated
+    // every time, or a browser keeps running the UI from before an update.
+    b = b.header(
+        header::CACHE_CONTROL,
+        if a.path.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" },
+    );
     match (accept_gzip, a.gzip) {
         (true, Some(gz)) => b
             .header(header::CONTENT_ENCODING, "gzip")
@@ -556,7 +563,7 @@ fn merge_spec(doc: &mut serde_json::Value, sub: serde_json::Value, mount: &str, 
     }
 }
 
-fn err(code: StatusCode, msg: &str) -> Response {
+pub(crate) fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(serde_json::json!({ "error": msg }))).into_response()
 }
 

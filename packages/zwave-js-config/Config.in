@@ -1,0 +1,8 @@
+config BR2_PACKAGE_ZWAVE_JS_CONFIG
+	bool "zwave-js-config"
+	help
+	  Z-Wave JS's device database (@zwave-js/config's device files),
+	  which zwave-bridge reads to name each node and its
+	  configuration parameters. Data only.
+
+	  https://github.com/zwave-js/zwave-js

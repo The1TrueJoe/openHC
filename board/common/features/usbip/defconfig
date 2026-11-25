@@ -1,0 +1,12 @@
+# openHC feature: usbip — share the box's USB devices (a Zigbee or Z-Wave stick,
+# say) with another machine over the network: `usbip attach -r <box> -b <busid>`
+# on a Linux client. SHARED: every board with a USB host port (the EA family,
+# the HC-800, the CA-1); the IO Extender has none.
+#
+# OFF BY DEFAULT. S97ohcusbip does nothing until the web UI (webd /api/usbip)
+# turns it on and picks devices; that choice lives in /data/ohc/usbip.conf.
+# The box's own radio bridges (the EA's CP2104 Zigbee bridge, the HC-800's
+# internal Wi-Fi at 1-7) are never offered: /dev/ohc/radio/* and OHC_USBIP_RESERVED.
+
+# usbip + usbipd (the userspace half; needs udev, which common already has).
+BR2_PACKAGE_USBIP=y

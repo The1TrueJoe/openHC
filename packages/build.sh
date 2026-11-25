@@ -4,6 +4,8 @@
 #   packages/build.sh <board>            (default: ca1)
 #   packages/build.sh <board> --crates   the crates this board ships, and stop
 #   packages/build.sh <board> --bins     the binaries this board ships, and stop
+#   packages/build.sh <board> --external build only the upstream binaries
+#                                        (below) into target/<triple>/release
 #
 # <board> is a DIRECTORY NAME under board/, because that is what CI passes: the
 # matrix is built from the board tree, so it says "ea1-v2-poe", not "ea1". The
@@ -50,7 +52,12 @@ fi
 # Extender does not carry the Zigbee binary and a CA-1 does not carry audio.
 #
 # A feature owns a crate by dropping a `packages` file in its feature directory,
-# one "<crate> <binary>" per line (binary defaults to the crate name). The family
+# one "<crate> <binary>" per line (binary defaults to the crate name).
+#
+# A line with more after the binary is an UPSTREAM binary, not one of ours:
+# "<crate> <binary> <cargo install args...>", e.g. `--git <url> --rev <sha>`.
+# It is built with `cargo install --locked`, so exactly as its project ships it
+# (its own lockfile and CLI), and lands beside ours in target/<triple>/release. The family
 # layers are the same as build/build.sh's (build/board-layers.sh).
 . "$REPO/build/board-layers.sh"
 
@@ -61,17 +68,28 @@ fi
 # `wifi` feature's, so only boards with Wi-Fi ship it.
 CRATES="iod webd sysmond"   # core
 BINS="iod webd sysmond"
+EXTERNAL=""
 for f in $FEATURES; do
   for d in $(feature_dirs "$f"); do
     [ -f "$d/packages" ] || continue
-    while read -r crate bin _rest; do
+    while read -r crate bin rest; do
       case "$crate" in ''|\#*) continue ;; esac
-      CRATES="$CRATES $crate"
       BINS="$BINS ${bin:-$crate}"
-      echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})" >&2
+      if [ -n "$rest" ]; then
+        EXTERNAL="$EXTERNAL$crate ${bin:-$crate} $rest
+"
+        echo ">> feature '$f' adds upstream '$crate' (bin ${bin:-$crate}, $rest)" >&2
+      else
+        CRATES="$CRATES $crate"
+        echo ">> feature '$f' adds crate '$crate' (bin ${bin:-$crate})" >&2
+      fi
     done < "$d/packages"
   done
 done
+
+# Two features may want the same crate (ohcmqtt's helper): list each once.
+CRATES=$(printf '%s\n' $CRATES | awk '!seen[$0]++' | tr '\n' ' ')
+BINS=$(printf '%s\n' $BINS | awk '!seen[$0]++' | tr '\n' ' ')
 
 # `build.sh <board> --crates` / `--bins`: just say what this board gets, for
 # CI (daemons.yml builds exactly these, so a crate is only ever compiled for
@@ -79,7 +97,23 @@ done
 case "${2:-}" in
   --crates) echo $CRATES; exit 0 ;;
   --bins)   echo $BINS; exit 0 ;;
+  --external) [ -n "$EXTERNAL" ] || exit 0 ;;   # nothing upstream: no toolchain needed
 esac
+
+# The upstream binaries, into the same release directory as ours. `cargo
+# install` ignores the local .cargo/config.toml, so it is handed over with
+# --config: the same linker and static-musl flags as everything else.
+build_external() {
+  [ -n "$EXTERNAL" ] || return 0
+  printf '%s' "$EXTERNAL" | while read -r crate bin rest; do
+    echo ">> upstream $crate ($rest) for $TARGET"
+    # shellcheck disable=SC2086  # $rest is the line's cargo install arguments
+    "$CARGO" --config "$HERE/.cargo/config.toml" install --locked --force \
+      --target "$TARGET" --root "$HERE/target/external/$TARGET" $rest "$crate"
+    mkdir -p "$HERE/target/$TARGET/release"
+    install -m 0755 "$HERE/target/external/$TARGET/bin/$bin" "$HERE/target/$TARGET/release/$bin"
+  done
+}
 
 # a cargo whose toolchain actually has std for $TARGET (Homebrew's lies about it)
 pick_cargo() {
@@ -96,11 +130,14 @@ pick_cargo() {
 CARGO="$(pick_cargo)"
 export RUSTC="$(dirname "$CARGO")/rustc"
 
+if [ "${2:-}" = --external ]; then build_external; exit 0; fi
+
 echo ">> UI (must build before cargo — build.rs embeds ui/dist)"
 ( cd "$HERE/webd/ui" && npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund; npm run build )
 
 echo ">> crates for $BOARD ($TARGET): $CRATES"
 ( cd "$HERE" && "$CARGO" build --release $(for c in $CRATES; do printf ' -p %s' "$c"; done) --target "$TARGET" )
+build_external
 
 DEST="$REPO/board/common/rootfs-overlay/opt/ohc/bin"
 mkdir -p "$DEST"

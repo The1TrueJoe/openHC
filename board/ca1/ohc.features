@@ -1,7 +1,11 @@
 # Shared feature sets the CA-1 pulls in (board/common/features/<name>/).
-#   zigbee - EM35x NCP bring-up (zigbee, gated Rust package) + node for the
-#            zigbee2mqtt bridge + cp210x. The CA-1's NCP is on a native UART
+#   zigbee - EM35x NCP bring-up (zigbee) + zigbee-bridge, Zigbee to MQTT
+#            + cp210x. The CA-1's NCP is on a native UART
 #            (ttymxc4, DTR-reset), not USB, so cp210x just idles here.
 zigbee
+zwave       # zwave-bridge on the onboard ZM5304 (ttymxc3), or a USB stick
+bluetooth   # bluetooth-bridge on the RTL8723BS's Bluetooth (H5 on ttymxc1), or a dongle
 storage     # USB drives mounted and shared over SMB (storaged); no audio
             # playback here, so a network share only
+usbip       # USB/IP: share USB devices over the network (off until the web UI
+            # turns it on)

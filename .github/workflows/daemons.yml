@@ -9,12 +9,14 @@ on:
   pull_request:
     paths:
       - 'packages/**'
+      - 'board/**/features/*/packages'
       - 'flasher/crates/core/**'
       - '.github/workflows/daemons.yml'
   push:
     branches: [main]
     paths:
       - 'packages/**'
+      - 'board/**/features/*/packages'
       - 'flasher/crates/core/**'
       - '.github/workflows/daemons.yml'
   workflow_dispatch:
@@ -124,6 +126,11 @@ jobs:
       - name: Build this board's daemons for ${{ matrix.board }}
         working-directory: packages
         run: cargo build --release $CARGO_PKGS --target ${{ matrix.target }}
+      # Upstream binaries a feature pins (`<crate> <bin> <cargo install args>` in
+      # its packages file), built as their projects ship them, into the same
+      # release directory so the collect step below finds them.
+      - name: Build this board's upstream binaries for ${{ matrix.board }}
+        run: bash packages/build.sh ${{ matrix.board }} --external
 
       - uses: actions/setup-node@v4
         with:

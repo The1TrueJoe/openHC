@@ -4,8 +4,7 @@
 //! gated onto only the boards whose `ohc.features` lists `zigbee`. It replaces the
 //! former node script of the same name: the bring-up is a few serial writes, so a
 //! ~1 MB static Rust binary beats dragging the Node runtime in just for this.
-//! (Node is still pulled by the `zigbee` feature, but for zigbee2mqtt — the
-//! MQTT bridge — not for this.)
+//! (The MQTT bridge on top, zigbee-bridge, is a static binary too.)
 //!
 //! WHY it is needed. The EM35x resets into its serial BOOTLOADER whenever its
 //! reset line is asserted, and the bootloader ignores EZSP/ASH. On the CA-1 that
@@ -17,7 +16,7 @@
 //!   2. send "2"        (the bootloader's "run application" menu key)
 //!   3. ASH RST -> RSTACK confirms the NCP is now running
 //!   4. HOLD the port open for the life of the service so DTR stays asserted —
-//!      the next opener (zigbee2mqtt) does NOT re-trigger the bootloader.
+//!      the next opener (zigbee-bridge) does NOT re-trigger the bootloader.
 //!
 //! On boards whose reset is a GPIO held released at boot (the EA's gpio29), step 1
 //! does not reset anything — the app is already running — and the same sequence
@@ -251,7 +250,7 @@ fn main() {
     }
 
     // Hold the fd (and DTR) open forever. Deliberately no reads past bring-up: the
-    // radio owner (zigbee2mqtt) reads the EZSP stream, and a tty's input is a
+    // radio owner (zigbee-bridge) reads the EZSP stream, and a tty's input is a
     // single queue — a read here would steal its bytes.
     loop {
         sleep(Duration::from_secs(3600));

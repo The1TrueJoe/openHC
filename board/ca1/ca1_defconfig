@@ -47,7 +47,7 @@ BR2_LINUX_KERNEL_CUSTOM_DTS_PATH="$(BR2_EXTERNAL_OPENHC_PATH)/ca1/linux/c4-imx6s
 # recoverable. BR2_TARGET_ROOTFS_INITRAMFS is intentionally OFF.
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
-# Sized for the full stack (python3 web API now, node zigbee2mqtt/zwave-js next);
+# Sized for the full stack (the radio bridges are a few MB of static binaries);
 # resized to fill p2 (1.9 GB) with resize2fs at install time.
 BR2_TARGET_ROOTFS_EXT2_SIZE="768M"
 
@@ -100,12 +100,12 @@ BR2_PACKAGE_DNSMASQ=y
 # boot by the gpio-hogs in the DTS — switching it at runtime needs those hogs
 # converted to a real consumer first (see the DTS).
 
-# Mosquitto, the broker zigbee2mqtt publishes to, comes from common_defconfig
+# Mosquitto, the broker the radio bridges publish to, comes from common_defconfig
 # now — every board runs one (iod, sysmond and audiod are its clients).
 
-# Node.js (zigbee2mqtt / zwave-js) and its C++ toolchain come from the shared
-# 'zigbee' feature (board/common/features/zigbee), which ca1 enables in its
-# ohc.features — not duplicated here.
+# zigbee-bridge and zwave-bridge come from the shared 'zigbee' and 'zwave'
+# features (board/common/features/), which ca1 enables in its ohc.features —
+# not duplicated here.
 
 # --- rootfs overlay + image publishing ---
 # BOTH overlays, common first. BR2_ROOTFS_OVERLAY is a space-separated list and

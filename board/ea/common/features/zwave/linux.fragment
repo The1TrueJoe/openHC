@@ -1,0 +1,3 @@
+# zwave, EA kernel half: the USB modem driver as a module (copy window);
+# eudev loads it when a stick is plugged in.
+CONFIG_USB_ACM=m

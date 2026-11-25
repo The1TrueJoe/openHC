@@ -6,6 +6,7 @@ import {
 import { io, rest, type Capabilities, type FileEntry, type StorageShare, type StorageVolume } from '../api';
 import { useIoState } from '../App';
 import { toastError } from '../toast';
+import { ask, askText } from '../dialog';
 
 /* Storage: drives plugged into the box, and the network share they are on.
 
@@ -20,7 +21,8 @@ export function StoragePanel({ caps }: { caps: Capabilities }) {
   const share = live?.share ?? caps.storage?.share;
   return (
     <div className="space-y-4">
-      <Drives volumes={volumes} />
+      {/* The USB page above already says when nothing is plugged in. */}
+      {volumes.length > 0 && <Drives volumes={volumes} />}
       {volumes.length > 0 && <Files volumes={volumes} />}
       {share && <Share share={share} volumes={volumes} initialPassword={caps.storage?.share.initial_password} />}
     </div>
@@ -284,8 +286,8 @@ function Files({ volumes }: { volumes: StorageVolume[] }) {
         </div>
         <div className="ml-auto flex gap-1.5 font-normal">
           <button disabled={readOnly}
-            onClick={() => {
-              const n = prompt('New folder name');
+            onClick={async () => {
+              const n = await askText('New folder name', '', 'Create');
               if (n) act(rest.fileMkdir(`${here}/${n}`));
             }}
             className="hair flex items-center gap-1.5 rounded-lg border bg-raised px-2.5 py-1.5 text-xs hover:border-accent/50 disabled:opacity-40">
@@ -353,15 +355,15 @@ function Files({ volumes }: { volumes: StorageVolume[] }) {
               {!readOnly && (
                 <>
                   <button className={rowBtn} title="Rename" aria-label={`Rename ${e.name}`}
-                    onClick={() => {
-                      const n = prompt('Rename to', e.name);
+                    onClick={async () => {
+                      const n = await askText('Rename to', e.name, 'Rename');
                       if (n && n !== e.name) act(rest.fileRename(path, n));
                     }}>
                     <Pencil size={13} />
                   </button>
                   <button className={rowBtn} title="Delete" aria-label={`Delete ${e.name}`}
-                    onClick={() => {
-                      if (confirm(e.dir ? `Delete the folder "${e.name}" and everything in it?` : `Delete "${e.name}"?`)) act(rest.fileDelete(path));
+                    onClick={async () => {
+                      if (await ask(e.dir ? `Delete the folder "${e.name}"?` : `Delete "${e.name}"?`, { body: e.dir ? 'Everything in it goes too.' : undefined, ok: 'Delete', danger: true })) act(rest.fileDelete(path));
                     }}>
                     <Trash2 size={13} />
                   </button>

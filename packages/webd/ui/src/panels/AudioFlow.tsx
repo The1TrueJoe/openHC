@@ -13,6 +13,7 @@ import {
   type IoState, type LibraryEntry, type LibraryState, type ToneKnob,
 } from '../api';
 import { toastError, tryIo } from '../toast';
+import { ask } from '../dialog';
 
 /* The audio switcher: the whole Audio page on boards with named outputs.
 
@@ -539,8 +540,8 @@ function SourceInspector({
           <span className={`flex items-center gap-1.5 text-xs ${s.playing ? 'text-live' : 'text-muted'}`}>
             <span className={`size-1.5 rounded-full ${s.playing ? 'bg-live' : 'bg-[var(--muted)]'}`} /> {status}
           </span>
-          <button onClick={() => {
-            if (!confirm(`Remove "${s.name}"?`)) return;
+          <button onClick={async () => {
+            if (!(await ask(`Remove "${s.name}"?`, { ok: 'Remove', danger: true }))) return;
             const next = clone(); list(next)!.splice(s.index, 1); onSave(next); onClose();
           }} className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted hover:bg-alarm/10 hover:text-alarm">
             <Trash2 size={12} /> Remove

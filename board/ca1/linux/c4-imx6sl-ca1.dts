@@ -156,8 +156,9 @@
  * serial_* direction hogs into a real consumer (a uart rs485 binding, or a
  * line-holding daemon) rather than adding a second writer.
  *
- * eth_phy_reset (gpio2 17) and wifi_enable (gpio3 30) are deliberately NOT
- * hogged: they are claimed by &fec and by pwrseq_wifi respectively, and a hog
+ * eth_phy_reset (gpio2 17), wifi_enable (gpio3 30) and the Bluetooth lines
+ * (bt_enable, host_wake_bt, bt_wake_host) are deliberately NOT hogged: they
+ * are claimed by &fec, pwrseq_wifi and the &uart2 bluetooth node, and a hog
  * would take the line out from under those drivers.
  */
 &gpio1 {
@@ -179,11 +180,6 @@
 		output-high;		/* reset released */
 	};
 
-	bt-enable-hog {
-		gpio-hog;
-		gpios = <18 GPIO_ACTIVE_HIGH>;
-		output-low;
-	};
 };
 
 &gpio2 {
@@ -194,11 +190,6 @@
 		"", "eth_phy_reset", "serial_fen", "serial_loopback",
 		"", "", "", "", "", "", "", "", "", "", "", "";
 
-	host-wake-bt-hog {
-		gpio-hog;
-		gpios = <10 GPIO_ACTIVE_HIGH>;
-		output-high;
-	};
 
 	/* RS-232/RS-485 transceiver, held in the stock boot configuration:
 	 * RS-232, full duplex, driver enabled, receiver off, no loopback. */
@@ -261,12 +252,25 @@
 	status = "okay";
 };
 
-/* ── UART2 → ttymxc1: unused on this board, brought up for completeness ── */
+/*
+ * ── UART2 → ttymxc1: the RTL8723BS's Bluetooth, Realtek H5 ──────────────
+ * Control4 never used it (stock holds bt_enable low and ships no attach), but
+ * the part answers an H5 SYNC here at 115200 8E1 once bt_enable is high
+ * (checked on hardware 2026-11-20). hci_uart's Realtek support drives the
+ * enable/wake lines, loads rtl_bt/rtl8723bs_fw.bin and registers hci0.
+ */
 &uart2 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_uart2>;
 	uart-has-rtscts;
 	status = "okay";
+
+	bluetooth {
+		compatible = "realtek,rtl8723bs-bt";
+		enable-gpios = <&gpio1 18 GPIO_ACTIVE_HIGH>;		/* bt_enable */
+		device-wake-gpios = <&gpio2 10 GPIO_ACTIVE_HIGH>;	/* host_wake_bt */
+		host-wake-gpios = <&gpio2 7 GPIO_ACTIVE_HIGH>;		/* bt_wake_host */
+	};
 };
 
 /*
@@ -293,9 +297,9 @@
 
 /*
  * ── UART5 → ttymxc4: Zigbee NCP (EM35x, RTS/CTS) ───────────────────────
- * The part is unconfirmed: on the recon unit this NCP returned nothing to an
- * EZSP/ASH reset at any baud, with or without flow control, before or after
- * pulsing zigbee_reset. See https://the1truejoe.github.io/openHC/ca1/.
+ * An EM357. It cold-boots into its serial bootloader, which only echoes;
+ * S91ohczigbee sends it "2" to run the NCP app. See
+ * https://the1truejoe.github.io/openHC/ca1/.
  */
 &uart5 {
 	pinctrl-names = "default";
