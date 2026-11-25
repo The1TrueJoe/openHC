@@ -62,7 +62,7 @@ ln -sf lib "$WORK/lib64"
 # Applet symlinks the /init calls (busybox resolves the rest by argv[0]). The
 # second group is the no-serial network-install path (see board/.../boot-init/init
 # net_serve): bring up eth0, DHCP, and a shell for the flasher's SSH session.
-for a in sh mount umount mkdir dd gunzip gzip sync switch_root cat ls \
+for a in sh mount umount mkdir dd gunzip gzip sync switch_root cat ls od \
          ifconfig udhcpc ip route sleep hostname echo sed cut \
          rm tar unxz xz; do
     ln -sf /bin/busybox "$WORK/bin/$a"

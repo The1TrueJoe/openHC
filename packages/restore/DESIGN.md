@@ -133,6 +133,12 @@ Flow (`restore stock`):
    - `reboot -f`.
 4. **Cold boot** → CEFDK (autoscript off) → Control4's kernel → stock p1.
 
+After the factory-restore button, p1 and the kernel slot are stock but the
+autoscript is still on, so boot-init runs once more on Control4's kernel. It finds
+Control4 on p1 with no `/.ohc-install-pending` (the flasher's mark of an install
+under way) and runs `restore button-finalize`: the finalize without the p1
+reimage. Then it reboots into stock.
+
 When `restore stock` is run somewhere p1 is already free (a ramboot), the detour
 is skipped and the finalize runs immediately. p2 is never written in any path.
 
