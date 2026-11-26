@@ -75,28 +75,6 @@ ohc-flash restore <ip>                            # back to factory
 [Recovery](https://the1truejoe.github.io/openHC/shared/recovery/) for how your
 controller gets back to stock.
 
-## Build it yourself
-
-Needs Docker and Python 3; nothing else is installed on the host.
-
-```sh
-make image BOARD=ea3-v2
-```
-
-`make help` lists the boards. Full detail:
-[Building an image](https://the1truejoe.github.io/openHC/build/).
-
-## Layout
-
-```
-board/      Buildroot BR2_EXTERNAL root — one directory per board, plus the
-            shared common/ and ea/common/ trees they compose from
-packages/   Buildroot packages and the Rust workspace (iod, webd, wifi+portal, …)
-flasher/    the flasher — Rust workspace, GUI + CLI over one engine
-build/      Dockerised Buildroot
-site/       this project's documentation site (Astro + Starlight)
-```
-
 ## License
 
 MIT. Not affiliated with or endorsed by Control4 / Snap One. Reverse-engineered
