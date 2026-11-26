@@ -10,8 +10,8 @@ on:
 
 env:
   # The Mac on the board LAN: netconsole sink and the run-time http server.
-  NETCONSOLE_TARGET: 10.0.0.110:6666
-  MAC_HTTP: http://10.0.0.110:8530
+  NETCONSOLE_TARGET: 10.0.0.111:6666
+  MAC_HTTP: http://10.0.0.111:8530
 
 jobs:
   build:
