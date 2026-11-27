@@ -1,8 +1,8 @@
 diff --git a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxtransfer.c b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxtransfer.c
-index 497fca1..9835dbe 100644
+index 497fca1..6ec84b8 100644
 --- a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxtransfer.c
 +++ b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxtransfer.c
-@@ -58,6 +58,114 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+@@ -58,6 +58,124 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  #include "sgxutils.h"
  #include "ttrace.h"
  
@@ -50,19 +50,19 @@ index 497fca1..9835dbe 100644
 +}
 +
 +/*
-+ * (CAP-XPOLL) capture-only: right after a transfer is queued, read a few SGX
-+ * registers in a tight loop and keep every change with its time (ns since the
-+ * queue), for the first XPOLL_SLOTS transfers, as debugfs blobs xferpoll<N>.
-+ * Register values only. Format (LE u32): "POLL" slot nchanges elapsed_ns, then
-+ * nchanges x (t_ns reg value); the first entries (t 0) are the starting values.
-+ * Stops 20 ms after the queue, or 5 ms after the last change.
++ * (CAP-XPOLL) capture-only: right after a transfer is queued, read five SGX
++ * registers in a tight loop and keep every change with its loop iteration and
++ * time, for the first XPOLL_SLOTS transfers, as debugfs blobs xferpoll<N>, plus
++ * the OR of every value 0x12c and 0x118 took. Register values only. Format
++ * (LE u32): "POL2" slot nchanges iterations elapsed_ns or_12c or_118, then
++ * nchanges x (iteration t_ns reg value); iteration 0 holds the starting values.
++ * Stops 20 ms after the queue.
 + */
 +#include <linux/sched/clock.h>
 +#define XPOLL_SLOTS	4
 +#define XPOLL_MAX	16384
-+static const IMG_UINT32 xpoll_reg[] = {
-+	0x004, 0x118, 0x12c, 0x138, 0x4e0, 0x4e4, 0x4ec, 0x4d4, 0x4d8, 0x734, 0x738,
-+};
++#define XPOLL_HDR	7
++static const IMG_UINT32 xpoll_reg[] = { 0x12c, 0x118, 0x004, 0x4e4, 0x4ec };
 +#define XPOLL_NREG	(sizeof(xpoll_reg) / sizeof(xpoll_reg[0]))
 +static struct debugfs_blob_wrapper xpoll_blob[XPOLL_SLOTS];
 +static IMG_UINT32 xpoll_n;
@@ -70,46 +70,56 @@ index 497fca1..9835dbe 100644
 +static IMG_VOID XferPoll(IMG_HANDLE hDevHandle)
 +{
 +	PVRSRV_SGXDEV_INFO *psDevInfo = ((PVRSRV_DEVICE_NODE *)hDevHandle)->pvDevice;
-+	IMG_UINT32 cur[XPOLL_NREG], *p, n = 0, i, v, slot = xpoll_n;
-+	u64 t0, t, last;
++	IMG_UINT32 cur[XPOLL_NREG], *p, n = 0, i, v, it = 0, or12c = 0, or118 = 0, slot = xpoll_n;
++	u64 t0, t;
 +	char name[16];
 +
 +	if (slot >= XPOLL_SLOTS)
 +		return;
-+	p = vmalloc(16 + XPOLL_MAX * 12);
++	p = vmalloc((XPOLL_HDR + XPOLL_MAX * 4) * 4);
 +	if (!p)
 +		return;
 +	xpoll_n++;
-+	t0 = last = t = local_clock();
++	t0 = t = local_clock();
 +	for (i = 0; i < XPOLL_NREG; i++) {
 +		cur[i] = OSReadHWReg(psDevInfo->pvRegsBaseKM, xpoll_reg[i]);
-+		p[4 + 3 * n] = 0;
-+		p[5 + 3 * n] = xpoll_reg[i];
-+		p[6 + 3 * n] = cur[i];
++		p[XPOLL_HDR + 4 * n] = 0;
++		p[XPOLL_HDR + 4 * n + 1] = 0;
++		p[XPOLL_HDR + 4 * n + 2] = xpoll_reg[i];
++		p[XPOLL_HDR + 4 * n + 3] = cur[i];
 +		n++;
 +	}
-+	while (t - t0 < 20000000ull && t - last < 5000000ull) {
-+		t = local_clock();
++	while (t - t0 < 20000000ull) {
++		it++;
++		if (!(it & 63))
++			t = local_clock();
 +		for (i = 0; i < XPOLL_NREG; i++) {
 +			v = OSReadHWReg(psDevInfo->pvRegsBaseKM, xpoll_reg[i]);
++			if (i == 0)
++				or12c |= v;
++			else if (i == 1)
++				or118 |= v;
 +			if (v == cur[i])
 +				continue;
 +			cur[i] = v;
-+			last = t;
 +			if (n < XPOLL_MAX) {
-+				p[4 + 3 * n] = (IMG_UINT32)(t - t0);
-+				p[5 + 3 * n] = xpoll_reg[i];
-+				p[6 + 3 * n] = v;
++				p[XPOLL_HDR + 4 * n] = it;
++				p[XPOLL_HDR + 4 * n + 1] = (IMG_UINT32)(t - t0);
++				p[XPOLL_HDR + 4 * n + 2] = xpoll_reg[i];
++				p[XPOLL_HDR + 4 * n + 3] = v;
 +				n++;
 +			}
 +		}
 +	}
-+	memcpy(&p[0], "POLL", 4);
++	memcpy(&p[0], "POL2", 4);
 +	p[1] = slot;
 +	p[2] = n;
-+	p[3] = (IMG_UINT32)(t - t0);
++	p[3] = it;
++	p[4] = (IMG_UINT32)(t - t0);
++	p[5] = or12c;
++	p[6] = or118;
 +	xpoll_blob[slot].data = p;
-+	xpoll_blob[slot].size = 16 + n * 12;
++	xpoll_blob[slot].size = (XPOLL_HDR + n * 4) * 4;
 +	snprintf(name, sizeof(name), "xferpoll%u", slot);
 +	debugfs_create_blob(name, 0400, NULL, &xpoll_blob[slot]);
 +}
@@ -117,7 +127,7 @@ index 497fca1..9835dbe 100644
  #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
  #include "pvr_sync.h"
  #endif
-@@ -554,7 +662,10 @@ IMG_EXPORT PVRSRV_ERROR SGXSubmitTransferKM(IMG_HANDLE hDevHandle, PVRSRV_TRANSF
+@@ -554,7 +672,10 @@ IMG_EXPORT PVRSRV_ERROR SGXSubmitTransferKM(IMG_HANDLE hDevHandle, PVRSRV_TRANSF
  	PVR_TTRACE(PVRSRV_TRACE_GROUP_TRANSFER, PVRSRV_TRACE_CLASS_CMD_END,
  			TRANSFER_TOKEN_SUBMIT);
  
