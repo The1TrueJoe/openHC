@@ -2444,6 +2444,7 @@ dependencies = [
  "libc",
  "ohc-flash-core",
  "pbkdf2",
+ "sddp",
  "serialport",
  "sha2",
  "socket2",
@@ -2990,6 +2991,14 @@ dependencies = [
  "memmap2",
  "smithay-client-toolkit 0.19.2",
  "tiny-skia",
+]
+
+[[package]]
+name = "sddp"
+version = "0.1.0"
+source = "git+https://github.com/The1TrueJoe/sddp?rev=f1cbff62e434eec6558a2f83b07dd4b62cd60576#f1cbff62e434eec6558a2f83b07dd4b62cd60576"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]
