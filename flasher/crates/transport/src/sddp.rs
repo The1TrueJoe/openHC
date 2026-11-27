@@ -34,6 +34,10 @@
 //! version has to be asked for over HTTP or SSH once a unit is found, so this
 //! module does not pretend to supply one.
 //!
+//! The SDDP dialect is parsed and formatted by the shared `sddp` crate (its
+//! codec only: this module stays blocking std I/O). The `c4:director` SSDP
+//! dialect is not SDDP, so its three header lines are still read here.
+//!
 //! ANNOUNCEMENTS ARE PERIODIC AND RARE. The EA1 above advertises `max-age =
 //! 5000`, i.e. roughly once an hour and a half, and controllers do not reliably
 //! answer an active search. So a short scan legitimately sees nothing, and the
@@ -43,9 +47,9 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-const GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
+const GROUP: Ipv4Addr = sddp::MULTICAST_ADDR;
 const SSDP_PORT: u16 = 1900;
-const SDDP_PORT: u16 = 1902;
+const SDDP_PORT: u16 = sddp::PORT;
 const DIRECTOR: &str = "c4:director";
 
 /// A device that announced itself. Everything past `ip` is best-effort: which
@@ -81,7 +85,9 @@ fn ssdp_msearch() -> Vec<u8> {
 /// SDDP's own search. `Host` must be the sender's address, not a hostname —
 /// devices reply to it directly.
 fn sddp_search(from: Ipv4Addr) -> Vec<u8> {
-    format!("SEARCH * SDDP/1.0\r\nHost: \"{from}:{SDDP_PORT}\"\r\n\r\n").into_bytes()
+    let mut m = sddp::Message::search("*");
+    m.headers_mut().set_quoted("Host", format!("{from}:{SDDP_PORT}"), true);
+    m.to_bytes()
 }
 
 /// Search for devices and collect what answers within `wait`.
@@ -109,16 +115,15 @@ pub fn search_from(also_ask: &[Ipv4Addr], wait: Duration) -> Vec<SddpUnit> {
     let _ = sock.set_multicast_ttl_v4(4);
     let _ = sock.set_read_timeout(Some(Duration::from_millis(300)));
 
-    let local = sock.local_addr().ok().map(|a| a.ip()).and_then(|ip| match ip {
-        std::net::IpAddr::V4(v4) => Some(v4),
-        _ => None,
-    }).unwrap_or(Ipv4Addr::UNSPECIFIED);
+    // The socket is bound to 0.0.0.0, so its own address says nothing; ask the
+    // routing table which address the multicast group will see us at.
+    let local = sddp::default_interface().unwrap_or(Ipv4Addr::UNSPECIFIED);
 
     let _ = sock.send_to(&ssdp_msearch(), (GROUP, SSDP_PORT));
     let _ = sock.send_to(&sddp_search(local), (GROUP, SDDP_PORT));
     for ip in also_ask {
         let _ = sock.send_to(&ssdp_msearch(), (*ip, SSDP_PORT));
-        let _ = sock.send_to(&sddp_search(*ip), (*ip, SDDP_PORT));
+        let _ = sock.send_to(&sddp_search(local), (*ip, SDDP_PORT));
     }
 
     let deadline = Instant::now() + wait;
@@ -166,18 +171,19 @@ pub fn parse(text: &str, from_ip: &str) -> Option<SddpUnit> {
         return None;
     }
 
-    if text.contains("SDDP/1.0") {
-        // `Host: "name"` — quoted, and the quotes are part of the wire format.
-        u.name = field(text, "Host");
-        u.kind = field(text, "Type");
-        u.manufacturer = field(text, "Manufacturer");
-        u.model = field(text, "Model");
-        u.driver = field(text, "Driver");
-        u.config_url = field(text, "Config-URL");
-        // OFFLINE is a device saying goodbye; do not list it as present.
-        if text.starts_with("NOTIFY OFFLINE") {
+    if let Ok(msg) = sddp::Message::parse(text.as_bytes()) {
+        // OFFLINE is a device saying goodbye; do not list it as present. A
+        // message with no Host does not identify a device at all.
+        let src = from_ip.parse().ok().map(|ip| SocketAddr::new(ip, SDDP_PORT));
+        let Some(sddp::Event::Alive(d)) = sddp::Event::from_message(&msg, src) else {
             return None;
-        }
+        };
+        u.name = Some(d.host).filter(|h| !h.is_empty());
+        u.kind = Some(d.device_type).filter(|t| !t.is_empty());
+        u.manufacturer = d.manufacturer;
+        u.model = d.model;
+        u.driver = d.driver;
+        u.config_url = d.config_url;
         u.is_director = u.kind.as_deref().is_some_and(|k| k.contains("controller"));
         // A MAC is often the tail of the Host name: `leaf_ultra_lu862-70b3d50c1637`
         // or `Front-Garage-EA1-000FFF1DCCB1`. Take it, and then take it OFF the
@@ -211,7 +217,7 @@ pub fn parse(text: &str, from_ip: &str) -> Option<SddpUnit> {
     Some(u)
 }
 
-/// `Name: "value"` or `Name: value`, case-insensitive, quotes stripped.
+/// `Name: value` from the SSDP dialect, case-insensitive, quotes stripped.
 fn field(msg: &str, name: &str) -> Option<String> {
     msg.lines().find_map(|line| {
         let (k, v) = line.split_once(':')?;
