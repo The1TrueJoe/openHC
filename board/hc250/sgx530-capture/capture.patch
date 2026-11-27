@@ -16,24 +16,33 @@
 # dump the uploaded microkernel + five PDS buffers to confirm the launch words
 # against the static decode in docs/porting/cores/sgx530-vendor-setup.md.
 diff --git a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c
-index 965d10d..c81a39b 100644
 --- a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c
 +++ b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxinit.c
-@@ -306,6 +306,13 @@ static PVRSRV_ERROR InitDevInfo(PVRSRV_PER_PROCESS_DATA *psPerProc,
+@@ -305,6 +305,13 @@
+ 
  	/* Initialise Dev Data */
  	OSMemCopy(&psDevInfo->asSGXDevData, &psInitInfo->asInitDevData, sizeof(psDevInfo->asSGXDevData));
- 
++
 +	/* (CAP) the launch/task-setup fields the user space computed. */
 +	PVR_LOG(("(CAP-INIT) EDMTaskReg 0x%08X 0x%08X  ClkGateCtl 0x%08X 0x%08X  ClkGateStatus 0x%08X/0x%08X  CacheControl 0x%08X",
 +		psInitInfo->ui32EDMTaskReg0, psInitInfo->ui32EDMTaskReg1,
 +		psInitInfo->ui32ClkGateCtl, psInitInfo->ui32ClkGateCtl2,
 +		psInitInfo->ui32ClkGateStatusReg, psInitInfo->ui32ClkGateStatusMask,
 +		psInitInfo->ui32CacheControl));
-+
+ 
  	return PVRSRV_OK;
  
- failed_allockernelccb:
-@@ -397,6 +404,9 @@ static PVRSRV_ERROR SGXRunScriptOnCore(PVRSRV_SGXDEV_INFO *psDevInfo, SGX_INIT_C
+@@ -331,6 +338,9 @@
+ 			case SGX_INIT_OP_WRITE_HW_REG:
+ 			{
+ 				OSWriteHWReg(psDevInfo->pvRegsBaseKM, psComm->sWriteHWReg.ui32Offset, psComm->sWriteHWReg.ui32Value);
++				/* (CAP) the single-core path: the same log as SGXRunScriptOnCore's */
++				PVR_LOG(("(CAP-SCRIPT-WR) 0x%08X = 0x%08X",
++					psComm->sWriteHWReg.ui32Offset, psComm->sWriteHWReg.ui32Value));
+ 				PDUMPCOMMENT("SGXRunScript: Write HW reg operation");
+ 				PDUMPREG(SGX_PDUMPREG_NAME, psComm->sWriteHWReg.ui32Offset, psComm->sWriteHWReg.ui32Value);
+ 				break;
+@@ -397,6 +407,9 @@
  			case SGX_INIT_OP_WRITE_HW_REG:
  			{
  				OSWriteHWReg(psDevInfo->pvRegsBaseKM, SGX_MP_CORE_SELECT(psComm->sWriteHWReg.ui32Offset,ui32CoreNum), psComm->sWriteHWReg.ui32Value);
@@ -43,7 +52,7 @@ index 965d10d..c81a39b 100644
  				PDUMPCOMMENT("SGXRunScriptOnCore: Write HW reg operation");
  				PDUMPREG(SGX_PDUMPREG_NAME, SGX_MP_CORE_SELECT(psComm->sWriteHWReg.ui32Offset,ui32CoreNum), psComm->sWriteHWReg.ui32Value);
  				break;
-@@ -729,6 +739,9 @@ PVRSRV_ERROR SGXInitialise(PVRSRV_SGXDEV_INFO	*psDevInfo,
+@@ -729,6 +742,9 @@
  
  	PVR_ASSERT(psDevInfo->psKernelCCBCtl->ui32ReadOffset == psDevInfo->psKernelCCBCtl->ui32WriteOffset);
  
