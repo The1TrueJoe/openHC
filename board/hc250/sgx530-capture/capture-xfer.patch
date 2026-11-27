@@ -1,0 +1,60 @@
+--- a/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxtransfer.c	2026-11-26 21:43:34
++++ b/drivers/gpu/drm/pvrsgx/1.14.3699939/eurasia_km/services4/srvkm/devices/sgx/sgxtransfer.c	2026-11-26 21:43:34
+@@ -57,6 +57,49 @@
+ #include "pvr_debug.h"
+ #include "sgxutils.h"
+ #include "ttrace.h"
++
++/*
++ * (CAP-XFER) capture-only: the first XFERSNAP_SLOTS transfer commands as the
++ * client wrote them (0x100 bytes either side of the shared part's CCB offset)
++ * and the kick's command words, as debugfs blobs xfersnap<N>. Format (LE u32):
++ *   "XFER" slot shared_off from_off nbytes <bytes> "KICK" nbytes <bytes>
++ */
++#include <linux/debugfs.h>
++#include <linux/vmalloc.h>
++#define XFERSNAP_SLOTS	4
++static struct debugfs_blob_wrapper xfersnap_blob[XFERSNAP_SLOTS];
++static IMG_UINT32 xfersnap_n;
++
++static IMG_VOID XferSnap(PVRSRV_KERNEL_MEM_INFO *psCCBMemInfo, IMG_UINT32 ui32Shared,
++			 const SGXMKIF_COMMAND *psCommand)
++{
++	IMG_UINT32 from = ui32Shared > 0x100 ? ui32Shared - 0x100 : 0;
++	IMG_UINT32 to = ui32Shared + 0x100, n, *p, slot = xfersnap_n;
++	char name[16];
++
++	if (slot >= XFERSNAP_SLOTS)
++		return;
++	if (to > psCCBMemInfo->uAllocSize)
++		to = psCCBMemInfo->uAllocSize;
++	n = to - from;
++	p = vmalloc(32 + n + sizeof(*psCommand));
++	if (!p)
++		return;
++	xfersnap_n++;
++	memcpy(&p[0], "XFER", 4);
++	p[1] = slot;
++	p[2] = ui32Shared;
++	p[3] = from;
++	p[4] = n;
++	memcpy(&p[5], (IMG_UINT8 *)psCCBMemInfo->pvLinAddrKM + from, n);
++	memcpy((IMG_UINT8 *)&p[5] + n, "KICK", 4);
++	*(IMG_UINT32 *)((IMG_UINT8 *)&p[6] + n) = sizeof(*psCommand);
++	memcpy((IMG_UINT8 *)&p[7] + n, psCommand, sizeof(*psCommand));
++	xfersnap_blob[slot].data = p;
++	xfersnap_blob[slot].size = 28 + n + sizeof(*psCommand);
++	snprintf(name, sizeof(name), "xfersnap%u", slot);
++	debugfs_create_blob(name, 0400, NULL, &xfersnap_blob[slot]);
++}
+ 
+ #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
+ #include "pvr_sync.h"
+@@ -554,6 +597,7 @@
+ 	PVR_TTRACE(PVRSRV_TRACE_GROUP_TRANSFER, PVRSRV_TRACE_CLASS_CMD_END,
+ 			TRANSFER_TOKEN_SUBMIT);
+ 
++	XferSnap(psCCBMemInfo, psKick->ui32SharedCmdCCBOffset, &sCommand);	/* (CAP-XFER) */
+ 	eError = SGXScheduleCCBCommandKM(hDevHandle, SGXMKIF_CMD_TRANSFER, &sCommand, KERNEL_ID, psKick->ui32PDumpFlags, hDevMemContext, IMG_FALSE);
+ 
+ 	if (eError == PVRSRV_ERROR_RETRY)

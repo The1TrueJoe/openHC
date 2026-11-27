@@ -22,6 +22,7 @@ fi
 cd linux
 git apply "$here/capture.patch"            # build-time only
 git apply "$here/capture-snap.patch"       # kick snapshots, build-time only
+git apply "$here/capture-xfer.patch"       # transfer command snapshots, build-time only
 
 # 2. Config: omap2plus + the capture fragment.
 export ARCH=arm CROSS_COMPILE=${CROSS:-arm-linux-gnueabihf-}
