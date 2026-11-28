@@ -97,10 +97,14 @@ pub fn install(ssh: &tp::Ssh, b: &Bundle, zigbee: Zigbee, p: &Progress) -> Resul
     .map_err(|e| anyhow::anyhow!("installing the Control4 extension: {e}"))?;
     if zigbee == Zigbee::Control4 {
         p.emit(Event::step("giving the Zigbee radio to Control4 (Control4's own firmware)".into()));
-        let out = ssh
-            .run(&format!("{DIR}/control4/init zigbee control4 2>&1"), false)
-            .map_err(|e| anyhow::anyhow!("switching the radio to Control4 Zigbee: {e}"))?;
-        p.emit(Event::detail(out.trim().to_string()));
+        // The rest of Control4 works either way, so a radio that cannot switch
+        // is a warning: it stays on openHC's Zigbee.
+        match ssh.run(&format!("{DIR}/control4/init zigbee control4 2>&1"), true) {
+            Ok(out) => p.emit(Event::detail(out.trim().to_string())),
+            Err(e) => p.emit(Event::warn(format!(
+                "the radio stays on openHC Zigbee; Control4 Zigbee did not start: {e}"
+            ))),
+        }
     }
     if !ssh.test("-x /etc/init.d/S96ohc-extensions") {
         p.emit(Event::warn(
