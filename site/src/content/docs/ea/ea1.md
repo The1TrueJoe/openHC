@@ -201,9 +201,10 @@ the web UI System panel, or by **holding the front ID button** — SoC GPIO 32
 device tree. The watcher times the hold from the button's input events and is
 fail-safe: a press already down when it starts never counts.
 
-This matters on the EA1 specifically: with the boot fuse blown, the native
-recessed CEFDK button does **not** rewrite the SPI-NOR MFH, so it alone won't undo
-openHC's one change — the software path is the dependable one. The `mtd0` write
+The native recessed CEFDK button does **not** rewrite the SPI-NOR MFH. On its
+own it can't undo openHC's one change: the boot-init that runs after it turns the
+autoscript off (see [recovery](/shared/recovery/)). The software path doesn't
+depend on that. The `mtd0` write
 path is proven on this unit; the full `stock` round-trip back to Control4 is not
 yet hardware-verified. Full detail on [recovery](/shared/recovery/).
 

@@ -101,7 +101,9 @@ openHC's autoscript off, p1 reimaged from p2, and the radio and IO firmware
 back. See [recovery](/shared/recovery/#openhcs-own-software-return-to-stock).
 
 The recessed factory-restore button is the fallback. It reimages kernel, rootfs
-**and** CEFDK from p2. Or, if the box still boots, `script off` at the CEFDK
+**and** CEFDK from p2, but it leaves openHC's autoscript. On the next boot
+boot-init sees Control4 on p1 and turns the autoscript off itself, then reboots
+into stock (see [recovery](/shared/recovery/#what-the-factory-restore-button-actually-does)). Or, if the box still boots, `script off` at the CEFDK
 shell restores the stock verified boot path without touching anything else.
 
 ## CA-1

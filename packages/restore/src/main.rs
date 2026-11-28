@@ -42,6 +42,8 @@
 //!                 Control4's kernel back in its slot, reverts the MFH and reimages
 //!                 p1 from p2. The complete, one-way return to stock, with no
 //!                 button. `--no-reboot` stages without rebooting.
+//!   button-finalize  boot-init's half of the factory button: p1 already stock,
+//!                 so only the stock kernel, `revert` and the IO firmware.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -384,6 +386,36 @@ fn cmd_reimage_finalize() -> io::Result<()> {
     kernel::install_stock_kernel(&p2)?;
     cmd_revert()?;
     reimage_p1_direct()?; // p1 -> factory rootfs (asserts p1 is not root)
+    Ok(())
+}
+
+/// After Control4's factory-restore button: p1 is stock again, but openHC's
+/// autoscript is still on and the stock kernel slot may hold openHC's kernel.
+/// boot-init runs this pre-pivot when p1 holds Control4 and carries no install
+/// flag. The finalize minus the p1 reimage the button already did: stock kernel,
+/// autoscript off, then Control4's IO firmware from the restored p1.
+fn cmd_button_finalize() -> io::Result<()> {
+    if !std::path::Path::new(MTD).exists() {
+        return Err(io::Error::other(format!(
+            "{MTD} absent — refusing, the autoscript could not be cleared"
+        )));
+    }
+    let p2 = mount_p2()?;
+    if !p2.join("recovery_kernel.deb").exists() {
+        return Err(io::Error::other("p2 has no recovery_kernel.deb — nothing changed"));
+    }
+    kernel::install_stock_kernel(&p2)?;
+    cmd_revert()?;
+    let p1 = "/mnt/ohc-p1";
+    std::fs::create_dir_all(p1)?;
+    if run("mount", &["-o", "ro", "/dev/mmcblk0p1", p1]).is_ok() {
+        match iomcu::restore_from_root(std::path::Path::new(p1)) {
+            Ok(m) => eprintln!("stock: {m}"),
+            Err(e) => eprintln!("stock: IO microcontroller NOT restored: {e}"),
+        }
+        let _ = run("umount", &[p1]);
+    }
+    let _ = run("umount", &[&p2.to_string_lossy()]);
     Ok(())
 }
 
@@ -787,6 +819,8 @@ fn main() {
         // Reimage p1 + clear the autoscript, in place. boot-init runs this pre-pivot
         // (p1 free) after seeing the one-shot flag; refuses if p1 is the running root.
         "reimage-finalize" => cmd_reimage_finalize(),
+        // The same with p1 left alone: boot-init runs it after the factory button.
+        "button-finalize" => cmd_button_finalize(),
         // Reimage p1 by kexec-ing p2's stock recovery kernel. Only from a kernel
         // whose GPU driver never bound (refuses otherwise), and defeated on the EA3
         // by the fat kernel's reclaim memmap; `stock` (flag + reboot) is the path.
@@ -801,7 +835,7 @@ fn main() {
             cmd_restore_mfh(file, comp)
         }
         _ => {
-            eprintln!("usage: restore {{status|revert|install|stock [--no-reboot] [--keep-radio]|radio|iomcu|reimage-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
+            eprintln!("usage: restore {{status|revert|install|stock [--no-reboot] [--keep-radio]|radio|iomcu|reimage-finalize|button-finalize|recovery-kexec|restore-mfh <file> [--compensate]}}");
             std::process::exit(2);
         }
     };

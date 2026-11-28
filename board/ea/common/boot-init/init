@@ -16,14 +16,37 @@
 #     512 MB image), then pivot. Nothing else ever loads the full rootfs into
 #     RAM.
 #
-# One fixed autoscript covers install and every boot after, so openHC needs no
-# MTD tools and the unit stays factory-restore-friendly. The staged image lives
-# in the raw region ahead of p1 (see ROOTFS_STAGE_MB), which factory-restore
-# leaves alone — but p1 reverts to stock, whose lack of /etc/openhc-release
-# makes this /init run the installer again (re-laying openHC), OR you clear the
-# autoscript for a truly-stock box.
+#   * p1 holds Control4, no install    -> FACTORY-RESTORE BUTTON. It reimages
+#     asked for                           p1 and the kernel slot but never the
+#     MFH, so openHC's autoscript still runs us (on Control4's kernel): check the
+#     kernel, clear the autoscript and reboot into stock. Every flasher install marks a stock p1 with
+#     .ohc-install-pending first, so a fresh install is never mistaken for it.
 
 PATH=/bin:/sbin
+
+# Where the flasher staged the gzipped ext2 rootfs, in MiB from the start of
+# /dev/mmcblk0 (Linux view). Must match the flasher's ROOTFS_STAGE_OFF. It sits
+# after the kernel container (0x400) and the initrd, still ahead of p1 (32 MiB).
+ROOTFS_STAGE_MB=16
+STAGE_DEV=/dev/mmcblk0
+
+# Does the image staged in the gap unpack to an ext2/3/4 filesystem (superblock
+# magic 0xEF53, little-endian, at byte 1080)? Only then is it written to p1: a
+# zeroed or stale gap must never touch p1.
+staged_ext2() {
+    set -- $(dd if="$STAGE_DEV" bs=1M skip="$ROOTFS_STAGE_MB" 2>/dev/null | gunzip -c 2>/dev/null \
+        | dd bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1)
+    [ "$1$2" = 53ef ]
+}
+
+# Is the root mounted at $1 Control4's own, with no install asked for?
+button_restored() {
+    [ -d "$1/control4" ] && [ ! -e "$1/etc/openhc-release" ] && [ ! -e "$1/.ohc-install-pending" ]
+}
+
+# boot-init/test.sh sources the helpers above and stops here.
+[ -n "${OHC_INIT_FUNCS:-}" ] && return 0
+
 /bin/mount -t proc     proc     /proc 2>/dev/null
 /bin/mount -t sysfs    sysfs    /sys  2>/dev/null
 /bin/mount -t devtmpfs devtmpfs /dev  2>/dev/null
@@ -43,11 +66,6 @@ while [ ! -b "$ROOT" ] && [ $i -lt 100 ]; do
     i=$((i + 1))
 done
 [ -b "$ROOT" ] || echo "openHC: WARNING $ROOT never appeared after ${i} tries"
-
-# Where the flasher staged the gzipped ext2 rootfs, in MiB from the start of
-# /dev/mmcblk0 (Linux view). Must match the flasher's ROOTFS_STAGE_OFF. It sits
-# after the kernel container (0x400) and the initrd, still ahead of p1 (32 MiB).
-ROOTFS_STAGE_MB=16
 
 valid_p1() {
     for fs in ext4 ext2; do
@@ -93,8 +111,39 @@ net_serve() {
     while :; do /bin/sleep 3600; done
 }
 
+# The SPI-NOR probes asynchronously, like the eMMC above.
+wait_mtd0() {
+    j=0
+    while [ ! -c /dev/mtd0 ] && [ $j -lt 50 ]; do
+        /bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
+        /bin/sleep 0.1 2>/dev/null || /bin/usleep 100000 2>/dev/null || :
+        j=$((j + 1))
+    done
+}
+
 P1_OK=
 valid_p1 && P1_OK=1
+
+# FACTORY-RESTORE BUTTON (see the top). p1 is left exactly as Control4's restore
+# wrote it; on any failure the box comes up on the network instead of laying
+# openHC over it.
+if [ -z "$P1_OK" ] && /bin/mount -o ro "$ROOT" "$NEW" 2>/dev/null; then
+    BUTTON=
+    button_restored "$NEW" && BUTTON=1
+    /bin/umount "$NEW" 2>/dev/null
+    if [ -n "$BUTTON" ]; then
+        echo "openHC: p1 holds Control4 again (factory restore) — finishing the return to stock"
+        wait_mtd0
+        if [ -c /dev/mtd0 ] && /usr/sbin/restore button-finalize; then
+            echo "openHC: back to stock — rebooting"
+            /bin/sync
+            /sbin/reboot -f
+        fi
+        echo "openHC: could not finish the return to stock (p1 untouched) — coming up on the network"
+        net_serve
+        exec /bin/sh
+    fi
+fi
 
 # ONE-SHOT REINSTALL. ohc-flash stage 1 on a box already running openHC leaves
 # this flag on p1; come up on the network for stage 2 instead of pivoting into the
@@ -112,7 +161,9 @@ if [ -z "$P1_OK" ]; then
     echo "openHC: no rootfs on $ROOT — installing from the eMMC-staged image..."
     # Raw stream: eMMC gap -> gunzip -> p1. dd/gunzip work on tiny buffers, so
     # the 512 MB rootfs is never held in RAM.
-    if /bin/dd if=/dev/mmcblk0 bs=1M skip="$ROOTFS_STAGE_MB" 2>/dev/null \
+    if ! staged_ext2; then
+        echo "openHC: no ext2 image staged in the gap"
+    elif /bin/dd if=/dev/mmcblk0 bs=1M skip="$ROOTFS_STAGE_MB" 2>/dev/null \
         | /bin/gunzip 2>/dev/null | /bin/dd of="$ROOT" bs=1M 2>/dev/null; then
         /bin/sync
         echo "openHC: rootfs written to $ROOT"
@@ -149,12 +200,7 @@ if [ -f "$NEW/.ohc-restore-stock" ]; then
     # asynchronously (like the eMMC wait above), so wait for the node BEFORE we
     # unmount and wipe. If it never appears, SKIP the restore and boot openHC — p1 is
     # untouched (still mounted at $NEW), so the pivot below just works.
-    j=0
-    while [ ! -c /dev/mtd0 ] && [ $j -lt 50 ]; do
-        /bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
-        /bin/sleep 0.1 2>/dev/null || /bin/usleep 100000 2>/dev/null || :
-        j=$((j + 1))
-    done
+    wait_mtd0
     if [ -c /dev/mtd0 ]; then
         /bin/umount "$NEW" 2>/dev/null
         if /usr/sbin/restore reimage-finalize; then

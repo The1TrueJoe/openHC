@@ -66,9 +66,20 @@ from p2**, in this order:
    the bootloader.
 5. reboots.
 
-**The consequence for going persistent is good:** the button restores kernel,
-rootfs *and* CEFDK to stock, so flashing our own kernel and rootfs is fully
-reversible with one press.
+**What it leaves is openHC's autoscript.** The button never touches the SPI-NOR
+MFH, so on an openHC box CEFDK still runs the autoscript on the next boot, now with
+Control4's kernel from the slot it just rewrote, and openHC's boot-init from the
+gap. boot-init finishes the job: it finds Control4 on p1 with no install flag
+(every flasher install drops `/.ohc-install-pending` on a stock p1 first), runs
+`restore button-finalize` (Control4's kernel checked in its slot, the autoscript
+off, the IO firmware from the restored p1) and reboots into stock. One press is
+therefore a full return to Control4. If that step can't run (no `/dev/mtd0`),
+boot-init leaves p1 as the button wrote it and comes up on the network: SSH in
+and run `restore revert`, then `reboot -f`.
+
+A boot-init older than this check doesn't know it. It comes up on the network
+waiting for the flasher, or lays a staged `--self-install` image back over p1.
+The same `restore revert` over SSH gets that box to stock.
 
 **The single region that must never be written is p2.** It holds
 `recovery_kernel.deb`, `cefdk.deb` and the stock rootfs, and it's the one source
@@ -132,9 +143,9 @@ here ever claims success without the flash reading back exactly what was intende
    rather than wiping a box. `board.env` sets only the hold time and the LED.
 
 :::caution[Why the software path is the reliable one on a fuse-blown EA1]
-The native recessed CEFDK button does **not** rewrite the SPI-NOR MFH on a
-fuse-blown EA1, so the native button alone won't undo openHC's one change. The
-software path is the dependable way back there. On the EA3 the button's GPIO line
+The native recessed CEFDK button does **not** rewrite the SPI-NOR MFH, so on
+its own it can't undo openHC's one change: the boot-init that runs after it does
+(above), and only if it's new enough. The software path doesn't depend on that. On the EA3 the button's GPIO line
 and polarity are not yet hardware-confirmed (the `board.env` notes this); the
 fail-safe keeps a wrong polarity inert until they are.
 :::

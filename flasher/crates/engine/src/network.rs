@@ -216,7 +216,7 @@ pub fn stage1_ram_installer(
         }
         write_mtd(ssh, &cefdk::build_autoscript(&script).map_err(anyhow::Error::msg)?)?;
     }
-    mark_reinstall(ssh, p)?;
+    mark_p1(ssh, p, true)?;
 
     p.emit(Event::step("rebooting into boot-init (the RAM installer)".into()));
     let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
@@ -306,6 +306,8 @@ pub fn install_self(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -
         p.emit(Event::detail("fuse clear: autoscript still written (harmless, one path)".into()));
     }
     write_mtd(ssh, &cefdk::build_autoscript(&script).map_err(anyhow::Error::msg)?)?;
+    // The staged image is the install here, so an openHC p1 gets no reinstall flag.
+    mark_p1(ssh, p, false)?;
     // ram_autoscript reads the whole slots, so those are the sizes to record.
     record_autoscript_sizes(ssh, "", KERNEL_SLOT, INITRD_SLOT);
 
@@ -530,6 +532,9 @@ fn ensure_p1_marker(ssh: &Ssh, p: &Progress) -> Result<()> {
 /// One-shot flag on p1 that makes boot-init skip an installed openHC and come up
 /// on the network for stage 2 (board/ea/common/boot-init/init).
 const REINSTALL_FLAG: &str = ".ohc-reinstall-pending";
+/// One-shot flag on a stock p1: an install is under way, so boot-init must not
+/// take that p1 for a factory-button restore (board/ea/common/boot-init/init).
+const INSTALL_FLAG: &str = ".ohc-install-pending";
 
 /// Does p1 hold an openHC rootfs (the running root, or mountable)? Stage 2 then
 /// re-images it, losing everything on it.
@@ -544,22 +549,34 @@ pub fn p1_holds_openhc(ssh: &Ssh) -> bool {
     ssh.run(&cmd, false).map(|o| o.contains("OHC")).unwrap_or(false)
 }
 
-/// Over an installed openHC, boot-init would pivot into the OLD p1 and stage 2
-/// would refuse a mounted root. Flag p1 so the next boot waits for stage 2
-/// instead. Stock p1 has no /etc/openhc-release and needs no flag.
-fn mark_reinstall(ssh: &Ssh, p: &Progress) -> Result<()> {
+/// Mark p1 for the boot-init that runs after this install.
+///
+/// Over an installed openHC (`reinstall`), boot-init would pivot into the OLD p1
+/// and stage 2 would refuse a mounted root: flag it so the next boot waits for
+/// stage 2 instead. On a stock p1, flag the install itself: boot-init takes a
+/// stock p1 WITHOUT that flag for Control4's factory-restore button and returns
+/// the box to stock. The install overwrites p1, which clears either flag.
+fn mark_p1(ssh: &Ssh, p: &Progress, reinstall: bool) -> Result<()> {
+    let ohc = if reinstall { format!(": > $R/{REINSTALL_FLAG} && echo FLAGGED") } else { "true".into() };
+    let flag = format!(
+        "if [ -f $R/etc/openhc-release ]; then {ohc}; \
+         elif [ -d $R/control4 ]; then : > $R/{INSTALL_FLAG} && echo INSTALL; fi; sync"
+    );
     let cmd = if is_root_on_p1(ssh) {
-        format!("[ -f /etc/openhc-release ] && : > /{REINSTALL_FLAG} && sync && echo FLAGGED; true")
+        format!("R=; {flag}; true")
     } else {
         format!(
-            "mkdir -p /mnt/ohcp1 && mount /dev/mmcblk0p1 /mnt/ohcp1 2>/dev/null && {{ \
-             [ -f /mnt/ohcp1/etc/openhc-release ] && : > /mnt/ohcp1/{REINSTALL_FLAG} && echo FLAGGED; \
-             sync; umount /mnt/ohcp1; }}; true"
+            "R=/mnt/ohcp1; mkdir -p $R && mount /dev/mmcblk0p1 $R 2>/dev/null && {{ {flag}; umount $R; }}; true"
         )
     };
-    if ssh.run(&cmd, false)?.contains("FLAGGED") {
+    let out = ssh.run(&cmd, false)?;
+    if out.contains("FLAGGED") {
         p.emit(Event::detail(format!(
             "p1 holds openHC: flagged /{REINSTALL_FLAG} so boot-init waits for stage 2"
+        )));
+    } else if out.contains("INSTALL") {
+        p.emit(Event::detail(format!(
+            "p1 holds Control4: flagged /{INSTALL_FLAG} so boot-init installs instead of restoring stock"
         )));
     }
     Ok(())
@@ -869,7 +886,7 @@ pub fn install_ramboot(ssh: &Ssh, rel: &Release, p: &Progress) -> Result<()> {
     write_mtd_block(ssh, table_blk_off, &table_blk)?;
     p.emit(Event::step("SPI-NOR: enable autoscript".into()));
     write_mtd_block(ssh, params_blk_off, &params_blk)?;
-    mark_reinstall(ssh, p)?;
+    mark_p1(ssh, p, true)?;
 
     p.emit(Event::resolved("no-serial install complete — rebooting into openHC".into()));
     let _ = ssh.run("sync; (sleep 1; reboot) >/dev/null 2>&1 &", false);
