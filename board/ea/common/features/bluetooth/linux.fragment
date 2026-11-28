@@ -2,3 +2,8 @@
 # a dongle is plugged in.
 CONFIG_BT=m
 CONFIG_BT_HCIBTUSB=m
+# The EA-3's onboard Atheros AR3012 (USB 0cf3:3004) comes up without its
+# firmware (bcdDevice 0x0001), which btusb leaves alone: ath3k loads the patch
+# and RAM patch from /lib/firmware/ar3k, the chip re-enumerates, then btusb
+# takes it as hci0.
+CONFIG_BT_ATH3K=m
