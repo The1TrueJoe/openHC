@@ -11,6 +11,7 @@
 #   bridge  (default) this bridge owns the radio
 #   radio   S91 serves the port over TCP for a zigpy host elsewhere instead;
 #           this script does nothing
+#   none    openHC leaves the radio alone (S91 too); this script does nothing
 # The bridge needs EZSP 8 or newer (EmberZNet 6.7+). Control4's 4.7.2 (EZSP 4,
 # the Control4 Zigbee mode) is left alone, so whatever drives that has the port.
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
@@ -56,7 +57,7 @@ base_topic = "$base/zigbee"
 [data]
 dir = "$DATA"
 CONF
-    # ponytail: a plain restart loop, 10 s apart, no backoff.
+    # A plain restart loop, 10 s apart, no backoff.
     while [ -f "$PID" ]; do
         "$BIN" --config "$CONF"
         echo "zigbee-bridge exited ($?); restarting in 10 s"

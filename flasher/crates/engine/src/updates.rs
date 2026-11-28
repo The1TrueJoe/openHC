@@ -37,11 +37,17 @@ impl GhRelease {
     /// The image bundle for a board: `openhc-<board>-<version>.zip`. Never a
     /// longer board's bundle: `ea1-v2` must not pick `ea1-v2-poe`'s.
     pub fn image_asset(&self, board: &str) -> Option<&Asset> {
-        let prefix = format!("openhc-{board}-");
+        self.image_asset_named("openhc", board)
+    }
+
+    /// The same for another image family: `<name>-<board>-<version>.zip`
+    /// (an extension's images, `openhc-ha-ea3-v1-….zip`).
+    pub fn image_asset_named(&self, name: &str, board: &str) -> Option<&Asset> {
+        let prefix = format!("{name}-{board}-");
         let longer: Vec<String> = ohc_flash_core::board::BOARDS
             .iter()
             .filter(|b| b.name.len() > board.len() && b.name.starts_with(&format!("{board}-")))
-            .map(|b| format!("openhc-{}-", b.name))
+            .map(|b| format!("{name}-{}-", b.name))
             .collect();
         self.assets.iter().find(|a| {
             a.name.starts_with(&prefix)
@@ -83,7 +89,17 @@ pub fn latest_release_from(repo: &str) -> Result<GhRelease> {
 
 /// The rolling `dev` pre-release, which main's builds update.
 pub fn dev_release() -> Result<GhRelease> {
-    release_at(&format!("https://api.github.com/repos/{REPO}/releases/tags/dev"))
+    dev_release_from(REPO)
+}
+
+fn dev_release_from(repo: &str) -> Result<GhRelease> {
+    release_at(&format!("https://api.github.com/repos/{repo}/releases/tags/dev"))
+}
+
+/// What a user installs from a repository: its latest release, or until there
+/// is one, its rolling `dev` pre-release.
+pub fn newest_from(repo: &str) -> Result<GhRelease> {
+    latest_release_from(repo).or_else(|_| dev_release_from(repo))
 }
 
 fn release_at(url: &str) -> Result<GhRelease> {
@@ -198,6 +214,20 @@ mod tests {
         assert!(rel().image_asset("hc800").is_none());
         assert_eq!(rel().image_asset("ea1-v2").unwrap().name, "openhc-ea1-v2-v1.2.0.zip");
         assert_eq!(rel().image_asset("ea1-v2-poe").unwrap().name, "openhc-ea1-v2-poe-v1.2.0.zip");
+    }
+
+    #[test]
+    fn an_extension_image_is_not_openhc_s_and_back() {
+        let r: GhRelease = serde_json::from_str(
+            r#"{"tag_name":"dev","assets":[
+                {"name":"openhc-ha-ea1-v2-poe-abc1234.zip","browser_download_url":"http://x/p"},
+                {"name":"openhc-ha-ea1-v2-abc1234.zip","browser_download_url":"http://x/q"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.image_asset_named("openhc-ha", "ea1-v2").unwrap().name, "openhc-ha-ea1-v2-abc1234.zip");
+        assert!(r.image_asset("ea1-v2").is_none());
+        assert!(rel().image_asset_named("openhc-ha", "ea3-v2").is_none());
     }
 
     #[test]

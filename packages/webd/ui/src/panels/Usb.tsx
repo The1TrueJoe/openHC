@@ -11,7 +11,7 @@ import { UsbipSection } from './Usbip';
 export function UsbPanel({ caps, go }: { caps: Capabilities; go: (id: string) => void }) {
   const [devices, setDevices] = useState<UsbDevice[] | null>(null);
   useEffect(() => {
-    // ponytail: polls; a uevent stream from webd if 3 s ever feels slow.
+    // Polls; a uevent stream from webd if 3 s ever feels slow.
     const load = () => rest.usb().then((s) => setDevices(s.devices)).catch(() => {});
     load();
     const t = setInterval(load, 3000);

@@ -22,7 +22,7 @@ use eframe::egui::{self, Color32, RichText};
 use ohc_flash_core::board::Running;
 use ohc_flash_core::board::Family;
 use ohc_flash_core::{board, image, method, Board, Identity, Method};
-use ohc_flash_engine::{control4, hc250, hc800, iox, network, updates, Event, GhRelease, Progress, Release};
+use ohc_flash_engine::{choice, control4, hc250, hc800, iox, network, updates, Event, GhRelease, Install, Progress, Release, Zigbee};
 use ohc_flash_transport as tp;
 
 /// This flasher's own version, baked in by CI (`OHC_VERSION`) so it can tell
@@ -272,6 +272,13 @@ struct Shared {
     /// A release image just downloaded, waiting for the UI thread to open it
     /// (set off-thread, consumed in `render`, same pattern as a dropped file).
     downloaded_image: Option<PathBuf>,
+    /// The newest openHC and Home Assistant image releases (a published
+    /// release, else the rolling dev one), for which choices have an image.
+    img_openhc: Option<GhRelease>,
+    img_ha: Option<GhRelease>,
+    /// Which image family (`Install::image`) the loaded release was downloaded
+    /// for, so switching between choices that share an image fetches nothing.
+    loaded_image: Option<(&'static str, &'static str)>,
     /// Where the Control4 driver was saved, once the extension is installed.
     control4_driver: Option<PathBuf>,
     /// Why the Control4 step did not finish, when openHC itself did.
@@ -347,7 +354,7 @@ impl Step {
         match self {
             Step::Find => "Find",
             Step::Check => "Check",
-            Step::Images => "Release",
+            Step::Images => "Choose",
             Step::Install => "Install",
         }
     }
@@ -367,9 +374,12 @@ struct App {
     forced: Option<&'static Board>,
     details: bool,
     self_install: bool,
-    /// After installing openHC, make it a Control4 controller again
-    /// (openhc-control4): the driver for every board, the box side where it runs.
-    control4: bool,
+    /// What goes on the box. Nothing until the user picks.
+    with: Option<Install>,
+    /// With Control4 on an EA: which Zigbee its radio runs.
+    zigbee: Zigbee,
+    /// The user chose an image file instead of the downloaded one.
+    own_image: bool,
     /// Has the first automatic scan been kicked off?
     ///
     /// Opening the app onto a "Scan the network" button and nothing else makes
@@ -390,7 +400,9 @@ impl Default for App {
             forced: None,
             details: false,
             self_install: false,
-            control4: true,
+            with: None,
+            zigbee: Zigbee::Openhc,
+            own_image: false,
             auto_scanned: false,
         }
     }
@@ -624,6 +636,7 @@ impl App {
             &self.host,
             sh.conn.as_ref().map(|c| &c.id),
             self.board(sh),
+            self.with.is_some(),
             sh.rel_info.as_ref(),
         )
     }
@@ -688,6 +701,8 @@ impl App {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(path) = dropped.first().map(|f| f.path().to_path_buf()) {
             self.images = path.display().to_string();
+            self.own_image = true;
+            sh.loaded_image = None;
             self.step = Step::Images;
             self.load_release(sh, shared);
         }
@@ -1066,62 +1081,106 @@ impl App {
     }
 
     fn step_images(&mut self, ui: &mut egui::Ui, sh: &mut Shared, shared: &Arc<Mutex<Shared>>) {
-        ui.heading("Choose the openHC release");
-        ui.label("A release is the folder or .zip produced by a build. You can also drag one onto this window.");
+        let Some(b) = self.board(sh) else {
+            ui.label("Go back and identify the controller first.");
+            return;
+        };
+        ui.heading("What should this controller run?");
+        ui.label("The flasher downloads what it needs.");
         ui.add_space(10.0);
 
-        // Fetch the newest release image for this board straight from GitHub —
-        // for the common case of a user who has not built anything. Custom forks
-        // still use Browse / drag-and-drop below; this does not replace them.
-        if let Some(b) = self.board(sh) {
-            let asset = sh.latest.as_ref().and_then(|r| r.image_asset(b.name).cloned());
-            if let Some(asset) = asset {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            sh.busy.is_none(),
-                            egui::Button::new("⤓ Download the latest openHC for this controller"),
-                        )
-                        .clicked()
-                    {
-                        self.download_image(sh, shared, b.name);
-                    }
-                    ui.label(RichText::new(format!("{} ({})", asset.name, fmt_bytes(asset.size))).weak());
-                });
-                ui.add_space(6.0);
-                ui.label(RichText::new("— or choose your own —").weak());
-                ui.add_space(6.0);
+        for i in Install::ALL.into_iter().filter(|i| i.fits(b)) {
+            let rel = if i.image().0 == choice::HA_REPO { &sh.img_ha } else { &sh.img_openhc };
+            // Unknown until GitHub answers; only a release without this board's
+            // image rules a choice out.
+            let missing = rel.as_ref().is_some_and(|r| r.image_asset_named(i.image().1, b.name).is_none());
+            let usable = self.own_image || !missing;
+            let r = ui.add_enabled(
+                usable && sh.busy.is_none(),
+                egui::RadioButton::new(self.with == Some(i), RichText::new(i.title()).strong()),
+            );
+            if r.clicked() && self.with != Some(i) {
+                self.with = Some(i);
+                if !self.own_image && sh.loaded_image != Some(i.image()) {
+                    self.download_image(sh, shared, b, i);
+                }
+            }
+            ui.indent(i.name(), |ui| {
+                ui.label(RichText::new(i.blurb()).weak());
+                if missing && !self.own_image {
+                    ui.label(RichText::new("No image for this controller has been published yet.").weak());
+                }
+                if i == Install::Control4 && self.with == Some(i) && Zigbee::choosable(b) {
+                    ui.add_space(4.0);
+                    ui.label("Its Zigbee radio:");
+                    ui.radio_value(&mut self.zigbee, Zigbee::Openhc, "openHC Zigbee");
+                    ui.indent("zb-openhc", |ui| {
+                        ui.label(
+                            RichText::new(
+                                "Standard Zigbee 3.0 devices (bulbs, sensors, switches from any brand), \
+                                 on the box's MQTT.",
+                            )
+                            .weak(),
+                        );
+                    });
+                    ui.radio_value(&mut self.zigbee, Zigbee::Control4, "Control4 Zigbee (experimental)");
+                    ui.indent("zb-c4", |ui| {
+                        ui.label(
+                            RichText::new(
+                                "The radio becomes a Control4 Zigbee access point, for Control4's own \
+                                 Zigbee devices. Not working yet: Director does not connect to it.",
+                            )
+                            .color(WARN),
+                        );
+                    });
+                }
+            });
+            ui.add_space(6.0);
+        }
+        if sh.img_openhc.is_none() && sh.img_ha.is_none() {
+            if let Some(e) = &sh.latest_error {
+                ui.label(RichText::new(format!("GitHub did not answer: {e}")).color(WARN));
             }
         }
 
-        ui.horizontal(|ui| {
-            let edited = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.images)
-                        .hint_text("folder or .zip")
-                        .desired_width(380.0),
-                )
-                .lost_focus();
-            if ui.button("Browse…").clicked() {
-                if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("openHC release", &["zip"])
-                    .pick_file()
-                    .or_else(|| rfd::FileDialog::new().pick_folder())
-                {
-                    self.images = p.display().to_string();
-                    self.load_release(sh, shared);
-                }
-            }
-            if ui.button("Folder…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                    self.images = p.display().to_string();
-                    self.load_release(sh, shared);
-                }
-            }
-            if edited && !self.images.trim().is_empty() {
-                self.load_release(sh, shared);
-            }
-        });
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new("Use my own image (a folder or .zip)")
+            .default_open(self.own_image)
+            .show(ui, |ui| {
+                ui.label(RichText::new("A build of your own, or a zip you downloaded. You can also drag one onto this window.").weak());
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let edited = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.images)
+                                .hint_text("folder or .zip")
+                                .desired_width(380.0),
+                        )
+                        .lost_focus();
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("openHC release", &["zip"])
+                            .pick_file()
+                            .or_else(|| rfd::FileDialog::new().pick_folder())
+                        {
+                            self.images = p.display().to_string();
+                            self.own_image = true;
+                            self.load_release(sh, shared);
+                        }
+                    }
+                    if ui.button("Folder…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                            self.images = p.display().to_string();
+                            self.own_image = true;
+                            self.load_release(sh, shared);
+                        }
+                    }
+                    if edited && !self.images.trim().is_empty() {
+                        self.own_image = true;
+                        self.load_release(sh, shared);
+                    }
+                });
+            });
 
         ui.add_space(12.0);
         if let Some(err) = &sh.rel_error {
@@ -1203,22 +1262,20 @@ impl App {
                         ui.label(RichText::new("Address").weak());
                         ui.monospace(&self.host);
                         ui.end_row();
-                        ui.label(RichText::new("Release").weak());
+                        ui.label(RichText::new("Installing").weak());
+                        let with = self.with.map(Install::title).unwrap_or("(nothing chosen)");
+                        let zb = match self.zigbee {
+                            Zigbee::Control4 if self.with == Some(Install::Control4) && Zigbee::choosable(b) => {
+                                ", Control4 Zigbee"
+                            }
+                            _ => "",
+                        };
+                        ui.label(RichText::new(format!("{with}{zb}")).strong());
+                        ui.end_row();
+                        ui.label(RichText::new("Image").weak());
                         ui.monospace(&self.images);
                         ui.end_row();
                     });
-                ui.add_space(10.0);
-                ui.checkbox(&mut self.control4, RichText::new("Make it a Control4 controller again").strong());
-                ui.label(
-                    RichText::new(if control4::runs_on_box(b) {
-                        "Adds the on-screen navigator and puts its relays, contacts, IR and serial \
-                         back into your Control4 project. You get the Composer driver at the end."
-                    } else {
-                        "Puts its relays, contacts, IR and serial back into your Control4 project \
-                         (no on-screen navigator on this board yet). You get the Composer driver at the end."
-                    })
-                    .weak(),
-                );
                 ui.add_space(12.0);
                 ui.label(
                     "This takes a few minutes and the controller restarts on its own. \
@@ -1249,7 +1306,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.label("openHC is installed and it is a Control4 controller again. In Composer Pro:");
                 ui.add_space(6.0);
-                let add = format!("Driver → Add Driver… and pick {} (saved to {}).", control4::DRIVER, driver.display());
+                let add = format!("Driver → Add Driver… and pick {}.", driver.display());
                 let steps: [String; 3] = if on_box {
                     [
                         add,
@@ -1287,6 +1344,47 @@ impl App {
                         reveal(driver.parent().unwrap_or(&driver));
                     }
                     if ui.add_enabled(sh.busy.is_none(), egui::Button::new("Install another")).clicked() {
+                        self.reset(sh);
+                    }
+                });
+            }
+            Some(Phase::Done) if matches!(self.with, Some(Install::HomeAssistant | Install::MusicAssistant)) => {
+                ui.heading(RichText::new("Done").color(OK));
+                ui.add_space(8.0);
+                ui.label(
+                    "openHC is installed and the controller is restarting. On this first start it \
+                     downloads and installs its apps, which takes a while on this hardware.",
+                );
+                ui.add_space(6.0);
+                let ha = self.with == Some(Install::HomeAssistant);
+                let mut steps = vec![format!(
+                    "openHC's own page is up in about a minute: http://{}/ (its address may change \
+                     on reboot; Find it again below).",
+                    self.host
+                )];
+                if ha {
+                    steps.push(format!(
+                        "Home Assistant: http://{}:8123 in 20–40 minutes. Create your account, then add \
+                         the MQTT integration (broker 127.0.0.1) to get the box's IO, Zigbee and Bluetooth.",
+                        self.host
+                    ));
+                }
+                steps.push(format!(
+                    "Music Assistant: http://{}:8095. Create its admin account within 15 minutes of it \
+                     starting; the box's outputs are its squeezelite players.",
+                    self.host
+                ));
+                for (n, step) in steps.iter().enumerate() {
+                    ui.label(format!("{}. {step}", n + 1));
+                }
+                ui.add_space(4.0);
+                ui.hyperlink_to(
+                    "The full guide",
+                    format!("https://github.com/{}/blob/main/docs/install.md", choice::HA_REPO),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(sh.busy.is_none(), egui::Button::new("Find it again")).clicked() {
                         self.reset(sh);
                     }
                 });
@@ -1536,7 +1634,9 @@ impl App {
         let secure = b.secure_boot;
         let self_install = self.self_install;
         let Some(m) = method_for(b) else { return };
-        let c4 = self.control4 && !finish_only;
+        let with = self.with.unwrap_or(Install::Openhc);
+        let c4 = with == Install::Control4 && !finish_only;
+        let zigbee = if Zigbee::choosable(b) { self.zigbee } else { Zigbee::Openhc };
         let on_box = control4::runs_on_box(b);
         // The MAC finds the box again after its reboot, on whatever lease it gets.
         let mac = sh.found.iter().find(|u| u.ip == host).and_then(|u| u.mac.clone());
@@ -1551,10 +1651,11 @@ impl App {
 
         spawn(sh, shared, "Installing…", move |s| {
             let p = sink(s);
-            let out = run_install(s, &p, &ssh, &host, &rel, m, secure, self_install, finish_only);
+            let files = with.p1_files();
+            let out = run_install(s, &p, &ssh, &host, &rel, m, secure, self_install, finish_only, &files);
             if out.is_ok() && c4 {
                 s.lock().unwrap().phase = Some(Phase::Control4);
-                let r = run_control4(&p, &host, mac.as_deref(), on_box);
+                let r = run_control4(&p, &host, mac.as_deref(), b, on_box, zigbee);
                 let mut g = s.lock().unwrap();
                 match r {
                     Ok(driver) => g.control4_driver = Some(driver),
@@ -1586,27 +1687,31 @@ impl App {
         }
         sh.checked_latest = true;
         let s = Arc::clone(shared);
-        std::thread::spawn(move || match updates::latest_release() {
-            Ok(r) => s.lock().unwrap().latest = Some(r),
-            Err(e) => s.lock().unwrap().latest_error = Some(format!("{e:#}")),
+        std::thread::spawn(move || {
+            match updates::latest_release() {
+                Ok(r) => s.lock().unwrap().latest = Some(r),
+                Err(e) => s.lock().unwrap().latest_error = Some(format!("{e:#}")),
+            }
+            let openhc = updates::newest_from(updates::REPO).ok();
+            let ha = updates::newest_from(choice::HA_REPO).ok();
+            let mut g = s.lock().unwrap();
+            (g.img_openhc, g.img_ha) = (openhc, ha);
         });
     }
 
-    /// Download the newest release image for the selected board and open it, so
-    /// a user who has not built anything locally can still flash. Custom forks
-    /// keep working through Browse / drag-and-drop — this is an addition.
-    fn download_image(&mut self, sh: &mut Shared, shared: &Arc<Mutex<Shared>>, board: &'static str) {
-        let Some(rel) = &sh.latest else { return };
-        let Some(asset) = rel.image_asset(board) else { return };
-        let (url, name) = (asset.url.clone(), asset.name.clone());
-        sh.push(Lvl::Step, format!("downloading {name}"));
-        spawn(sh, shared, "Downloading the latest image…", move |s| {
-            let dest = std::env::temp_dir().join(&name);
-            match updates::download(&url, &dest) {
-                Ok(()) => {
+    /// Download the newest image for what the user chose and open it.
+    fn download_image(&mut self, sh: &mut Shared, shared: &Arc<Mutex<Shared>>, b: &'static Board, i: Install) {
+        sh.rel = None;
+        sh.rel_info = None;
+        sh.rel_error = None;
+        sh.loaded_image = None;
+        spawn(sh, shared, "Downloading…", move |s| {
+            let p = sink(s);
+            match i.fetch_image(b, &p) {
+                Ok(dest) => {
                     let mut g = s.lock().unwrap();
-                    g.push(Lvl::Step, format!("downloaded {name}"));
                     g.downloaded_image = Some(dest);
+                    g.loaded_image = Some(i.image());
                 }
                 Err(e) => {
                     let mut g = s.lock().unwrap();
@@ -1769,6 +1874,7 @@ fn run_install(
     secure_boot: bool,
     self_install: bool,
     finish_only: bool,
+    files: &[(&str, &[u8])],
 ) -> Result<(), String> {
     // The HC-800 flows are SINGLE STAGE. The EA install has to reboot into a RAM
     // installer halfway through because p1 is the running root and a mounted
@@ -1805,6 +1911,11 @@ fn run_install(
     let mut sizes = None;
     if !finish_only {
         if self_install {
+            if !files.is_empty() {
+                return Err("this choice needs the standard install (it writes a setting to the \
+                            system partition); untick the one-shot self-install"
+                    .into());
+            }
             network::install_self(ssh, rel, secure_boot, p).map_err(|e| format!("{e:#}"))?;
             return Ok(());
         }
@@ -1831,14 +1942,21 @@ fn run_install(
         g.phase = Some(Phase::Finishing);
         g.wait = None;
     }
-    network::stage2_write_rootfs(&ssh2, rel, sizes, p).map_err(|e| format!("{e:#}"))
+    network::stage2_write_rootfs(&ssh2, rel, sizes, files, p).map_err(|e| format!("{e:#}"))
 }
 
 /// After openHC is in: download openhc-control4 and, where the box side runs,
 /// find the box again once it has rebooted (by MAC, if its lease changed) and
 /// install it. Returns where the Composer driver was saved.
-fn run_control4(p: &Progress, host: &str, mac: Option<&str>, on_box: bool) -> Result<PathBuf, String> {
-    let b = control4::fetch(&control4::driver_dir(), on_box, p).map_err(|e| format!("{e:#}"))?;
+fn run_control4(
+    p: &Progress,
+    host: &str,
+    mac: Option<&str>,
+    board: &'static Board,
+    on_box: bool,
+    zigbee: Zigbee,
+) -> Result<PathBuf, String> {
+    let b = control4::fetch(&control4::driver_dir(), board, on_box, p).map_err(|e| format!("{e:#}"))?;
     if !on_box {
         return Ok(b.driver);
     }
@@ -1847,7 +1965,7 @@ fn run_control4(p: &Progress, host: &str, mac: Option<&str>, on_box: bool) -> Re
          `ohc-flash control4 <address>`."
             .to_string()
     })?;
-    control4::install(&ssh, &b, p).map_err(|e| format!("{e:#}"))?;
+    control4::install(&ssh, &b, zigbee, p).map_err(|e| format!("{e:#}"))?;
     Ok(b.driver)
 }
 
@@ -1873,6 +1991,7 @@ fn gate(
     host: &str,
     id: Option<&Identity>,
     board: Option<&'static Board>,
+    chosen: bool,
     rel: Option<&RelInfo>,
 ) -> Option<String> {
     match step {
@@ -1898,8 +2017,9 @@ fn gate(
                 None => Some("no install method applies to this controller".into()),
             }
         }
+        Step::Images if !chosen => Some("Choose what to install".into()),
         Step::Images => match rel {
-            None => Some("Choose a release".into()),
+            None => Some("Waiting for the image".into()),
             Some(r) if !r.problems.is_empty() => Some("This release cannot be installed".into()),
             Some(_) => None,
         },
@@ -1947,17 +2067,17 @@ mod tests {
     #[test]
     fn gate_stops_a_board_this_app_cannot_flash() {
         let ea = id_for("ea3-v2");
-        assert!(gate(Step::Check, "1.2.3.4", Some(&ea), ea.board, None).is_none());
+        assert!(gate(Step::Check, "1.2.3.4", Some(&ea), ea.board, false, None).is_none());
 
         let ca = id_for("ca1");
-        let why = gate(Step::Check, "1.2.3.4", Some(&ca), ca.board, None).unwrap();
+        let why = gate(Step::Check, "1.2.3.4", Some(&ca), ca.board, false, None).unwrap();
         assert!(why.contains("uboot"), "{why}");
     }
 
     #[test]
     fn gate_needs_a_host_then_a_clean_release() {
-        assert!(gate(Step::Find, "   ", None, None, None).is_some());
-        assert!(gate(Step::Find, "10.0.0.9", None, None, None).is_none());
+        assert!(gate(Step::Find, "   ", None, None, false, None).is_some());
+        assert!(gate(Step::Find, "10.0.0.9", None, None, false, None).is_none());
 
         let bad = RelInfo {
             source: "x".into(),
@@ -1966,9 +2086,10 @@ mod tests {
             problems: vec!["no bzImage".into()],
             names: vec![],
         };
-        assert!(gate(Step::Images, "h", None, None, Some(&bad)).is_some());
+        assert!(gate(Step::Images, "h", None, None, true, Some(&bad)).is_some());
         let good = RelInfo { problems: vec![], ..bad };
-        assert!(gate(Step::Images, "h", None, None, Some(&good)).is_none());
+        assert!(gate(Step::Images, "h", None, None, true, Some(&good)).is_none());
+        assert!(gate(Step::Images, "h", None, None, false, Some(&good)).is_some());
     }
 
     #[test]
@@ -2062,5 +2183,26 @@ mod tests {
             app.step = step;
             pass(&mut app);
         }
+
+        // The choices: an openHC image and no Home Assistant one, each choice
+        // picked, Control4's Zigbee pick, and the assistants' Done screen.
+        {
+            let mut g = app.shared.lock().unwrap();
+            g.img_openhc = g.latest.clone();
+            g.img_ha = Some(serde_json::from_str(r#"{"tag_name":"dev","assets":[]}"#).unwrap());
+        }
+        app.step = Step::Images;
+        for i in Install::ALL {
+            app.with = Some(i);
+            pass(&mut app);
+        }
+        app.with = Some(Install::Control4);
+        app.zigbee = Zigbee::Control4;
+        pass(&mut app);
+        app.step = Step::Install;
+        pass(&mut app);
+        app.with = Some(Install::HomeAssistant);
+        app.shared.lock().unwrap().phase = Some(Phase::Done);
+        pass(&mut app);
     }
 }

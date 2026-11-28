@@ -321,10 +321,13 @@ pub fn install_self(ssh: &Ssh, rel: &Release, secure_boot: bool, p: &Progress) -
 /// `sizes` are the read sizes of the autoscript stage 1 left (its return
 /// value); they are recorded in [`AUTOSCRIPT_ENV`] ON P1, the only root that
 /// outlives this boot. `None` (stage 2 run on its own) records nothing.
+/// `files` (absolute paths on the new root) are written to p1 before its first
+/// boot: settings an image reads then.
 pub fn stage2_write_rootfs(
     ssh: &Ssh,
     rel: &Release,
     sizes: Option<(u64, u64)>,
+    files: &[(&str, &[u8])],
     p: &Progress,
 ) -> Result<()> {
     if is_root_on_p1(ssh) {
@@ -358,6 +361,21 @@ pub fn stage2_write_rootfs(
                 "could not record the autoscript sizes in p1:{AUTOSCRIPT_ENV} — later \
                  in-place updates from a no-MTD system will refuse"
             )));
+        }
+    }
+
+    for (path, data) in files {
+        let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
+        let r = ssh.put_stream(
+            data,
+            &format!(
+                "mkdir -p /mnt/ohcp1 && mount /dev/mmcblk0p1 /mnt/ohcp1 && \
+                 {{ mkdir -p /mnt/ohcp1{dir} && cat > /mnt/ohcp1{path}; r=$?; sync; umount /mnt/ohcp1; exit $r; }}"
+            ),
+        );
+        match r {
+            Ok(_) => p.emit(Event::detail(format!("p1:{path} written"))),
+            Err(e) => p.emit(Event::warn(format!("could not write {path} to p1: {e}"))),
         }
     }
 

@@ -7,6 +7,7 @@
 //! keeps the "wait for the box" policy in the front end where a user can watch.
 pub mod event;
 pub mod ca1;
+pub mod choice;
 pub mod control4;
 pub mod ea;
 pub mod hc250;
@@ -20,6 +21,7 @@ pub mod updates;
 pub mod zipfetch;
 pub mod release;
 
+pub use choice::{Install, Zigbee};
 pub use event::{Event, Progress};
 pub use mfgmode::{MfgWatch, Stage};
 pub use netboot::netboot;

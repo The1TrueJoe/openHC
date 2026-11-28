@@ -98,7 +98,7 @@ export function BluetoothPanel() {
         <h2 className="mb-3 text-sm font-medium">Nearby <span className="text-xs font-normal text-muted">{nearby.length}</span></h2>
         {nearby.length ? (
           <div className="divide-y divide-edge">
-            {/* ponytail: the 100 strongest; a busy site can have thousands. */}
+            {/* The 100 strongest; a busy site can have thousands. */}
             {nearby.filter(([a, s]) => match(a, s)).slice(0, 100).map(([addr, s]) => {
               const md = s?.advertisement?.manufacturer_data?.[0];
               const what = [

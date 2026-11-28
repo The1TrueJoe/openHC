@@ -29,7 +29,7 @@
  * out intact), so the train is loaded at kernel speed and then fired — no
  * watermark interrupt. One engine and a mutex is enough for one-jack-at-a-time
  * sends.
- * ponytail: engine 0 only; use engine 1 too if concurrent sends on two jacks matter.
+ * Engine 0 only; use engine 1 too if concurrent sends on two jacks matter.
  */
 
 #include <linux/io.h>
