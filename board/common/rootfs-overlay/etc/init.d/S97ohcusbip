@@ -13,7 +13,7 @@
 # board.env OHC_USBIP_RESERVED, and whatever USB device carries a radio tty the
 # board's udev rule named (/dev/ohc/radio/* — the EA's CP2104 Zigbee bridge).
 #
-# ponytail: devices are bound at boot and on reload only; a selected stick
+# Devices are bound at boot and on reload only; a selected stick
 # plugged in later waits for the next reload (add a udev rule if that matters).
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 CONF=${OHC_DATA:-/data}/ohc/usbip.conf

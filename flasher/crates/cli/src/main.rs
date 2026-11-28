@@ -2,7 +2,7 @@
 //! for power users and scripts.
 
 use ohc_flash_core::{board, cefdk, image, method, Method};
-use ohc_flash_engine::{ca1, control4, ea, hc250, hc800, iox, netboot, network, Progress, Release};
+use ohc_flash_engine::{ca1, control4, ea, hc250, hc800, iox, netboot, network, Install, Progress, Release, Zigbee};
 use ohc_flash_transport as tp;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -58,8 +58,14 @@ fn help() {
            validate <dir|zip> [board]\n\
                                     check a release's images; the board picks the\n\
                                     rules (an HC-800 release has no rootfs.ext2)\n\
-           install [HOST] --images <dir|zip> [--dry-run] [--yes] [--method M]\n\
-                                    install openHC. EA: writes the kernel and initramfs,\n\
+           install [HOST] [--with W] [--zigbee Z] [--images <dir|zip>] [--dry-run] [--yes] [--method M]\n\
+                                    install openHC. --with picks what goes on the box:\n\
+                                    openhc (default), control4 (a Control4 controller\n\
+                                    again), home-assistant or music-assistant (EA only).\n\
+                                    The image is downloaded unless --images names one.\n\
+                                    --zigbee control4 (EA, with control4) makes the radio\n\
+                                    a Control4 Zigbee access point instead of openHC's.\n\
+                                    EA: writes the kernel and initramfs,\n\
                                     reboots into RAM, then writes p1 and reboots into it\n\
                                     (--no-wait stops after stage 1; --self-install uses\n\
                                     the tiny boot-init instead).\n\
@@ -78,10 +84,10 @@ fn help() {
                                     5 min); --method kexec runs it from RAM, writing\n\
                                     nothing. `boot` and `uninstall` take --images too.\n\
                                     --netconsole <ip>[:port] ships the boot log to you\n\
-                                    --control4 then makes it a Control4 controller again\n\
-                                    (openhc-control4): waits for openHC, installs it, and\n\
-                                    saves the Composer driver to your Downloads\n\
-           control4 [HOST]          the same, on a box already running openHC\n\
+                                    --with control4 waits for openHC, installs\n\
+                                    openhc-control4, and saves the Composer driver to your\n\
+                                    Downloads (--control4 is the same)\n\
+           control4 [HOST] [--zigbee Z]  the same, on a box already running openHC\n\
            rootfs [HOST] --images <dir|zip> [--yes]\n\
                                     stage 2: write rootfs to p1 (box must be RAM-booted)\n\
            netboot --serial <dev> --mac <aa:bb:..> [--images <dir|zip>]\n\
@@ -695,11 +701,38 @@ fn restore(rest: &[String]) -> bool {
     true
 }
 
-/// `install`, then with `--control4` make the new openHC box a Control4
+/// `--with`: what goes on the box (`--control4` is the old spelling).
+fn with_arg(rest: &[String]) -> Option<Install> {
+    if rest.iter().any(|a| a == "--control4") {
+        return Some(Install::Control4);
+    }
+    match rest.windows(2).find(|w| w[0] == "--with") {
+        None => Some(Install::Openhc),
+        Some(w) => Install::parse(&w[1]).or_else(|| {
+            let all: Vec<_> = Install::ALL.iter().map(|i| i.name()).collect();
+            eprintln!("  unknown --with '{}' (one of: {})", w[1], all.join(", "));
+            None
+        }),
+    }
+}
+
+/// `--zigbee`: which Zigbee a Control4 controller's radio runs.
+fn zigbee_arg(rest: &[String]) -> Option<Zigbee> {
+    match rest.windows(2).find(|w| w[0] == "--zigbee") {
+        None => Some(Zigbee::Openhc),
+        Some(w) => Zigbee::parse(&w[1]).or_else(|| {
+            eprintln!("  unknown --zigbee '{}' (openhc or control4)", w[1]);
+            None
+        }),
+    }
+}
+
+/// `install`, then with `--with control4` make the new openHC box a Control4
 /// controller again once it is back up — wherever its new DHCP lease put it.
 fn install(rest: &[String]) -> bool {
-    if !rest.iter().any(|a| a == "--control4") {
-        return install_image(rest);
+    let (Some(with), Some(zigbee)) = (with_arg(rest), zigbee_arg(rest)) else { return false };
+    if with != Install::Control4 {
+        return install_image(rest, with);
     }
     let Some(host) = rest.iter().find(|a| !a.starts_with("--")).cloned().or_else(auto_host) else {
         return false;
@@ -707,21 +740,22 @@ fn install(rest: &[String]) -> bool {
     // The MAC finds it again after the reboot; ask before the install, while it answers.
     let mac = tp::discover(false).into_iter().find(|f| f.ip == host).and_then(|f| f.mac);
     let forced = rest.windows(2).find(|w| w[0] == "--board").and_then(|w| board::by_name(&w[1]));
-    let on_box = forced
-        .or_else(|| connect(rest).and_then(|(_, s)| tp::identify(&s).board))
-        .is_some_and(control4::runs_on_box);
-    if !install_image(rest) {
+    let Some(board) = forced.or_else(|| connect(rest).and_then(|(_, s)| tp::identify(&s).board)) else {
+        eprintln!("  the board is not known; pass --board <name>");
+        return false;
+    };
+    if !install_image(rest, with) {
         return false;
     }
-    if !on_box {
-        return control4_driver_only(&host);
+    if !control4::runs_on_box(board) {
+        return control4_driver_only(&host, board);
     }
     if ["--dry-run", "--no-wait", "--ram-only"].iter().any(|f| rest.iter().any(|a| a == f)) {
         println!("  (Control4 skipped: the install did not finish here; run `ohc-flash control4 <ip>` once openHC is up)");
         return true;
     }
     let p = Progress::stdout();
-    let bundle = match control4::fetch(&control4::driver_dir(), true, &p) {
+    let bundle = match control4::fetch(&control4::driver_dir(), board, true, &p) {
         Ok(b) => b,
         Err(e) => { eprintln!("  openHC is installed, but the Control4 extension: {e:#}"); return false; }
     };
@@ -729,7 +763,7 @@ fn install(rest: &[String]) -> bool {
         eprintln!("  openHC did not come back within 300s. Once it is up: ohc-flash control4 <ip>");
         return false;
     };
-    control4_install(&ip, &ssh, &bundle)
+    control4_install(&ip, &ssh, &bundle, zigbee)
 }
 
 /// `control4` — make a box already running openHC a Control4 controller again.
@@ -739,23 +773,28 @@ fn control4_cmd(rest: &[String]) -> bool {
         eprintln!("  {host} is not running openHC — install it first (ohc-flash install --control4)");
         return false;
     }
-    if tp::identify(&ssh).board.is_some_and(|b| !control4::runs_on_box(b)) {
-        return control4_driver_only(&host);
+    let Some(zigbee) = zigbee_arg(rest) else { return false };
+    let Some(board) = tp::identify(&ssh).board else {
+        eprintln!("  could not tell which board {host} is");
+        return false;
+    };
+    if !control4::runs_on_box(board) {
+        return control4_driver_only(&host, board);
     }
     let p = Progress::stdout();
-    match control4::fetch(&control4::driver_dir(), true, &p) {
-        Ok(b) => control4_install(&host, &ssh, &b),
+    match control4::fetch(&control4::driver_dir(), board, true, &p) {
+        Ok(b) => control4_install(&host, &ssh, &b, zigbee),
         Err(e) => { eprintln!("  {e:#}"); false }
     }
 }
 
 /// A board with no on-screen view in openHC yet (HC-250, CA-1, IO Extender):
 /// nothing goes on the box, and the driver gives Composer its IO.
-fn control4_driver_only(host: &str) -> bool {
-    match control4::fetch(&control4::driver_dir(), false, &Progress::stdout()) {
+fn control4_driver_only(host: &str, board: &board::Board) -> bool {
+    match control4::fetch(&control4::driver_dir(), board, false, &Progress::stdout()) {
         Ok(b) => {
             println!("\n  This board has no on-screen navigator in openHC yet; its IO goes into Control4. In Composer Pro:");
-            println!("    1. Driver → Add Driver… {} (saved to {})", control4::DRIVER, b.driver.display());
+            println!("    1. Driver → Add Driver… {}", b.driver.display());
             println!("    2. On the Network tab, identify its openHC Controller connection as {host}");
             println!("       (ohc-flash discover finds it if a reboot gave it a new address)");
             println!("    3. Bind the relays, contacts, IR and serial it has");
@@ -765,19 +804,19 @@ fn control4_driver_only(host: &str) -> bool {
     }
 }
 
-fn control4_install(host: &str, ssh: &tp::Ssh, b: &control4::Bundle) -> bool {
-    if let Err(e) = control4::install(ssh, b, &Progress::stdout()) {
+fn control4_install(host: &str, ssh: &tp::Ssh, b: &control4::Bundle, zigbee: Zigbee) -> bool {
+    if let Err(e) = control4::install(ssh, b, zigbee, &Progress::stdout()) {
         eprintln!("  {e:#}");
         return false;
     }
     println!("\n  {host} is a Control4 controller again. In Composer Pro:");
-    println!("    1. Driver → Add Driver… {} (saved to {})", control4::DRIVER, b.driver.display());
+    println!("    1. Driver → Add Driver… {}", b.driver.display());
     println!("    2. Add the openHC box from the discovered devices — it fills in its own address");
     println!("    3. Bind HDMI to the TV's input, and the IO the box has");
     true
 }
 
-fn install_image(rest: &[String]) -> bool {
+fn install_image(rest: &[String], with: Install) -> bool {
     let dry = rest.iter().any(|a| a == "--dry-run");
     let yes = rest.iter().any(|a| a == "--yes");
     let Some((host, ssh)) = connect(rest) else { return false };
@@ -823,8 +862,23 @@ fn install_image(rest: &[String]) -> bool {
     for w in &pl.writes { println!("    ! {w}"); }
     println!("  recovery: {}", pl.reversible);
 
-    let images = images_arg(rest);
+    if !with.fits(board) {
+        eprintln!("  {} is not available for the {}", with.title(), board.name);
+        return false;
+    }
+    if !with.p1_files().is_empty() && rest.iter().any(|a| a == "--self-install") {
+        eprintln!("  {} needs the two-stage install (it writes a setting to p1); drop --self-install", with.title());
+        return false;
+    }
+    let images = match rest.windows(2).find(|w| w[0] == "--images") {
+        Some(w) => PathBuf::from(&w[1]),
+        None => match with.fetch_image(board, &Progress::stdout()) {
+            Ok(p) => p,
+            Err(e) => { eprintln!("  {e:#}"); return false }
+        },
+    };
     let rel = match Release::open(&images) { Ok(r) => r, Err(e) => { eprintln!("  {e}"); return false } };
+    println!("  installing: {} ({})", with.title(), images.display());
     if dry { println!("\n  (dry run — nothing written)"); return true; }
 
     // The HC-800 flows are single-stage; the EA network flow is not, so they
@@ -923,7 +977,7 @@ fn install_image(rest: &[String]) -> bool {
             return false;
         }
     };
-    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, sizes, &p) {
+    if let Err(e) = network::stage2_write_rootfs(&ssh2, &rel, sizes, &with.p1_files(), &p) {
         eprintln!("  stage 2 (p1) failed: {e:#}");
         eprintln!("  openHC still auto-boots from RAM; p1 persistence is not set up.");
         return false;
@@ -996,7 +1050,7 @@ fn rootfs(rest: &[String]) -> bool {
         if !matches!(line.trim(), "y" | "yes") { return false; }
     }
     let p = Progress::stdout();
-    match network::stage2_write_rootfs(&ssh, &rel, None, &p) {
+    match network::stage2_write_rootfs(&ssh, &rel, None, &[], &p) {
         Ok(()) => { println!("\n  done — the box is rebooting into openHC on p1."); true }
         Err(e) => { eprintln!("  stage 2 failed: {e:#}"); false }
     }

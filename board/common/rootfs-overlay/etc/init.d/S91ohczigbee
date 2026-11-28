@@ -23,6 +23,8 @@
 #           advertises it over mDNS as _zigbee-coordinator._tcp — the record
 #           ZHA's discovery reads. ZHA wants exactly two TXT keys, radio_type
 #           and serial_number.
+#   none    openHC leaves the radio alone: no bring-up, no reflash, the port
+#           free for another radio stack (an extension's, on its own firmware).
 [ -r /opt/ohc/board.env ] && . /opt/ohc/board.env
 [ -r /data/ohc/zigbee.env ] && . /data/ohc/zigbee.env
 [ "${OHC_ZIGBEE_STACK:-bridge}" = radio ] || unset OHC_ZIGBEE_TCP_PORT
@@ -53,6 +55,7 @@ EOF
 start() {
     [ -x "$BIN" ] || return 0                # no zigbee feature on this board
     [ -e /dev/zigbee ] || return 0           # no radio on this board
+    [ "${OHC_ZIGBEE_STACK:-bridge}" = none ] && return 0   # another stack owns it
     export OHC_ZIGBEE_BAUD OHC_ZIGBEE_TCP_PORT OHC_ZIGBEE_TCP_BIND \
         OHC_ZIGBEE_NCP_IMAGE OHC_ZIGBEE_NCP_UPDATE OHC_ZIGBEE_BTL_BAUD
     # stdout to syslog so "NCP up" / client connects are visible in logread.

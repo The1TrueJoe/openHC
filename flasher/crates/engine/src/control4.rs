@@ -2,8 +2,8 @@
 //! project — the on-screen navigator on its video output and its IO as
 //! ordinary Control4 connections (https://github.com/The1TrueJoe/openhc-control4).
 //!
-//! Two artefacts come from that repository's latest release: the Composer
-//! driver (`openhc.c4z`, saved where the user will find it), which every board
+//! Two artefacts come from that repository's newest release: the board's
+//! Composer driver (`openhc-<model>.c4z`, saved where the user will find it), which every board
 //! uses for its IO, and on the boards with an on-screen view the box side
 //! (`openhc-control4.tar.gz`, unpacked into `/data/extensions`, which openHC's
 //! `S96ohc-extensions` starts at every boot).
@@ -16,12 +16,18 @@ use anyhow::{Context, Result};
 use ohc_flash_core::Board;
 use ohc_flash_transport as tp;
 
-use crate::{updates, Event, Progress};
+use crate::{updates, Event, Progress, Zigbee};
 
 pub const REPO: &str = "The1TrueJoe/openhc-control4";
 const TARBALL: &str = "openhc-control4.tar.gz";
-pub const DRIVER: &str = "openhc.c4z";
 const DIR: &str = "/data/extensions";
+
+/// The board's Composer driver: one per model (`openhc-ea3.c4z`, `openhc-iox.c4z`).
+pub fn driver_name(board: &Board) -> String {
+    let model = board.name.split('-').next().unwrap_or(board.name);
+    let model = if model.starts_with("iox") { "iox" } else { model };
+    format!("openhc-{model}.c4z")
+}
 
 /// The boards the box side runs on: the x86_64 ones with openHC's on-screen
 /// view (`wpe`) and a persistent `/data`. Every other board (HC-250, CA-1, IO
@@ -46,11 +52,11 @@ pub fn driver_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// Download the latest release: the driver into `dir`, and with `with_box` the
-/// box side into memory.
-pub fn fetch(dir: &Path, with_box: bool, p: &Progress) -> Result<Bundle> {
+/// Download the newest release: the board's driver into `dir`, and with
+/// `with_box` the box side into memory.
+pub fn fetch(dir: &Path, board: &Board, with_box: bool, p: &Progress) -> Result<Bundle> {
     p.emit(Event::step("downloading the Control4 extension".into()));
-    let rel = updates::latest_release_from(REPO)?;
+    let rel = updates::newest_from(REPO)?;
     let url = |name: &str| {
         rel.assets
             .iter()
@@ -70,14 +76,16 @@ pub fn fetch(dir: &Path, with_box: bool, p: &Progress) -> Result<Bundle> {
     } else {
         None
     };
-    let driver = dir.join(DRIVER);
-    updates::download(&url(DRIVER)?, &driver)?;
+    let name = driver_name(board);
+    let driver = dir.join(&name);
+    updates::download(&url(&name)?, &driver)?;
     p.emit(Event::detail(format!("{REPO} {}: driver saved to {}", rel.tag_name, driver.display())));
     Ok(Bundle { tar, driver })
 }
 
-/// Unpack the box side, start it, and point the on-screen view at the navigator.
-pub fn install(ssh: &tp::Ssh, b: &Bundle, p: &Progress) -> Result<()> {
+/// Unpack the box side, start it, point the on-screen view at the navigator,
+/// and give the radio to the Zigbee asked for.
+pub fn install(ssh: &tp::Ssh, b: &Bundle, zigbee: Zigbee, p: &Progress) -> Result<()> {
     let tar = b.tar.as_deref().context("the box side was not downloaded")?;
     p.emit(Event::step("setting the controller up for Control4".into()));
     ssh.put_stream(
@@ -87,6 +95,13 @@ pub fn install(ssh: &tp::Ssh, b: &Bundle, p: &Progress) -> Result<()> {
         ),
     )
     .map_err(|e| anyhow::anyhow!("installing the Control4 extension: {e}"))?;
+    if zigbee == Zigbee::Control4 {
+        p.emit(Event::step("giving the Zigbee radio to Control4 (Control4's own firmware)".into()));
+        let out = ssh
+            .run(&format!("{DIR}/control4/init zigbee control4 2>&1"), false)
+            .map_err(|e| anyhow::anyhow!("switching the radio to Control4 Zigbee: {e}"))?;
+        p.emit(Event::detail(out.trim().to_string()));
+    }
     if !ssh.test("-x /etc/init.d/S96ohc-extensions") {
         p.emit(Event::warn(
             "this openHC image predates extensions: Control4 runs now, but update openHC so it \
@@ -158,5 +173,14 @@ mod tests {
         let b = |n| ohc_flash_core::board::by_name(n).unwrap();
         assert!(runs_on_box(b("ea3-v2")) && runs_on_box(b("hc800")));
         assert!(!runs_on_box(b("hc250")) && !runs_on_box(b("ca1")) && !runs_on_box(b("ioxv1")));
+    }
+
+    #[test]
+    fn one_driver_per_model() {
+        let d = |n| driver_name(ohc_flash_core::board::by_name(n).unwrap());
+        assert_eq!(d("ea1-v2-poe"), "openhc-ea1.c4z");
+        assert_eq!(d("ea5-v1"), "openhc-ea5.c4z");
+        assert_eq!(d("ioxv1"), "openhc-iox.c4z");
+        assert_eq!(d("hc800"), "openhc-hc800.c4z");
     }
 }

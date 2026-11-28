@@ -42,7 +42,7 @@ CONF
     # Z-Wave JS's device database (the zwave-js-config package): node names
     # and named configuration parameters.
     [ -d "$DEVICES" ] && printf '\n[devices]\ndir = "%s"\n' "$DEVICES" >> "$CONF"
-    # ponytail: a plain restart loop, 30 s apart, no backoff.
+    # A plain restart loop, 30 s apart, no backoff.
     while [ -f "$PID" ]; do
         if [ -e /dev/zwave ]; then
             "$BIN" --config "$CONF"

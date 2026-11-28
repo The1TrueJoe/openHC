@@ -1,24 +1,24 @@
 # openHC
 
-Open, kernel-up firmware for **Control4 controllers**. A modern Linux kernel and
-root filesystem, built from source, running on hardware the vendor shipped
-locked.
+New, open software for old **Control4 controllers**. openHC replaces the
+controller's Control4 OS with a current Linux system, so hardware Control4 no
+longer supports keeps working: its relays, contact inputs, IR, serial ports,
+Zigbee radio and audio outputs.
 
 📖 **[Documentation and the full hardware research →](https://the1truejoe.github.io/openHC/)**
 
-## Extensions
+## What you can make it
 
-Separate projects that build on openHC:
+The flasher asks what the controller should run and downloads it for you:
 
-- **[openhc-control4](https://github.com/The1TrueJoe/openhc-control4)**: back
-  into a Control4 project as a controller, with its IO and the on-screen
-  navigator on the TV.
-- **[openhc-minecraft](https://github.com/The1TrueJoe/openhc-minecraft)**:
-  Minecraft on an EA's HDMI output.
-- **[c4-ea-homeassistant](https://github.com/The1TrueJoe/c4-ea-homeassistant)**:
-  Home Assistant on the EA series.
+| Choice | What you get | Controllers |
+|---|---|---|
+| **openHC** | A web page for the box, its IO and radios on MQTT for your own home automation, and AirPlay 2 (plus Spotify Connect and more) on every audio output | all |
+| **Control4 controller** | Back in your current Control4 project as a device: its IO, audio and an on-screen navigator, through a Composer driver ([openhc-control4](https://github.com/The1TrueJoe/openhc-control4)) | all |
+| **Home Assistant** | Home Assistant and Music Assistant on the box, with its IO, Zigbee, Bluetooth and outputs already in them ([c4-ea-homeassistant](https://github.com/The1TrueJoe/c4-ea-homeassistant)) | EA series |
+| **Music Assistant only** | Music Assistant on the box, playing to its outputs | EA series |
 
-## Currently Supported controllers
+## Supported controllers
 
 | Controller | Supported |
 |---|:---:|
@@ -35,45 +35,62 @@ Separate projects that build on openHC:
 | IO Extender (v1) | ✅ |
 | IO Extender (v2) | ❌ |
 
-These are just the controllers I have on hand. More will be coming in the future. I do not have plans to work on models older than the HC-250 (HC-200, HC-300, HC-500, HC-1000).
+These are the controllers I have on hand. More will come. I do not plan to work
+on models older than the HC-250 (HC-200, HC-300, HC-500, HC-1000).
 
-## The flasher
+## Install
 
-Everything goes through the flasher: installing openHC, going back into it, and
-restoring a controller to factory. It works over the network, with no serial
-cable and no lid off, and it identifies the controller before touching it.
+You need the controller on your network and a Mac, Windows or Linux computer
+on the same network. No serial cable, and the lid stays on.
 
-**GUI:** download `ohc-flasher` for macOS, Windows or Linux from the
-[latest release](https://github.com/The1TrueJoe/openHC/releases), along with the
-image bundle for your controller (`openhc-<board>-<version>.zip`), and run it.
-On an HC-800 or EA, **Make it a Control4 controller again** on the Install
-screen also sets it up with [openhc-control4](https://github.com/The1TrueJoe/openhc-control4)
-and saves the Composer driver to your Downloads.
+1. Download **ohc-flasher** for your computer from the
+   [latest release](https://github.com/The1TrueJoe/openHC/releases) (until the
+   first release, from **dev (rolling)** on the same page). On macOS and Linux
+   it also needs `sshpass` (`brew install sshpass`, or your distribution's
+   package).
+2. Open it. It scans your network and lists the Control4 controllers it finds.
+   Pick yours.
+3. It checks which model it is and what it runs now.
+4. Choose what it should run (the table above). The flasher downloads it.
+5. Press **Install**. The controller restarts on its own, once or twice, over a
+   few minutes. Leave it powered until the flasher says it is done.
 
-**Command line:** build `ohc-flash` from this repository:
+Then open the controller's address in a browser for openHC's own page. Its
+address can change when it restarts; the flasher's **Find it again** shows the
+new one. SSH works too: `ssh root@<address>`, password `openhc` (change it with
+`passwd`).
+
+Before you install, read
+[Recovery](https://the1truejoe.github.io/openHC/shared/recovery/): it explains
+how your controller goes back to Control4. The flasher does that too
+(**restore**), and openHC never touches the controller's factory recovery.
+
+### From a terminal
+
+The flasher also comes as a command, `ohc-flash`, on the same release page:
 
 ```sh
-cd flasher
-cargo build --release -p ohc-flash-cli
+ohc-flash discover                       # find controllers on the network
+ohc-flash identify <ip>                  # what it is, and what it runs
+ohc-flash install <ip> --with control4   # or openhc, home-assistant, music-assistant
+ohc-flash restore <ip>                   # back to factory
 ```
 
-Both need `sshpass` to log into a controller (`brew install sshpass`, or your
-distribution's package).
+`ohc-flash help` lists everything else.
 
-```sh
-ohc-flash discover                                # find controllers on the network
-ohc-flash identify <ip>                           # what it is, and what is running
-ohc-flash plan <board>                            # what an install would do
-ohc-flash install <ip> --images openhc-<board>-<version>.zip
-ohc-flash control4 <ip>                           # make it a Control4 controller again
-ohc-flash boot <ip>                               # go back into an installed openHC
-ohc-flash uninstall <ip>                          # boot stock Control4 again
-ohc-flash restore <ip>                            # back to factory
-```
+## More projects on openHC
 
-`ohc-flash help` lists every option. Before installing, read
-[Recovery](https://the1truejoe.github.io/openHC/shared/recovery/) for how your
-controller gets back to stock.
+- **[openhc-control4](https://github.com/The1TrueJoe/openhc-control4)**: the
+  Control4 controller choice.
+- **[c4-ea-homeassistant](https://github.com/The1TrueJoe/c4-ea-homeassistant)**:
+  the Home Assistant and Music Assistant choices.
+- **[openhc-minecraft](https://github.com/The1TrueJoe/openhc-minecraft)**:
+  Minecraft on an EA's HDMI output.
+
+## Contributing
+
+Building openHC, the repository's layout and how to work on a board:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

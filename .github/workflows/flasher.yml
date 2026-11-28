@@ -184,3 +184,19 @@ jobs:
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
             "${{ env.ASSET }}" "${{ env.CLI_ASSET }}" --clobber
+
+      # Main's builds also go on the rolling `dev` pre-release (made by the
+      # images workflow), so there is always a flasher to download without a
+      # GitHub login. The previous build for this OS is replaced.
+      - name: Publish to the dev pre-release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view dev >/dev/null 2>&1 || { echo "no dev release yet"; exit 0; }
+          for old in $(gh release view dev --json assets -q '.assets[].name' \
+                       | grep -E '^ohc-flash(er)?-[0-9a-f]{7,}-dev-${{ matrix.name }}' || true); do
+            case "$old" in "$ASSET"|"$CLI_ASSET") ;; *) gh release delete-asset dev "$old" --yes ;; esac
+          done
+          gh release upload dev "$ASSET" "$CLI_ASSET" --clobber

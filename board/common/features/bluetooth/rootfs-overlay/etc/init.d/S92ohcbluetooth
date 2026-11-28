@@ -41,7 +41,7 @@ CONF
     # Onboard controllers come up from the device tree; a dongle's driver is
     # loaded by eudev. Either way, wait for hci0.
     modprobe -q btusb 2>/dev/null
-    # ponytail: a plain restart loop, 30 s apart, no backoff.
+    # A plain restart loop, 30 s apart, no backoff.
     while [ -f "$PID" ]; do
         if [ -e /sys/class/bluetooth/hci0 ]; then
             "$BIN" --config "$CONF"
